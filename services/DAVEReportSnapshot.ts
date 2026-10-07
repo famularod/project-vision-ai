@@ -199,6 +199,64 @@ export function reportPeriodKey(snapshot: Pick<DAVEReportSnapshot, 'scopeKey' | 
   return JSON.stringify([snapshot.scopeKey, snapshot.reportFormat ?? null]);
 }
 
+/**
+ * R4 item 4a (the fingerprint's versions). A report's source fingerprint says
+ * which version wrote it in its first characters. Version 1.0 followed the
+ * order the tasks were saved in and the id each device files the project
+ * under; 2.0 follows neither. An approval, a sent report or a saved web
+ * report made under 1.0 must still be known for the same facts, so wherever
+ * the app works out today's fingerprint it also works out the 1.0 one for
+ * the same facts and remembers the pair here (in memory: both are worked out
+ * again whenever the facts are). Kept for as long as a 1.0 fingerprint can
+ * still be in a saved period, a saved web report or the web's list of sent
+ * reports.
+ */
+const LEGACY_REPORT_SOURCE_PREFIX = 'dave-report-source/1.0:';
+const REMEMBERED_LEGACY_SOURCES = 400;
+const legacyReportSources = new Map<string, Set<string>>();
+
+export function isLegacyReportSource(fingerprint: string | null | undefined): boolean {
+  return typeof fingerprint === 'string' && fingerprint.startsWith(LEGACY_REPORT_SOURCE_PREFIX);
+}
+
+/** Today's fingerprint of some facts, and the 1.0 fingerprint of the same facts. */
+export function rememberLegacyReportSource(current: string, legacy: string): void {
+  if (!current || !legacy || current === legacy) return;
+  const known = legacyReportSources.get(current) ?? new Set<string>();
+  known.add(legacy);
+  // Most recently worked out last, so the oldest pair is the one dropped.
+  legacyReportSources.delete(current);
+  legacyReportSources.set(current, known);
+  while (legacyReportSources.size > REMEMBERED_LEGACY_SOURCES) {
+    const oldest = legacyReportSources.keys().next().value;
+    if (oldest === undefined) break;
+    legacyReportSources.delete(oldest);
+  }
+}
+
+/** The 1.0 fingerprints known for the facts of `current`; none for a 1.0 fingerprint itself. */
+export function legacyReportSourcesOf(current: string | null | undefined): readonly string[] {
+  return current ? [...(legacyReportSources.get(current) ?? [])] : [];
+}
+
+/**
+ * Whether two fingerprints are of the same facts: the same fingerprint, or
+ * one written under 1.0 and the other today's fingerprint of those facts.
+ * The web's longer source fingerprint ("<facts>:media-…") is compared by its
+ * facts part, with the rest the same.
+ */
+export function sameReportSource(left: string | null | undefined, right: string | null | undefined): boolean {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const [leftFacts, ...leftRest] = left.split(':media-');
+  const [rightFacts, ...rightRest] = right.split(':media-');
+  if (leftRest.join(':media-') !== rightRest.join(':media-')) return false;
+  if (isLegacyReportSource(leftFacts) === isLegacyReportSource(rightFacts)) return false;
+  return isLegacyReportSource(leftFacts)
+    ? legacyReportSourcesOf(rightFacts).includes(leftFacts)
+    : legacyReportSourcesOf(leftFacts).includes(rightFacts);
+}
+
 function wasDelivered(snapshot: DAVEReportSnapshot): boolean {
   return snapshot.deliveredAt !== null;
 }
@@ -225,7 +283,7 @@ export function reportBaselineSnapshot(
   currentFingerprint: string,
 ): DAVEReportSnapshot | null {
   if (!previous) return null;
-  if (previous.sourceFingerprint === currentFingerprint) {
+  if (sameReportSource(previous.sourceFingerprint, currentFingerprint)) {
     return previous.supersedes ?? (isLegacySnapshot(previous) ? previous : null);
   }
   if (!wasDelivered(previous)) return previous.supersedes ?? null;
@@ -245,7 +303,7 @@ export function reportSnapshotToSave(
 ): DAVEReportSnapshot | null {
   // The same projects and, since owner answer Q17, the same report format.
   const samePeriod = previous ? reportPeriodKey(previous) === reportPeriodKey(current) : false;
-  if (previous && samePeriod && previous.sourceFingerprint === current.sourceFingerprint) {
+  if (previous && samePeriod && sameReportSource(previous.sourceFingerprint, current.sourceFingerprint)) {
     return null;
   }
   const pending = { ...current, deliveredAt: null };
@@ -438,7 +496,7 @@ export function otherDeviceSendNotReceived({
 }): DAVEReportSnapshot | null {
   const send = reportPeriodSend(period);
   if (typeof send?.deliveredAt !== 'string' || ownSends.has(send.deliveredAt)) return null;
-  if (send.sourceFingerprint === currentFingerprint) return null;
+  if (sameReportSource(send.sourceFingerprint, currentFingerprint)) return null;
   const pulled = Date.parse(pulledAt ?? '');
   if (Number.isNaN(pulled)) return send;
   if (pulled > reportSendCountsFrom(send)) return null;
@@ -466,6 +524,7 @@ export type DAVEReportPeriodChange = Readonly<{
   areaName: string | null;
   kind:
     | 'added'
+    | 'returned'
     | 'removed'
     | 'completed'
     | 'reopened'
@@ -555,6 +614,44 @@ export function reportTasksLeftByLookahead(truths: readonly DAVEProjectTruth[]):
   })));
 }
 
+/**
+ * An earlier row of a task shown, as it was last saved (DAVEProjectTruth),
+ * with its project (R5 item 1, the returning task).
+ */
+export type DAVEReportTaskEarlierRow = Readonly<{
+  /** The task shown now that answers to this row. */
+  taskId: string;
+  earlierTaskId: string;
+  /** When the row came in. */
+  savedAt: string | null;
+  /** When the row shown came in. */
+  taskSavedAt: string | null;
+  /** A row a lookahead added: the task began as a lookahead's own row. */
+  addedByLookahead?: true;
+  projectName: string;
+  taskName: string;
+  areaName: string | null;
+  owner: string | null;
+  status: string;
+  percentComplete: number;
+  finishDate: string | null;
+  approvalStatus: string | null;
+  estimatedScheduleImpactDays: number | null;
+}>;
+
+/** The earlier rows of the tasks shown, as the truths give them, oldest first for each task (R5 item 1). */
+export function reportTaskEarlierRows(truths: readonly DAVEProjectTruth[]): DAVEReportTaskEarlierRow[] {
+  return truths.flatMap(truth => (truth.earlierRows ?? []).map(row => Object.freeze({
+    ...row,
+    projectName: truth.projectName,
+  })));
+}
+
+/** The tasks shown whose own row a lookahead added, as the truths give them (R5 item 1). */
+export function reportTasksAddedByLookahead(truths: readonly DAVEProjectTruth[]): string[] {
+  return truths.flatMap(truth => truth.lookaheadAddedTaskIds ?? []);
+}
+
 export function buildDAVEReportSnapshot({
   truths,
   scopeKey,
@@ -627,9 +724,20 @@ export function compareDAVEReportSnapshots({
   current,
   previous,
   tasksLeftByLookahead = [],
+  earlierRows = [],
+  lookaheadAddedTaskIds = [],
 }: {
   current: DAVEReportSnapshot;
   previous?: DAVEReportSnapshot | null;
+  /**
+   * The saved earlier rows of the tasks shown (R5 item 1, the returning
+   * task): how a task that is back last stood when no report kept has it,
+   * and which tasks began as a lookahead's own row. Without them a task the
+   * earlier report does not have reads as before.
+   */
+  earlierRows?: readonly DAVEReportTaskEarlierRow[];
+  /** The tasks shown whose own row a lookahead added, a master's task or not by now (R5 item 1). */
+  lookaheadAddedTaskIds?: readonly string[];
   /**
    * The saved detail tasks not shown because a newer lookahead replaced
    * theirs (owner answer 3 Oct 2026, "Don't mention them"): one the earlier
@@ -693,19 +801,103 @@ export function compareDAVEReportSnapshots({
   const unpairedBefore = previous.tasks.filter(task => !currentById.has(task.taskId) && !linked.previous.has(task) && !saidNewTask(task));
   const unpairedNow = current.tasks.filter(task =>
     !previousById.has(task.taskId) && !linked.current.has(task) && !saidNewTask(task) && !knownByEarlierIdsAmongSameNamed(task));
+  // R5 item 1 (the recorded case; Low, older): nor a task that BEGAN as a lookahead's own row, once a master lists
+  // it. Paint (his 60%) was dropped by a master; a lookahead then listed Paint as its own row, a new task at 0%,
+  // and the report said "removed" and "added" by the rule above. The next master listed it: its new row answers to
+  // the lookahead's row and is a master's task now, so the rule let go, the name was the only Paint in both
+  // reports, and the same period then read "Paint moved from 60% to 0% complete." and "owner changed from Sam to
+  // unassigned." So too when the master listed it on the lookahead's own days: the lookahead's row itself became
+  // the master's task. The list had not carried what he set: his 60% and his owner stayed on the dropped row. A
+  // task shown whose row a lookahead added, or that answers to such a row, is not read as a master's task of the
+  // earlier report when that reading would say he LOST something he had set (progress gone back, or an owner, an
+  // approval asked for or a schedule impact gone): the dropped task is said removed and this one added. Where
+  // nothing he had set is lost the two still read as one task, as before: the same name was in his list at both
+  // reports, and "removed" and "added" would be noise (the reviewer's text driver, Set Active profiles: five of
+  // the six sequences that reach this have nothing lost, and one has "moved from 50% to 0%").
+  // (Read from the saved rows handed over, for the tasks of this report only: nothing is kept in a saved report
+  // for it.)
+  const earlierRowsOf = new Map<string, DAVEReportTaskEarlierRow[]>();
+  earlierRows.forEach(row => earlierRowsOf.set(row.taskId, [...(earlierRowsOf.get(row.taskId) || []), row]));
+  const ownRowAddedByLookahead = new Set(lookaheadAddedTaskIds);
+  const beganOnLookahead = (task: DAVEReportSnapshotTask) =>
+    ownRowAddedByLookahead.has(task.taskId) || (earlierRowsOf.get(task.taskId) || []).some(row => row.addedByLookahead === true);
   const isLookaheadDetail = (task: DAVEReportSnapshotTask) => task.lookaheadDetail === true;
+  /** Of this report's tasks: a lookahead's detail row, or a task that began as one. */
+  const isLookaheadRowNow = (task: DAVEReportSnapshotTask) => isLookaheadDetail(task) || beganOnLookahead(task);
   const revisions = new Map([
     ...pairRevisedTasks(unpairedBefore.filter(task => !isLookaheadDetail(task)), unpairedNow.filter(task => !isLookaheadDetail(task))),
     ...pairRevisedTasks(unpairedBefore.filter(isLookaheadDetail), unpairedNow.filter(isLookaheadDetail)),
-  ]);
+  ].filter(([task, prior]) => !(beganOnLookahead(task) && !isLookaheadDetail(prior) && saysWhatHeSetIsLost(prior, task))));
   const revisedPriorIds = new Set([...linked.pairs.values(), ...revisions.values()].map(task => task.taskId));
   const changes: DAVEReportPeriodChange[] = [];
+  const addedTasks: DAVEReportSnapshotTask[] = [];
   const unchangedTaskIds = new Set<string>();
   const newActivityTaskIds = new Set<string>();
   const sameActivityTaskIds = new Set<string>();
   // The report before the earlier one, when it was kept (A6 pass 16 L1).
   const reportBefore = previous.supersedes?.scopeKey === previous.scopeKey ? previous.supersedes : null;
   const reportBeforeById = new Map((reportBefore?.tasks ?? []).map(task => [task.taskId, task]));
+  // R5 item 1 (the returning task, report side; Medium, older). Since schedule batch S2 a task one master leaves
+  // out and a later master lists again is the SAME task: by its Unique ID, or by his answer at the import review.
+  // Master F listed Paint (his 60%); G left it out, and a report said "Paint was removed from the current project
+  // plan."; H listed it again and he answered "The same task". The earlier report no longer had Paint, so the
+  // next report read "Paint was added to the project plan." and compared it with nothing: his 60% to 70% was
+  // never said. A task the earlier report does not have, by id or by name, that is one a report said was removed,
+  // reads as back, compared with how it last stood:
+  //  - as the report before the earlier one had it, by its own row or a row it answers to (one to one, as above).
+  //    That report is the furthest back a saved period keeps once this report is approved (A6 pass 16 L1), so the
+  //    report reads the same before and after approval. Not a lookahead's detail row there: one that left with
+  //    its replaced lookahead was never said removed (owner answer 3 Oct 2026), and reads as before;
+  //  - else, out for longer, as the row it left on was last saved: the latest of its earlier rows, a master's and
+  //    this project's, that was already saved when the earlier report was made. That report had no row of the
+  //    task, so the task was out of the list then. A row saved since is the same task moved inside this period,
+  //    and the task is new to the reader: "added".
+  //    Fourth part (found by the text driver taught this rule): only when the row SHOWN is newer than the earlier
+  //    report, the row a master made for the task on its return. A row shown that was already saved then is the
+  //    task's own row shown again (he confirmed "The same task" on the days it had, or Set Active went back): it
+  //    IS the row it left on, and holds what was set since. An older row it answers to is not how it last stood:
+  //    Paint, moved by master 2 and at 60% in the last report that listed it, came back after two reports and
+  //    read "Paint moved from 0% to 70% complete." and "owner changed from unassigned to Sam" against master 1's
+  //    row, which no report had ever shown that way. It reads "added", as it did before this batch.
+  //    Fifth part (found the same way): and only when there was a report before the earlier one. When the earlier
+  //    report is the only one there has been, no report can have listed the task and said it removed: a task
+  //    that left the plan before the first report and comes back after it is new to the reader, "added".
+  // A task that comes back on its own row after more than one report (he answered "The same task" for a row on the
+  // days it had, or Set Active went back) has nothing saved to tell how it last stood, and still reads "added".
+  // Third part (found by the text driver taught this rule, 1 of 1,600 sequences): never a task that is a lookahead's
+  // detail row NOW. No master has listed it, so no report said it was removed: it can only have left with a replaced
+  // lookahead. A report saved by a build before detail rows were marked has the row without the mark, and a later
+  // lookahead that listed it again read "Detail walk is back in the project plan." It reads "added", as before.
+  const noPriorNow = new Set(current.tasks.filter(task => !isLookaheadDetail(task) &&
+    !previousById.has(task.taskId) && !linked.pairs.has(task) && !revisions.has(task) && !linked.current.has(task)));
+  const linkedBefore = reportBefore ? linkTasksById(reportBefore.tasks, [...noPriorNow]) : null;
+  const earlierReportMade = Date.parse(previous.capturedAt);
+  const returnedFrom = (task: DAVEReportSnapshotTask): DAVEReportSnapshotTask | null => {
+    if (!noPriorNow.has(task)) return null;
+    const before = reportBeforeById.get(task.taskId) ?? linkedBefore?.pairs.get(task);
+    if (before) return isLookaheadDetail(before) ? null : before;
+    if (!reportBefore) return null;
+    const rows = (earlierRowsOf.get(task.taskId) || []).filter(row => {
+      const saved = Date.parse(row.savedAt ?? '');
+      const shownSaved = Date.parse(row.taskSavedAt ?? '');
+      return row.addedByLookahead !== true && !Number.isNaN(saved) && !Number.isNaN(earlierReportMade) && saved < earlierReportMade &&
+        !Number.isNaN(shownSaved) && shownSaved >= earlierReportMade;
+    });
+    const row = rows.at(-1);
+    return row ? Object.freeze({
+      taskId: row.earlierTaskId,
+      projectName: task.projectName,
+      taskName: row.taskName,
+      areaName: clean(row.areaName) || null,
+      owner: clean(row.owner) || null,
+      status: clean(row.status),
+      percentComplete: boundedPercent(row.percentComplete),
+      finishDate: clean(row.finishDate) || null,
+      urgency: 'not_urgent' as const,
+      approvalStatus: clean(row.approvalStatus) || null,
+      estimatedScheduleImpactDays: finiteNumber(row.estimatedScheduleImpactDays),
+    }) : null;
+  };
 
   // Whole-app audit A6 pass 10 M1 (30 Sep 2026): pass 9 held back a task
   // whose copy in the earlier report was the newer row. A note or owner
@@ -716,7 +908,13 @@ export function compareDAVEReportSnapshots({
   for (const task of current.tasks) {
     const prior = previousById.get(task.taskId) ?? linked.pairs.get(task) ?? revisions.get(task);
     if (!prior) {
-      changes.push(changeFor(task, 'added', `${task.taskName} was added to the project plan.`));
+      const lastKnown = returnedFrom(task);
+      if (lastKnown) {
+        changes.push(changeFor(task, 'returned', `${task.taskName} is back in the project plan.`), ...changesBetween(lastKnown, task));
+      } else {
+        changes.push(changeFor(task, 'added', `${task.taskName} was added to the project plan.`));
+        addedTasks.push(task);
+      }
       // Whole-app audit A6 pass 19 L3 (1 Oct 2026): a report went out while a master without Cleanup was
       // current, and Cleanup came back. Its note made after the report before that one ("Dumpster
       // ordered.") was older than the earlier report, so the time rule never said it. A task the earlier
@@ -732,9 +930,12 @@ export function compareDAVEReportSnapshots({
     // earlier ids; M's row had no note, so F's old note read as new. A row
     // paired across a master change is checked against the report before the
     // earlier one (A6 pass 16 L1), and failing that keeps the time rule.
+    // Schedule batch S5, item 1 (7 Oct 2026): a task's activity notes follow it from row to row now (a master that
+    // moves it, Set Active, Make Current), so the row the earlier report had for this task can hold the very note this
+    // row shows. That note was there for the earlier report: it is not said again.
     const activity = prior.taskId === task.taskId
       ? activityAgainstOwnRow(prior, task)
-      : activityAgainstReportBefore(task, reportBefore, reportBeforeById.get(task.taskId));
+      : activityFollowedTheTask(prior, task) ?? activityAgainstReportBefore(task, reportBefore, reportBeforeById.get(task.taskId));
     if (activity) (activity === 'new' ? newActivityTaskIds : sameActivityTaskIds).add(task.taskId);
     changes.push(...changesBetween(prior, task));
   }
@@ -768,6 +969,7 @@ export function compareDAVEReportSnapshots({
   // The tasks that left with a lookahead, as each counts in this report: as it stood, or completed.
   const leftCounted: DAVEReportSnapshotTask[] = [];
   const leftSeen = new Set<DAVEReportTaskLeftByLookahead>();
+  const removedTasks: DAVEReportSnapshotTask[] = [];
   // Review N2 (5 Oct 2026): a task a master has listed is a master's task from then on. A lookahead added Rebar
   // delivery; the next master listed it on other days, as a new row that answers to the lookahead's row (its
   // earlier ids); a newer lookahead replaced the first; a later master dropped it. The lookahead's old saved
@@ -791,6 +993,20 @@ export function compareDAVEReportSnapshots({
       continue;
     }
     changes.push(changeFor(task, 'removed', `${task.taskName} was removed from the current project plan.`));
+    removedTasks.push(task);
+  }
+  // R1 item 4 (8 Oct 2026, the owner's open items): a lookahead's own row and a master's row of one name are not
+  // paired (the decided rule: one is removed, the other added), so when he set the owner on the row now shown, no
+  // report ever said so: an added task gets no owner line, and the next report already counts from the new owner.
+  // Where exactly one task of that name was added and exactly one removed, one of them a lookahead's own row and
+  // the other a master's, the owner he set is said beside "added" and "removed". Nothing else is paired.
+  for (const task of addedTasks) {
+    if (!normalized(task.owner)) continue;
+    const removed = removedTasks.filter(earlier => sameRevisedTask(earlier, task));
+    if (removed.length !== 1 || addedTasks.filter(other => sameRevisedTask(removed[0], other)).length !== 1) continue;
+    const [earlier] = removed;
+    if (isLookaheadDetail(earlier) === isLookaheadRowNow(task) || normalized(earlier.owner) === normalized(task.owner)) continue;
+    changes.push(changeFor(task, 'owner', `${task.taskName} owner changed from ${earlier.owner || 'unassigned'} to ${task.owner || 'unassigned'}.`));
   }
   // A detail task no report ever had (added, completed and gone with its lookahead between two reports): said by
   // the first report whose earlier report did not know that lookahead as replaced; never without that record.
@@ -892,6 +1108,9 @@ function changesBetween(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotT
   // for a task that came back since the earlier report: that report had it on
   // a lookahead's dates (it kept its start then), or on that lookahead's
   // finish. Any other date change reads as before.
+  // R1 item 6 (8 Oct 2026, the owner's open items): the date in brackets is the one the EARLIER REPORT showed. It
+  // was the replaced lookahead's own date; when a second lookahead came and went between two reports, that was a
+  // date no report had ever shown ("the previous lookahead showed 10/14" where the last report said 10/12).
   const back = task.replacedLookaheadDates && !prior.replacedLookaheadDates ? task.replacedLookaheadDates : null;
   const backSince = Boolean(back) && (prior.startDate !== undefined || sameCalendarDate(prior.finishDate, back!.finishDate));
   if (backSince && prior.startDate !== undefined && task.startDate !== undefined &&
@@ -899,7 +1118,7 @@ function changesBetween(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotT
     changes.push(changeFor(
       task,
       'start_date',
-      `${task.taskName} start is back to the master schedule's ${task.startDate} (the previous lookahead showed ${back!.startDate}).`,
+      `${task.taskName} start is back to the master schedule's ${task.startDate} (the previous lookahead showed ${clean(prior.startDate) || back!.startDate}).`,
     ));
   }
   if (!sameCalendarDate(prior.finishDate, task.finishDate)) {
@@ -907,7 +1126,7 @@ function changesBetween(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotT
       task,
       'finish_date',
       backSince && clean(task.finishDate)
-        ? `${task.taskName} finish is back to the master schedule's ${task.finishDate} (the previous lookahead showed ${back!.finishDate}).`
+        ? `${task.taskName} finish is back to the master schedule's ${task.finishDate} (the previous lookahead showed ${clean(prior.finishDate) || back!.finishDate}).`
         : `${task.taskName} finish changed from ${prior.finishDate || 'not set'} to ${task.finishDate || 'not set'}.`,
     ));
   }
@@ -940,6 +1159,21 @@ function changesBetween(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotT
     ));
   }
   return changes;
+}
+
+/**
+ * Whether reading `task` as the earlier report's `prior` would say he lost
+ * something he had set on it (R5 item 1, the recorded case): its progress
+ * gone back, or its owner, an approval he asked for or its schedule impact
+ * gone. A date that moved, or anything he set since, is no loss.
+ */
+function saysWhatHeSetIsLost(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotTask): boolean {
+  const asked = (approval: string | null) => Boolean(normalized(approval)) && normalized(approval) !== 'not required';
+  return (snapshotTaskIsComplete(prior) && !snapshotTaskIsComplete(task)) ||
+    task.percentComplete < prior.percentComplete ||
+    (Boolean(normalized(prior.owner)) && !normalized(task.owner)) ||
+    (asked(prior.approvalStatus) && !asked(task.approvalStatus)) ||
+    (prior.estimatedScheduleImpactDays !== null && task.estimatedScheduleImpactDays === null);
 }
 
 export function daveReportSnapshotScopeKey(projectNames: readonly string[]) {
@@ -1109,6 +1343,11 @@ function activityAgainstReportBefore(
   if (againstOwnRow) return againstOwnRow;
   const before = validDate(reportBefore.capturedAt);
   return before && activityAfter(task, before) ? 'new' : null;
+}
+
+/** A task that has a latest activity, and the other row the earlier report had for it saved that very one (S5 item 1). */
+function activityFollowedTheTask(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotTask): 'same' | null {
+  return validDate(task.activityAt) && typeof prior.activityKey === 'string' && prior.activityKey === task.activityKey ? 'same' : null;
 }
 
 /** Whether a task says what the earlier report's task said; unknown (false) when either was saved with no key. */

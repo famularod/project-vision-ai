@@ -269,6 +269,43 @@ describe('independent review R02 and pass 2: the cloud reads and writes behind t
     expect(placed.flat().every(filter => /^(entity_type|record_id) (eq|gt) /.test(filter))).toBe(true);
   });
 
+  // Sync batch Y1 (item 2): the deletion history asked again for just the records a sync is about to create.
+  it('the deletion records of named records are read by their ids: this account\'s, of that kind, a hundred ids to a request, in either letter case', async () => {
+    const deleted = (owner: string, entityType: string, recordId: string) => ({ owner_id: owner, entity_type: entityType, record_id: recordId, deleted_at: NOW });
+    mockTables.dave_sync_tombstones = [
+      deleted('owner-1', 'schedule_item', taskId(3)),
+      deleted('owner-1', 'schedule_item', 'master f-9'),     // written by a device that keeps ids in lower case
+      deleted('owner-1', 'project_area', taskId(4)),          // another kind of record with that id
+      deleted('owner-2', 'schedule_item', taskId(5)),         // another account's
+      deleted('owner-1', 'schedule_item', taskId(900)),       // not asked about
+    ];
+
+    const result = await service.listDAVESyncTombstonesForRecords('schedule_item', [taskId(3), taskId(4), taskId(5), 'MASTER F-9', ' ', taskId(3)]);
+
+    expect(result.ok).toBe(true);
+    expect(result.data).toEqual([
+      { entityType: 'schedule_item', recordId: taskId(3), deletedAt: NOW },
+      { entityType: 'schedule_item', recordId: 'master f-9', deletedAt: NOW },
+    ]);
+    const askedOf = () => mockRequests.filter(request => request.table === 'dave_sync_tombstones');
+    const [asked] = askedOf();
+    expect(askedOf()).toHaveLength(1);
+    expect(asked.filters).toEqual(['owner_id eq owner-1', 'entity_type eq schedule_item']);
+    // Each id once as given and once in lower case, where that differs.
+    expect(asked.ids).toBe(5);
+
+    // 150 ids: two requests, a hundred ids at most in each.
+    mockRequests.length = 0;
+    const many = await service.listDAVESyncTombstonesForRecords('schedule_item', Array.from({ length: 150 }, (_, index) => taskId(index)));
+    expect(many.data).toEqual([{ entityType: 'schedule_item', recordId: taskId(3), deletedAt: NOW }]);
+    expect(askedOf().map(request => request.ids)).toEqual([100, 50]);
+
+    // Nothing to ask about: no request.
+    mockRequests.length = 0;
+    await expect(service.listDAVESyncTombstonesForRecords('schedule_item', [])).resolves.toMatchObject({ ok: true, data: [] });
+    expect(mockRequests).toEqual([]);
+  });
+
   it('judgments and decisions are read by their ids and come back in the order they had: newest first, a decision\'s versions by number', async () => {
     const scope = { organization_id: 'org-1', project_id: 'p-1' };
     mockTables.pie_executive_judgments = [

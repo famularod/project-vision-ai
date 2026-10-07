@@ -396,6 +396,26 @@ export function createBackupRestoreRuntime({
   ];
   let recoveryPromise: Promise<void> | null = null;
 
+  /**
+   * Sync batch Y4, item 1 (the coordinator's decision). A held restore whose record cannot be read at all has
+   * nothing to finish from and nothing to roll back to: the recovery refused it at every start and every Retry
+   * Recovery, with no way out but removing the app. Its record is now set aside: kept, byte for byte, under another
+   * name, and removed from where it blocked. The app starts on the saved records as they are (each list is the
+   * restore's or the one from before it, whichever was on the device), and he is told once
+   * (services/RecoveryRecordNotices.ts). Only a record that cannot be read: one that can be is finished as before,
+   * and when it cannot be finished the failure is the one it always was. If the device cannot keep the copy, nothing
+   * is removed and this start fails as before; the next start tries again.
+   * The files the restore placed are settled as after any recovery, by what any saved value names. The record that
+   * was set aside is a saved value too: a file only it names stays on the device with it (left behind, never lost).
+   */
+  const finishHeldRestoreOrSetItAside = async () => {
+    try {
+      await transaction.recover();
+    } catch (cause) {
+      if (!await transaction.setAsideIfUnreadable()) throw cause;
+    }
+  };
+
   const recoverBeforeStartupReads = (): Promise<void> => {
     if (recoveryPromise) return recoveryPromise;
     const recovery = (async () => {
@@ -403,7 +423,7 @@ export function createBackupRestoreRuntime({
       await recoverFieldUpdate();
       await runExclusiveLocalStorageMutation(mutationKeys, async () => {
         await assertNoForeignPendingJournal(storage, barrierKeys);
-        await transaction.recover();
+        await finishHeldRestoreOrSetItAside();
         // The journal is finished or was never written: what the saved records name now is final.
         await settleRestoredMedia?.().catch(() => undefined);
       });

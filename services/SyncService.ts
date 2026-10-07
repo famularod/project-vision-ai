@@ -16,6 +16,7 @@ import {
   listProjectUpdates,
   listProjectAreas,
   listArchivedProjects,
+  listDAVESyncTombstonesForRecords,
   listProjects,
   listReferenceDocuments,
   listScheduleItems,
@@ -43,6 +44,7 @@ import {
   projectDocumentBridgeOrphaned,
 } from './ProjectDocumentBridge';
 import { getStoredJson, setStoredJson } from './StorageService';
+import { subscribeToOwnerStorageSwitch } from './OwnerStorageSandbox';
 import {
   deletedDAVERecordIds,
   loadDAVEOperationalTombstones,
@@ -71,11 +73,11 @@ import { fieldUpdateCopyIsSettled, fieldUpdateEditAgainstCloud, fieldUpdateEditB
 import {
   isEditBase, scheduleItemFieldsWithOwnProgress, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBaseOf,
   scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOnRow, scheduleItemConflictFields, scheduleItemEditBasesMerged, scheduleItemLaterPercentGivenBack,
-  scheduleItemLaterPercentInCloud,
+  scheduleItemLaterPercentInCloud, scheduleItemFileTookPercentOverInCloud,
   scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemConflictCopyOfBoth,
   scheduleItemNewRowMetAgain, scheduleItemRecordAfterTheSyncWrote, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
-  scheduleItemChangedSinceMade, SCHEDULE_ITEM_AS_MADE,
-  scheduleItemEditBaseOverTextBroughtForward,
+  scheduleItemChangedSinceMade, scheduleItemWholeCopyBaseSinceMade, scheduleItemWholeCopyFieldByField, SCHEDULE_ITEM_AS_MADE,
+  scheduleItemEditBaseOverTextBroughtForward, scheduleItemActivityWithOtherRows, scheduleItemCarriedFieldsToSend,
   scheduleItemWholeCopyBase,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
 } from './ScheduleItemEditBase';
@@ -85,7 +87,13 @@ import {
   referenceDocumentEditOutlivingActivation,
   referenceDocumentSharedDetailsFingerprint,
 } from './DAVECloudRecovery';
-import { cloudPhotoPreviewIsFresh } from './ProjectPhotoTransport';
+import {
+  cloudPhotoPreviewIsFresh,
+  forgetPhotoNotInCloud,
+  photoKnownNotInCloud,
+  rememberPhotoNotInCloud,
+  signableCloudPhotoPath,
+} from './ProjectPhotoTransport';
 import {
   confirmProjectUpdateCloudDeletion,
   confirmedProjectUpdateDeletionIds,
@@ -138,6 +146,7 @@ import {
 } from './DAVEProjectUpdateCloudReceipt';
 import {
   buildOperationalProjectIdentityAuthority,
+  operationalProjectIdentityFailureKind,
   resolveOperationalProjectIdentity,
   resolveOperationalReferenceDocumentScope,
   type OperationalProjectIdentityAuthority,
@@ -148,6 +157,9 @@ import {
   mapWithBoundedConcurrency,
 } from './BoundedConcurrency';
 import {
+  CLOUD_ACCOUNT_CHANGED,
+  CLOUD_ACCOUNT_CHANGED_MESSAGE,
+  callAsCloudOwner,
   cloudOwnerUnchanged,
   currentCloudOwner,
   heldForAnotherOwner,
@@ -267,6 +279,18 @@ export type SyncUploadResult = {
    * once that change uploads (whole-app audit A3 pass 7 L1).
    */
   projectStillUploading?: boolean;
+  /**
+   * A task save only (sync batch Y4, item 3): the task's project has a
+   * deletion record, so neither this phone's waiting create or reopen of it
+   * nor the task can arrive. Both were taken off the queue.
+   */
+  projectDeletedInCloud?: boolean;
+  /**
+   * A task save only (review pass 1, sync F2): the account changed while the
+   * save asked the cloud about the task's project. Nothing was decided and
+   * nothing is said: the answer would be about another account's project.
+   */
+  accountChangedDuringSave?: boolean;
 };
 
 export type SyncItemOutcome =
@@ -700,6 +724,12 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
    */
   keepCloudChoice?: true;
   /**
+   * Keep Cloud's copy (sync batch Y2, item 5): the stamp of the cloud's copy Keep Cloud read and built it from.
+   * Keep Phone's copy (sync batch Y3, item 5): the stamp of the cloud's copy Keep Phone read and checked against the
+   * one the screen showed. Whether the cloud's copy changed under either is told by that version, not by a clock.
+   */
+  chosenOverCloudStamp?: string;
+  /**
    * Keep Cloud's copy only: the document changes and analysis results it
    * took in while Keep Cloud tried (whole-app audit A4 pass 21 F1), which go
    * onto the phone's work it puts back when Keep Cloud fails.
@@ -776,6 +806,8 @@ type ScheduleItemRecordPayload = {
    * the retry of a first upload whose answer was lost.
    */
   sinceMade?: ScheduleItemEditBase;
+  /** With sinceMade (review P7-3): a write of this copy has been tried as it stands, so what he changed on it has been sent. */
+  writeTried?: boolean;
   /** On a task's conflict only (owner answer Q28): the fields changed here and on another device, which Review Conflicts shows. */
   askedFields?: string[];
   /**
@@ -786,6 +818,17 @@ type ScheduleItemRecordPayload = {
    * discard; a later Keep Cloud undoes the one that landed.
    */
   withdrawnEdits?: SyncQueueItem[];
+  /**
+   * Sync batch Y4, item 2: which of `withdrawnEdits` never left this phone,
+   * each as its JSON text. A Keep Cloud that cannot finish leaves on the card
+   * every edit it took off the queue. One it took off while the card stayed
+   * open cannot be in the cloud's row (a landing closes the card); only the
+   * others may be. A later Keep Cloud looked for all of them in the row, and
+   * "undid" a progress edit that had never been sent wherever the row held its
+   * values: another device's 60% went back as "Not Started". An edit with no
+   * mark (a card an earlier build saved) is read as before: it may have landed.
+   */
+  withdrawnEditsNeverSent?: string[];
 };
 
 type ReferenceDocumentRecordPayload = {
@@ -807,6 +850,13 @@ const SYNC_LAST_RUN_STORAGE_KEY = 'projectVisionAI.lastSyncAt.v1';
 /** The copy of each field update David last opened as the draft, per account (owner answer Q28). */
 const FIELD_UPDATE_EDIT_BASES_STORAGE_KEY = 'projectVisionAI.fieldUpdateEditBases.v1';
 const FIELD_UPDATE_EDIT_BASES_KEPT = 200;
+/** The copy of each field update this device last put in the cloud, per account (sync batch Y1, item 3). */
+const FIELD_UPDATE_COPIES_IN_CLOUD_STORAGE_KEY = 'projectVisionAI.fieldUpdateCopiesInCloud.v1';
+/** How much of it is kept on the device: the latest copies, up to this many and this many characters for one account. */
+const FIELD_UPDATE_COPIES_IN_CLOUD_KEPT = 40;
+const FIELD_UPDATE_COPIES_IN_CLOUD_CHARACTERS = 400_000;
+/** One copy larger than this is held in memory only, as every copy was. */
+const FIELD_UPDATE_COPY_IN_CLOUD_CHARACTERS = 120_000;
 const LEGACY_DELETED_PROJECTS_STORAGE_KEY =
   'projectPhotoUpdate.deletedProjects.v1';
 const PROJECT_UPDATE_BLOCKED_ON_PHOTO_ASSETS = 'blocked_on_photo_assets';
@@ -1676,7 +1726,9 @@ function mergeScheduleItemQueueChangeScope(
     delete fullRecordPayload.carriedOver;
     delete fullRecordPayload.base;
     // Each field keeps the copy its first waiting edit started from, as far as it is known (owner answer Q28).
-    const wholeBase = scheduleItemEditBasesMerged(existingPayload, incomingPayload);
+    // (A whole copy saved over a row this device made and that still waits: the row as made, review P7-4.)
+    const wholeBase = scheduleItemEditBasesMerged(existingPayload, incomingPayload) ??
+      (Array.isArray(incomingPayload.changedFields) ? undefined : scheduleItemWholeCopyBaseSinceMade(existingPayload.sinceMade, incomingPayload.base, existingPayload));
     return {
       ...incoming,
       // (An edit of his joining a master's new row that still waits whole: what he has changed on the row since it was
@@ -1989,18 +2041,107 @@ export async function runScheduleItemCloudSync(
           ? [`Task “${item.taskName || 'Unnamed Task'}” could not sync.`]
           : [];
 
+  const projectOnItsWay = Boolean(remainingItem && projectOpeningStillQueued(remainingQueue, item.projectName));
+  // Sync batch Y4, item 3: "on its way" is said only of a project that can still arrive.
+  const neverArrives = projectOnItsWay && operationalProjectIdentityFailureKind(remainingItem?.lastError ?? '') === 'not_open'
+    ? await retireProjectOpeningThatCanNeverArrive(remainingQueue, item.projectName, queueItemId)
+    : null;
   return {
     configured: aggregateResult.configured,
     uploaded: itemSucceeded ? 1 : 0,
     uploadedByEntity: itemSucceeded ? { schedule_item: 1 } : {},
     itemOutcomes: itemOutcome ? { [queueItemId]: itemOutcome } : {},
-    queued: remainingItem ? 1 : 0,
+    queued: remainingItem && neverArrives !== 'deleted' ? 1 : 0,
     conflicts: currentConflict ? 1 : 0,
     errors: itemErrors,
-    ...(remainingItem && projectOpeningStillQueued(remainingQueue, item.projectName)
-      ? { projectStillUploading: true }
-      : {}),
+    ...(projectOnItsWay && !neverArrives ? { projectStillUploading: true } : {}),
+    ...(neverArrives === 'deleted' ? { projectDeletedInCloud: true } : {}),
+    ...(neverArrives === 'account_changed' ? { accountChangedDuringSave: true } : {}),
   };
+}
+
+/** This account's waiting create or reopen of the named project (see projectOpeningStillQueued). */
+function projectOpeningsQueued(queue: readonly SyncQueueItem[], key: string): SyncQueueItem[] {
+  const owner = currentCloudOwner();
+  return queue.filter(candidate => {
+    if (!key || candidate.entity !== 'project' || heldForAnotherOwner(candidate.ownerId, owner)) return false;
+    const payload = (candidate.payload || {}) as Partial<ProjectCreatePayload & ProjectUpdatePayload>;
+    if (candidate.operation === 'create') return normalizedProjectArchiveName(payload.name) === key;
+    return candidate.operation === 'update' && payload.archived === false &&
+      normalizedProjectArchiveName(payload.previousName) === key;
+  });
+}
+
+/**
+ * Sync batch Y4, item 3. A new task goes up in a pass of tasks only, so this phone's own create (or reopen) of its
+ * project is still waiting when the task's save answers, and the save said "on its way to the cloud. The task uploads
+ * right after it." Not so when another device, meanwhile, made a project of that name and closed it, or deleted it:
+ * the next full pass drops the create (the cloud has the name: no second copy is made of a project that is closed in
+ * the cloud, sync batch Y1 item 1; or the name has a deletion record), and the task was then tried again at every
+ * pass, for good.
+ *
+ * The questions that pass will ask are asked now, only when the task was refused as "project not open" while such a
+ * change waits: the deletion history (as the pass reads it) and, for a create, the cloud's list of closed projects.
+ *   - a deletion record of the name: the waiting create or reopen is taken off the queue, as the next pass would, and
+ *     so is this task's own record, which could never arrive. The save says the project has been deleted.
+ *   - closed in the cloud (a create only; a reopen of a closed project is what he asked for): the create is taken off
+ *     the queue, as the next pass would. The task waits, and the save says it uploads once the project is open.
+ * When either cannot be read just then nothing is decided, and the save says what it said.
+ *
+ * Review pass 1, sync F2 (caused by this function's own commit; owner answer Q45, 6 Oct 2026). Its reads were made
+ * as whoever was signed in by then, and its removal looked at the account not at all: with account A signed out and
+ * B signed in during the first read, B's closed (or deleted) project of the same name took A's waiting create off
+ * the queue, and the save said of A's project what was true only of B's. It now decides for the account that
+ * queued the create, and only while that account stays signed in: the account is taken in the same instant the
+ * waiting changes are chosen, each read is made as it (the closed list through the rule every read of the queue
+ * goes through, the deletion history by its own), and it is looked at again after each answer and inside the
+ * removal itself. Once it has changed nothing is removed and nothing is decided ('account_changed'), and the save
+ * says nothing: what it would say is about another account's project.
+ */
+async function retireProjectOpeningThatCanNeverArrive(
+  queue: readonly SyncQueueItem[],
+  projectName: string | null | undefined,
+  taskQueueItemId: string,
+): Promise<'deleted' | 'closed' | 'account_changed' | null> {
+  const key = normalizedProjectArchiveName(projectName);
+  // The account whose waiting changes these are: read in the same instant as they are chosen.
+  const itsAccount = { account: currentCloudOwner() };
+  const openings = projectOpeningsQueued(queue, key);
+  if (openings.length === 0) return null;
+  let verdict: 'deleted' | 'closed' | null = null;
+  try {
+    // The two things the pass itself reads before it sends a project change (queuedProjectChangeWasDeleted, and
+    // the deletion history).
+    const deletedHere = (await loadLegacyDeletedProjectNames()).has(key);
+    if (passAccountChanged(itsAccount)) return 'account_changed';
+    const history = deletedHere ? null : await loadDAVEOperationalTombstones();
+    if (passAccountChanged(itsAccount)) return 'account_changed';
+    if (deletedHere || openings.some(opening => queueItemMatchesDAVESyncTombstone(opening, history?.tombstones ?? []))) verdict = 'deleted';
+  } catch {
+    // Not known just now.
+  }
+  const create = verdict ? undefined : openings.find(opening => opening.operation === 'create');
+  if (create) {
+    const closed = await asItsAccount(itsAccount, () => listArchivedProjects(), create.ownerId).catch(() => null);
+    if (closed?.ok && !closed.stubbed && (closed.data || []).some(project => normalizedProjectArchiveName(project.name) === key)) verdict = 'closed';
+  }
+  if (passAccountChanged(itsAccount)) return 'account_changed';
+  if (!verdict) return null;
+  const retired = new Set(openings.filter(opening => verdict === 'deleted' || opening.operation === 'create').map(opening => opening.id));
+  if (verdict === 'deleted') retired.add(taskQueueItemId);
+  const removedForItsAccount = await mutateOfflineQueue(current => {
+    // Looked at once more where the queue is changed: by now it may be another account's queue.
+    if (passAccountChanged(itsAccount)) return { nextQueue: current, result: false, persist: false };
+    const nextQueue = current.filter(candidate => !retired.has(candidate.id));
+    return { nextQueue, result: true, persist: nextQueue.length !== current.length };
+  });
+  if (!removedForItsAccount || passAccountChanged(itsAccount)) return 'account_changed';
+  // Review pass 1, sync F3 (wording; caused by this function's own commit). The cloud has the name as a CLOSED
+  // project, this phone's create of it waits, and so does his own REOPEN of it (he heard it was closed and tapped
+  // Reopen). The create is taken off the queue as above, but the save then said "not an open project ... reopen it
+  // on Overview", which he has just done: the reopen lands at the next pass and the task goes up right after it.
+  // What is true in that state is what the save said before: the project is on its way.
+  return verdict === 'closed' && openings.some(opening => opening.operation === 'update') ? null : verdict;
 }
 
 /**
@@ -2400,8 +2541,9 @@ async function stageScheduleImportQueue(input: {
     ...input.scheduleItems.map(item => {
       // The copy the approved row started from (owner answer Q28); a row new to this device has none.
       const base = scheduleItemWholeCopyBase(before.get(item.id));
-      // A master's new row, made by this approval (review P6-2): it keeps what he changes on it while it waits.
-      const madeNow = Boolean(input.scheduleItemsBefore) && !before.has(item.id) && Boolean(item.textFromTask?.taskId);
+      // A row this approval makes (review P6-2; a task the master adds too, review P7-5): it keeps what he changes on
+      // it while it waits.
+      const madeNow = Boolean(input.scheduleItemsBefore) && !before.has(item.id);
       return {
         id: scheduleItemQueueItemId(item.id),
         entity: 'schedule_item' as const,
@@ -2674,7 +2816,15 @@ type PatchedProjectUpdate = {
   documents?: ReadonlyArray<{ id: string }> | null;
 };
 
+/**
+ * The document changes and photo results that reached an update while Keep Cloud worked on it, until its card has
+ * the chosen copy (sync batch Y1, item 6). In memory: a kill there leaves the conflict open and the card as it was.
+ */
+const changesWhileKeepCloudRuns = new Map<string, FieldUpdateDocumentPatch[]>();
+
 async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: FieldUpdateDocumentPatch): Promise<void> {
+  changesWhileKeepCloudRuns.get(update.id)?.push(patch); // at once: the card already shows it
+  await projectUpdateLastVersionInCloud.loaded();
   const lastInCloud = projectUpdateLastVersionInCloud.get(update.id); // read before it goes (A7 pass 9 L1)
   projectUpdateLastVersionInCloud.delete(update.id);
   if (await hasProjectUpdateDeletionIntent(update.id)) return;
@@ -3018,6 +3168,7 @@ async function writeStagedProjectUpdateRecord(
   const ownerId = currentCloudOwner().ownerId;
   const settled = overConflict ? undefined : await settledFieldUpdateBaseFor(update);
   const inCloud = overConflict || settled || update.status === 'sent' ? undefined : await fieldUpdateCopyKnownInCloud(update);
+  await projectUpdateLastVersionInCloud.loaded();
   return mutateOfflineQueue(queue => {
     const existing = queue.find(item => item.id === id);
     const unchanged = { nextQueue: queue, result: null, persist: false };
@@ -3275,6 +3426,28 @@ function withoutChoiceOverConflict(item: SyncQueueItem): SyncQueueItem {
   return { ...item, payload: rest };
 }
 
+/**
+ * The documents this device took off an update (its own durable list of
+ * them) that a waiting whole copy of the update no longer lists, as removals
+ * to carry; null when there is none. One that is long since off the cloud's
+ * copy changes nothing there when it is applied again.
+ */
+function documentsTakenOffInsideCopy(
+  updateId: string,
+  payload: Partial<ProjectUpdateRecordPayload>,
+  takenOff: ReadonlySet<string>,
+): FieldUpdateDocumentPatch[] | null {
+  if (payload.archiveOnly || !isRecord(payload.updateData)) return null;
+  const documents = (payload.updateData as { documents?: unknown }).documents;
+  const listed = new Set((Array.isArray(documents) ? documents : []).map(document => isRecord(document) ? document.id : undefined));
+  const patches = [...takenOff]
+    .filter(key => key.startsWith(removedFieldUpdateDocumentKey(updateId, '')))
+    .map(key => key.slice(removedFieldUpdateDocumentKey(updateId, '').length))
+    .filter(documentId => documentId && !listed.has(documentId))
+    .map(documentId => ({ documentId, remove: true as const }));
+  return patches.length > 0 ? patches : null;
+}
+
 export type ProjectUpdateTombstoneReplay = {
   updateId: string;
   /**
@@ -3305,6 +3478,8 @@ export async function replayProjectUpdateTombstonesInQueue(
     : await confirmedProjectUpdateDeletionIds().catch(() => new Set<string>());
   const ownerId = currentCloudOwner().ownerId;
   const queuedAt = new Date().toISOString();
+  const takenOff = byId.size === 0 ? new Set<string>()
+    : await loadRemovedFieldUpdateDocuments().catch(() => new Set<string>());
   const outcome = await mutateOfflineQueue(queue => {
     const updateItems = queue.filter(item => item.entity === 'project_update');
     const payloadId = (item: SyncQueueItem) => (item.payload as Partial<ProjectUpdateRecordPayload>).id;
@@ -3333,7 +3508,12 @@ export async function replayProjectUpdateTombstonesInQueue(
         (replay.archive.archivedAt === null || payload.archivedAt === replay.archive.archivedAt) &&
         (!replay.archive.documentChangesOnly || Boolean(queuedFieldUpdateDocumentPatches(item)));
       if (sameArchive) archiveKept.add(replay.updateId);
-      const patches = replay.archive !== false && !sameArchive ? queuedFieldUpdateDocumentPatches(item) : null;
+      // Or taken off inside a whole copy that waited (sync batch Y3, item 3):
+      // with an edit of the update already waiting, the removal goes into
+      // that copy and no change of its own waits, so it was dropped with the
+      // copy and the archived cloud copy kept the document.
+      const patches = replay.archive !== false && !sameArchive
+        ? queuedFieldUpdateDocumentPatches(item) ?? documentsTakenOffInsideCopy(replay.updateId, payload, takenOff) : null;
       if (patches) waitingDocumentChanges.set(replay.updateId, patches);
       return sameArchive;
     });
@@ -3626,6 +3806,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   };
   const uploadedReferenceDocuments = new Map<string, ReferenceDocument>();
   const uploadContext: QueueUploadContext = {
+    account: owner,
     settledQueueItemIds: resolvedIds,
     queuedScheduleItemIds: uploadBatch.flatMap(item => item.entity === 'schedule_item' && item.operation !== 'delete' &&
       typeof (item.payload as Partial<ScheduleItemRecordPayload>).id === 'string' ? [(item.payload as ScheduleItemRecordPayload).id] : []),
@@ -3664,7 +3845,9 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     queueEntityUsesDAVESyncTombstones(item.entity)
   ));
   let operationalTombstoneGate: DAVESyncTombstoneSyncResult | null = null;
-  if (operationalQueueItems.length > 0) {
+  // Not once the account has changed (the read of what is in the cloud, just above, can take that long): the pass
+  // stops at its first item, and asks the cloud for nothing more as the next account (sync batch Y4).
+  if (operationalQueueItems.length > 0 && cloudOwnerUnchanged(owner)) {
     try {
       // Routine task/area/document saves only need the authoritative deletion
       // inventory before writing. synchronizeDAVESyncTombstones() also
@@ -3791,6 +3974,13 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
       continue;
     }
 
+    if (resultCode === QUEUED_RECORD_DELETED_IN_CLOUD_MEANWHILE) {
+      // Deleted on another device since this pass read the deletion history (schedule batch S3, item 4).
+      itemOutcomes[item.id] = 'superseded';
+      resolvedIds.add(item.id);
+      continue;
+    }
+
     if (resultCode === 'conflict') {
       itemOutcomes[item.id] = 'conflict';
       resolvedIds.add(item.id);
@@ -3813,6 +4003,8 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
 
     retriedItemsById.set(item.id, {
       ...attemptedItem,
+      // (A row this device made, whose write was sent and brought no answer: it may have landed, review P7-3.)
+      ...(uploadContext.newRowWritesTried?.has(item.id) ? { payload: { ...attemptedItem.payload, writeTried: true } } : {}),
       retryCount: attemptedItem.retryCount + 1,
       lastError: sanitizedResult,
       lastFailureCategory: failureCategory,
@@ -3829,10 +4021,14 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   // Reconcile against the queue as it stands right now, not the snapshot
   // read at the top of this function - anything enqueued while the uploads
   // above were in flight needs to survive this write.
+  const lateResults = await lateResultsOntoConflictCopies(attemptedItemsById, itemOutcomes);
   const remaining = await mutateOfflineQueue(currentQueue => {
     const nextQueue = currentQueue.flatMap(item => {
       const attempted = attemptedItemsById.get(item.id);
       if (!attempted || !sameQueueRevision(item, attempted)) {
+        // A photo result alone reached the copy this pass has just recorded a conflict for (sync batch Y3, item 4).
+        const lateResult = lateResults.get(item.id);
+        if (lateResult && lateResult.queuedAs === JSON.stringify(item)) return [lateResult.asItsOwnChange];
         // A newer task edit merged in while this one went up starts from what landed (owner answer Q28).
         return [attempted && itemOutcomes[item.id] === 'uploaded' ? scheduleItemQueuedAfterLanding(item, attempted) : item];
       }
@@ -3848,10 +4044,14 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   });
 
   await resolveUploadedArchiveOnlyQuarantines(archiveRecovery, itemOutcomes);
+  // What this pass put in the cloud is on the device before it answers (sync batch Y1, item 3).
+  await projectUpdateLastVersionInCloud.saved();
 
   let storageCleanupRemaining = 0;
   let storageCleanupCompleted = 0;
-  if (!taskPriorityBatch) {
+  // Not once the account has changed (while the queue was being written back, just above): the housekeeping that ends
+  // a pass asks the cloud too, and the next account's own pass does it for that account (sync batch Y4).
+  if (!taskPriorityBatch && cloudOwnerUnchanged(owner)) {
     try {
       const maintenance = await runDAVECloudMaintenanceIfDue({
         forceStorageCleanup: uploadBatch.some(item =>
@@ -3885,6 +4085,73 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     heldErrorCount,
     itemErrors,
   };
+}
+
+/**
+ * Sync batch Y3, item 4 (open item: "A late photo result can be missing from a conflict's review copy when the sync
+ * read the edit just before the result arrived"). A photo result that finishes while an update is in conflict goes
+ * into the copy recorded with the conflict and waits as a change of its own for the cloud's copy (A4 pass 14 #4).
+ * One that finished while the pass that FOUND the conflict was still working on the update saw no conflict yet, and
+ * went into the queued copy the pass had already read. The conflict was then recorded without it, and the queued
+ * copy, different from the conflict's by that result alone, was taken for an edit he made afterwards: Review
+ * Conflicts said "Includes a change you made after the conflict was found", and Keep Phone sent the copy without
+ * the result, so the cloud read "Analyzing" until some later sync.
+ *
+ * Here, at the end of that pass, it is put as it would have been a moment later: the conflict's copy takes the
+ * result, and what waits in the queue is the result as its own change. Only when the queued record is the one the
+ * pass read in everything but photo results; any other difference is an edit of his and stays as it is. The
+ * conflict is written first: an app closed between the two writes leaves the queued copy equal to the conflict's,
+ * which is no newer edit either.
+ */
+async function lateResultsOntoConflictCopies(
+  attemptedItemsById: ReadonlyMap<string, SyncQueueItem>,
+  itemOutcomes: Readonly<Record<string, SyncItemOutcome>>,
+): Promise<Map<string, { queuedAs: string; asItsOwnChange: SyncQueueItem }>> {
+  const late = new Map<string, { queuedAs: string; asItsOwnChange: SyncQueueItem }>();
+  const inConflictNow = [...attemptedItemsById.values()].filter(item =>
+    item.entity === 'project_update' && item.operation !== 'delete' && itemOutcomes[item.id] === 'conflict');
+  if (inConflictNow.length === 0) return late;
+  const queue = await getOfflineQueue();
+  const now = new Date().toISOString();
+  await serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    const next = conflicts.map(conflict => {
+      const attempted = conflict.entity === 'project_update'
+        ? inConflictNow.find(item => (item.payload as Partial<ProjectUpdateRecordPayload>).id === conflict.localId) : undefined;
+      const current = attempted && queue.find(item => item.id === attempted.id);
+      const local = conflict.localPayload as Partial<ProjectUpdateRecordPayload> | undefined;
+      if (!attempted || !current || sameQueueRevision(current, attempted) || !isRecord(local?.updateData)) return conflict;
+      const { updateData: read, ...readRest } = attempted.payload as ProjectUpdateRecordPayload;
+      const { updateData: queued, ...queuedRest } = current.payload as ProjectUpdateRecordPayload;
+      if (!isRecord(read) || !isRecord(queued) || current.operation !== attempted.operation ||
+        current.createdAt !== attempted.createdAt || current.changedAt !== attempted.changedAt ||
+        JSON.stringify(queuedRest) !== JSON.stringify(readRest) ||
+        !sameProjectUpdateContent(local!.updateData, read as unknown as ProjectUpdate) ||
+        !sameProjectUpdateContent(withoutPhotoAnalysis(queued), withoutPhotoAnalysis(read) as ProjectUpdate)) return conflict;
+      const resultOf = (copy: unknown, photoId: string) => JSON.stringify(
+        ((copy as { photos?: Array<{ id: string; photoIntelligence?: unknown }> }).photos || [])
+          .find(photo => photo?.id === photoId)?.photoIntelligence ?? null);
+      const patches = ((queued as { photos?: Array<{ id: string }> }).photos || [])
+        .filter(photo => isRecord(photo) && resultOf(queued, photo.id) !== resultOf(read, photo.id))
+        .map(photo => fieldUpdatePhotoAnalysisPatchFor(read, queued, photo.id));
+      if (patches.length === 0) return conflict;
+      const payload = current.payload as ProjectUpdateRecordPayload;
+      late.set(current.id, {
+        queuedAs: JSON.stringify(current),
+        asItsOwnChange: {
+          id: current.id, entity: 'project_update', operation: 'update', createdAt: now, changedAt: now, retryCount: 0, lastError: null,
+          payload: {
+            id: payload.id, projectId: payload.projectId, projectName: payload.projectName, selectedAreaName: payload.selectedAreaName,
+            updateData: queued, documentPatches: patches, pendingPhotoAssetIds: payload.pendingPhotoAssetIds || [],
+          },
+          ...(current.ownerId ? { ownerId: current.ownerId } : {}),
+        },
+      });
+      return { ...conflict, localPayload: { ...local, updateData: queued } };
+    });
+    if (late.size > 0) await writeSyncConflicts(next);
+  });
+  return late;
 }
 
 /**
@@ -4017,6 +4284,27 @@ const keepCloudChoicesSending = new Set<string>();
 /** The conflicts whose Keep Cloud copy met a newer cloud copy while it was sent, which the conflict took (A4 pass 22 L1). */
 const keepCloudChoicesMetNewerCloudCopy = new Set<string>();
 const KEEP_CLOUD_CHOICE_CLOUD_COPY_CHANGED = 'The cloud copy changed while Keep Cloud was saving it.';
+/** The conflicts whose Keep Phone copy met a cloud copy that was no longer the version he chose over (sync batch Y3, item 5). */
+const keepPhoneChoicesMetChangedCloudCopy = new Set<string>();
+const KEEP_PHONE_CHOICE_CLOUD_COPY_CHANGED = 'The cloud copy changed while Keep Phone was saving your copy.';
+
+/**
+ * Whether the cloud's copy of a field update is newer than a queued copy of it. By the two stamps, as before, except
+ * for Keep Cloud's own copy (sync batch Y2, item 5): that copy is the cloud's copy as Keep Cloud read it, so the
+ * cloud's is newer exactly when it is no longer that version. By the clocks, a cloud copy stamped by a device whose
+ * clock is ahead read as newer than Keep Cloud's copy every time, and Keep Cloud said "review again" until this
+ * phone's clock had passed that stamp; and a save made during Keep Cloud by a device whose clock is behind did not
+ * read as newer at all. A stamp that cannot be read as a time is compared by the clocks, as before.
+ */
+function cloudCopyNewerThanQueuedCopy(payload: ProjectUpdateRecordPayload, cloudStamp: string, queuedAt: string): boolean {
+  // Keep Phone's copy too (sync batch Y3, item 5). By the clocks, a cloud copy stamped by a device whose clock is
+  // ahead read as newer than his kept copy at every tap ("Conflict not resolved") until this phone's clock had
+  // passed that stamp. And a save another device made after Keep Phone had read the cloud never read as newer,
+  // whatever its clock said, unless it was stamped after the instant his copy was queued: his copy went up over it.
+  const chosenOver = payload.keepCloudChoice || payload.overConflict ? Date.parse(payload.chosenOverCloudStamp ?? '') : NaN;
+  const cloudAt = Date.parse(cloudStamp);
+  return Number.isFinite(chosenOver) && Number.isFinite(cloudAt) ? cloudAt !== chosenOver : isRemoteNewer(cloudStamp, queuedAt);
+}
 
 /**
  * Keep Cloud's copy found an iPad save newer than it (whole-app audit A4
@@ -4036,6 +4324,24 @@ async function keepCloudChoiceMetNewerCloudCopy(
       ? { ...item, remotePayload: cloud.updateData, remoteChangedAt: cloud.updatedAt ?? item.remoteChangedAt }
       : item));
     keepCloudChoicesMetNewerCloudCopy.add(conflictId);
+    return true;
+  });
+}
+
+/** As keepCloudChoiceMetNewerCloudCopy, for Keep Phone's copy: the open conflict takes the cloud's copy as it is now. */
+async function keepPhoneChoiceMetChangedCloudCopy(
+  payload: ProjectUpdateRecordPayload,
+  cloud: { updatedAt?: string | null; updateData?: unknown },
+): Promise<boolean> {
+  const conflictId = payload.overConflict;
+  if (!conflictId || !isRecord(cloud.updateData)) return false;
+  return serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    if (!conflicts.some(item => item.id === conflictId)) return false;
+    await writeSyncConflicts(conflicts.map(item => item.id === conflictId
+      ? { ...item, remotePayload: cloud.updateData, remoteChangedAt: cloud.updatedAt ?? item.remoteChangedAt }
+      : item));
+    keepPhoneChoicesMetChangedCloudCopy.add(conflictId);
     return true;
   });
 }
@@ -4167,11 +4473,20 @@ function queueItemMatchesDAVESyncTombstone(
   ));
 }
 
+/**
+ * Review pass 1, sync, item 5 (older; found by reading; owner answer Q45, 6 Oct 2026). A download is one account's:
+ * the one signed in as it begins (or the account of the sync it is part of). Each list is asked for as that
+ * account, and when another account has signed in by the time the lists have answered, the download is discarded:
+ * what comes back holds no records and marks every list as not read, so nothing of the first account's is merged
+ * into, or saved on, the next account's side of this phone.
+ */
 export async function downloadCloudChanges<TUpdate>(
   knownTombstoneSync?: DAVESyncTombstoneSyncResult,
+  account: CloudOwnerBinding = currentCloudOwner(),
 ): Promise<
   CloudDownloadResult<TUpdate>
 > {
+  const itsAccount = { account };
   const [
     tombstoneSync,
     projectsResult,
@@ -4181,12 +4496,27 @@ export async function downloadCloudChanges<TUpdate>(
     documentsResult,
   ] = await Promise.all([
     knownTombstoneSync ?? synchronizeDAVESyncTombstones(),
-    listProjects(),
-    listProjectUpdates<TUpdate>(),
-    listProjectAreas(),
-    listScheduleItems(),
-    listReferenceDocuments(),
+    asItsAccount(itsAccount, () => listProjects()),
+    asItsAccount(itsAccount, () => listProjectUpdates<TUpdate>()),
+    asItsAccount(itsAccount, () => listProjectAreas()),
+    asItsAccount(itsAccount, () => listScheduleItems()),
+    asItsAccount(itsAccount, () => listReferenceDocuments()),
   ]);
+  if (passAccountChanged(itsAccount)) {
+    return {
+      configured: projectsResult.configured || updatesResult.configured,
+      collectionErrors: allCollectionsFailed(CLOUD_ACCOUNT_CHANGED_MESSAGE),
+      projects: [],
+      projectNames: [],
+      updates: [],
+      projectAreas: [],
+      scheduleItems: [],
+      referenceDocuments: [],
+      tombstones: [],
+      tombstonesAuthoritative: false,
+      tombstoneError: CLOUD_ACCOUNT_CHANGED_MESSAGE,
+    };
+  }
 
   // Audit P1-27: record WHY a collection is empty. A read failure or an
   // unverifiable deletion history yields an explicit error, never a silent [].
@@ -4329,6 +4659,37 @@ const cloudScheduleItemsByIds: CloudRecordsByIdReader<ScheduleItem> = async ids 
 
 const cloudProjectAreasByIds: CloudRecordsByIdReader<ProjectArea> = ids => getProjectAreasByIds(ids);
 
+/**
+ * Sync batch Y1 (item 2; left open by independent review R02, its notes item 5): of the records a sync is about to
+ * send to the cloud as NEW (the cloud has no row for them), the ones the cloud holds a deletion record for NOW, by
+ * their keys. A string when that cannot be read.
+ *
+ * The deletion history is read once, when a sync starts. A record deleted on another device in the seconds after
+ * that read has no row any more, and no deletion record this device has heard of: it read as new to the cloud and
+ * was sent back, and the next sync took it away again. The history is asked once more, for just the ids about to be
+ * created (one request for a hundred), so a record deleted meanwhile is not sent back. What is left is the moment
+ * between this read and the write itself, one request wide; only the database could close that.
+ */
+async function recordsDeletedInCloudNow(
+  entity: 'schedule_item' | 'project_area',
+  ids: readonly string[],
+): Promise<Set<string> | string> {
+  if (ids.length === 0) return new Set();
+  try {
+    const read = await listDAVESyncTombstonesForRecords(entity, ids);
+    if (read.ok && !read.stubbed && Array.isArray(read.data)) return new Set(read.data.map(tombstone => cloudRecordKey(tombstone.recordId)));
+    return read.error || read.message || 'The cloud did not answer.';
+  } catch {
+    return 'The cloud did not answer.';
+  }
+}
+
+/** A queued new task the cloud holds a deletion record for by now (schedule batch S3, item 4): retired, not sent. */
+const QUEUED_RECORD_DELETED_IN_CLOUD_MEANWHILE = 'deleted-in-cloud-meanwhile';
+
+const DELETION_NOT_CHECKED_BEFORE_SENDING =
+  'Whether it was deleted on another device could not be checked just before sending, so this device\'s copy was kept here and will be checked again at the next sync.';
+
 const RECORD_NOT_CHECKED_BEFORE_SENDING =
   'The cloud\'s copy could not be checked just before sending, so this device\'s copy was kept here and will be checked again at the next sync.';
 
@@ -4457,7 +4818,9 @@ export async function synchronizeLocalData(
   }
 
   progress('Checking cross-device deletion history');
-  const tombstoneSync = await synchronizeDAVESyncTombstones();
+  // Read after this sync was asked for, never one already under way (sync batch Y3, item 7): what Settings records
+  // as caught up counts from the moment Sync Now was pressed.
+  const tombstoneSync = await synchronizeDAVESyncTombstones({ beganAfterThisCall: true });
   if (!tombstoneSync.cloudAuthoritative) {
     return {
       configured: true,
@@ -4697,7 +5060,24 @@ export async function synchronizeLocalData(
       continue;
     }
 
-    const result = await createProject({ name: normalizedName });
+    // Sync batch Y1 (item 1; left open by independent review R02): the cloud may hold this project CLOSED. Only the
+    // open list was looked at, so Full Sync made a second, open project of the same name, and everything of that
+    // project then stopped uploading ("project identity ambiguous"). The queue's own create has asked both lists
+    // since audit A3 pass 2; Full Sync now asks the same question the same way (cloudProjectNameExists), just before
+    // it would create the project. When the lists cannot be read the project is not created, and the sync says so.
+    const inCloudAlready = await cloudProjectNameExists(normalizedName);
+    if (typeof inCloudAlready === 'string') {
+      errors.push(`Project “${normalizedName}” could not sync.${cloudWriteFailureReason({ error: inCloudAlready })}`);
+      progress(`Project preserved for retry: ${normalizedName}`);
+      continue;
+    }
+    if (inCloudAlready) {
+      existingProjectNames.add(normalizedName.toLowerCase());
+      progress(`Project already in the cloud: ${normalizedName}`);
+      continue;
+    }
+
+    const result = await asItsAccount({ account: owner }, () => createProject({ name: normalizedName }));
 
     if (result.ok && !result.stubbed) {
       details.projectsUploaded += 1;
@@ -4749,6 +5129,10 @@ export async function synchronizeLocalData(
   for (const areas of chunkSupabaseFilterValues(syncableProjectAreas)) {
     if (!cloudOwnerUnchanged(owner)) break;
     const cloudNow = await cloudRecordsNow(areas, cloudProjectAreasByIds);
+    // The areas of this read the cloud has no row for: sent as new, unless deleted on another device since this sync
+    // read the deletion history (sync batch Y1, item 2).
+    const areasDeletedNow = typeof cloudNow === 'string' ? new Set<string>()
+      : await recordsDeletedInCloudNow('project_area', areas.filter(area => !cloudRecordOf(cloudNow, area.id)).map(area => area.id));
     for (const weighed of areas) {
       if (!cloudOwnerUnchanged(owner)) break;
       if (typeof cloudNow === 'string') {
@@ -4763,6 +5147,18 @@ export async function synchronizeLocalData(
         progress(`GPS area left for the next sync: ${weighed.name}`);
         continue;
       }
+      // An area the cloud has no row for (sync batch Y1, item 2): its deletion record may be seconds old.
+      if (!rowNow) {
+        if (typeof areasDeletedNow === 'string') {
+          errors.push(`GPS area “${weighed.name}” was not sent. ${DELETION_NOT_CHECKED_BEFORE_SENDING}${cloudWriteFailureReason({ error: areasDeletedNow })}`);
+          progress(`GPS area preserved: ${weighed.name}`);
+          continue;
+        }
+        if (areasDeletedNow.has(cloudRecordKey(weighed.id))) {
+          progress(`GPS area left for the next sync: ${weighed.name}`);
+          continue;
+        }
+      }
       const area = sameCloudRecord(rowWeighed, rowNow)
         ? weighed
         : daveProjectAreasNeedingCloudUpload({
@@ -4774,7 +5170,7 @@ export async function synchronizeLocalData(
         progress(`GPS area already current: ${weighed.name}`);
         continue;
       }
-      const result = await upsertProjectArea(area, ...cloudRowWriteConditionFor(rowNow));
+      const result = await asItsAccount({ account: owner }, () => upsertProjectArea(area, ...cloudRowWriteConditionFor(rowNow)));
 
       if (result.ok && !result.stubbed) {
         details.areasUploaded += 1;
@@ -4824,6 +5220,11 @@ export async function synchronizeLocalData(
         }));
       }
     }
+    // The tasks of this read the cloud has no row for and had none when they were weighed: sent as new, unless
+    // deleted on another device since this sync read the deletion history (sync batch Y1, item 2).
+    const tasksDeletedNow = typeof cloudNow === 'string' ? new Set<string>()
+      : await recordsDeletedInCloudNow('schedule_item', items
+        .filter(item => !cloudNow.get(cloudRecordKey(item.id)) && !deletedKeys.has(cloudRecordKey(item.id))).map(item => item.id));
     for (const weighed of items) {
       if (!cloudOwnerUnchanged(owner)) break;
       if (typeof cloudNow === 'string') {
@@ -4837,6 +5238,17 @@ export async function synchronizeLocalData(
         continue;
       }
       const rowNow = cloudNow.get(key);
+      if (!rowNow) {
+        if (typeof tasksDeletedNow === 'string') {
+          errors.push(`Schedule task “${weighed.taskName}” was not sent. ${DELETION_NOT_CHECKED_BEFORE_SENDING}${cloudWriteFailureReason({ error: tasksDeletedNow })}`);
+          progress(`Schedule preserved: ${weighed.taskName}`);
+          continue;
+        }
+        if (tasksDeletedNow.has(key)) {
+          progress(`Schedule left for the next sync: ${weighed.taskName}`);
+          continue;
+        }
+      }
       const item = changedKeys.has(key) ? weighedAgain.get(key) : weighed;
       if (!item) {
         // The cloud's row as it is now already holds everything this device's copy would add.
@@ -4853,7 +5265,7 @@ export async function synchronizeLocalData(
       // moment is never replaced by a copy sent as new.
       // And a task the cloud has a row for is written only if the row is still the one just read (pass 2, item 1).
       const bound = { ...item, projectId: binding.identity.id };
-      const result = await upsertScheduleItem(bound, ...cloudRowWriteConditionFor(rowNow));
+      const result = await asItsAccount({ account: owner }, () => upsertScheduleItem(bound, ...cloudRowWriteConditionFor(rowNow)));
 
       if (result.ok && !result.stubbed) {
         details.schedulesUploaded += 1;
@@ -4898,6 +5310,8 @@ export async function synchronizeLocalData(
       try {
         authoritativeDocument = await prepareReferenceDocumentForCloud(
           authoritativeDocument,
+          // The file leaves as the account this sync began with, asked again when it is ready to go (review pass 1, sync G2).
+          file => asItsAccount({ account: owner }, () => uploadPhoto(file)),
         );
       } catch {
         errors.push(
@@ -4914,9 +5328,9 @@ export async function synchronizeLocalData(
         continue;
       }
     }
-    const result = await upsertReferenceDocument(authoritativeDocument, {
+    const result = await asItsAccount({ account: owner }, () => upsertReferenceDocument(authoritativeDocument, {
       existing: Boolean(cloudDocumentsBeforeUpload.data?.some(cloud => cloud.id === document.id)),
-    });
+    }));
 
     if (result.ok && !result.stubbed) {
       details.documentsUploaded += 1;
@@ -4931,29 +5345,37 @@ export async function synchronizeLocalData(
 
   // Another account's cloud records must not be handed to this one's screen,
   // which merges and saves them on this phone (whole-app audit A1 M3).
-  if (!cloudOwnerUnchanged(owner)) {
-    return {
-      configured: true,
-      connected: true,
-      downloadStatus: 'partial',
-      uploaded: 0,
-      downloaded: 0,
-      queued: 0,
-      conflicts: 0,
-      cloudProjectCount: null,
-      lastSyncAt: null,
-      errors: [...errors, 'The account changed during sync. Nothing more was sent or downloaded.'],
-      missingPhotos,
-      details,
-      recovered: emptyRecovery,
-    };
-  }
+  //
+  // Review pass 1, sync, item 5 (older): this was asked before the download and not after it. A download in flight
+  // across a sign-out and another sign-in handed the first account's rows to the screen that merges and saves
+  // them. It is asked again once the lists have answered, and after each wait that follows, before anything is
+  // saved or handed back: the download is then discarded, the time of the last sync is not saved, and the answer
+  // is the one below, with nothing in it to apply.
+  const accountChangedDuringSync = (): FullSyncResult => ({
+    configured: true,
+    connected: true,
+    downloadStatus: 'partial',
+    uploaded: 0,
+    downloaded: 0,
+    queued: 0,
+    conflicts: 0,
+    cloudProjectCount: null,
+    lastSyncAt: null,
+    errors: [...errors, 'The account changed during sync. Nothing more was sent or downloaded.'],
+    missingPhotos,
+    // What was downloaded was discarded: it is not counted.
+    details: { ...details, cloudProjectsDownloaded: 0, cloudUpdatesDownloaded: 0, cloudAreasDownloaded: 0, cloudSchedulesDownloaded: 0, cloudDocumentsDownloaded: 0 },
+    recovered: emptyRecovery,
+  });
+  if (!cloudOwnerUnchanged(owner)) return accountChangedDuringSync();
 
   progress('Downloading cloud changes');
-  const download = await downloadCloudChanges<ProjectUpdate>(tombstoneSync);
+  const download = await downloadCloudChanges<ProjectUpdate>(tombstoneSync, owner);
+  if (!cloudOwnerUnchanged(owner)) return accountChangedDuringSync();
   const recoveredUpdates = await Promise.all(
     download.updates.map(row => hydrateProjectUpdatePhotoPreviews(row.updateData)),
   );
+  if (!cloudOwnerUnchanged(owner)) return accountChangedDuringSync();
   details.cloudProjectsDownloaded = download.projects.length;
   details.cloudUpdatesDownloaded = download.updates.length;
   details.cloudAreasDownloaded = download.projectAreas.length;
@@ -4979,6 +5401,7 @@ export async function synchronizeLocalData(
   const downloadComplete = collectionFailureMessages.length === 0;
 
   const cloudCount = await countCloudProjects();
+  if (!cloudOwnerUnchanged(owner)) return accountChangedDuringSync();
   const lastSyncAt = downloadComplete ? new Date().toISOString() : null;
   if (lastSyncAt !== null) {
     await setStoredJson(SYNC_LAST_RUN_STORAGE_KEY, lastSyncAt);
@@ -4987,6 +5410,8 @@ export async function synchronizeLocalData(
     getOfflineQueue(),
     getSyncConflicts(),
   ]);
+  // The queue and the cards just read are by now the next account's: not counted for this one.
+  if (!cloudOwnerUnchanged(owner)) return accountChangedDuringSync();
   const scheduleItemEditsWaiting = pendingScheduleItemEditsOf(queue, conflicts, owner);
   const uploaded =
     details.queuedUploads +
@@ -5338,6 +5763,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     const withdrawn = await withdrawProjectUpdateFromSyncQueue(conflict.localId);
     let queuedCloudCopy: SyncQueueItem | null = null;
     let chosenCloudUpdate: TUpdate;
+    changesWhileKeepCloudRuns.set(conflict.localId, []);
     try {
       await uploadPendingChanges();
       withdrawn.push(...await withdrawProjectUpdateFromSyncQueue(conflict.localId));
@@ -5347,6 +5773,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       // cloud can be reached, and stands in when this one fails.
       const reread = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId).catch(() => null);
       const currentCopy = (reread?.ok && !reread.stubbed ? reread : current).data?.updateData;
+      const currentStamp = (reread?.ok && !reread.stubbed ? reread : current).data?.updatedAt;
       const cloudNow = isRecord(currentCopy) && !phoneCopies.some(copy =>
         sameProjectUpdateContent(copy, currentCopy as unknown as ProjectUpdate, { retryStampsAside: true }))
         ? currentCopy : cloudUpdate;
@@ -5387,6 +5814,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
           // landed, the card still held the discarded edit, and a document
           // upload or analysis result finishing then queued that edit whole.
           keepCloudChoice: true,
+          ...(typeof currentStamp === 'string' && currentStamp ? { chosenOverCloudStamp: currentStamp } : {}),
         } satisfies ProjectUpdateRecordPayload<TUpdate>,
         createdAt: queuedAt, changedAt: queuedAt, retryCount: 0, lastError: null,
         ...(ownerId ? { ownerId } : {}),
@@ -5407,9 +5835,19 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
           : exact.error || 'sync_conflict_save_failed');
       }
     } catch (error) {
+      changesWhileKeepCloudRuns.delete(conflict.localId);
       await putBackWithdrawnProjectUpdateWork(withdrawn, queuedCloudCopy);
       throw error;
     }
+    // Sync batch Y1 (item 6): the card took the copy as it was queued. A photo result or a document upload finishing
+    // while that copy went up reached the cloud (taken into the queued copy, or sent after it as its own patch), and
+    // the card read "Analyzing" or "Document upload failed" until the next refresh. The card takes the copy with
+    // those changes, under the rule for every patch: not a result the copy's own stands over. Nothing is awaited
+    // between the upload's answer and the card.
+    const sinceItRan = changesWhileKeepCloudRuns.get(conflict.localId) ?? [];
+    changesWhileKeepCloudRuns.delete(conflict.localId);
+    chosenCloudUpdate = applyFieldUpdateDocumentPatches(chosenCloudUpdate as object,
+      fieldUpdatePatchesNotSuperseded(chosenCloudUpdate as object, sinceItRan)) as TUpdate;
     beforeClose?.(chosenCloudUpdate);
     await clearResolvedConflict(conflict.id);
     return chosenCloudUpdate;
@@ -5443,7 +5881,10 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   // Conflicts shows the same edit (A4 pass 15b F1). Never marked as Keep
   // Cloud's copy (A4 pass 22 L1): an earlier build recorded conflicts whose
   // phone side was that copy, and the kept copy was then held.
-  const { newerEdit: _carried, ...conflictPayload } = withoutKeepCloudMarks(localPayload);
+  const { newerEdit: _carried, chosenOverCloudStamp: _earlier, ...conflictPayload } = withoutKeepCloudMarks(localPayload);
+  // The version of the cloud's copy he is choosing over: the one read, and checked against the screen's, above.
+  const chosenOver = typeof current.data?.updatedAt === 'string' && current.data.updatedAt
+    ? { chosenOverCloudStamp: current.data.updatedAt } : {};
   const now = new Date().toISOString();
   const ownerId = currentCloudOwner().ownerId;
   const { written, newerEdit, before } = await mutateOfflineQueue(queue => {
@@ -5453,14 +5894,35 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       withArchiveKeptInQueuedCopy(newerFound, localUpdateData), cloudResults);
     const kept: SyncQueueItem = {
       id: `project-update-${localPayload.id}`, entity: 'project_update', operation: 'update',
-      payload: { ...conflictPayload, updateData: localUpdateData, overConflict: conflict.id, ...(newer ? { newerEdit: newer } : {}) },
+      payload: { ...conflictPayload, updateData: localUpdateData, overConflict: conflict.id, ...chosenOver, ...(newer ? { newerEdit: newer } : {}) },
       createdAt: now, changedAt: now, retryCount: 0, lastError: null, ...(ownerId ? { ownerId } : {}),
     };
     const nextQueue = existing?.operation === 'delete' ? queue : [...queue.filter(item => item.id !== queueItemId), kept];
     return { nextQueue, result: { written: kept, newerEdit: newer, before: existing ?? null }, persist: nextQueue !== queue };
   });
+  keepPhoneChoicesMetChangedCloudCopy.delete(conflict.id);
   const exact = await uploadExactQueueItem(queueItemId, written);
   if (!exact.landed) {
+    // The cloud's copy was no longer the one he chose over (sync batch Y3, item 5): it is on the card now, nothing
+    // was sent, and what waited for the update is back as it was. He reviews again.
+    if (keepPhoneChoicesMetChangedCloudCopy.delete(conflict.id)) {
+      const earlier = (before?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.overConflict === conflict.id;
+      await putBackPhoneWorkAfterFailedKeepPhone(before && !earlier ? before : newerEdit, written);
+      throw new Error('sync_conflict_cloud_copy_changed');
+    }
+    // Sync batch Y1 (item 5): Settings said "Neither copy was changed" whenever the kept copy's write failed. A write
+    // whose answer was lost HAS landed. The cloud's copy is read once. It is the kept copy: the upload is run once more,
+    // finds it there and ends as when the answer had arrived (the newer edit queued after it). It cannot be read, or
+    // that second run does not get through either: Settings says the change may or may not have been saved. Only when
+    // it is read and is not the kept copy is neither copy changed.
+    const after = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId).catch(() => null);
+    const readable = Boolean(after?.ok && !after.stubbed);
+    const landedUnanswered = readable && isRecord(after?.data?.updateData) &&
+      daveProjectUpdateMatchesCloudReceipt((written.payload as ProjectUpdateRecordPayload).updateData, after!.data!.updateData);
+    if (landedUnanswered && (await uploadExactQueueItem(queueItemId, written)).landed) {
+      await clearResolvedConflict(conflict.id);
+      return localUpdateData;
+    }
     // The queue as it was before the choice (whole-app audit A4 pass 16 L1):
     // with no newer edit, the kept copy stayed queued, marked as David's
     // choice, and went up by itself once the signal returned, clearing the
@@ -5469,7 +5931,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     // earlier kept copy of this choice gives way to the edit it carries.
     const earlierChoice = (before?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.overConflict === conflict.id;
     await putBackPhoneWorkAfterFailedKeepPhone(before && !earlierChoice ? before : newerEdit, written);
-    throw new Error(exact.error || 'sync_conflict_save_failed');
+    throw new Error(!readable || landedUnanswered ? 'sync_conflict_save_unconfirmed' : exact.error || 'sync_conflict_save_failed');
   }
 
   await clearResolvedConflict(conflict.id);
@@ -5524,6 +5986,55 @@ export function withPhoneAnalysisResults(copy: unknown, phoneCopies: readonly un
     next = applyFieldUpdatePhotoAnalysisPatch(next, fieldUpdatePhotoAnalysisPatchFor(best.phone as object, best.phone as object, photoId));
   }
   return next;
+}
+
+const cloudPhotoResultsKeptListeners = new Set<(updateId: string, cloudCopy: unknown) => void>();
+
+/**
+ * Sync batch Y4, item 4 (sync batch Y1 item 6a, left open there). When an
+ * upload pass leaves one of this phone's photo results out because the
+ * cloud's copy holds one that stands over it (the iPad ran the photo again
+ * and he confirmed it), the cloud is right at once but the card went on
+ * showing the phone's result until the next refresh: a pass had no way to
+ * hand a copy to a card. The pass now tells whoever listens, with the update's
+ * id and the cloud's copy as that upload left it. Called with nothing else:
+ * a result that went up is not told. The unsubscribe function.
+ */
+export function subscribeToCloudPhotoResultsKept(listener: (updateId: string, cloudCopy: unknown) => void): () => void {
+  cloudPhotoResultsKeptListeners.add(listener);
+  return () => {
+    cloudPhotoResultsKeptListeners.delete(listener);
+  };
+}
+
+function tellCloudPhotoResultsKept(updateId: string, cloudCopy: unknown): void {
+  cloudPhotoResultsKeptListeners.forEach(listener => {
+    try {
+      listener(updateId, cloudCopy);
+    } catch {
+      // A screen's listener never fails an upload.
+    }
+  });
+}
+
+/**
+ * The cards with that one update's card holding the cloud's photo results
+ * that stand over its own (sync batch Y4, item 4), by the rule every patch
+ * follows (withPhoneAnalysisResults: the same that Keep Phone takes the
+ * cloud's by). Only results: the cloud's note, documents and the rest are
+ * the refresh's to bring, under its own rules for which copy a card keeps.
+ * The same list when nothing changes, or when the update has no card here
+ * (it was deleted meanwhile): nothing is drawn or saved again.
+ */
+export function fieldUpdateCardsWithCloudPhotoResults<TCard extends { id: string }>(
+  cards: TCard[],
+  updateId: string,
+  cloudCopy: unknown,
+): TCard[] {
+  const index = cards.findIndex(card => card.id === updateId);
+  if (index < 0 || !isRecord(cloudCopy)) return cards;
+  const next = withPhoneAnalysisResults(cards[index], [cloudCopy]) as TCard;
+  return next === cards[index] ? cards : cards.map((card, at) => (at === index ? next : card));
 }
 
 /** A newer edit Keep Phone carries, with the cloud's results that stand over its own (A4 pass 26 L2). */
@@ -5782,10 +6293,21 @@ async function uploadExactQueueItem(
  * cloud cannot be read. Read by its id (A7 pass 15 L-2): the full list pages
  * by offset, newest first, so a row edited while it was read could be missed,
  * and the conflict was closed as "deleted on another device".
+ *
+ * Review pass 1, sync G3 (older; owner answer Q45, 6 Oct 2026). "The cloud has none" is true of one account only.
+ * This read was made as whoever was signed in when it left, and an answer that came back empty under the next
+ * account read as "deleted on another device", which closes a card. It is made for one account: the caller's own
+ * (a choice in Review Conflicts, an upload pass), or else the one signed in as it starts. The cloud is asked as
+ * that account, and when that account is no longer the one signed in, before the read or when its answer arrives,
+ * the cloud "cannot be read": never "has none".
  */
-async function currentCloudScheduleItem(itemId: string): Promise<ScheduleItem | null> {
-  const cloud = await getScheduleItem(itemId).catch(() => null);
-  if (!cloud?.ok || cloud.stubbed) {
+async function currentCloudScheduleItem(
+  itemId: string,
+  itsAccount: Pick<QueueUploadContext, 'account'> = {},
+): Promise<ScheduleItem | null> {
+  const asked = { account: itsAccount.account ?? currentCloudOwner() };
+  const cloud = await asItsAccount(asked, () => getScheduleItem(itemId)).catch(() => null);
+  if (!cloud?.ok || cloud.stubbed || passAccountChanged(asked)) {
     throw new Error('sync_conflict_cloud_copy_unreadable');
   }
   return cloud.data ?? null;
@@ -6009,6 +6531,78 @@ export async function refreshScheduleItemConflictCloudCopies(): Promise<SyncConf
   return getSyncConflicts();
 }
 
+/**
+ * Sync batch Y1 (item 5): this device's side of a task's conflict as Keep Phone will send it, when that is not the
+ * copy saved with the conflict: the conflict's copy with this device's newer waiting edits of the task over it (any
+ * a Keep Cloud that could not finish left on the card, then the one on the queue), as Keep Phone folds them in. On a
+ * card of fields, the fields it asks about only: a waiting edit of another field goes up by itself first and is no
+ * part of the choice. Null when nothing newer waits. Review Conflicts showed the conflict's copy on its "Phone:"
+ * line while Keep Phone sent the newer value, and Keep Cloud gave it up unsaid.
+ */
+export function newerPhoneCopyForScheduleItemConflict(conflict: SyncConflict, queue: readonly SyncQueueItem[]): ScheduleItem | null {
+  if (conflict.entity !== 'schedule_item' || !isRecord(conflict.localPayload)) return null;
+  const payload = conflict.localPayload as Partial<ScheduleItemRecordPayload>;
+  if (!isRecord(payload.itemData)) return null;
+  const own = payload.itemData as ScheduleItem;
+  const queueItemId = scheduleItemQueueItemId(conflict.localId);
+  const kept = withNewerPhoneTaskEdits(own, [
+    ...(Array.isArray(payload.withdrawnEdits) ? payload.withdrawnEdits : []),
+    ...queue.filter(item => item.id === queueItemId),
+  ]);
+  const asked = scheduleItemConflictFields(conflict.localPayload);
+  const shown = asked.length > 0 ? asked
+    : [...new Set([...Object.keys(own), ...Object.keys(kept)])].filter(field => !TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK.has(field));
+  if (shown.every(field => taskFieldValue(kept, field) === taskFieldValue(own, field))) return null;
+  return asked.length > 0
+    ? { ...own, ...Object.fromEntries(asked.map(field => [field, (kept as unknown as Record<string, unknown>)[field]])) } as ScheduleItem
+    : kept;
+}
+
+/**
+ * Review pass 1, sync F4 (wording; caused by sync batch Y2 (1) on top of Y1 (5)). What Keep Cloud will do with the
+ * changes he made to a task after its conflict was found, for the question it asks before he confirms:
+ *   'discarded'  they are given up with the phone's copy (what the question has always said);
+ *   'sent'       they change another part of the task than the card is about, so Keep Cloud does not give them up:
+ *                each goes up by itself first (and is weighed there like any waiting edit);
+ *   'both'       some of each; null: there is no such change.
+ * On a card about the whole task the card shows such a change either way ("Includes a change you made after the
+ * conflict was found"), and the question said it "will also be discarded" for both: since Y2 (1) an owner set while
+ * the card showed two notes is sent and kept. Decided by the choice's own rule (taskEditWaitsBesideCard), on the
+ * copies the card shows. On a card of fields a change to another field is no part of what the card shows, and
+ * nothing is said of it, as before.
+ */
+export function keepCloudOnNewerPhoneTaskEdits(
+  conflict: SyncConflict,
+  queue: readonly SyncQueueItem[],
+): 'discarded' | 'sent' | 'both' | null {
+  if (conflict.entity !== 'schedule_item' || !isRecord(conflict.localPayload)) return null;
+  const payload = conflict.localPayload as Partial<ScheduleItemRecordPayload>;
+  if (!isRecord(payload.itemData)) return null;
+  const cardFields = scheduleItemConflictFields(conflict.localPayload).length > 0 && Array.isArray(payload.changedFields)
+    ? new Set(payload.changedFields.map(String)) : null;
+  const wholeTaskDifference = !cardFields && isRecord(conflict.remotePayload)
+    ? taskFieldsInDispute(payload.itemData, conflict.remotePayload) : null;
+  const besideCard = taskEditWaitsBesideCard(cardFields, wholeTaskDifference);
+  const queueItemId = scheduleItemQueueItemId(conflict.localId);
+  const sentFirst = cardFields === null && queue.some(item => item.id === queueItemId && besideCard(item));
+  const discarded = newerPhoneCopyForScheduleItemConflict(conflict, queue.filter(item => item.id !== queueItemId || !besideCard(item))) !== null;
+  return discarded && sentFirst ? 'both' : discarded ? 'discarded' : sentFirst ? 'sent' : null;
+}
+
+/**
+ * The waiting edits of a task that a choice on its card does not decide: each goes through the ordinary upload
+ * first (independent review pass 4; sync batch Y2, item 1). One rule for the choice and for what Keep Cloud's
+ * question says of it (review pass 1, sync F4).
+ */
+function taskEditWaitsBesideCard(
+  cardFields: ReadonlySet<string> | null,
+  wholeTaskDifference: ReadonlySet<string> | null,
+): (edit: SyncQueueItem) => boolean {
+  return edit => cardFields !== null
+    ? taskEditChangesBeyond(edit, cardFields)
+    : wholeTaskDifference !== null && taskFieldEditWeighedByItsStart(edit) && taskEditChangesBeyond(edit, wholeTaskDifference);
+}
+
 /** Takes a task's waiting edits off the queue; the edits taken. One that `stays` is left waiting. */
 function withdrawScheduleItemFromSyncQueue(itemId: string, stays: (edit: SyncQueueItem) => boolean = () => false): Promise<SyncQueueItem[]> {
   const queueItemId = scheduleItemQueueItemId(itemId);
@@ -6043,19 +6637,45 @@ function putTaskEditsBackOnSyncQueue(itemId: string, edits: readonly SyncQueueIt
  * put back on the queue, the next automatic pass sent them (tasks have no
  * hold), undoing the choice. An edit made since stays queued, as any is.
  */
-async function putBackTaskConflictAsItWas(conflict: SyncConflict, edits: readonly SyncQueueItem[]): Promise<void> {
+async function putBackTaskConflictAsItWas(
+  conflict: SyncConflict,
+  edits: readonly SyncQueueItem[],
+  /** Those of `edits` that never left this phone, as JSON text (sync batch Y4, item 2). */
+  neverSent: ReadonlySet<string> = new Set(),
+): Promise<void> {
   const unique = edits.filter((edit, index) =>
     edits.findIndex(other => JSON.stringify(other) === JSON.stringify(edit)) === index);
+  const marks = unique.map(edit => JSON.stringify(edit)).filter(text => neverSent.has(text));
   await serializeSyncConflictMutation(async () => {
     const conflicts = await readSyncConflictsUnsafe();
     const open = conflicts.find(item => item.entity === conflict.entity && item.localId === conflict.localId);
     const base = open ?? conflict;
-    const saved = { ...base, localPayload: { ...(base.localPayload as ScheduleItemRecordPayload), withdrawnEdits: unique } };
+    const { withdrawnEditsNeverSent: _marksBefore, ...payload } = base.localPayload as ScheduleItemRecordPayload;
+    const saved = { ...base, localPayload: { ...payload, withdrawnEdits: unique, ...(marks.length > 0 ? { withdrawnEditsNeverSent: marks } : {}) } };
     await writeSyncConflicts(open ? conflicts.map(item => item === open ? saved : item) : [...conflicts, saved]);
   });
 }
 
 /** Whether a waiting edit of a task changes a field the card does not ask about; a whole copy may change any. */
+/**
+ * Sync batch Y2 (item 1): an edit of single fields that the upload weighs field by field from the copy it started
+ * from (owner answer Q28), and that sets no progress. Only such an edit goes up first beside a card about the whole
+ * task: one with no starting copy is sent unweighed, and a percent is decided by who confirmed it later, so either
+ * could go over a value another device set after the card was shown (audit A7 pass 16 keeps those given up).
+ */
+function taskFieldEditWeighedByItsStart(edit: SyncQueueItem): boolean {
+  const payload = edit.payload as Partial<ScheduleItemRecordPayload>;
+  return edit.entity === 'schedule_item' && edit.operation === 'update' && Array.isArray(payload.changedFields) && isEditBase(payload.base) &&
+    !payload.changedFields.some(field => field === 'percentComplete' || field === 'status' || SCHEDULE_PROGRESS_FIELDS.includes(String(field)));
+}
+
+/** The fields a card about the whole task is about (sync batch Y2, item 1): those in which the two copies differ. */
+function taskFieldsInDispute(own: unknown, shown: unknown): Set<string> {
+  const fields = new Set([...Object.keys(isRecord(own) ? own : {}), ...Object.keys(isRecord(shown) ? shown : {})]);
+  return new Set([...fields].filter(field => !TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK.has(field) &&
+    taskFieldValue(own, field) !== taskFieldValue(shown, field)));
+}
+
 function taskEditChangesBeyond(edit: SyncQueueItem, cardFields: ReadonlySet<string>): boolean {
   if (edit.entity !== 'schedule_item' || edit.operation !== 'update') return false;
   const fields = (edit.payload as Partial<ScheduleItemRecordPayload>).changedFields;
@@ -6077,13 +6697,13 @@ function taskEditChangesBeyond(edit: SyncQueueItem, cardFields: ReadonlySet<stri
  */
 async function weighTaskEditsWaitingBesideCard(
   conflict: SyncConflict,
-  cardFields: ReadonlySet<string>,
+  /** Whether an edit of his changes something the card does not ask about. */
+  beyond: (edit: SyncQueueItem) => boolean,
   resolution: 'keep_local' | 'keep_cloud',
   /** The cloud's copy as the screen showed it. */
   shown: unknown,
 ): Promise<{ cardId: string; fields: string[]; sent: boolean } | null> {
   const queueItemId = scheduleItemQueueItemId(conflict.localId);
-  const beyond = (edit: SyncQueueItem) => taskEditChangesBeyond(edit, cardFields);
   const waits = async () => (await getOfflineQueue()).find(item => item.id === queueItemId);
   const held = resolution === 'keep_cloud' ? [] : ((conflict.localPayload as Partial<ScheduleItemRecordPayload>).withdrawnEdits ?? [])
     .filter(edit => edit.entity === 'schedule_item' && edit.operation === 'update');
@@ -6096,9 +6716,11 @@ async function weighTaskEditsWaitingBesideCard(
       const conflicts = await readSyncConflictsUnsafe();
       await writeSyncConflicts(conflicts.map(item => {
         if (item.id !== conflict.id) return item;
-        const { withdrawnEdits, ...payload } = item.localPayload as ScheduleItemRecordPayload;
+        const { withdrawnEdits, withdrawnEditsNeverSent, ...payload } = item.localPayload as ScheduleItemRecordPayload;
         const left = (withdrawnEdits ?? []).filter(edit => !held.includes(edit) && !held.some(known => JSON.stringify(known) === JSON.stringify(edit)));
-        return { ...item, localPayload: left.length > 0 ? { ...payload, withdrawnEdits: left } : payload };
+        // The marks of the edits that stay on the card stay with them (sync batch Y4, item 2).
+        const marks = (withdrawnEditsNeverSent ?? []).filter(text => left.some(edit => JSON.stringify(edit) === text));
+        return { ...item, localPayload: left.length > 0 ? { ...payload, withdrawnEdits: left, ...(marks.length > 0 ? { withdrawnEditsNeverSent: marks } : {}) } : payload };
       }));
     });
   }
@@ -6155,8 +6777,13 @@ let taskConflictChoicesUnderWay = 0;
  * task the cloud no longer has is not written back, and its conflict is closed, as when Keep Phone itself finds it
  * gone. Null when the cloud's row cannot be read now: the copy waits for the next pass, as it did.
  */
-async function returnRefusedKeptTaskCopyToItsCard(item: SyncQueueItem, payload: ScheduleItemRecordPayload): Promise<string | null> {
-  const row = await currentCloudScheduleItem(payload.id).catch(() => undefined);
+async function returnRefusedKeptTaskCopyToItsCard(
+  item: SyncQueueItem,
+  payload: ScheduleItemRecordPayload,
+  /** The pass this is part of: the row is read as its account, and "gone" is never said on another account's answer (review pass 1, sync G3). */
+  itsAccount: Pick<QueueUploadContext, 'account'> = {},
+): Promise<string | null> {
+  const row = await currentCloudScheduleItem(payload.id, itsAccount).catch(() => undefined);
   if (row === undefined) return null;
   const taskName = payload.itemData?.taskName || 'Unnamed Task';
   if (row === null) {
@@ -6218,10 +6845,12 @@ async function chooseScheduleItemSyncConflictCopy(
    * A7 pass 15, as for field updates, A4 pass 17 L1); without it, the copy
    * saved with the conflict.
    */
-  { cloudCopyShown, refusedBefore = 0, weighedBesideCard }: {
+  { cloudCopyShown, refusedBefore = 0, weighedBesideCard, choiceAccount }: {
     cloudCopyShown?: unknown;
     /** Keep Phone's own count of the times its copy was refused in this choice (independent review pass 3); not for callers. */
     refusedBefore?: number;
+    /** The choice's own (review pass 1, sync G3); not for callers: the account the choice was begun under, kept through each further step of it. */
+    choiceAccount?: CloudOwnerBinding;
     /**
      * The choice's own (independent review pass 4); not for callers: the fields of this phone's edits of the task that
      * waited beside a card of fields and went through the ordinary upload before this choice went on.
@@ -6229,6 +6858,13 @@ async function chooseScheduleItemSyncConflictCopy(
     weighedBesideCard?: readonly string[];
   } = {},
 ): Promise<ScheduleItem> {
+  // Review pass 1, sync G3 (older; owner answer Q45, 6 Oct 2026): the account this choice is made for, taken before
+  // anything is waited on. Every read of the cloud's row below, and Keep Cloud's own write that takes a landed
+  // edit back out of it, is made as this account or not at all. They were made as whoever was signed in by then:
+  // 15 of the 16 places that write to the cloud went through the account check, and Keep Cloud's undo was the
+  // sixteenth. With another account signed in, that write (made only over the row version this account read)
+  // changed nothing, the next read came back empty, and the card closed as "deleted on another device".
+  const itsAccount = { account: choiceAccount ?? currentCloudOwner() };
   // This phone's waiting edits of the task, before anything else: an upload
   // already under way takes one off the queue once it has landed it.
   const queueAtChoice = await getOfflineQueue();
@@ -6249,7 +6885,7 @@ async function chooseScheduleItemSyncConflictCopy(
     if (!now) throw new Error('sync_conflict_closed');
     const value = (copy: unknown, field: string) => JSON.stringify(isRecord(copy) ? copy[field] ?? null : null);
     if (!askedFields.every(field => value(shown, field) === value(now.remotePayload, field))) throw new Error('sync_conflict_cloud_copy_changed');
-    return resolveScheduleItemSyncConflict(now.id, resolution, { cloudCopyShown: now.remotePayload, refusedBefore, weighedBesideCard });
+    return resolveScheduleItemSyncConflict(now.id, resolution, { cloudCopyShown: now.remotePayload, refusedBefore, weighedBesideCard, choiceAccount: itsAccount.account });
   }
   const waitingEdits = queueAtChoice.filter(item => item.id === scheduleItemQueueItemId(conflict.localId));
 
@@ -6283,12 +6919,35 @@ async function chooseScheduleItemSyncConflictCopy(
   // (syncConflictChoiceStopReason), since "Nothing was sent" would not be true.
   const cardFields = askedFields.length > 0 && Array.isArray(localPayload.changedFields)
     ? new Set(localPayload.changedFields.map(String)) : null;
+  // Sync batch Y2 (item 1): Keep Cloud on a card about the WHOLE task too. Such a card is about the fields in which
+  // his copy and the cloud's copy, as shown, differ; it took every waiting edit of the task off the queue, so an owner
+  // set while the card showed two notes was discarded with the note. A waiting FIELD edit that changes a field outside
+  // that difference goes through the ordinary upload first, as beside a card of fields. A whole copy that waits (an
+  // approved schedule's row, a carried percent) holds his side of the difference itself, so it is given up as
+  // before; the card shows it (sync batch Y1, item 5).
+  const wholeTaskDifference = resolution === 'keep_cloud' && !cardFields && isRecord(localItem) && isRecord(shown)
+    ? taskFieldsInDispute(localItem, shown) : null;
+  const besideCard = taskEditWaitsBesideCard(cardFields, wholeTaskDifference);
   const decidedAfterWhatWaitsBesideCard = async (): Promise<ScheduleItem | null> => {
-    if (!cardFields || weighedBesideCard !== undefined) return null;
-    const beside = await weighTaskEditsWaitingBesideCard(conflict, cardFields, resolution, shown);
+    if ((!cardFields && !wholeTaskDifference) || weighedBesideCard !== undefined) return null;
+    let beside: Awaited<ReturnType<typeof weighTaskEditsWaitingBesideCard>>;
+    try {
+      beside = await weighTaskEditsWaitingBesideCard(conflict, besideCard, resolution, shown);
+    } catch (error) {
+      // An edit of his that lands closes a card about the whole task, as it always has (settleScheduleItemConflicts):
+      // the cloud's row then holds the cloud's side of the difference with his other field on it, which is what Keep
+      // Cloud was asked for. The choice is made, with that row. Not when an earlier Keep Cloud that could not finish
+      // left edits on the card: one of them may be in the row, and only the choice's own write takes it back.
+      if (wholeTaskDifference && error instanceof Error && error.message === 'sync_conflict_closed' &&
+        choicesStoppedAfterOtherChangeSent.has(error) && !localPayload.withdrawnEdits?.length) {
+        const rowNow = await currentCloudScheduleItem(conflict.localId, itsAccount).catch(() => null);
+        if (rowNow) return rowNow;
+      }
+      throw error;
+    }
     if (!beside) return null;
     try {
-      return await resolveScheduleItemSyncConflict(beside.cardId, resolution, { cloudCopyShown, refusedBefore, weighedBesideCard: beside.fields });
+      return await resolveScheduleItemSyncConflict(beside.cardId, resolution, { cloudCopyShown, refusedBefore, weighedBesideCard: beside.fields, choiceAccount: itsAccount.account });
     } catch (error) {
       if (beside.sent && error instanceof Error) choicesStoppedAfterOtherChangeSent.add(error);
       throw error;
@@ -6305,7 +6964,7 @@ async function chooseScheduleItemSyncConflictCopy(
     // task since and the progress David entered on the web. A cloud that
     // cannot be read changes nothing; a task the cloud no longer has is not
     // written back, and its conflict is closed.
-    const cloudItem = await currentCloudScheduleItem(conflict.localId);
+    const cloudItem = await currentCloudScheduleItem(conflict.localId, itsAccount);
     if (!cloudItem) {
       await clearScheduleItemSyncConflicts(conflict.localId);
       throw new Error('sync_conflict_record_deleted');
@@ -6315,8 +6974,7 @@ async function chooseScheduleItemSyncConflictCopy(
     // On a card of fields (follow-up 1), never an edit that changes another field: it is not his to give up here. One
     // that still waits (it could not be sent in the step above, or was saved a moment ago) stops the choice with
     // nothing changed; chosen again, it is sent first.
-    const besideCard = (edit: SyncQueueItem) => cardFields !== null && taskEditChangesBeyond(edit, cardFields);
-    const waitsBesideCard = async () => cardFields !== null &&
+    const waitsBesideCard = async () => (cardFields !== null || wholeTaskDifference !== null) &&
       (await getOfflineQueue()).some(item => item.id === scheduleItemQueueItemId(conflict.localId) && besideCard(item));
     if (await waitsBesideCard()) throw new Error('sync_conflict_save_failed');
     const withdrawn = await withdrawScheduleItemFromSyncQueue(conflict.localId, besideCard);
@@ -6338,14 +6996,27 @@ async function chooseScheduleItemSyncConflictCopy(
       await putTaskEditsBackOnSyncQueue(conflict.localId, withdrawn);
       throw new Error('sync_conflict_save_failed');
     }
-    const phoneEditMayHaveLanded = Boolean(localPayload.withdrawnEdits?.length) || closedDuringChoice;
+    // Sync batch Y4, item 2: of the edits an earlier Keep Cloud left on the card, the ones it had taken off the queue
+    // while the card stayed open never left the phone, and it marked them so. They are given up with the rest (the
+    // card shows them), but none can be in the row, so none is looked for there. An edit with no mark may have landed.
+    const neverSentBefore = new Set(localPayload.withdrawnEditsNeverSent ?? []);
+    const leftOnCardThatMayHaveLanded = (localPayload.withdrawnEdits ?? []).filter(edit => !neverSentBefore.has(JSON.stringify(edit)));
+    const phoneEditMayHaveLanded = leftOnCardThatMayHaveLanded.length > 0 || closedDuringChoice;
     // Still open: only an edit waiting on the conflict can be in the row (A7
     // pass 17 L-2). Every edit was undone by value, a progress edit that
     // never left the phone too, and the web's 60% went back as "Not Started".
-    const editsThatMayHaveLanded = closedDuringChoice ? phoneEdits : localPayload.withdrawnEdits ?? [];
+    const editsThatMayHaveLanded = closedDuringChoice
+      ? phoneEdits.filter(edit => !neverSentBefore.has(JSON.stringify(edit)))
+      : leftOnCardThatMayHaveLanded;
+    // What this choice took off the queue while the card stayed open never left the phone either: if the choice
+    // cannot finish, it waits on the card marked so. Only what was taken off the queue itself: an edit that was
+    // waiting when he chose and was gone before it could be taken off (an upload had it) gets no mark. Nor does one
+    // whose text an unmarked edit on the card shares: the two are kept as one, and that one may have landed.
+    const neverSent = new Set([...neverSentBefore, ...(closedDuringChoice ? [] : withdrawn.map(edit => JSON.stringify(edit)))]
+      .filter(text => !leftOnCardThatMayHaveLanded.some(edit => JSON.stringify(edit) === text)));
     // Read again now: an edit from another device that landed meanwhile is
     // the cloud's too.
-    const reread = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
+    const reread = await currentCloudScheduleItem(conflict.localId, itsAccount).catch(() => undefined);
     if (reread === null) {
       await clearScheduleItemSyncConflicts(conflict.localId);
       throw new Error('sync_conflict_record_deleted');
@@ -6386,19 +7057,19 @@ async function chooseScheduleItemSyncConflictCopy(
         // another device made in the instant after that row was read was replaced, with no card (and a task deleted
         // in that instant was written back). Refused, nothing was written: the row is read again and the undo worked
         // out on it, as a queued edit is weighed again; a row that keeps changing leaves the choice to be made again.
-        const restore = await upsertScheduleItem(restored, ...cloudRowWriteConditionFor(cloudNow)).catch(() => null);
+        const restore = await asItsAccount(itsAccount, () => upsertScheduleItem(restored, ...cloudRowWriteConditionFor(cloudNow))).catch(() => null);
         if (restore?.ok && !restore.stubbed) {
           await clearResolvedConflict(conflict.id);
           return restored;
         }
         if (restore?.code !== CLOUD_ROW_CHANGED_SINCE_READ) throw new Error('sync_conflict_save_unconfirmed');
         if (refused >= QUEUED_RECORD_WEIGH_AGAIN_LIMIT) throw new Error('sync_conflict_cloud_copy_changed');
-        const rowNow = await currentCloudScheduleItem(conflict.localId);
+        const rowNow = await currentCloudScheduleItem(conflict.localId, itsAccount);
         if (!rowNow) break; // deleted on another device in that instant: closed below, and not written back
         cloudNow = rowNow;
       }
     } catch (error) {
-      await putBackTaskConflictAsItWas(conflict, phoneEdits);
+      await putBackTaskConflictAsItWas(conflict, phoneEdits, neverSent);
       throw error;
     }
     await clearScheduleItemSyncConflicts(conflict.localId);
@@ -6425,7 +7096,7 @@ async function chooseScheduleItemSyncConflictCopy(
   // it and nothing is sent: David reviews it again. A cloud that cannot be
   // read changes nothing; a task the cloud no longer has is not written
   // back, and its conflict is closed.
-  const cloudNow = await currentCloudScheduleItem(conflict.localId);
+  const cloudNow = await currentCloudScheduleItem(conflict.localId, itsAccount);
   if (!cloudNow) {
     await clearScheduleItemSyncConflicts(conflict.localId);
     throw new Error('sync_conflict_record_deleted');
@@ -6546,7 +7217,7 @@ async function chooseScheduleItemSyncConflictCopy(
     // moment is not written back, and its conflict is closed. A row written again that still says what the screen
     // showed has the choice made on it again, here, twice at most. Any other failure is reported as before.
     if (keptTaskCopiesRefused.delete(localItem.id)) {
-      const rowAfter = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
+      const rowAfter = await currentCloudScheduleItem(conflict.localId, itsAccount).catch(() => undefined);
       if (rowAfter === null) {
         await clearScheduleItemSyncConflicts(conflict.localId);
         throw new Error('sync_conflict_record_deleted');
@@ -6555,10 +7226,21 @@ async function chooseScheduleItemSyncConflictCopy(
         throw new Error('sync_conflict_cloud_copy_changed');
       }
       if (rowAfter && refusedBefore < QUEUED_RECORD_WEIGH_AGAIN_LIMIT) {
-        return resolveScheduleItemSyncConflict(conflictId, resolution, { cloudCopyShown, refusedBefore: refusedBefore + 1, weighedBesideCard });
+        return resolveScheduleItemSyncConflict(conflictId, resolution, { cloudCopyShown, refusedBefore: refusedBefore + 1, weighedBesideCard, choiceAccount: itsAccount.account });
       }
+      throw new Error(result.errors[0] || 'sync_conflict_save_failed');
     }
-    throw new Error(result.errors[0] || 'sync_conflict_save_failed');
+    // Sync batch Y1 (item 5): any other failure of the kept copy's write. Settings said "Neither copy was changed",
+    // but a write whose answer was lost HAS landed. The row is read once. It holds what he chose to keep: the choice
+    // is made, and ends as when the answer had arrived. It cannot be read: Settings says the change may or may not
+    // have been saved. Only when it is read and does not hold his copy is neither copy changed.
+    const rowAfter = await currentCloudScheduleItem(conflict.localId, itsAccount).catch(() => undefined);
+    if (rowAfter === undefined) throw new Error('sync_conflict_save_unconfirmed');
+    const keptValues = cardFields ? [...cardFields].filter(field => !TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK.has(field)) : null;
+    const landed = Boolean(rowAfter) && (keptValues
+      ? keptValues.every(field => taskFieldValue(rowAfter, field) === taskFieldValue(keptItem, field))
+      : sameTaskContent(rowAfter, keptItem));
+    if (!landed) throw new Error(result.errors[0] || 'sync_conflict_save_failed');
   }
 
   await clearResolvedConflict(conflict.id);
@@ -6574,9 +7256,50 @@ type ReferenceDocumentUploadSuccess = {
   referenceDocument: ReferenceDocument;
 };
 
+/**
+ * Sync batch Y4, the account boundary of an upload under way (owner answer Q45, 6 Oct 2026: yes).
+ *
+ * One waiting item's upload is several requests: checks, then the write, and sometimes the checks and the write
+ * again when the write is refused. The pass looked at who is signed in before each ITEM only (whole-app audit A1
+ * M3). When that account signed out and another signed in while one of an item's checks was still waiting, the pass
+ * went on when the check was answered: the write left with the new account's sign-in and named the new account as
+ * owner. One account's task was written into another's.
+ *
+ * Every cloud call an item makes now goes through here:
+ *  1. the account the pass began with is looked at again before the call, so before every check, every write and
+ *     every further try inside the item; once it has changed nothing more is asked of the cloud, and the call is
+ *     answered here as a refusal;
+ *  2. a write is made "as" the account the item was queued under (the pass's own account for an item an earlier
+ *     build queued with none): the cloud layer refuses it when it finds another account signed in, so the owner a
+ *     row is written with is never whoever is signed in by now;
+ *  3. below that, a request that names one account is not sent with another's sign-in (SupabaseService).
+ * A refusal is a failed call to every caller: the item is left as it is, for its own account. Nothing is sent
+ * that was refused before. With no account given (a caller that is not the pass) the call is made as it always was.
+ */
+function asItsAccount<T>(context: Pick<QueueUploadContext, 'account'>, call: () => Promise<T>, queuedBy?: unknown): Promise<T> {
+  const account = context.account;
+  if (!account) return call();
+  if (!cloudOwnerUnchanged(account)) return Promise.resolve(CLOUD_ACCOUNT_CHANGED_ANSWER as unknown as T);
+  return callAsCloudOwner(typeof queuedBy === 'string' && queuedBy ? queuedBy : account.ownerId, call);
+}
+
+/** What a cloud call answers when it was not made because the account changed: a failure, in the cloud layer's own shape. */
+const CLOUD_ACCOUNT_CHANGED_ANSWER = Object.freeze({
+  ok: false, configured: true, stubbed: false, data: null, error: CLOUD_ACCOUNT_CHANGED_MESSAGE, status: 409, code: CLOUD_ACCOUNT_CHANGED,
+});
+
+/** Whether the account this pass began with is no longer the one signed in. */
+function passAccountChanged(context: Pick<QueueUploadContext, 'account'>): boolean {
+  return Boolean(context.account && !cloudOwnerUnchanged(context.account));
+}
+
 type QueueUploadContext = {
+  /** The account this pass began with: every cloud call of an item is made as it, or not at all (sync batch Y4). */
+  account?: CloudOwnerBinding;
   /** What David is told, once, of each copy he chose to keep that went back to its card in this pass (review pass 5, P5-1), by queue item. */
   keptCopiesReturnedToCard?: Map<string, string>;
+  /** The queue items of rows this device made whose write this pass sent (review P7-3): what he changed on them has gone, whatever came back. */
+  newRowWritesTried?: Set<string>;
   projectsAuthorityPromise?: ReturnType<typeof listProjects>;
   projectIdentityAuthority?: OperationalProjectIdentityAuthority;
   archivedProjectsAuthorityPromise?: ReturnType<typeof listArchivedProjects>;
@@ -6592,6 +7315,8 @@ type QueueUploadContext = {
   scheduleItemsReadById?: Map<string, ScheduleItem | null>;
   /** Why that read failed; the tasks it was for stay queued. */
   scheduleItemsReadByIdError?: string;
+  /** Of the queued tasks the cloud has no row for, the ones it holds a deletion record for now (schedule batch S3, item 4), asked once in a pass. */
+  scheduleItemsDeletedNow?: Promise<Set<string> | string>;
   /** Queued records read again and weighed again after a refused write, and how many times (pass 2, item 1). */
   recordsWeighedAgain?: Map<string, number>;
   referenceDocumentsAuthorityPromise?: ReturnType<typeof listReferenceDocuments>;
@@ -6799,7 +7524,7 @@ async function resolveArchivedProjectUpdateIdentity(
   ) {
     return activeFailure;
   }
-  context.archivedProjectsAuthorityPromise ??= listArchivedProjects();
+  context.archivedProjectsAuthorityPromise ??= asItsAccount(context, () => listArchivedProjects());
   const archived = await context.archivedProjectsAuthorityPromise;
   if (!archived.ok || archived.stubbed || !Array.isArray(archived.data)) return activeFailure;
   context.archivedProjectIdentityAuthority ??=
@@ -6815,7 +7540,7 @@ async function loadOperationalProjectIdentityAuthority(
   context: QueueUploadContext,
 ): Promise<OperationalProjectIdentityAuthority | string> {
   if (context.projectIdentityAuthority) return context.projectIdentityAuthority;
-  context.projectsAuthorityPromise ??= listProjects();
+  context.projectsAuthorityPromise ??= asItsAccount(context, () => listProjects());
   const result = await context.projectsAuthorityPromise;
   if (!result.ok || result.stubbed || !Array.isArray(result.data)) {
     return result.error || result.message || 'Cloud projects could not be checked before upload.';
@@ -6880,7 +7605,7 @@ async function cloudScheduleItemMissedByList(
     context.scheduleItemsReadById = new Map();
     const unlisted = [...new Set(context.queuedScheduleItemIds ?? [])].filter(queuedId => !context.scheduleItemsById?.has(queuedId));
     if (unlisted.length > 1) {
-      const read = await cloudRecordsNow<Pick<ScheduleItem, 'id'>>(unlisted.map(queuedId => ({ id: queuedId })), getScheduleItemsByIds);
+      const read = await cloudRecordsNow<Pick<ScheduleItem, 'id'>>(unlisted.map(queuedId => ({ id: queuedId })), wanted => asItsAccount(context, () => getScheduleItemsByIds(wanted)));
       if (typeof read === 'string') context.scheduleItemsReadByIdError = read || 'Task authority could not be checked.';
       else unlisted.forEach(queuedId => context.scheduleItemsReadById!.set(queuedId, (cloudRecordOf(read, queuedId) as ScheduleItem | undefined) ?? null));
     }
@@ -6889,7 +7614,7 @@ async function cloudScheduleItemMissedByList(
   if (context.scheduleItemsReadByIdError && context.queuedScheduleItemIds?.includes(id)) return context.scheduleItemsReadByIdError;
   let row: Awaited<ReturnType<typeof getScheduleItem>> | null = null;
   try {
-    row = await getScheduleItem(id);
+    row = await asItsAccount(context, () => getScheduleItem(id));
   } catch {
     row = null;
   }
@@ -6922,7 +7647,7 @@ async function cloudRowToWeighAgain<T extends { id: string }>(
   const weighedAgain = (context.recordsWeighedAgain ??= new Map<string, number>());
   const times = weighedAgain.get(key) ?? 0;
   if (times >= QUEUED_RECORD_WEIGH_AGAIN_LIMIT) return null;
-  const rows = await cloudRecordsNow<Pick<T, 'id'>>([{ id }], readByIds);
+  const rows = await cloudRecordsNow<Pick<T, 'id'>>([{ id }], wanted => asItsAccount(context, () => readByIds(wanted)));
   const row = typeof rows === 'string' ? undefined : cloudRecordOf(rows, id) as T | undefined;
   if (!row) return null;
   weighedAgain.set(key, times + 1);
@@ -6943,7 +7668,7 @@ async function uploadQueueItem(
 
   if (item.entity === 'project_area') {
     const payload = item.payload as ProjectAreaRecordPayload;
-    context.projectAreasAuthorityPromise ??= listProjectAreas();
+    context.projectAreasAuthorityPromise ??= asItsAccount(context, () => listProjectAreas());
     const cloud = await context.projectAreasAuthorityPromise;
     if (!cloud.ok || cloud.stubbed || !Array.isArray(cloud.data)) {
       return cloud.error || cloud.message || 'GPS area authority could not be checked.';
@@ -6955,7 +7680,7 @@ async function uploadQueueItem(
     // An area the list did not hold is asked for by its id before this device's copy goes up as new (independent
     // review R02): the list pages by offset, and a row another device changed while it was read can be left out.
     if (!remote) {
-      const row = await cloudRecordsNow<Pick<ProjectArea, 'id'>>([{ id: payload.id }], getProjectAreasByIds);
+      const row = await cloudRecordsNow<Pick<ProjectArea, 'id'>>([{ id: payload.id }], wanted => asItsAccount(context, () => getProjectAreasByIds(wanted)));
       if (typeof row === 'string') return row || 'GPS area authority could not be checked.';
       remote = cloudRecordOf(row, payload.id) as ProjectArea | undefined;
       if (remote) context.projectAreasById.set(payload.id, remote);
@@ -6972,7 +7697,7 @@ async function uploadQueueItem(
     // Independent review pass 2 (item 1): written only if the cloud's row is still the one this was weighed against
     // (or there is still none). The list is read once for the whole pass; a point another device captured since
     // then was written over. Refused, the row is read again by its id and the area weighed again.
-    const result = await upsertProjectArea(authoritative, ...cloudRowWriteConditionFor(remote));
+    const result = await asItsAccount(context, () => upsertProjectArea(authoritative, ...cloudRowWriteConditionFor(remote)), item.ownerId);
     if (result.ok && !result.stubbed) {
       context.projectAreasById.set(payload.id, withCloudRowVersion(authoritative, cloudRowVersionOf(result.data)));
       return 'uploaded';
@@ -6989,7 +7714,7 @@ async function uploadQueueItem(
 
   if (item.entity === 'schedule_item') {
     const payload = item.payload as ScheduleItemRecordPayload;
-    context.scheduleItemsAuthorityPromise ??= listScheduleItems();
+    context.scheduleItemsAuthorityPromise ??= asItsAccount(context, () => listScheduleItems());
     const cloud = await context.scheduleItemsAuthorityPromise;
     if (!cloud.ok || cloud.stubbed || !Array.isArray(cloud.data)) {
       return cloud.error || cloud.message || 'Task authority could not be checked.';
@@ -7019,6 +7744,20 @@ async function uploadQueueItem(
     }
     // The cloud had no row for this task when it was read by its id.
     const newToCloud = !remote;
+    // Schedule batch S3, item 4 (the window sync batch Y1, item 2, left in this upload): the deletion history was read
+    // when this pass started. A task deleted on another device in the seconds since has no row any more and no deletion
+    // record this pass has heard of, so it read as new to the cloud and was sent back once. The history is asked once
+    // more, as Full Sync asks it (recordsDeletedInCloudNow): one request for all the queued tasks the cloud has no row
+    // for. A task deleted meanwhile is not sent: its queued copy is retired, as one whose deletion the pass knew of at
+    // its start, and the next refresh takes the task off this device. When the question cannot be asked the task goes
+    // up as before: this upload runs on weak signal all day, and an approval's new rows must not wait on it. (Accepted
+    // on 7 Oct 2026: a queue that never uploads is worse than a task that is removed again at the next sync.)
+    if (newToCloud) {
+      context.scheduleItemsDeletedNow ??= passAccountChanged(context) ? Promise.resolve(CLOUD_ACCOUNT_CHANGED_MESSAGE) : recordsDeletedInCloudNow('schedule_item', [...new Set([payload.id, ...(context.queuedScheduleItemIds ?? [])])]
+        .filter(id => id === payload.id || (!context.scheduleItemsById?.has(id) && context.scheduleItemsReadById?.get(id) === null)));
+      const deletedNow = await context.scheduleItemsDeletedNow;
+      if (typeof deletedNow !== 'string' && deletedNow.has(cloudRecordKey(payload.id))) return QUEUED_RECORD_DELETED_IN_CLOUD_MEANWHILE;
+    }
     // Review N3 R3, review P4 F1: a master's new row first goes up weighed against the cloud's row of the task it
     // replaces, field by field, from what it took of that row (scheduleItemAgainstItsTask): the approval may have had
     // no signal, and the device may not have heard what was set on the task elsewhere. His text and his controls alike,
@@ -7040,12 +7779,12 @@ async function uploadQueueItem(
     // upload (an edit, a whole copy, an edit sent on to the task's row), not only where a new row first goes up.
     const taskOfRow = (rowId: string) => tasksOfRows()(rowId);
     const setSinceMade = remote && !queuedFields && !payload.forceLocal && !isEditBase(payload.base)
-      ? scheduleItemNewRowMetAgain(payload.itemData, remote, tasksOfRows, payload.sinceMade) : undefined;
+      ? scheduleItemNewRowMetAgain(payload.itemData, remote, tasksOfRows, payload.sinceMade, payload.writeTried === true) : undefined;
     if (setSinceMade === null) {
       await settleScheduleItemConflicts(payload.id, null);
       return 'uploaded';
     }
-    if (setSinceMade) return uploadQueueItem({ ...item, payload: { id: payload.id, itemData: payload.itemData, ...setSinceMade } as ScheduleItemRecordPayload }, context);
+    if (setSinceMade) return uploadQueueItem({ ...item, payload: { id: payload.id, itemData: payload.itemData, ...setSinceMade, sinceMade: payload.sinceMade } as ScheduleItemRecordPayload }, context);
     const takenFromId = newToCloud ? payload.itemData.textFromTask?.taskId : undefined;
     const takenFromRow = takenFromId ? context.scheduleItemsById.get(takenFromId) ?? await cloudScheduleItemMissedByList(takenFromId, context) : null;
     if (typeof takenFromRow === 'string') return takenFromRow;
@@ -7060,9 +7799,12 @@ async function uploadQueueItem(
     const ownFields = remote && queuedFields ? scheduleItemFieldsWithOwnProgress(payload.itemData, queuedFields, remote) : queuedFields;
     // A carried owner, contractor or note only fills a blank in the cloud's row (review N2 P1): over a value the cloud
     // holds, the cloud's stands, with nothing asked and, when that leaves nothing to send, nothing written.
+    // (Schedule batch S5, item 1: a carried priority only while the cloud's row still holds the one it took; carried
+    // activity notes only when the cloud's row lacks one: scheduleItemCarriedFieldsToSend.)
     const carriedText = remote && ownFields ? (payload.carriedText ?? []) as string[] : [];
+    const carriedToSend = carriedText.length > 0 ? scheduleItemCarriedFieldsToSend(carriedText, payload.itemData, remote!) : [];
     const changedFields = ownFields && carriedText.length > 0
-      ? ownFields.filter(field => !carriedText.includes(field) || !String((remote as unknown as Record<string, unknown>)[field] ?? '').trim())
+      ? ownFields.filter(field => !carriedText.includes(field) || carriedToSend.includes(field))
       : ownFields;
     if (carriedText.length > 0 && changedFields!.every(field => field === 'updatedAt')) return 'uploaded';
     // Review N3 R3 (Medium, caused by c3899ef): his owner, contractor or note typed on a row a newer master has since
@@ -7102,9 +7844,11 @@ async function uploadQueueItem(
     // A later percent of David's own in the cloud stands over the edit's older one (owner answer Q28): the progress is
     // not sent. Otherwise it goes as before.
     const laterPercentInCloud = Boolean(weighed && remote && scheduleItemLaterPercentInCloud(payload.itemData, changedFields!, payload.base, remote));
+    // Nor a percent a master's file has since taken over on the cloud's row (Build 231, S3 item 1; owner answer Q32 b).
+    const fileTookPercentOver = Boolean(weighed && remote && scheduleItemFileTookPercentOverInCloud(payload.itemData, changedFields!, payload.base, remote));
     const sentFields = weighed && changedFields
       ? changedFields.filter(field => !weighed.asked.includes(field) && !weighed.keptFromCloud.includes(field) && !weighed.held.includes(field) &&
-        !(laterPercentInCloud && SCHEDULE_PROGRESS_FIELDS.includes(field)))
+        !((laterPercentInCloud || fileTookPercentOver) && SCHEDULE_PROGRESS_FIELDS.includes(field)))
       : changedFields;
     // That later percent, confirmed again just after this device's older entry when this device's is the later
     // confirmed (review N1 finding 6): the device kept its entry, and its next Full Sync sent it whole over the cloud's.
@@ -7114,17 +7858,22 @@ async function uploadQueueItem(
     // (review N1 finding 3): a note typed on another device had stamped the row newer, and the merge took it whole,
     // dropping the dates of a lookahead approved offline.
     const restUnchanged = Boolean(remote && !changedFields && !payload.forceLocal && scheduleItemWholeCopyRestUnchanged(payload.base, remote));
-    const recovered = remote && !changedFields && !payload.forceLocal
-      ? restUnchanged ? payload.itemData : recoverDAVEScheduleRecords({
+    const merged = remote && !changedFields && !payload.forceLocal && !restUnchanged
+      ? recoverDAVEScheduleRecords({
           local: [payload.itemData],
           cloud: [remote],
           allowCloudOnly: true,
         }).find(candidate => candidate.id === payload.id) || payload.itemData
       : null;
+    // Review P7-2: with the rest of the cloud's row changed too, the copy is weighed field by field from the copy it
+    // started from: what only it changed goes on the cloud's row, what only the cloud's row changed stays, and a
+    // field changed on both is asked about. (Without that copy, or where the sync merge alone has a rule: the merge.)
+    const byField = merged && remote ? scheduleItemWholeCopyFieldByField(payload.itemData, payload.base, remote, merged) : null;
+    const recovered = remote && !changedFields && !payload.forceLocal ? restUnchanged ? payload.itemData : byField?.itemData ?? merged : null;
     const wholeWeighed = recovered && remote && isEditBase(payload.base)
       ? scheduleItemWholeCopyAgainstCloud(recovered, payload.itemData, payload.base, remote, taskOfRow)
       : null;
-    const asked = weighed?.asked ?? wholeWeighed?.asked ?? firstSent?.asked ?? [];
+    const asked = weighed?.asked ?? (wholeWeighed ? [...(byField?.asked ?? []), ...wholeWeighed.asked] : null) ?? firstSent?.asked ?? [];
     // What this upload decides for the task's open conflicts: the fields an edit sends of this device's own (owner
     // answer Q28). A whole copy decides none of a card's fields (review N1): null.
     const settles: readonly string[] | null = sentFields;
@@ -7150,7 +7899,7 @@ async function uploadQueueItem(
       return 'conflict';
     };
     // A whole copy that stands for the rest and, weighed, is the cloud's row but for its stamp has nothing to write.
-    if (remote && restUnchanged && wholeWeighed &&
+    if (remote && (restUnchanged || byField) && wholeWeighed &&
       canonicalScheduleItemJson({ ...wholeWeighed.itemData, updatedAt: remote.updatedAt }) === canonicalScheduleItemJson(remote)) {
       if (asked.length > 0) return askAbout(remote);
       await settleScheduleItemConflicts(payload.id, settles);
@@ -7184,6 +7933,9 @@ async function uploadQueueItem(
                     remote.projectControls,
                   ),
                 }
+              // Carried activity notes join the ones the cloud's row holds, each once (schedule batch S5, item 1).
+              : field === 'activity' && (sent.carriedText ?? []).includes(field)
+              ? { ...merged, activity: scheduleItemActivityWithOtherRows(remote.activity, sent.itemData.activity) ?? remote.activity }
               : {
                   ...merged,
                   [field]: sent.itemData[field],
@@ -7205,7 +7957,7 @@ async function uploadQueueItem(
         // by hand) the stamp was the time of the upload: a master that only listed the task unchanged stamped its row
         // "just now", and a lookahead approved earlier with no signal then lost its dates and percent to that row.
         ? wholeWeighed && (JSON.stringify(wholeWeighed.itemData) !== JSON.stringify(recovered) ||
-          (restUnchanged && Boolean(payload.itemData.updatedAt || remote!.updatedAt)))
+          ((restUnchanged || byField) && Boolean(payload.itemData.updatedAt || remote!.updatedAt)))
           ? { ...wholeWeighed.itemData, updatedAt: scheduleItemStampAfter(payload.itemData.updatedAt, remote!.updatedAt) }
           : recovered
         // Keep Phone keeps the cloud's import memberships (whole-app audit A5 pass 3 F6)
@@ -7250,9 +8002,10 @@ async function uploadQueueItem(
     // (keptOverRowVersion), whatever this pass listed since: a row another device wrote between Keep Phone's read and
     // this pass's read of the list is then not the row it names, and the write is refused, as above. Never as new:
     // Keep Phone saw a row, so none now means it was deleted.
-    const result = await upsertScheduleItem(authoritative, ...(payload.forceLocal && payload.keptOverRowVersion
+    if (isEditBase(payload.sinceMade)) (context.newRowWritesTried ??= new Set<string>()).add(item.id);
+    const result = await asItsAccount(context, () => upsertScheduleItem(authoritative, ...(payload.forceLocal && payload.keptOverRowVersion
       ? [{ ifUnchangedSince: payload.keptOverRowVersion }]
-      : newToCloud ? [{ onlyIfAbsent: true }] : cloudRowWriteConditionFor(remote)));
+      : newToCloud ? [{ onlyIfAbsent: true }] : cloudRowWriteConditionFor(remote))), item.ownerId);
     if (result.ok && !result.stubbed) {
       context.scheduleItemsById.set(payload.id, withCloudRowVersion(authoritative, cloudRowVersionOf(result.data)));
       if (asked.length > 0) return askAbout(authoritative);
@@ -7266,7 +8019,7 @@ async function uploadQueueItem(
       // Review pass 5 (P5-1): with no choice under way to look at it, it does not wait here refused at every pass. It
       // goes back to its card, once, and he is told once (returnRefusedKeptTaskCopyToItsCard).
       if (payload.forceLocal) {
-        const told = taskConflictChoicesUnderWay === 0 ? await returnRefusedKeptTaskCopyToItsCard(item, payload) : null;
+        const told = taskConflictChoicesUnderWay === 0 ? await returnRefusedKeptTaskCopyToItsCard(item, payload, context) : null;
         if (told) {
           (context.keptCopiesReturnedToCard ??= new Map<string, string>()).set(item.id, told);
           return 'conflict';
@@ -7285,7 +8038,7 @@ async function uploadQueueItem(
 
   if (item.entity === 'reference_document') {
     const payload = item.payload as ReferenceDocumentRecordPayload;
-    context.referenceDocumentsAuthorityPromise ??= listReferenceDocuments();
+    context.referenceDocumentsAuthorityPromise ??= asItsAccount(context, () => listReferenceDocuments());
     const cloud = await context.referenceDocumentsAuthorityPromise;
     if (!cloud.ok || cloud.stubbed || !Array.isArray(cloud.data)) {
       return cloud.error || cloud.message || 'Document authority could not be checked.';
@@ -7322,7 +8075,14 @@ async function uploadQueueItem(
     const hasLocalFile = Boolean(authoritative.uri?.trim());
     if (!authoritative.storagePath && hasLocalFile) {
       try {
-        authoritative = await prepareReferenceDocumentForCloud(authoritative);
+        // The file is sent by the document store's own code: not once the account has changed (sync batch Y4).
+        if (passAccountChanged(context)) return CLOUD_ACCOUNT_CHANGED_MESSAGE;
+        // And when it is ready to go, after it has been measured and hashed, it leaves as the account it was
+        // queued under, or not at all (review pass 1, sync G2).
+        authoritative = await prepareReferenceDocumentForCloud(
+          authoritative,
+          file => asItsAccount(context, () => uploadPhoto(file), item.ownerId),
+        );
       } catch {
         return 'The document file could not be prepared for protected cloud storage.';
       }
@@ -7331,7 +8091,7 @@ async function uploadQueueItem(
       }
     }
     // A record the cloud already has is updated (whole-app audit A8 pass 1 F3).
-    const result = await upsertReferenceDocument(authoritative, { existing: Boolean(remote) });
+    const result = await asItsAccount(context, () => upsertReferenceDocument(authoritative, { existing: Boolean(remote) }), item.ownerId);
     if (result.ok && !result.stubbed) {
       context.referenceDocumentsById.set(payload.id, authoritative);
       referenceDocumentDetailsSent.set(payload.id, referenceDocumentSharedDetailsFingerprint(authoritative));
@@ -7379,28 +8139,29 @@ async function uploadProjectQueueItem(
     return 'Project delete is waiting for the project to reach the cloud.';
   }
   if (item.operation === 'update' && payload.coverPhotoUpload) {
-    const upload = await uploadPhoto({
+    const coverUpload = {
       path: payload.coverPhotoUpload.remotePath,
       uri: payload.coverPhotoUpload.localUri,
       contentType: payload.coverPhotoUpload.mimeType,
       upsert: true,
       cacheControl: '86400',
-    });
+    };
+    const upload = await asItsAccount(context, () => uploadPhoto(coverUpload), item.ownerId);
     if (!upload.ok || upload.stubbed) {
       return upload.error || upload.message || 'Project cover upload is waiting for cloud sync.';
     }
   }
   if (item.operation === 'create') {
-    const existing = await cloudProjectNameExists(payload.name || '');
+    const existing = passAccountChanged(context) ? CLOUD_ACCOUNT_CHANGED_MESSAGE : await cloudProjectNameExists(payload.name || '');
     if (typeof existing === 'string') return existing;
     if (existing) return 'uploaded';
   }
   const result =
     item.operation === 'create'
-      ? await createProject({ name: payload.name || 'Untitled Project' })
+      ? await asItsAccount(context, () => createProject({ name: payload.name || 'Untitled Project' }), item.ownerId)
       : item.operation === 'delete'
-        ? await deleteProject({ name: payload.name || payload.previousName || '' })
-        : await updateProject(payload);
+        ? await asItsAccount(context, () => deleteProject({ name: payload.name || payload.previousName || '' }), item.ownerId)
+        : await asItsAccount(context, () => updateProject(payload), item.ownerId);
 
   if (result.ok && !result.stubbed) {
     // A close finds no cloud row while the project's own create, queued ahead
@@ -7517,9 +8278,9 @@ async function uploadProjectUpdateQueueItem(
     let cloudDeleteSucceededAt = deletePayload.cloudDeleteSucceededAt;
 
     if (!cloudDeleteSucceededAt) {
-      const result = await deleteProjectUpdate({
+      const result = await asItsAccount(context, () => deleteProjectUpdate({
         id: deletePayload.id,
-      });
+      }), item.ownerId);
 
       if (!result.ok || result.stubbed) {
         return result.error
@@ -7555,11 +8316,11 @@ async function uploadProjectUpdateQueueItem(
   const payload = item.payload as ProjectUpdateRecordPayload;
   if (await hasProjectUpdateDeletionIntent(payload.id)) return 'uploaded';
   if (payload.archiveOnly) {
-    const result = await archiveProjectUpdate({
+    const result = await asItsAccount(context, () => archiveProjectUpdate({
       id: payload.id,
       archivedAt: payload.archivedAt || item.changedAt,
       projectId: payload.projectId,
-    });
+    }), item.ownerId);
     if (!result.ok || result.stubbed) return result.error || result.message || 'Field update archive is waiting for cloud sync.';
     if (!queuedFieldUpdateDocumentPatches(item)) return 'uploaded';
     // Then the document changes that waited when it was archived go onto the
@@ -7600,6 +8361,8 @@ async function uploadProjectUpdateQueueItem(
     // phone's copy in the cloud (A7 pass 22 L-1): recorded, a refresh kept
     // the card's older result, shown as Sent.
     if (patchesToApply.length === (documentPatches || []).length) recordProjectUpdateUpload(payload.id);
+    // The card takes the cloud's result at once, not at the next refresh (sync batch Y4, item 4).
+    else tellCloudPhotoResultsKept(payload.id, cloudCopy.updateData);
     return 'uploaded';
   }
   if (!patchedCloudCopy && uniquePhotoAssetIds(pendingPhotoAssetIds).length > 0) {
@@ -7626,7 +8389,7 @@ async function uploadProjectUpdateQueueItem(
     !judgedByStartingCopy &&
     remoteMetadata.ok &&
     remoteMetadata.data?.updatedAt &&
-    isRemoteNewer(remoteMetadata.data.updatedAt, item.changedAt)
+    cloudCopyNewerThanQueuedCopy(payload, remoteMetadata.data.updatedAt, item.changedAt)
   ) {
     if (projectUpdatePayloadsMatch(payload.updateData, remoteMetadata.data.updateData)) {
       await clearConflictsForLocalRecord('project_update', payload.id);
@@ -7641,6 +8404,13 @@ async function uploadProjectUpdateQueueItem(
     // queued for Keep Cloud's put-back, which takes it off by its mark.
     if (payload.keepCloudChoice && await keepCloudChoiceMetNewerCloudCopy(payload, remoteMetadata.data)) {
       return KEEP_CLOUD_CHOICE_CLOUD_COPY_CHANGED;
+    }
+    // Keep Phone's copy, by the version he chose over (sync batch Y3, item 5): the same answer. The conflict he
+    // chose in takes the cloud's copy as it is now, on the same card, and Keep Phone asks him to review again. A
+    // second conflict was saved in its place, with his kept copy as its phone side, and Settings said "Conflict
+    // not resolved. Neither copy was changed."
+    if (!payload.keepCloudChoice && payload.chosenOverCloudStamp && await keepPhoneChoiceMetChangedCloudCopy(payload, remoteMetadata.data)) {
+      return KEEP_PHONE_CHOICE_CLOUD_COPY_CHANGED;
     }
 
     await recordConflict({
@@ -7744,7 +8514,7 @@ async function uploadProjectUpdateQueueItem(
     updatedAt: ownPatchesSinceEdit && isRemoteNewer(ownPatchesSinceEdit.at, item.changedAt)
       ? ownPatchesSinceEdit.at : newerCloudStamp ?? item.changedAt,
   };
-  const result = await saveProjectUpdate({ id: payload.id, ...record });
+  const result = await asItsAccount(context, () => saveProjectUpdate({ id: payload.id, ...record }), item.ownerId);
 
   if (result.ok && !result.stubbed) {
     if (settledCopy) return settledByCloud(); // only its own photo result went up, onto the cloud's copy
@@ -7754,6 +8524,8 @@ async function uploadProjectUpdateQueueItem(
     if (!documentPatches && !payload.keepCloudChoice) await clearConflictsForLocalRecord('project_update', payload.id);
     if (cloudCopy && patchedCloudCopy) {
       noteProjectUpdatePatchesLanded(payload.id, cloudCopy.updatedAt, { updatedAt: record.updatedAt, updateData: patchedCloudCopy }, documentPatches || [], cloudCopy.updateData);
+      // One of them was left out for the cloud's own: the card takes that one at once (sync batch Y4, item 4).
+      if (patchesToApply.length < (documentPatches || []).length) tellCloudPhotoResultsKept(payload.id, patchedCloudCopy);
     }
     else projectUpdatePatchesLanded.delete(payload.id);
     // The copy a choice of his put in the cloud is his own write, to the edits he saved before it (review N2 L7).
@@ -8006,10 +8778,139 @@ const projectUpdateUploadedAt = new Map<string, number>();
  * or with a document patch, while nothing newer was queued for it (whole-app
  * audit A7 pass 7 M1). A sync attempt that finds nothing queued for an update
  * still this copy, the document upload state aside, has nothing to send
- * again (writeStagedProjectUpdateRecord). Held in memory: after a relaunch a
- * sync attempt queues the whole copy, as before.
+ * again (writeStagedProjectUpdateRecord).
+ *
+ * Sync batch Y1 (item 3; medium, older): it was held in memory only, and for
+ * whichever account. After a relaunch a card still reading "Waiting to Sync"
+ * whose record was already in the cloud was staged again as a WHOLE copy:
+ * with "Analyzing" for a photo being run again, over the finished result the
+ * cloud held; or to be weighed against a copy another device had changed
+ * since, which could raise a conflict over nothing he had edited.
+ *
+ * It is now kept on the device as well, for the signed-in account:
+ * - each account has its own (in memory and in what is saved); the saved
+ *   value is one of the account's own keys, so the switch of this device's
+ *   storage to another account takes it away with the rest, and what is in
+ *   memory is forgotten at that switch;
+ * - bounded: the latest copies only, by number and by size; a very large
+ *   copy stays in memory only;
+ * - a restore writes its ten lists and nothing else, so it cannot bring an
+ *   old one back; a copy held here that no longer matches a restored card is
+ *   simply not that card's copy.
+ *
+ * What it is trusted for, and no more. It says one thing: "this device put
+ * exactly this copy in the cloud". It is read two ways only: is a card that
+ * very copy (then there is nothing of the card's to send again), and does
+ * that copy hold an archive or a finished photo result that stands over the
+ * card's by the usual rule. It never makes anything be sent, and it is never
+ * the cloud's copy: every write still reads the cloud's own copy and weighs
+ * against that. A copy read back from the device (not put in the cloud in
+ * this run of the app) spares a send only for a card that still owes its own
+ * sync; a Sent card is staged and checked against the cloud as before.
+ *
+ * Lost (a save that failed, the app closed before it was written, more than
+ * the bound) it costs what it cost before: the card is staged whole after a
+ * relaunch. Stale (the cloud's copy has moved on) it can only spare a send
+ * of an identical copy, never cause one.
  */
-const projectUpdateLastVersionInCloud = new Map<string, ProjectUpdate>();
+type FieldUpdateCopiesInCloud = Record<string, Record<string, { at: string; copy: ProjectUpdate }>>;
+const projectUpdateLastVersionInCloud = (() => {
+  type OwnCopies = {
+    copies: Map<string, ProjectUpdate>; changedHere: Set<string>; readBack: Set<string>;
+    /** The read of what is saved on the device: under way or done; and whether it is done. */
+    loading: Promise<void> | null; read: boolean;
+  };
+  const byOwner = new Map<string, OwnCopies>();
+  let tail: Promise<void> = Promise.resolve();
+  /** Goes up when what is in memory is forgotten: a save still on its way from before is then not made. */
+  let run = 0;
+  const ownerKey = () => currentCloudOwner().ownerId ?? '';
+  const own = (key: string): OwnCopies => {
+    let held = byOwner.get(key);
+    if (!held) byOwner.set(key, held = { copies: new Map(), changedHere: new Set(), readBack: new Set(), loading: null, read: false });
+    return held;
+  };
+  /** One change of what is saved for this account, after the ones before it. Never into another account's storage. */
+  const save = (key: string, change: (saved: Record<string, { at: string; copy: ProjectUpdate }>) => void) => {
+    const started = run;
+    const write = async () => {
+      if (ownerKey() !== key || run !== started) return;
+      const stored = await getStoredJson<FieldUpdateCopiesInCloud>(FIELD_UPDATE_COPIES_IN_CLOUD_STORAGE_KEY, {});
+      const all: FieldUpdateCopiesInCloud = isRecord(stored) ? { ...stored } : {};
+      const saved = isRecord(all[key]) ? { ...all[key] } : {};
+      const before = JSON.stringify(saved);
+      change(saved);
+      // The latest first; the oldest go when there are too many, or too much.
+      let size = 0;
+      const kept = Object.entries(saved)
+        .filter(([, entry]) => isRecord(entry) && isRecord(entry.copy) && typeof entry.at === 'string')
+        .sort(([, left], [, right]) => right.at.localeCompare(left.at))
+        .slice(0, FIELD_UPDATE_COPIES_IN_CLOUD_KEPT)
+        .filter(([, entry]) => (size += JSON.stringify(entry).length) <= FIELD_UPDATE_COPIES_IN_CLOUD_CHARACTERS);
+      if (JSON.stringify(Object.fromEntries(kept)) === before) return;
+      if (ownerKey() !== key || run !== started) return;
+      await setStoredJson(FIELD_UPDATE_COPIES_IN_CLOUD_STORAGE_KEY, { ...all, [key]: Object.fromEntries(kept) });
+    };
+    // Not kept when it cannot be saved: after a relaunch that card is staged as before.
+    tail = tail.then(write, write).catch(() => undefined);
+  };
+  const store = {
+    get(updateId: string): ProjectUpdate | undefined {
+      return own(ownerKey()).copies.get(updateId);
+    },
+    /** Whether the copy held for this update was read back from the device, not put in the cloud in this run. */
+    readBack(updateId: string): boolean {
+      return own(ownerKey()).readBack.has(updateId);
+    },
+    set(updateId: string, copy: ProjectUpdate): void {
+      const key = ownerKey();
+      const held = own(key);
+      held.copies.set(updateId, copy);
+      held.changedHere.add(updateId);
+      held.readBack.delete(updateId);
+      const at = new Date().toISOString();
+      const small = JSON.stringify(copy).length <= FIELD_UPDATE_COPY_IN_CLOUD_CHARACTERS;
+      save(key, saved => { if (small) saved[updateId] = { at, copy }; else delete saved[updateId]; });
+    },
+    delete(updateId: string): void {
+      const key = ownerKey();
+      const held = own(key);
+      const known = held.copies.delete(updateId);
+      held.changedHere.add(updateId);
+      held.readBack.delete(updateId);
+      // Nothing is saved for it when this account's copies have been read back and none was held.
+      if (known || !held.read) save(key, saved => { delete saved[updateId]; });
+    },
+    /** What is saved on the device for the signed-in account, read once into memory: before anything asks what is held. */
+    loaded(): Promise<void> {
+      const key = ownerKey();
+      const held = own(key);
+      held.loading ??= (tail = tail.then(async () => {
+        const stored = await getStoredJson<FieldUpdateCopiesInCloud>(FIELD_UPDATE_COPIES_IN_CLOUD_STORAGE_KEY, {});
+        const saved = isRecord(stored) && isRecord(stored[key]) ? stored[key] : {};
+        Object.entries(saved).forEach(([updateId, entry]) => {
+          // What this run has put in the cloud, or taken away, since it started stands over what was saved before it.
+          if (held.changedHere.has(updateId) || !isRecord(entry) || !isRecord(entry.copy) || entry.copy.id !== updateId) return;
+          held.copies.set(updateId, entry.copy as ProjectUpdate);
+          held.readBack.add(updateId);
+        });
+        held.read = true;
+      }).catch(() => undefined));
+      return held.loading;
+    },
+    /** Once what this run has changed so far is on the device (an upload pass waits for it before it answers). */
+    saved(): Promise<void> {
+      return tail;
+    },
+    /** As a relaunch leaves it, or the switch of this device's storage to another account: nothing in memory. */
+    forget(): void {
+      byOwner.clear();
+      run += 1;
+    },
+  };
+  return store;
+})();
+subscribeToOwnerStorageSwitch(() => projectUpdateLastVersionInCloud.forget());
 
 /** Queue records of field updates settled by the cloud's newer copy without a write (owner answer Q28), in this pass. */
 const projectUpdateQueueItemsSettledByCloud = new Set<string>();
@@ -8032,6 +8933,9 @@ function noteProjectUpdateVersionInCloud(item: SyncQueueItem) {
  */
 function projectUpdateVersionIsInCloud(update: ProjectUpdate): boolean {
   const sent = projectUpdateLastVersionInCloud.get(update.id);
+  // A copy read back from the device (sync batch Y1, item 3) spares the send of a card that still owes its own sync,
+  // which is what it is kept for. A Sent card is staged and checked against the cloud, as after any relaunch.
+  if (sent && projectUpdateLastVersionInCloud.readBack(update.id) && !fieldUpdateOwesOwnSync(update.status)) return false;
   return Boolean(sent) && sameProjectUpdateContent(sent, withSentCopysStandingParts(update, sent) as ProjectUpdate);
 }
 
@@ -8119,7 +9023,7 @@ function sameProjectUpdateContent(left: unknown, right: ProjectUpdate, { retrySt
  * relaunch does, so no test depends on the one before it.
  */
 export function resetFieldUpdateSyncMemoryForTests(): void {
-  projectUpdateLastVersionInCloud.clear();
+  projectUpdateLastVersionInCloud.forget();
   projectUpdateUploadedAt.clear();
   syncConflictsAsOfQueueRead = [];
   projectUpdatePatchesLanded.clear();
@@ -8224,7 +9128,7 @@ function loadProjectUpdateSyncMetadata(
   context.projectUpdateMetadataPromises ??= new Map();
   const existing = context.projectUpdateMetadataPromises.get(updateId);
   if (existing) return existing;
-  const pending = getProjectUpdateSyncMetadata(updateId);
+  const pending = asItsAccount(context, () => getProjectUpdateSyncMetadata(updateId));
   context.projectUpdateMetadataPromises.set(updateId, pending);
   return pending;
 }
@@ -8523,9 +9427,16 @@ export function cloudPhotoLookupConfirmedMissing(
   );
 }
 
+/** One photo's upload, for an account: see uploadLocalPhotoWithDiagnostics. */
+function localPhotoUploadAs(account: CloudOwnerBinding) {
+  return (update: ProjectUpdate, photo: UpdatePhoto) => uploadLocalPhotoWithDiagnostics(update, photo, account);
+}
+
 export async function uploadLocalPhotoWithDiagnostics(
   update: ProjectUpdate,
   photo: UpdatePhoto,
+  /** The account the photo is sent for: its file is sent as that account, or not at all (sync batch Y4, the account boundary). */
+  account?: CloudOwnerBinding,
 ): Promise<LocalPhotoUploadResult> {
   const path = projectUpdatePhotoStoragePath(update, photo);
   const diagnosticBase: PhotoStorageUploadDiagnostic = {
@@ -8546,6 +9457,7 @@ export async function uploadLocalPhotoWithDiagnostics(
 
   const cloudCopy = await createPhotoSignedUrl(path, 60, PROJECT_PHOTOS_BUCKET);
   if (cloudCopy.ok && !cloudCopy.stubbed && cloudCopy.data) {
+    forgetPhotoNotInCloud(path);
     return {
       result: 'skipped',
       message: null,
@@ -8740,15 +9652,16 @@ export async function uploadLocalPhotoWithDiagnostics(
       };
     }
 
-    const result = await uploadPhoto({
+    const result = await asItsAccount({ account }, () => uploadPhoto({
       bucket: PROJECT_PHOTOS_BUCKET,
       path,
       uri: localUri!,
       contentType,
       upsert: true,
-    });
+    }));
 
     if (result.ok && !result.stubbed) {
+      forgetPhotoNotInCloud(path); // it is there now: its image may sign it again (sync batch Y3, item 1)
       return {
         result: 'uploaded',
         message: null,
@@ -8906,6 +9819,7 @@ export async function locateCloudPhotoCopy(
 ): Promise<{ path: string; lookup: PhotoSignedUrlLookup }> {
   const path = projectUpdatePhotoStoragePath(update, photo);
   const lookup = await createPhotoSignedUrl(path, ttlSeconds, PROJECT_PHOTOS_BUCKET);
+  if (lookup.ok && lookup.data && !lookup.stubbed) forgetPhotoNotInCloud(path);
   if ((lookup.ok && lookup.data && !lookup.stubbed) || !cloudPhotoLookupConfirmedMissing(lookup, true)) {
     return { path, lookup };
   }
@@ -8974,7 +9888,12 @@ export async function hydrateProjectUpdatePhotoPreviews<TUpdate extends ProjectU
     if (cloudPhotoPreviewIsFresh(photo)) return photo;
     const cloudStoragePath =
       photo.cloudStoragePath || projectUpdatePhotoStoragePath(update, photo);
-    const preview = sign ? await signProjectPhotoPreview({ ...photo, cloudStoragePath }) : null;
+    // Not a photo with nothing in the cloud: marked so by the sync, or found
+    // so for this account. Every live update, Settings download and launch
+    // looked each one up again (sync batch Y3, item 1).
+    const preview = sign && signableCloudPhotoPath({ ...photo, cloudStoragePath })
+      ? await signProjectPhotoPreview({ ...photo, cloudStoragePath })
+      : null;
     if (!preview) return { ...photo, cloudStoragePath };
     return {
       ...photo,
@@ -8998,7 +9917,7 @@ export async function signProjectPhotoPreview(
   { force = false }: Readonly<{ force?: boolean }> = {},
 ): Promise<Readonly<{ uri: string; usableUntil: number }> | null> {
   const cloudStoragePath = photo.cloudStoragePath;
-  if (!cloudStoragePath?.trim()) return null;
+  if (!cloudStoragePath?.trim() || photoKnownNotInCloud(cloudStoragePath)) return null;
   const transform = projectPhotoPreviewTransform(photo);
   if (force) photoPreviewSignedUrlCache.delete(photoPreviewCacheKey(cloudStoragePath, transform));
   const { result, usableUntil } = await createCachedPhotoPreviewSignedUrl(cloudStoragePath, transform);
@@ -9082,12 +10001,14 @@ async function createCachedPhotoPreviewSignedUrl(
   if (inFlight) return inFlight;
 
   const request = photoPreviewSigningRunner.run(async () => {
+    const askedAs = currentCloudOwner();
     const result = await createPhotoSignedUrl(
       cloudStoragePath,
       600,
       PROJECT_PHOTOS_BUCKET,
       transform,
     );
+    await rememberIfPhotoNotInCloud(cloudStoragePath, result, askedAs);
     const signed = {
       result,
       usableUntil: Date.now() + PROJECT_PHOTO_PREVIEW_USABLE_MS,
@@ -9109,6 +10030,26 @@ async function createCachedPhotoPreviewSignedUrl(
     if (photoPreviewSigningInFlight.get(cacheKey) === request) {
       photoPreviewSigningInFlight.delete(cacheKey);
     }
+  }
+}
+
+/**
+ * "Not found" is remembered for the signed-in account (ProjectPhotoTransport)
+ * only when the cloud confirms this is the owner asking: storage gives the
+ * same answer for every photo to a caller whose sign-in has lapsed, and no
+ * signal, a time-out or a refused request is no answer at all.
+ */
+async function rememberIfPhotoNotInCloud(
+  path: string,
+  lookup: PhotoSignedUrlResult,
+  askedAs: CloudOwnerBinding,
+): Promise<void> {
+  if (!lookup || lookup.ok || !cloudPhotoLookupConfirmedMissing(lookup, true)) return;
+  try {
+    const owner = await verifyDAVEAppOwner();
+    if (owner?.ok && !owner.stubbed && owner.data === true) rememberPhotoNotInCloud(path, askedAs);
+  } catch {
+    // Not remembered: the next look-up asks again.
   }
 }
 
@@ -9171,6 +10112,10 @@ async function uploadUpdatePhotosForSync(
     };
   }
 
+  // Each photo's file is sent as the account this staging began with, or not at all (sync batch Y4, the account
+  // boundary): one photo's upload is several requests too. The account is handed over here, so that the call below
+  // reads as it has since audit A1 M3 (scripts/local-sync-consistency-test.js holds its text).
+  const uploadLocalPhotoWithDiagnostics = localPhotoUploadAs(owner);
   const results = await mapWithBoundedConcurrency(
     update.photos,
     PROJECT_PHOTO_NETWORK_CONCURRENCY,

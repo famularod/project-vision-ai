@@ -640,3 +640,178 @@ describe('a refresh on a device holding many photos from another device (whole-a
     expect(signed).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Sync batch Y3, item 2 (6 Oct 2026). Open item: "A backup made with no
+ * signal marks cloud-only photos 'unavailable', and the mark survives a
+ * restore." With the mark, no image, download or sync on the restored device
+ * ever looked for the photo again. Runs App.tsx's own export step for one
+ * update (compiled from source) with the real cloud look-up, and the real
+ * restore step that places files and prepares the records. The backup file
+ * is written exactly as before; only what the restore makes of it changed.
+ */
+describe('a backup made with no signal, then restored (sync batch Y3, item 2)', () => {
+  const { materializeCompleteBackupState, measureBackupAssetSource } =
+    jest.requireActual('../../services/DeviceBackupWorkflow') as typeof import('../../services/DeviceBackupWorkflow');
+  const { markPhotoUnavailableInBackup } =
+    jest.requireActual('../../services/BackupArchivePhotos') as typeof import('../../services/BackupArchivePhotos');
+  const { hydrateRecoveredProjectUpdatePhotos } =
+    jest.requireActual('../../services/SyncService') as typeof import('../../services/SyncService');
+  const { signableCloudPhotoPath } =
+    jest.requireActual('../../services/ProjectPhotoTransport') as typeof import('../../services/ProjectPhotoTransport');
+  const { noteSignedInOwner } =
+    jest.requireActual('../../services/CloudOwnerBinding') as typeof import('../../services/CloudOwnerBinding');
+
+  const io = {
+    sizeOf: async (uri: string) => (mockExisting.has(uri) ? 1234 : null),
+    readBytes: async () => new Uint8Array([1, 2, 3]), readText: async () => '', writeText: async () => undefined,
+    writeBytes: async () => undefined, move: async () => undefined, remove: async () => undefined,
+    makeDirectory: async () => undefined,
+  };
+  const exportJs = ts.transpileModule(
+    `${componentFunction('prepareUpdateForCompleteBackup')}\nmodule.exports = prepareUpdateForCompleteBackup;`,
+    { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } },
+  ).outputText;
+  const exportDeps: Record<string, unknown> = {
+    hydrateRecoveredProjectUpdatePhotos, measureBackupAssetSource, expoBackupFileIO: io, markPhotoUnavailableInBackup,
+    sanitizeFilename: (name: string) => name, filenameFromUri: () => 'photo.jpg',
+  };
+  const exportModule = { exports: {} as unknown as (
+    update: unknown, assetPrefix: string, sources: unknown[], includeFiles: boolean, unavailable: unknown[],
+  ) => Promise<Record<string, any>> };
+  new Function('module', 'exports', ...Object.keys(exportDeps), exportJs)(exportModule, exportModule.exports, ...Object.values(exportDeps));
+  const prepareUpdateForCompleteBackup = exportModule.exports;
+
+  /** One update per test: the "not in the cloud" answers are remembered for the run (item 1). */
+  let serial = 0;
+  function sentUpdate(photos: (updateId: string) => unknown[]) {
+    serial += 1;
+    const id = `y3-restore-${serial}`;
+    return { ...cloudRow().updateData, id, status: 'sent', photos: photos(id) } as Record<string, any>;
+  }
+  const cloudOnly = (updateId: string, id: string, extra: Record<string, unknown> = {}) =>
+    photo(id, '', { cloudStoragePath: `p/${updateId}/${id}-IMG_${id}.jpg`, ...extra });
+  const noSignal = () => signed.mockImplementation(async () => (
+    { ok: false, stubbed: false, data: null, error: 'Network request failed' }));
+  const signalBack = () => signed.mockImplementation(async (storagePath: string) => (
+    { ok: true, stubbed: false, data: `https://signed.example/${storagePath}?preview` }));
+
+  /** The backup's record of the update, and what the owner is told about its photos. */
+  async function backUp(update: Record<string, any>) {
+    const sources: unknown[] = [];
+    const told: Array<{ reason?: string }> = [];
+    const archived = await prepareUpdateForCompleteBackup(update, 'saved', sources, true, told);
+    return { archived: JSON.parse(JSON.stringify(archived)) as Record<string, any>, told, sources };
+  }
+  /** The restore's own step, then the record as the app saves and reads it. */
+  async function restore(archived: Record<string, any>, draft?: Record<string, any>) {
+    let placed = 0;
+    const materialized = await materializeCompleteBackupState(
+      { savedUpdates: [archived], referenceDocuments: [], projectDocuments: [], ...(draft ? { activeDraft: { draft } } : {}) },
+      { take: () => ({ fileName: 'IMG.jpg', byteLength: 3, placeAt: async (uri: string) => { mockExisting.add(uri); } }),
+        assertAllTaken: () => undefined },
+      { io, newId: () => `restored${placed += 1}`, sanitizeFilename: (name: string) => name,
+        photoDirectory: async () => PHOTO_STORAGE_DIR, referenceDocumentsDirectory: async () => `${DOCUMENTS}reference-documents/`,
+        ownedProjectDocumentsRoot: `${DOCUMENTS}project-documents/`, cacheDirectory: 'file:///cache/', importProjectDocument: (async () => { throw new Error('none'); }) as never },
+    );
+    const state = materialized.state as { savedUpdates: unknown[]; activeDraft?: { draft: Record<string, any> } };
+    return { update: A.normalizeStoredUpdateRecord(state.savedUpdates[0]), draft: state.activeDraft?.draft };
+  }
+  const shows = (item: Record<string, any>) => signableCloudPhotoPath(item) !== '';
+  const previews = async (update: Record<string, any>) => (await hydrateProjectUpdatePhotoPreviews(
+    update as unknown as Parameters<typeof hydrateProjectUpdatePhotoPreviews>[0])) as unknown as Record<string, any>;
+
+  beforeEach(() => {
+    noteSignedInOwner(null);
+    noteSignedInOwner('owner-david');
+  });
+
+  it('the backup is written as before: the record keeps the mark and the path, and he is told the photo could not be confirmed', async () => {
+    const update = sentUpdate(id => [cloudOnly(id, 'p1')]);
+    noSignal();
+    const { archived, told, sources } = await backUp(update);
+    expect(archived.photos).toEqual([expect.objectContaining({
+      id: 'p1', uri: '', cloudStoragePath: `p/${update.id}/p1-IMG_p1.jpg`, cloudRecoveryStatus: 'unavailable',
+    })]);
+    expect(told).toEqual([expect.objectContaining({ reason: 'cloud_unconfirmed' })]);
+    expect(sources).toEqual([]);
+  });
+
+  it('restored with signal: the photo is looked for again and shows, at once and after a launch download and a refresh', async () => {
+    const update = sentUpdate(id => [cloudOnly(id, 'p1')]);
+    noSignal();
+    const { archived } = await backUp(update);
+    signalBack();
+    const { update: restored } = await restore(archived);
+    expect(restored.photos).toHaveLength(1);
+    expect(restored.photos[0].cloudRecoveryStatus ?? null).toBeNull();
+    expect(restored.photos[0].cloudStoragePath).toBe(`p/${update.id}/p1-IMG_p1.jpg`);
+    expect(shows(restored.photos[0])).toBe(true);
+    expect((await previews(restored)).photos[0].cloudPreviewUri).toMatch(SIGNED);
+
+    // The iPad's row for the same update, as the launch download and then a refresh read it.
+    const row = { ...cloudRow(), id: update.id, updateData: { ...update, photos: [cloudOnly(update.id, 'p1', { uri: `${OLD}aaa-IMG_p1.jpg` })] } };
+    listUpdates.mockResolvedValue({ ok: true, stubbed: false, data: [row] });
+    const cloud = normalizeStartupArray(await loadCloudUpdates(), A.normalizeStoredUpdateRecord, 'cloud').value;
+    const [launched] = A.mergeSavedUpdatesWithTombstones({ localUpdates: [restored], cloudUpdates: cloud, tombstones: [] });
+    expect(shows(launched.photos[0])).toBe(true);
+    expect(A.resolveProjectPhotoDisplayUri(launched.photos[0])).toMatch(SIGNED);
+    const { run, savedUpdatesRef } = refreshDeps({ saved: [launched], queue: [] }, undefined, [row as never]);
+    await run();
+    const [after] = savedUpdatesRef.current as Array<Record<string, any>>;
+    expect(shows(after.photos[0])).toBe(true);
+    expect(after.photos[0].cloudRecoveryStatus ?? null).toBeNull();
+  });
+
+  it('a backup file an earlier build made restores the same way: its record, as that build wrote it', async () => {
+    const update = sentUpdate(id => [cloudOnly(id, 'p1')]);
+    const asWrittenByBuild230 = { ...update, photos: [{ ...update.photos[0], uri: '', cloudRecoveryStatus: 'unavailable', cloudSignedUrlExpiresAt: null }] };
+    const { update: restored } = await restore(JSON.parse(JSON.stringify(asWrittenByBuild230)));
+    expect(restored.photos[0].cloudRecoveryStatus ?? null).toBeNull();
+    expect(shows(restored.photos[0])).toBe(true);
+  });
+
+  it("the open draft's photos are treated the same", async () => {
+    const update = sentUpdate(id => [cloudOnly(id, 'p1', { cloudRecoveryStatus: 'unavailable' })]);
+    const draft = sentUpdate(id => [cloudOnly(id, 'd1', { cloudRecoveryStatus: 'unavailable' })]);
+    const restored = await restore(JSON.parse(JSON.stringify(update)), JSON.parse(JSON.stringify(draft)));
+    expect(restored.draft?.photos[0].cloudRecoveryStatus).toBeNull();
+    expect(restored.draft?.photos[0].cloudStoragePath).toBe(`p/${draft.id}/d1-IMG_d1.jpg`);
+  });
+
+  it('a photo that really is not in the cloud is asked about once after the restore, and then no more', async () => {
+    const update = sentUpdate(id => [cloudOnly(id, 'p1', { cloudRecoveryStatus: 'unavailable' })]);
+    const { update: restored } = await restore(JSON.parse(JSON.stringify(update)));
+    signed.mockReset().mockImplementation(async () => (
+      { ok: false, stubbed: false, data: null, error: 'Object not found', status: 400 }));
+    await previews(restored);
+    await previews(restored);
+    await previews(restored);
+    expect(signed).toHaveBeenCalledTimes(1);
+    expect(shows(restored.photos[0])).toBe(false);
+  });
+
+  it('as before: a photo the backup carries is restored from its file, and one with no file and no cloud path is left out', async () => {
+    const mine = `${PHOTO_STORAGE_DIR}mine-IMG_p1.jpg`;
+    mockExisting.add(mine);
+    const update = sentUpdate(id => [
+      photo('p1', mine, { cloudStoragePath: `p/${id}/p1-IMG_p1.jpg`, cloudRecoveryStatus: 'unavailable' }),
+      photo('p2', `${PHOTO_STORAGE_DIR}gone-IMG_p2.jpg`, { cloudStoragePath: undefined }),
+    ]);
+    noSignal();
+    const { archived, told, sources } = await backUp(update);
+    expect(sources).toHaveLength(1);
+    expect(archived.photos[0]._backupAssetId).toBe('photo:saved:p1');
+    // hydrateRecoveredProjectUpdatePhotos stamps a path on the second before the export sees it, so it is "unconfirmed".
+    expect(told).toHaveLength(1);
+    const { update: restored } = await restore(archived);
+    expect(restored.photos[0].uri).toBe(`${PHOTO_STORAGE_DIR}restored1-IMG.jpg`);
+    expect(mockExisting.has(restored.photos[0].uri)).toBe(true);
+    // A mark on a photo whose file was carried is left alone: its file shows, whatever the mark says.
+    expect(restored.photos[0].cloudRecoveryStatus).toBe('unavailable');
+
+    const declared = sentUpdate(id => [markPhotoUnavailableInBackup({ ...cloudOnly(id, 'p3'), cloudStoragePath: undefined, cloudRecoveryStatus: 'unavailable' })]);
+    const withoutIt = await restore(JSON.parse(JSON.stringify(declared)));
+    expect(withoutIt.update.photos).toEqual([]);
+  });
+});

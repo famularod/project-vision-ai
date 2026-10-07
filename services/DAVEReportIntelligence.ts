@@ -1,4 +1,4 @@
-import type { DAVEProjectTruth } from './DAVEProjectTruth';
+import { daveProjectTruthAsBuilt, type DAVEProjectTruth } from './DAVEProjectTruth';
 import type { PIEReportDraft } from './PIEReporter';
 import {
   buildScheduleTaskAccounting,
@@ -10,15 +10,25 @@ import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import {
   buildDAVEReportSnapshot,
   compareDAVEReportSnapshots,
+  rememberLegacyReportSource,
   daveReportSnapshotScopeKey,
   reportPeriodWaitingForOtherDevice,
+  reportTaskEarlierRows,
+  reportTasksAddedByLookahead,
   reportTasksLeftByLookahead,
   type DAVEReportPeriodComparison,
   type DAVEReportSnapshot,
 } from './DAVEReportSnapshot';
 
 export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/2.0' as const;
-export const DAVE_REPORT_SOURCE_VERSION = 'dave-report-source/1.0' as const;
+/**
+ * 2.0 (R4 item 4a): the fingerprint no longer follows the order the tasks
+ * were saved in, nor the id each device files the project under. 1.0 is
+ * still worked out beside it for reports made under it (DAVEReportSnapshot,
+ * sameReportSource).
+ */
+export const DAVE_REPORT_SOURCE_VERSION = 'dave-report-source/2.0' as const;
+const DAVE_LEGACY_REPORT_SOURCE_VERSION = 'dave-report-source/1.0' as const;
 
 export type DAVEReportAction = Readonly<{
   id: string;
@@ -151,13 +161,72 @@ export function buildDAVEReportSourceFingerprint(
     .map(truth => ({
       projectName: normalized(truth.projectName),
       fingerprint: stableHash(stableStringify(canonicalizeReportSourceValue(
+        withoutVolatileReportSourceFields(reportSourceFactsOf(truth)),
+      ))),
+    }))
+    .sort((left, right) => left.projectName.localeCompare(right.projectName));
+  const fingerprint = `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify(truthFingerprints))}`;
+  // The 1.0 fingerprint of the same facts, so a report made under it is still known (R4 item 4a).
+  rememberLegacyReportSource(fingerprint, buildDAVELegacyReportSourceFingerprint(truths));
+  return fingerprint;
+}
+
+/**
+ * The fingerprint as version 1.0 wrote it, unchanged: of the truths as they
+ * were built, in saved order, with the id each device files the project
+ * under. Only to know a report made under 1.0 for the same facts.
+ */
+export function buildDAVELegacyReportSourceFingerprint(
+  truths: readonly DAVEProjectTruth[],
+): string {
+  const truthFingerprints = truths
+    .map(daveProjectTruthAsBuilt)
+    .map(truth => ({
+      projectName: normalized(truth.projectName),
+      fingerprint: stableHash(stableStringify(canonicalizeReportSourceValue(
         withoutVolatileReportSourceFields(truth),
       ))),
     }))
     .sort((left, right) => left.projectName.localeCompare(right.projectName));
 
-  return `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify(truthFingerprints))}`;
+  return `${DAVE_LEGACY_REPORT_SOURCE_VERSION}:${stableHash(stableStringify(truthFingerprints))}`;
 }
+
+/**
+ * What version 2.0 hashes of a truth (R4 item 4a): every fact, without
+ *  - `briefing`, Project Truth's own summary lines. They are written from
+ *    the facts hashed beside them, and take "the first" of each list;
+ *  - `entityLinks`, the links from each record to the project, its tasks
+ *    and the work areas saved on the device. They too are worked out from
+ *    the facts hashed beside them, and from the phone's saved work areas,
+ *    which the web does not download: with them in, a project with GPS work
+ *    areas never had the same fingerprint on the phone and on the web; and
+ *  - the id the truth is filed under, wherever an id carries it
+ *    ("timeline:<project id>:…"). The phone files a report's truth under
+ *    "report:<name>" and the web under the cloud project's id, so the two
+ *    never agreed on the fingerprint of the same facts.
+ */
+function reportSourceFactsOf(truth: DAVEProjectTruth): unknown {
+  const { briefing: _briefing, entityLinks: _entityLinks, ...facts } = truth as DAVEProjectTruth & Record<string, unknown>;
+  const projectId = typeof truth.projectId === 'string' ? truth.projectId : '';
+  if (!projectId) return facts;
+  // As written, and as an id inside an id carries it: encoded once, twice ("report%253Aalpha") or three times.
+  const once = encodeURIComponent(projectId);
+  const twice = encodeURIComponent(once);
+  const forms = [encodeURIComponent(twice), twice, once, projectId].filter((form, index, all) => all.indexOf(form) === index);
+  const withoutProjectId = (text: string) => forms.reduce((value, form) => value.split(form).join(REPORT_SOURCE_PROJECT_ID), text);
+  const isIdKey = (key: string) => key === 'id' || /Ids?$/.test(key);
+  const walk = (value: unknown, inId: boolean): unknown => {
+    if (typeof value === 'string') return inId ? withoutProjectId(value) : value;
+    if (Array.isArray(value)) return value.map(item => walk(item, inId));
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [key, walk(child, isIdKey(key))]));
+    }
+    return value;
+  };
+  return walk(facts, false);
+}
+const REPORT_SOURCE_PROJECT_ID = '<project>';
 
 export function buildDAVEReportBriefing({
   truths,
@@ -182,7 +251,7 @@ export function buildDAVEReportBriefing({
    * report's fingerprint. Without them, Completed Work's dates read as
    * before.
    */
-  scheduleItems?: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment'>[];
+  scheduleItems?: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>[];
 }): DAVEReportBriefing {
   const projectNames = unique(
     (selectedProjectNames?.length ? selectedProjectNames : truths.map(truth => truth.projectName))
@@ -202,6 +271,9 @@ export function buildDAVEReportBriefing({
     previous: previousSnapshot,
     // The detail tasks a replaced lookahead took with it are not said (owner answer 3 Oct 2026).
     tasksLeftByLookahead: reportTasksLeftByLookahead(truths),
+    // How a task that is back last stood, and which tasks began as a lookahead's own row (R5 item 1).
+    earlierRows: reportTaskEarlierRows(truths),
+    lookaheadAddedTaskIds: reportTasksAddedByLookahead(truths),
   });
   const reportingPeriod = waitingForOtherDevice ? reportPeriodWaitingForOtherDevice(comparison) : comparison;
   const projectConditions = truths.map(projectConditionFromTruth);
@@ -436,13 +508,29 @@ type CompletedTaskLastUpdatedAt = (task: DAVEProjectTruth['schedule'][number]) =
  * first 6). The confirmation is when the manager judged the percent
  * (scheduleProgressJudgedAt), read from the saved tasks; with none given,
  * the activity or the update time, whichever is later, as before.
+ *
+ * R5 item 3 (open item, small): a master schedule that states 100% for a
+ * task an import owns, with no percent of his on it, completes the task and
+ * records no confirmation time (the percent stands as the file's). With a
+ * note on the task from weeks before, Completed Work read "Last updated
+ * <the note's date>" for a task completed since. The day that master was
+ * approved counts as the confirmation does: the saved task keeps the highest
+ * percent a master's file has stated on its row that stood, and when
+ * (fileProgressPeak, Build 231). A task a master completed on an earlier
+ * build has no such record and reads as before.
  */
 function completedTaskLastUpdatedAt(
-  scheduleItems: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment'>[] | undefined,
+  scheduleItems: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>[] | undefined,
 ): CompletedTaskLastUpdatedAt {
   if (!scheduleItems) return task => latestDate([task.latestActivityAt, task.updatedAt]);
-  const confirmedAt = new Map(scheduleItems.map(item => [item.id, scheduleProgressJudgedAt(item)]));
+  const confirmedAt = new Map(scheduleItems.map(item => [item.id, latestDate([scheduleProgressJudgedAt(item), completedByMasterAt(item)])]));
   return task => latestDate([task.latestActivityAt, confirmedAt.get(task.taskId)]) || latestDate([task.updatedAt]);
+}
+
+/** When a master schedule's file completed the task on its row, if one did and that percent stood; else null. */
+function completedByMasterAt(item: Pick<ScheduleItem, 'fileProgressPeak'>): string | null {
+  const peak = item.fileProgressPeak;
+  return peak && boundedPercent(peak.percentComplete) >= 100 && typeof peak.statedAt === 'string' ? peak.statedAt : null;
 }
 
 function reportCompletedTaskFact(
@@ -1021,7 +1109,8 @@ function buildRecentChanges({
  * 2026). Lines were kept once by name and text, so Pour slab in Lot and Pour
  * slab in Deck, both completed, read "+2 completed" with one "Pour slab was
  * completed." The same task reached twice still says it once. Different tasks
- * in different areas name the area ("Pour slab (Deck) was completed."); in
+ * in different areas name the area ("Pour slab (Deck) was completed.", and
+ * "Pour slab (unassigned area) was completed." for the one with none); in
  * one area they say it once with the count ("Pour slab was completed (2
  * tasks).").
  */
@@ -1039,7 +1128,10 @@ function sameLineOfSameNamedTasks(
     .map(change => {
       const tasks = tasksOn.get(lineKey(change))!;
       if (tasks.length === 1) return change;
-      const area = areasNamed(change) && clean(change.areaName) ? ` (${clean(change.areaName)})` : '';
+      // Open item (A6 pass 24, wording): beside "Pour slab (Deck) was completed.", the same-named task with no area
+      // read "Pour slab was completed.", as a line about Pour slab as a whole. It says it has no area, in the
+      // words the report already uses for one ("moved from Lot to unassigned area").
+      const area = areasNamed(change) ? ` (${clean(change.areaName) || 'unassigned area'})` : '';
       const inArea = tasks.filter(other => areaKey(other) === areaKey(change)).length;
       const prefix = `${change.projectName}: ${change.taskName}`;
       if (!change.summary.startsWith(prefix)) return change;
@@ -1286,6 +1378,10 @@ const VOLATILE_REPORT_SOURCE_FIELDS = new Set([
   // Owner answer 3 Oct 2026 (report wording after a lookahead is replaced): where a task's dates come from and
   // which detail tasks left with a lookahead. The dates and the tasks shown are in the fingerprint themselves.
   'onLookaheadDates', 'replacedLookaheadDates', 'lookaheadReplacement',
+  // R5 item 1 (the returning task): the earlier rows of the tasks shown, and which tasks' own rows a lookahead
+  // added. Which task a row is and how it last stood; the tasks shown and what each says are in the fingerprint
+  // themselves.
+  'earlierRows', 'lookaheadAddedTaskIds',
 ]);
 
 function withoutVolatileReportSourceFields(value: unknown): unknown {

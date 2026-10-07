@@ -53,7 +53,7 @@ import type {
   PIEDecisionLedgerMigrationStatus,
 } from '../services/PIEDecisionLedgerStorage';
 import type { PIEDecisionSyncMetadata } from '../services/PIEDecisionLedgerSync';
-import { buildDAVEProjectTruth } from '../services/DAVEProjectTruth';
+import { buildDAVEReportProjectTruths } from '../services/DAVEReportProjectTruths';
 import {
   buildDAVEReportBriefing,
   buildDAVEReportSourceFingerprint,
@@ -67,6 +67,7 @@ import {
   buildDAVEReportSnapshot,
   daveReportSnapshotScopeKey,
   type DAVEReportSnapshot,
+  sameReportSource,
 } from '../services/DAVEReportSnapshot';
 import {
   loadDAVEReportPeriod,
@@ -100,6 +101,7 @@ import {
 import {
   approvedReportFingerprint,
   approvedReportPeriodSentAt,
+  forgetApprovalEndedByUnreviewedAdvisory,
   ownReportSendTimes,
   recallReportSessionState,
   rememberApprovedReportSent,
@@ -145,7 +147,6 @@ import {
   evaluateReportApprovalPolicy,
   type ReportApprovalPolicy,
 } from '../services/ReportApprovalPolicy';
-import { buildDailyReportAuthorityScope } from '../services/ReportAuthorityScope';
 import {
   reportApprovalTextKey,
   selectStableReportDraft,
@@ -155,6 +156,8 @@ import {
   buildAutomaticReportDrawingReferences,
   type ReportDrawingReference,
 } from '../services/ReportDrawingReferences';
+
+import { useListedSharedDocuments } from '../hooks/use-listed-shared-documents';
 
 const EMPTY_REVIEW_IDS: readonly string[] = Object.freeze([]);
 
@@ -175,7 +178,7 @@ export function ReportsScreen({
   currentUpdate,
   projectAreas,
   contacts,
-  referenceDocuments,
+  referenceDocuments: suppliedReferenceDocuments,
   syncMetadata,
   decisionLedger,
   layer4Identity,
@@ -288,6 +291,9 @@ export function ReportsScreen({
   ) => Promise<string | null>;
   onResolvePhotoPreview?: (photoId: string) => Promise<string | null>;
 }) {
+  // The one place shared documents are handed to the report (owner answer Q44; review of D1, L10): an archived one
+  // is not counted. With nothing archived this is the supplied list itself, and the report's fingerprint does not move.
+  const referenceDocuments = useListedSharedDocuments(suppliedReferenceDocuments);
   const { sizeClass } = useAppShellLayout();
   const [reportApproved, setReportApproved] = useState(false);
   const [reportEditing, setReportEditing] = useState(false);
@@ -313,6 +319,8 @@ export function ReportsScreen({
   const [schedulePulledAt, setSchedulePulledAt] = useState<string | null>(null);
   // Everyday item 1 (2 Oct 2026): the approval this device saved, to record as sent another way.
   const [approvalSavedHereKey, setApprovalSavedHereKey] = useState<string | null>(null);
+  // The approval waiting to be sent for which that has been read from this device's storage, saved here or not.
+  const [approvalSavedHereCheckedKey, setApprovalSavedHereCheckedKey] = useState<string | null>(null);
   const [markSentRecording, setMarkSentRecording] = useState(false);
   const [markSentMessage, setMarkSentMessage] = useState('');
   const liveAuthority = usePIELiveAuthority();
@@ -338,33 +346,21 @@ export function ReportsScreen({
   });
   stableReportDraftRef.current = stableReportDraft.cache;
   const baseReportDraft = stableReportDraft.draft;
-  const reportTruths = useMemo(() => selectedProjectNames.map(selectedName => {
-    const reportProjectId = `report:${reportProjectKey(selectedName) || 'project'}`;
-    const scopedTruthInput = buildDailyReportAuthorityScope({
-      selectedProjectName: selectedName,
-      selectedProjectNames: [selectedName],
-      projectRecords: selectedProjectNames.map(name => ({ name })),
-      updates,
-      scheduleItems,
-      projectAreas,
-      referenceDocuments,
-    });
-    return buildDAVEProjectTruth({
-      projectId: reportProjectId,
-      projectName: selectedName,
-      updates: scopedTruthInput.updates.map(update => ({ ...update, projectName: selectedName })),
-      scheduleItems: scopedTruthInput.scheduleItems,
-      // What a newer lookahead replaced, for "since the last report" (owner answer 3 Oct 2026).
-      ...(knownScheduleItems
-        ? { knownScheduleItems, knownScheduleDocuments: knownScheduleDocuments ?? referenceDocuments, reportLookaheadReplacement: true }
-        : {}),
-      projectAreas: scopedTruthInput.projectAreas,
-      referenceDocuments: scopedTruthInput.referenceDocuments.map(document => ({
-        ...document,
-        projectId: reportProjectId,
-        projectName: selectedName,
-      })),
-    });
+  // One recipe with the web's Reports page (open item, 6 Oct 2026): the saved
+  // tasks decide whose update it is here too, as in the app's own scope.
+  const reportTruths = useMemo(() => buildDAVEReportProjectTruths({
+    projects: selectedProjectNames.map(name => ({
+      name,
+      projectId: `report:${reportProjectKey(name) || 'project'}`,
+    })),
+    projectRecords: selectedProjectNames.map(name => ({ name })) as Parameters<typeof buildDAVEReportProjectTruths>[0]['projectRecords'],
+    updates,
+    scheduleItems,
+    // What a newer lookahead replaced, for "since the last report" (owner answer 3 Oct 2026).
+    knownScheduleItems,
+    knownScheduleDocuments,
+    projectAreas,
+    referenceDocuments,
   }), [
     knownScheduleDocuments,
     knownScheduleItems,
@@ -758,6 +754,19 @@ export function ReportsScreen({
     ) === loadedPeriodSentAt);
   }, [approvalTextKey, reportStateIdentityKey, reportApprovalAllowed, loadedPeriodSentAt]);
 
+  // Open item (A6 passes 3 and 4): something to review that he has not marked
+  // reviewed ends an approval that would otherwise come back when it leaves
+  // by itself (the connection returning). Read from the session's own record
+  // once this period is loaded, never from the screen's state: on a return to
+  // the tab the reviewed marks are restored a render after the first.
+  const reviewAdvisoryKey = reportApprovalPolicy.waitingForProjectData
+    ? ''
+    : reportApprovalPolicy.items.filter(item => item.kind === 'advisory').map(item => item.id).join('\n');
+  useEffect(() => {
+    if (!reviewAdvisoryKey || !snapshotScopeLoaded || loadedPeriodKeyRef.current !== currentReportPeriodKey) return;
+    forgetApprovalEndedByUnreviewedAdvisory(reportStateIdentityKey, approvalTextKey, loadedPeriodSentAt, reviewAdvisoryKey.split('\n'));
+  }, [approvalTextKey, currentReportPeriodKey, loadedPeriodSentAt, reportStateIdentityKey, reviewAdvisoryKey, snapshotScopeLoaded]);
+
   useEffect(() => {
     if (
       !onCreateDecisionSnapshot ||
@@ -1028,7 +1037,7 @@ export function ReportsScreen({
   // about a report that differed from it (this device's sync caught up).
   const alreadySentNotice = snapshotScopeLoaded && !reportApproved &&
     typeof previousReportSnapshot?.deliveredAt === 'string' &&
-    previousReportSnapshot.sourceFingerprint === reportSourceFingerprint &&
+    sameReportSource(previousReportSnapshot.sourceFingerprint, reportSourceFingerprint) &&
     !ownReportSendTimes().has(previousReportSnapshot.deliveredAt)
     ? laterSharedReportNotice(previousReportSnapshot, reportSourceFingerprint, 'refresh', false)
     : '';
@@ -1044,7 +1053,7 @@ export function ReportsScreen({
   ) => {
     const sentPeriodKey = reportPeriodKey(sentPeriod);
     const pending = pendingReportSnapshotSaveRef.current;
-    if (pending && pending.snapshot.sourceFingerprint === sentFingerprint && reportPeriodKey(pending.snapshot) === sentPeriodKey) {
+    if (pending && sameReportSource(pending.snapshot.sourceFingerprint, sentFingerprint) && reportPeriodKey(pending.snapshot) === sentPeriodKey) {
       void pending.save.then(() => markSavedReportDelivered(pending.snapshot, sentFingerprint, sentStateKey), () => undefined);
       return;
     }
@@ -1071,7 +1080,7 @@ export function ReportsScreen({
     deliveredAt: string = new Date().toISOString(),
     markedSentAt: string | null = null,
   ): Promise<boolean> => {
-    if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return Promise.resolve(false);
+    if (!saved || !sameReportSource(saved.sourceFingerprint, sentFingerprint) || saved.deliveredAt !== null) return Promise.resolve(false);
     // This device's send, kept for the app session so reading it back after
     // a tab switch is never taken for the other device's; the approval it
     // sent now stands on the period that send starts (A6 pass 8 M1).
@@ -1110,7 +1119,9 @@ export function ReportsScreen({
     void reportApprovalSavedHere(previousReportSnapshotRef.current)
       .catch(() => false)
       .then(here => {
-        if (!cancelled && here) setApprovalSavedHereKey(approvalAwaitingSendKey);
+        if (cancelled) return;
+        if (here) setApprovalSavedHereKey(approvalAwaitingSendKey);
+        setApprovalSavedHereCheckedKey(approvalAwaitingSendKey);
       });
     return () => {
       cancelled = true;
@@ -1119,6 +1130,13 @@ export function ReportsScreen({
   const approvalToMarkSent = approvalAwaitingSend && approvalSavedHereKey === approvalAwaitingSendKey
     ? approvalAwaitingSend
     : null;
+  // R5 (an R4 screen test that failed once under load; a race in the app, not in the test). Approving over an
+  // approved report that was never recorded as sent warns first (review N1 L5, above). Whether this device saved
+  // the approval that is waiting is read from its storage only after the reporting period has loaded, and Approve
+  // Report was already enabled while that read was on its way: a tap in that moment approved with no warning, and
+  // the earlier approval could no longer be marked sent. Until the answer is known Approve waits, as it waits for
+  // the period: the button is disabled and the line under it reads "Checking the reporting period."
+  const approvalSavedHereUnknown = approvalAwaitingSendKey !== null && approvalSavedHereCheckedKey !== approvalAwaitingSendKey;
 
   /**
    * The owner sent the approved report another way and says when (everyday
@@ -1138,7 +1156,7 @@ export function ReportsScreen({
     const period = { scopeKey: approval.scopeKey, reportFormat };
     const stateKey = reportStateIdentityKey;
     // The screen's approval moves to the new period only when it is this report's (A6 pass 8 M1).
-    const approvalStateKey = recallReportSessionState(stateKey)?.approvedFingerprint === approval.sourceFingerprint ? stateKey : '';
+    const approvalStateKey = sameReportSource(recallReportSessionState(stateKey)?.approvedFingerprint, approval.sourceFingerprint) ? stateKey : '';
     setMarkSentRecording(true);
     setMarkSentMessage('');
     void (async () => {
@@ -1219,7 +1237,7 @@ export function ReportsScreen({
             reportApproved={reportApproved}
             reportApprovalAllowed={reportApprovalAllowed}
             approvalMessage={reportApprovalMessage}
-            approvalChecking={approvalChecking}
+            approvalChecking={approvalChecking || approvalSavedHereUnknown}
             periodNotice={shownPeriodNotice}
             periodNote={sharedPeriodNote}
             communicationPending={communicationPending}
@@ -1515,7 +1533,7 @@ function laterSharedReportNotice(
     return `Your other device sent a report ${when}, after this one was approved, so this one was not recorded as sent. ` +
       'The next report counts from your other device\'s report.';
   }
-  if (later.deliveredAt !== null && later.sourceFingerprint === currentFingerprint) {
+  if (later.deliveredAt !== null && sameReportSource(later.sourceFingerprint, currentFingerprint)) {
     return moment === 'send'
       ? `${ALREADY_SENT_NOTICE_START} ${when}, so it was not sent again. Approve it only if you want to send it a second time.`
       : `${ALREADY_SENT_NOTICE_START} ${when}. Approve it only if you want to send it a second time.`;

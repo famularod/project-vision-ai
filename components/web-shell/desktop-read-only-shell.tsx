@@ -9,6 +9,7 @@ import {
   type ScheduleImportPairingAnswer,
 } from '../schedule-import-pairing-check';
 import type { ScheduleImportPairingQuestion } from '../../services/ScheduleImportMerge';
+import type { ScheduleImportRole, ScheduleImportRoleSuggestion } from '../../services/ScheduleLookahead';
 import {
   ActivityIndicator,
   Image,
@@ -33,15 +34,17 @@ import {
 } from '../../types';
 import type { CloudProject, CloudProjectUpdate } from '../../services/SupabaseService';
 import {
+  DAVEWebAuthorizationError,
   DAVEWebDocumentMutationError,
   DAVEWebSignOutNeedsConnectionError,
   DAVEWebTaskMutationError,
   type DAVEWebSignOutScope,
 } from '../../services/DAVEWebSupabaseClient';
-import type { DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
+import { loadDAVEWebReadOnlySnapshot, type DAVEWebReadOnlySnapshot, type DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 import {
   daveWebDocumentDeletionIsProtected,
   daveWebDocumentInEffect,
+  daveWebListedDocuments,
   groupDAVEWebDocuments,
 } from '../../services/DAVEWebDocumentManagement';
 import {
@@ -51,6 +54,7 @@ import {
   DAVE_WEB_TASK_PROJECT_FIXED_TEXT,
   DAVEWebTaskValidationError,
   daveWebNewTaskProjectId,
+  daveWebTaskProjectRepairedNotice,
   daveWebPercentFromBox,
   mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
@@ -70,10 +74,13 @@ import {
   scheduleDocumentIsScheduleLike,
 } from '../../services/PIEScheduleReconciliation';
 import { scheduleActivationNotice } from '../../services/SharedDocumentActivation';
+import { daveWebScheduleRetirementCheck } from '../../services/DAVEWebScheduleActivation';
+import { daveWebScheduleRetirementLead } from '../../services/DAVEWebScheduleActivationText';
 import {
   formatScheduleCalendarDay,
   scheduleCalendarDay,
 } from '../../services/ScheduleCalendarDay';
+import { scheduleDatesToCheck } from '../../services/ScheduleInputLimits';
 import {
   formatVitruviusDesktopGreeting,
   readVitruviusDesktopDisplayName,
@@ -100,8 +107,16 @@ import {
   DAVE_WEB_DOCUMENT_CATEGORIES,
   daveWebReportSourceIsCurrent,
   daveWebReportSourceNotCounted,
+  DAVE_WEB_DELETE_WITH_CHANGES_LABEL,
+  daveWebTaskDeleteRowIds,
+  daveWebTaskDeletedNotice,
+  planDAVEWebLinksRemovedWithTasks,
+  type DAVEWebLinksLeftAfterDelete,
   daveWebScheduleDocumentDeleteNote,
   daveWebScheduleImportPairingQuestions,
+  daveWebScheduleUploadRoleRefusal,
+  daveWebScheduleUploadRoleSuggestion,
+  withDAVEWebScheduleUploadRole,
   formatDAVEWebReport,
   prepareDAVEWebDocumentUpload,
   prepareDAVEWebLinkedDocument,
@@ -126,6 +141,7 @@ import { DesktopOverviewPage } from './desktop-overview-page';
 import { DesktopSchedulePage } from './desktop-schedule-page';
 import { DesktopAskECOSWorkspace } from './desktop-ask-ecos';
 import { DesktopDocumentOnboarding } from './desktop-document-onboarding';
+import { DesktopScheduleUploadRole } from './desktop-schedule-upload-role';
 import { mergeECOSDrawingIntakeSuggestion, reviewedECOSDrawingUpload, suggestECOSDrawingIntake } from '../../services/ECOSDocumentUploadIntake';
 import { validateECOSMobileDrawingControls } from '../../services/ECOSMobileDrawingOnboarding';
 import { DesktopDocumentProofPreview } from './desktop-document-proof-preview';
@@ -151,13 +167,16 @@ import {
   reportPeriodSentAfter,
   reportPeriodSentAt,
   type DAVEReportSnapshot,
+  sameReportSource,
 } from '../../services/DAVEReportSnapshot';
 import {
   approveDAVEWebReportPeriod,
   daveWebOwnReportSends,
+  daveWebOwnSendFactsKept,
   daveWebReportOlderPeriodLeftInBrowser,
   daveWebReportPeriodKeptInTabOnly,
   daveWebReportPeriodsKeptHere,
+  daveWebReportFromBeforeRememberedSends,
   daveWebReportSendReachedShared,
   daveWebReportSentHereAt,
   daveWebReportSentInThisTab,
@@ -170,6 +189,7 @@ import {
   type DAVEWebSendOutcome,
 } from '../../services/DAVEWebReportSend';
 import { approvalReplacesUnsentApproval, manualReportMarkTime, manualReportSendTime } from '../../services/ReportManualSend';
+import { reportFileTitleWithDate, reportSubjectWithDate } from '../../services/ReportCommunication';
 import {
   DesktopReportMarkSent,
   DesktopReportSentQuestion,
@@ -181,6 +201,8 @@ import {
   DAVE_WEB_REPORT_PERIOD_NOT_SAVED,
   DAVE_WEB_REPORT_PREPARED_WHILE_WAITING,
   DAVE_WEB_REPORT_SAYS_NOT_COUNTED,
+  DAVE_WEB_REPORT_OLDER_THAN_REMEMBERED,
+  DAVE_WEB_REPORT_OLDER_THAN_THE_LIST,
   DAVE_WEB_REPORT_SEND_NOT_RECORDED,
   DESKTOP_REPORT_SEND_CHECK_STANDS_MS,
   daveWebReportAlreadyMarkedSentMessage,
@@ -192,6 +214,7 @@ import {
   daveWebReportBehindMessage,
   daveWebReportLaterSendMessage,
   daveWebReportNotYetMessage,
+  daveWebReportRecordedLineNow,
   daveWebReportRecordedMessage,
   daveWebReportSendsNotSharedWarning,
   daveWebReportPeriodMoved,
@@ -202,6 +225,8 @@ import {
   daveWebReportWordWaitsMessage,
   readDAVEWebReportPeriod,
   type DAVEWebReportPeriodRead,
+  daveWebReportAlreadySentElsewhereAt,
+  daveWebReportAlreadySentElsewhereNote,
 } from '../../services/DAVEWebReportPeriod';
 import { buildAutomaticReportDrawingReferences } from '../../services/ReportDrawingReferences';
 import {
@@ -530,7 +555,7 @@ function AuthorizedDesktopWorkspace({ page }: { page: DesktopReadOnlyPage }) {
         <DesktopSidebar
           pathname={pathname}
           selectedProject={selectedProject}
-          documentCount={snapshot.referenceDocuments.length}
+          documentCount={daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds).length}
         />
       ) : null}
       <ScrollView
@@ -657,7 +682,7 @@ function DesktopPageData({
         }),
       )
     : snapshot.projectUpdates;
-  const documents = snapshot.referenceDocuments.filter(document => documentMatchesProjectScope(document, selectedScopes));
+  const documents = daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds).filter(document => documentMatchesProjectScope(document, selectedScopes)); // an archived one is hidden on every device (owner answer Q44)
   const projectIdentities = snapshot.projects.flatMap(project => {
     const id = project.id?.trim() || '';
     const name = project.name?.trim() || '';
@@ -1250,6 +1275,7 @@ function TaskEditingWorkspace({
         id: editingTask?.id ?? createDAVEWebTaskId(),
         now: new Date().toISOString(),
         actor: auth.userEmail || 'Project manager',
+        projects: auth.snapshot, // a task saved earlier under another project's name is repaired here (WS1 item 6)
       });
       if (editingTask) await auth.updateTask(item);
       else await auth.createTask(item);
@@ -1259,7 +1285,7 @@ function TaskEditingWorkspace({
       setConflictDraft(null);
       setNotice({
         tone: 'good',
-        text: editingTask ? 'Task updated and synced to the cloud.' : 'Task created and synced to the cloud.',
+        text: editingTask ? `Task updated and synced to the cloud.${daveWebTaskProjectRepairedNotice(editingTask, item)}` : 'Task created and synced to the cloud.',
       });
     } catch (error) {
       if (
@@ -1352,6 +1378,7 @@ function TaskEditingWorkspace({
         id: latest.id,
         now,
         actor,
+        projects: auth.snapshot,
       });
       await auth.updateTask(item);
       setSelectedTaskId(item.id);
@@ -1380,10 +1407,15 @@ function TaskEditingWorkspace({
     setPending(true);
     setNotice(null);
     try {
+      // The rows this delete takes, worked out before it, as the delete itself works them out (WS1 item 8).
+      const deletedIds = auth.snapshot ? daveWebTaskDeleteRowIds(auth.snapshot, deleteCandidate) : [deleteCandidate.id];
       await auth.deleteTask(deleteCandidate);
+      // The tasks that listed it as a predecessor drop that link, as on the phone: they named a row that is gone.
+      const stillLinked = await removeLinksToDeletedRows(deletedIds);
       if (selectedTaskId === deleteCandidate.id) setSelectedTaskId(null);
       setDeleteCandidate(null);
-      setNotice({ tone: 'good', text: 'Task deleted and protected from returning on another device.' });
+      // Each link left, with its own reason and a count of the tasks he can open (review pass 1, web L6).
+      setNotice({ tone: 'good', text: daveWebTaskDeletedNotice(stillLinked) });
     } catch (error) {
       if (error instanceof DAVEWebTaskMutationError) {
         await auth.refreshSnapshot().catch(() => undefined);
@@ -1392,6 +1424,70 @@ function TaskEditingWorkspace({
     } finally {
       setPending(false);
     }
+  };
+
+  /**
+   * WS1 item 8: after a task's delete, the links other tasks had to its rows are removed. Each task is saved only
+   * while nobody else changed it; when a save fails, the cloud is read once more and the links are taken again from
+   * its newer copy.
+   *
+   * Review pass 1, web L6 (6 Oct 2026): what is left is reported with why. The second try used to save the tasks as
+   * one batch again, which stops at the first task that cannot be saved, and whatever went wrong he was told every
+   * one of them "was being changed on another device". Now the second try saves each task on its own, so one task
+   * another device is changing does not keep the others' links, and each failure is known for what it is: changed
+   * elsewhere, deleted elsewhere meanwhile (it then lists nothing, and is not counted), a sign-in no longer accepted,
+   * or a save that did not go through. A failure that is not another device's doing ends the try: the cloud is not
+   * taking saves, and the tasks not reached still list the deleted task. Only tasks the schedule shows are counted.
+   * Null when no task shown still lists it (almost always).
+   */
+  const removeLinksToDeletedRows = async (deletedIds: readonly string[]): Promise<DAVEWebLinksLeftAfterDelete | null> => {
+    const held = auth.snapshot;
+    if (!held) return null;
+    const failureOf = (error: unknown): 'changedElsewhere' | 'gone' | 'signedOut' | 'notSaved' =>
+      error instanceof DAVEWebTaskMutationError
+        ? error.code === 'conflict' ? 'changedElsewhere' : error.code === 'deleted' || error.code === 'not_found' ? 'gone' : 'notSaved'
+        : error instanceof DAVEWebAuthorizationError ? 'signedOut' : 'notSaved';
+    const shownIn = (snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'>) => {
+      const shown = new Set(snapshot.scheduleItems.map(item => item.id));
+      return (rows: readonly DAVEWebScheduleItem[]) => rows.filter(row => shown.has(row.id)).length;
+    };
+    const planned = planDAVEWebLinksRemovedWithTasks({ snapshot: held, deletedIds });
+    if (planned.length === 0) return null;
+    let firstFailure: ReturnType<typeof failureOf>;
+    try {
+      await auth.updateTasks(planned);
+      return null;
+    } catch (error) {
+      firstFailure = failureOf(error);
+    }
+    const latest = await loadDAVEWebReadOnlySnapshot().catch(() => null);
+    const left = { changedElsewhere: 0, notSaved: 0, signedOut: 0 };
+    if (!latest) {
+      const count = shownIn(held)(planned);
+      if (count === 0) return null;
+      // One task was to lose the link: its save failed, for the reason it gave (deleted elsewhere: it lists nothing now).
+      if (planned.length === 1) return firstFailure === 'gone' ? null : { ...left, [firstFailure]: count };
+      // Several: the batch stopped at a task it could not save, and which one is not known, so some links may have
+      // been taken. What kept it from finishing is the read that failed, not another device.
+      return { ...left, [firstFailure === 'signedOut' ? 'signedOut' : 'notSaved']: count, unsure: true };
+    }
+    const countShown = shownIn(latest);
+    const again = planDAVEWebLinksRemovedWithTasks({ snapshot: latest, deletedIds });
+    for (let index = 0; index < again.length; index += 1) {
+      try {
+        await auth.updateTasks([again[index]]);
+      } catch (error) {
+        const failure = failureOf(error);
+        if (failure === 'gone') continue;
+        if (failure === 'changedElsewhere') {
+          left.changedElsewhere += countShown([again[index]]);
+          continue;
+        }
+        left[failure] += countShown(again.slice(index));
+        break;
+      }
+    }
+    return left.changedElsewhere + left.notSaved + left.signedOut > 0 ? left : null;
   };
 
   const addPhotoToTask = async (task: DAVEWebScheduleItem, file: File | null) => {
@@ -2225,6 +2321,7 @@ function TaskEditor({
         return {
           ...previous,
           percentComplete: '',
+          percentEntered: false,
           status: previous.status === 'Waiting' && storedPercent < 100
             ? 'Waiting'
             : automaticTaskStatus(storedPercent),
@@ -2237,6 +2334,8 @@ function TaskEditor({
       return {
         ...previous,
         percentComplete: normalizedValue,
+        // He typed it: his own entry, also when it is the percent a schedule file gave (WS1 item 5).
+        percentEntered: true,
         status: previous.status === 'Waiting' && percentComplete < 100
           ? 'Waiting'
           : automaticTaskStatus(percentComplete),
@@ -3805,16 +3904,35 @@ function DocumentManagementWorkspace({
   const [preparedUpload, setPreparedUpload] = useState<DAVEWebPreparedUpload | null>(null);
   // Same-named tasks whose pairing the dates cannot settle: David confirms which is which before the upload, as in
   // the phone's import review (owner answer Q30; review N1: the web's review asked nothing).
-  const pairingQuestions = useMemo(() => preparedUpload
-    ? daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: preparedUpload.scheduleItems })
-    : [], [auth.snapshot, preparedUpload]);
+  // "Full schedule" or "Lookahead" (owner answer Q22), asked at this review as on the phone's (WS1 item 2). The phone's
+  // suggestion is worked out once, when the file is prepared, and stands until he picks: it must not change under him
+  // while he excludes rows. Kept per prepared file, so another file starts from its own suggestion.
+  const [roleReview, setRoleReview] = useState<Readonly<{
+    documentId: string;
+    suggestion: ScheduleImportRoleSuggestion;
+    chosen: ScheduleImportRole | null;
+  }> | null>(null);
+  const roleSuggestion = preparedUpload && roleReview?.documentId === preparedUpload.document.id ? roleReview.suggestion : null;
+  const chosenRole = roleSuggestion ? roleReview?.chosen ?? null : null;
+  const reviewedRole: ScheduleImportRole | null = roleSuggestion ? chosenRole || roleSuggestion.role : null;
+  const roleReviewedUpload = useMemo(
+    () => (preparedUpload && reviewedRole ? withDAVEWebScheduleUploadRole(preparedUpload, reviewedRole) : preparedUpload),
+    [preparedUpload, reviewedRole],
+  );
+  const pairingQuestions = useMemo(() => roleReviewedUpload
+    ? daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: roleReviewedUpload.scheduleItems, document: roleReviewedUpload.document })
+    : [], [auth.snapshot, roleReviewedUpload]);
   const [pairingAnswers, setPairingAnswers] = useState<Readonly<Record<string, ScheduleImportPairingAnswer>>>({});
-  const pairingKey = (question: ScheduleImportPairingQuestion) => `${preparedUpload?.document.id}|${question.key}`;
+  // (An answer is for the role it was asked under: a lookahead pairs by other rules than a full schedule.)
+  const pairingKey = (question: ScheduleImportPairingQuestion) => `${preparedUpload?.document.id}|${reviewedRole ?? ''}|${question.key}`;
   const pairingAnswerOf = (question: ScheduleImportPairingQuestion) => pairingAnswers[pairingKey(question)] || scheduleImportPairingGuess(question);
   const [preparedBytes, setPreparedBytes] = useState<ArrayBuffer | null>(null);
   const [preparedFile, setPreparedFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
+  /** "Change the current schedule?": what making this schedule current does to another project (WS2 item 3). */
+  const [retirementQuestion, setRetirementQuestion] = useState<Readonly<{ documentId: string; lead: string; message: string }> | null>(null);
+  const retirementTarget = retirementQuestion ? documents.find(document => document.id === retirementQuestion.documentId) ?? null : null;
   const [reindexProgress, setReindexProgress] = useState<DocumentReindexBatchProgress | null>(null);
   const driveConfiguration = useMemo(() => googleDriveWebConfiguration(), []);
   const reindexPlan = useMemo(
@@ -3854,6 +3972,13 @@ function DocumentManagementWorkspace({
   const linkedTasksAreRevisionSafe = Boolean(
     deleteCandidate?.linkedScheduleItems.every(item => Boolean(item.cloudUpdatedAt)),
   );
+  // WS1 item 4: a replaced lookahead with no task of its own still changed the master's tasks. What its delete can put
+  // back, in the phone's sentence; empty when nothing goes back, and then one button is enough, as before. A lookahead
+  // in effect is never deleted here (protectedCurrentDocument).
+  const lookaheadChangesNote = deleteCandidate && !protectedCurrentDocument &&
+    scheduleDocumentAddsToMaster(deleteCandidate) && deleteCandidate.linkedScheduleItems.length === 0
+    ? daveWebScheduleDocumentDeleteNote({ snapshot: { scheduleItems: tasks, knownScheduleItems: knownTasks, referenceDocuments: scheduleDocuments }, document: deleteCandidate })
+    : '';
 
   const clearDocumentProofRoute = () => {
     router.setParams({
@@ -3992,6 +4117,8 @@ function DocumentManagementWorkspace({
             },
           }
         : preparedWithIntelligence);
+      const suggestion = daveWebScheduleUploadRoleSuggestion({ snapshot: auth.snapshot, prepared: preparedWithIntelligence });
+      setRoleReview(suggestion ? { documentId: preparedWithIntelligence.document.id, suggestion, chosen: null } : null);
       setPreparedBytes(bytes);
       setPreparedFile(file);
     } catch (error) {
@@ -4034,6 +4161,11 @@ function DocumentManagementWorkspace({
 
   async function uploadPreparedDocument() {
     if (!preparedUpload || !preparedBytes || !preparedFile || uploading) return;
+    const roleRefusal = daveWebScheduleUploadRoleRefusal(preparedUpload, reviewedRole);
+    if (roleRefusal) {
+      setNotice({ tone: 'danger', text: roleRefusal });
+      return;
+    }
     const pairingRefusal = scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);
     if (pairingRefusal) {
       setNotice({ tone: 'danger', text: pairingRefusal.replace('before saving', 'before uploading') });
@@ -4043,7 +4175,7 @@ function DocumentManagementWorkspace({
     setUploadProgress(0);
     setNotice(null);
     try {
-      let reviewedUpload = withScheduleImportPairingChoices(preparedUpload, pairingQuestions, pairingAnswerOf);
+      let reviewedUpload = withScheduleImportPairingChoices(roleReviewedUpload ?? preparedUpload, pairingQuestions, pairingAnswerOf);
       if (normalizedName(preparedUpload.document.category) === 'drawing') {
         const controls = { drawingNumber, drawingRevision, drawingDiscipline,
           drawingStatus, drawingIssuedAt, replacementDocumentId: replacementId || null };
@@ -4092,7 +4224,9 @@ function DocumentManagementWorkspace({
       setNotice({
         tone: 'good',
         text: preparedUpload.scheduleItems.length > 0
-          ? `Document and ${preparedUpload.scheduleItems.length} reviewed schedule task${preparedUpload.scheduleItems.length === 1 ? '' : 's'} uploaded. Use Make Current when this schedule should replace the active version.`
+          ? reviewedRole === 'lookahead'
+            ? `Lookahead and ${preparedUpload.scheduleItems.length} reviewed schedule task${preparedUpload.scheduleItems.length === 1 ? '' : 's'} uploaded. It adds to the master schedule now, so there is nothing to make current.`
+            : `Document and ${preparedUpload.scheduleItems.length} reviewed schedule task${preparedUpload.scheduleItems.length === 1 ? '' : 's'} uploaded. Use Make Current when this schedule should replace the active version.`
           : normalizedName(preparedUpload.document.category) === 'drawing'
             ? 'Drawing uploaded. Vitruvius is preparing it in the background; it will remain unavailable to Ask ECOS until preparation passes and you make this exact revision current.'
             : 'Document uploaded and classified in the shared project record.',
@@ -4123,7 +4257,7 @@ function DocumentManagementWorkspace({
     }
   }
 
-  async function makeCurrent(document: DAVEWebReferenceDocument) {
+  async function makeCurrent(document: DAVEWebReferenceDocument, retirementConfirmed = false) {
     if (uploading) return;
     const isSchedule = scheduleDocumentIsScheduleLike(document);
     if (!documentOffersMakeCurrent(document)) return; // a lookahead is never made current (review N1 web M1)
@@ -4141,7 +4275,23 @@ function DocumentManagementWorkspace({
     }
     setUploading(true);
     setNotice(null);
+    setRetirementQuestion(null);
     try {
+      // WS2 item 3: what this does to ANOTHER project's schedule is asked first, as on the phone, from the cloud's own
+      // current flags and from what this cloud retires. Not readable: nothing is made current.
+      if (isSchedule && !retirementConfirmed) {
+        const check = await daveWebScheduleRetirementCheck(document);
+        if (!check.ok) {
+          setNotice({ tone: 'danger', text: check.message });
+          return;
+        }
+        if (check.effects.length > 0) {
+          // The card's first line says which kind of change this is (review pass 1, web L5): another project's
+          // schedule, a newer schedule of one of its own projects, or both. It had always said "more than its own project".
+          setRetirementQuestion({ documentId: document.id, lead: daveWebScheduleRetirementLead(document.name, check.effects), message: check.message });
+          return;
+        }
+      }
       // Before the Q15 migration the cloud retires a combined schedule for
       // every project; after it the schedule stays current for its others,
       // which the activation's response says and the notice names.
@@ -4414,12 +4564,15 @@ function DocumentManagementWorkspace({
     try {
       await auth.deleteDocument(deleteCandidate, deleteLinkedTasks);
       const taskCount = deleteLinkedTasks ? deleteCandidate.linkedScheduleItems.length : 0;
+      const changesPutBack = deleteLinkedTasks && taskCount === 0 && scheduleDocumentAddsToMaster(deleteCandidate);
       if (selectedDocumentId === deleteCandidate.id) setSelectedDocumentId(null);
       setDeleteCandidateId(null);
       setNotice({
         tone: 'good',
         text: taskCount > 0
           ? `Document and ${taskCount} linked task${taskCount === 1 ? '' : 's'} deleted and protected from returning.`
+          : changesPutBack
+            ? 'Lookahead deleted, and what it had changed on the master schedule\'s tasks was put back. It is protected from returning on another device.'
           : deleteCandidate.sourceProvider === 'google_drive'
             ? 'Document removed from Vitruvius and protected from returning on another device. The original Google Drive file was not deleted.'
             : 'Document and its managed ECOS index were deleted and protected from returning on another device.',
@@ -4590,6 +4743,14 @@ function DocumentManagementWorkspace({
               <Text style={styles.dataDetail}>{preparedUpload.document.originalFileName} · {preparedUpload.document.category} · {formatFileSize(preparedUpload.document.sizeBytes || 0)}</Text>
               {preparedFromDrive ? <Text style={styles.dataMeta}>Source: Google Drive · Original file stays in Drive</Text> : null}
               <Text style={preparedUpload.extractionStatus === 'needs_manual_review' ? styles.errorText : styles.dataMeta}>{preparedUpload.reviewMessage}</Text>
+              {roleSuggestion ? (
+                <DesktopScheduleUploadRole
+                  suggestion={roleSuggestion}
+                  chosen={chosenRole}
+                  disabled={uploading}
+                  onChoose={role => setRoleReview(current => (current ? { ...current, chosen: role } : current))}
+                />
+              ) : null}
               {preparedUpload.scheduleItems.length > 0 ? (
                 <View style={styles.list}>
                   {preparedUpload.scheduleItems.map((item, index) => (
@@ -4599,6 +4760,10 @@ function DocumentManagementWorkspace({
                           <Text style={styles.dataTitle}>{item.taskName}</Text>
                           <Text style={styles.dataMeta}>{item.projectName}{item.locationName ? ` · ${item.locationName}` : ''}</Text>
                           <Text style={styles.dataDetail}>{item.status} · {item.percentComplete}% · Finish {formatCalendarDate(item.finishDate)}</Text>
+                          {/* A date outside 2000 to 2100 is pointed out before the upload, not changed (review pass 1, L3). */}
+                          {scheduleDatesToCheck(item).map(check => (
+                            <Text key={check.which} style={styles.errorText}>{check.text}</Text>
+                          ))}
                           {uploadProjects.length > 1 ? (
                             <View style={[styles.optionRow, styles.taskProjectChoices]}>
                               {uploadProjects.map(project => {
@@ -4672,6 +4837,36 @@ function DocumentManagementWorkspace({
         </View>
       ) : null}
 
+      {retirementQuestion && retirementTarget ? (
+        <View style={styles.deleteConfirm} accessibilityRole="alert">
+          <View style={styles.dataGrow}>
+            <Text style={styles.deleteConfirmTitle}>Change the current schedule?</Text>
+            <Text style={styles.dataDetail}>{retirementQuestion.lead}</Text>
+            <Text style={styles.errorText}>{retirementQuestion.message}</Text>
+          </View>
+          <View style={styles.inlineButtons}>
+            <Pressable
+              style={({ pressed }) => [styles.secondaryButton, styles.compactActionButton, pressed && styles.buttonPressed]}
+              onPress={() => setRetirementQuestion(null)}
+              disabled={uploading}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel making this schedule current"
+            >
+              <Text style={styles.secondaryButtonText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+              onPress={() => { void makeCurrent(retirementTarget, true); }}
+              disabled={uploading}
+              accessibilityRole="button"
+              accessibilityLabel={`Make ${retirementTarget.name} current anyway`}
+            >
+              <Text style={styles.primaryButtonText}>Make Current Anyway</Text>
+            </Pressable>
+          </View>
+        </View>
+      ) : null}
+
       {deleteCandidate ? (
         <View style={styles.deleteConfirm} accessibilityRole="alert">
           <View style={styles.dataGrow}>
@@ -4698,6 +4893,7 @@ function DocumentManagementWorkspace({
                 {deleteCandidate.linkedScheduleItems.length > 0 && !linkedTasksAreRevisionSafe
                   ? ' Those legacy tasks do not have safe cloud revisions, so this page will keep them.'
                   : daveWebScheduleDocumentDeleteNote({ snapshot: { scheduleItems: tasks, knownScheduleItems: knownTasks, referenceDocuments: scheduleDocuments }, document: deleteCandidate }) /* as the phone's question says it (review N2 W1) */}
+                {lookaheadChangesNote ? ' Delete Document Only leaves those tasks as they show now.' : ''}
               </Text>
             )}
           </View>
@@ -4722,8 +4918,18 @@ function DocumentManagementWorkspace({
                 accessibilityRole="button"
               >
                 <Text style={styles.primaryButtonText}>
-                  {deleting ? 'Deleting…' : deleteCandidate.linkedScheduleItems.length > 0 ? 'Delete Document Only' : 'Delete Document'}
+                  {deleting ? 'Deleting…' : deleteCandidate.linkedScheduleItems.length > 0 || lookaheadChangesNote ? 'Delete Document Only' : 'Delete Document'}
                 </Text>
+              </Pressable>
+            ) : null}
+            {!protectedCurrentDocument && lookaheadChangesNote ? (
+              <Pressable
+                style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+                onPress={() => { void confirmDelete(true); }}
+                disabled={deleting}
+                accessibilityRole="button"
+              >
+                <Text style={styles.primaryButtonText}>{DAVE_WEB_DELETE_WITH_CHANGES_LABEL}</Text>
               </Pressable>
             ) : null}
             {!protectedCurrentDocument && deleteCandidate.linkedScheduleItems.length > 0 && linkedTasksAreRevisionSafe ? (
@@ -5665,6 +5871,8 @@ function ReportWorkspace({
     text: string;
     byPeriodCard?: true;
     awaitingShared?: Readonly<{ sentAt: string; scopeKey: string; reportFormat: DAVEWebReportAudience }>;
+    /** R1 item 1 (8 Oct 2026): the send a "Recorded as sent" line speaks of, so the line can stop promising once a later report stands. */
+    recordedSend?: Readonly<{ sentAt: string; scopeKey: string; reportFormat: DAVEWebReportAudience }>;
   } | null>(null);
   useEffect(() => onDAVEWebReportSharedRecordSeen(seen => {
     setNotice(current => current?.awaitingShared && seen.sentAt === current.awaitingShared.sentAt &&
@@ -5673,6 +5881,7 @@ function ReportWorkspace({
         tone: 'good',
         text: daveWebReportRecordedMessage(current.awaitingShared.sentAt, 'checked'),
         ...(current.byPeriodCard ? { byPeriodCard: true as const } : {}),
+        recordedSend: current.awaitingShared,
       }
       : current);
   }), []);
@@ -5737,7 +5946,22 @@ function ReportWorkspace({
     ? daveWebReportSentHereAt(periodSnapshot, reportSource.fingerprint.split(':media-')[0])
     : null;
   const periodSentAt = reportPeriodSentAt(periodSnapshot);
+  // R1 item 1 (8 Oct 2026, the owner's open items): "Recorded as sent ... The next report on every device runs
+  // from this one." stayed on screen after another device (or another tab) sent a newer report, when the next
+  // report no longer runs from this one. Once the period on this page runs from a later send, the line says so.
+  const noticeText = (notice?.recordedSend && daveWebReportRecordedLineNow(notice.recordedSend, {
+    scopeKey: periodScopeKey,
+    reportFormat: reportAudience,
+    periodSentAt,
+    periodSendFromThisBrowser: periodSentAt !== null && daveWebOwnReportSends().has(periodSentAt),
+  })) || (notice?.text ?? '');
   const periodSendIsOwn = periodSentAt !== null && daveWebOwnReportSends().has(periodSentAt);
+  // R4 (the coordinator's decision): the report on this page is the one another device already sent, unchanged since. The
+  // "since" lines read as that report was sent (the same fingerprint on every device now), and the page says so in
+  // the phone's words until he approves it to send a second time.
+  const alreadySentElsewhereAt = currentPeriodRead.status === 'loaded' && reportStatus !== 'approved'
+    ? daveWebReportAlreadySentElsewhereAt(periodSnapshot, reportFingerprint, daveWebOwnReportSends())
+    : null;
   // Review N2 (5 Oct 2026): another TAB's later send. With Reports open in two tabs, this tab approved a report
   // (Pour slab 20% to 50%), the other tab then sent a later one (70%), and this tab's report still went out:
   // the other tab's send is this browser's own, and own sends never stopped a share (review N1 M2). Only
@@ -5773,8 +5997,15 @@ function ReportWorkspace({
     (periodSentAt === null || Date.parse(reportOwnSendAt as string) > Date.parse(periodSentAt));
   const approvedPeriodMoved = approvedMovedByAnotherTab || (reportStatus === 'approved' && !sentFromHereAt && !periodSendIsOwn &&
     !reportAheadOnOwnSend && daveWebReportPeriodMoved(reportSource.periodKey, period.periodKey));
+  // R1 item 2 (8 Oct 2026, the owner's open items): for as long as the page's read of the period took after a send
+  // (a second or two), the card still said "This approved report ... isn't recorded as sent" and offered Mark as
+  // Sent for the report just sent: the page's period was still that report's approval. The approval this tab has
+  // just recorded as sent is not offered again while the read catches up.
+  const [approvalRecordedSent, setApprovalRecordedSent] = useState<Readonly<{ scopeKey: string; reportFormat: DAVEWebReportAudience; fingerprint: string }> | null>(null);
   const approvalToMarkSent = currentPeriodRead.status === 'loaded' && currentPeriodRead.approvalSavedHere &&
-    periodSnapshot?.deliveredAt === null ? periodSnapshot : null;
+    periodSnapshot?.deliveredAt === null &&
+    !(approvalRecordedSent && approvalRecordedSent.scopeKey === periodScopeKey && approvalRecordedSent.reportFormat === reportAudience &&
+      approvalRecordedSent.fingerprint === periodSnapshot.sourceFingerprint) ? periodSnapshot : null;
   /** The report on screen as the period records it: its facts, these projects, this format. */
   const periodSnapshotOfReport = () => buildDAVEReportSnapshot({
     truths: reportTruths,
@@ -5806,7 +6037,7 @@ function ReportWorkspace({
       // on screen and its facts are the current ones, so this computer takes the approval as its own, as Approve
       // here would, and records the send; the later-send check applies as for any approval.
       // Not over another approved report this computer still has to mark sent: that one would be lost (review N1 L5).
-      if (!outcome && reportStatus === 'approved' && approvedFingerprint !== null && approvedFingerprint === reportFingerprint &&
+      if (!outcome && reportStatus === 'approved' && approvedFingerprint !== null && sameReportSource(approvedFingerprint, reportFingerprint) &&
         sentPeriod.scopeKey === periodScopeKey && sentPeriod.reportFormat === reportAudience && !approvalToMarkSent) {
         const approved = await approveDAVEWebReportPeriod(periodStore, periodSnapshotOfReport(), reportPeriodSentAt(periodSnapshot));
         outcome = approved.status === 'later_send'
@@ -5825,12 +6056,23 @@ function ReportWorkspace({
       setSendQuestion(asked => asked && asked.fingerprint === approvedFingerprint &&
         asked.scopeKey === sentPeriod.scopeKey && asked.reportFormat === sentPeriod.reportFormat ? null : asked);
     }
+    // This approval is now recorded as sent: the card does not offer it for Mark as Sent meanwhile.
+    const sentFingerprint = outcome?.status === 'saved' ? outcome.snapshot?.sourceFingerprint : null;
+    if (sentFingerprint) setApprovalRecordedSent({ ...sentPeriod, fingerprint: sentFingerprint });
     if (outcome?.status === 'already_sent') {
       // A second Share of the report this computer already sent: not a second send, and not an error (review N1).
       say('good', byPeriodCard ? daveWebReportAlreadyMarkedSentMessage(outcome.sentAt) : daveWebReportAlreadyRecordedMessage(outcome.sentAt));
       return true;
     }
     if (!outcome) {
+      // R1 item 3 (8 Oct 2026): the report on screen is from before the three sent reports this computer remembers
+      // (an older one opened from Report history). Nothing is wrong, and the page says what the limit is.
+      if (approvedFingerprint !== null && approvedFingerprint === reportSource.fingerprint.split(':media-')[0] &&
+        sentPeriod.scopeKey === periodScopeKey && sentPeriod.reportFormat === reportAudience &&
+        daveWebReportFromBeforeRememberedSends(periodSnapshot, reportSource.periodKey)) {
+        say('good', daveWebOwnSendFactsKept() ? DAVE_WEB_REPORT_OLDER_THAN_THE_LIST : DAVE_WEB_REPORT_OLDER_THAN_REMEMBERED);
+        return false;
+      }
       // Its facts are no longer the current ones and no approval of it is on record: said plainly (review N1 L2).
       say('danger', DAVE_WEB_REPORT_SEND_NOT_RECORDED);
       return false;
@@ -5841,7 +6083,7 @@ function ReportWorkspace({
     }
     // The approval stands on the period its own send starts (A6 pass 8 M1 on the phone).
     const recordedFingerprint = outcome.snapshot?.sourceFingerprint;
-    setReportSource(source => source.fingerprint.split(':media-')[0] === recordedFingerprint
+    setReportSource(source => sameReportSource(source.fingerprint.split(':media-')[0], recordedFingerprint)
       ? daveWebReportSourceOnPeriod(source, `sent:${sentAt}`)
       : source);
     // Review N2 follow-up (5 Oct 2026): "on every device" only once this send's own write is known to have
@@ -5853,6 +6095,7 @@ function ReportWorkspace({
       text: daveWebReportRecordedMessage(sentAt, reached),
       ...(byPeriodCard ? { byPeriodCard: true as const } : {}),
       ...(reached === 'unchecked' ? { awaitingShared: { sentAt, ...sentPeriod } } : {}),
+      recordedSend: { sentAt, ...sentPeriod },
     });
     return true;
   };
@@ -5872,7 +6115,7 @@ function ReportWorkspace({
   // for it only while its own approval is the one waiting here; once another device's (or another tab's) later
   // report has overtaken it, the page says so. The question and its "Not yet" promised Mark as Sent either way.
   const sharedCanBeMarkedSent = Boolean(sharedReportOnScreen && approvalToMarkSent &&
-    approvalToMarkSent.sourceFingerprint === sharedReportOnScreen.fingerprint);
+    sameReportSource(approvalToMarkSent.sourceFingerprint, sharedReportOnScreen.fingerprint));
   const sharedOvertaken = sharedReportOnScreen && approvedPeriodMoved
     ? daveWebReportPeriodMovedMessage(period.periodKey, approvedMovedByAnotherTab)
     : null;
@@ -5973,7 +6216,7 @@ function ReportWorkspace({
         media: resolvedMedia.media,
         unavailableMedia: resolvedMedia.unavailableMedia,
       });
-      downloadBlob(`${safeDownloadName(title)}.docx`, blob);
+      downloadBlob(`${safeDownloadName(reportFileTitleWithDate(title, generatedAt))}.docx`, blob);
       const embeddedPhotos = resolvedMedia.media.filter(item => item.kind === 'photo').length;
       const embeddedDrawings = resolvedMedia.media.filter(item => item.kind === 'drawing').length;
       const embedded = embeddedPhotos + embeddedDrawings;
@@ -6311,7 +6554,7 @@ function ReportWorkspace({
       }
     }
     const shared = reportAsShared();
-    const subject = encodeURIComponent(reportTitle.trim());
+    const subject = encodeURIComponent(reportSubjectWithDate(reportTitle, reportGeneratedAt));
     const emailBody = prepareDAVEWebReportEmailBody(reportBody);
     const body = encodeURIComponent(emailBody.text);
     window.open(`mailto:?subject=${subject}&body=${body}`, '_blank', 'noopener,noreferrer');
@@ -6408,6 +6651,9 @@ function ReportWorkspace({
         {daveWebReportPeriodNote(currentPeriodRead) ? (
           <Text style={styles.reportFactEmpty}>{daveWebReportPeriodNote(currentPeriodRead)}</Text>
         ) : null}
+        {alreadySentElsewhereAt ? (
+          <Text style={styles.reportFactEmpty}>{daveWebReportAlreadySentElsewhereNote(alreadySentElsewhereAt)}</Text>
+        ) : null}
         {daveWebReportPeriodKeptInTabOnly() ? (
           <Text style={styles.reportFactEmpty}>
             {daveWebReportKeptInTabOnlyNote(currentPeriodRead.status === 'loaded' ? currentPeriodRead.shared : 'loading', daveWebReportOlderPeriodLeftInBrowser())}
@@ -6424,7 +6670,7 @@ function ReportWorkspace({
         ) : null}
         {notice?.byPeriodCard ? (
           <View style={notice.tone === 'good' ? styles.successBanner : styles.errorBanner} accessibilityRole="alert">
-            <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{notice.text}</Text>
+            <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{noticeText}</Text>
           </View>
         ) : null}
       </View>
@@ -6697,7 +6943,7 @@ function ReportWorkspace({
             ) : null}
             {notice && !notice.byPeriodCard ? (
               <View style={notice.tone === 'good' ? styles.successBanner : styles.errorBanner} accessibilityRole="alert">
-                <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{notice.text}</Text>
+                <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{noticeText}</Text>
               </View>
             ) : null}
           </View>
@@ -6793,11 +7039,16 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
       // Once signed out, the sign-in page replaces this workspace.
       await auth.signOutOfDesktop(scope);
     } catch (error) {
-      // On the web, This Computer needs the cloud too, so it is not offered as
-      // the way out here (unlike the phone, which can sign out with no signal).
+      // Only All Devices needs the cloud (owner answer Q21): without it nothing is signed out, and he is told.
+      // This Computer does not (review pass 1, web L3; second review, F5): it signs this browser out whatever
+      // the cloud answers, like the phone with no signal, and the sign-in page says so when the cloud did not
+      // confirm it. It comes here only if this browser itself would not finish, so its message does not speak
+      // of the internet connection.
       setProblem(error instanceof DAVEWebSignOutNeedsConnectionError
         ? `${error.message} Try again when this computer is back online.`
-        : 'Sign out did not finish. Check the internet connection and try again.');
+        : scope === 'global'
+          ? 'Sign out did not finish. Check the internet connection and try again.'
+          : 'Sign out did not finish. Try again.');
       setPending(null);
     }
   };

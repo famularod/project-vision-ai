@@ -77,7 +77,31 @@ export type DurableLocalTransactionRepository = Readonly<{
     operations: readonly DurableLocalTransactionOperation[],
   ) => Promise<DurableLocalTransactionResult>;
   recover: () => Promise<DurableLocalTransactionResult | null>;
+  /**
+   * Sync batch Y4, item 1. A waiting journal that cannot be read at all has
+   * nothing to finish from, and `recover` and `commit` refuse it at every
+   * start, for good. This keeps its exact bytes under another name, writes
+   * down that it did (so it can be said once), and only then removes the
+   * journal. Resolves to null, and changes nothing, when no journal waits or
+   * the waiting one can be read: that one is finished by `recover`, or stops
+   * as it always has. Nothing does this by itself: each record's owner decides
+   * whether going on without it can lose anything.
+   */
+  setAsideIfUnreadable: () => Promise<Readonly<{ asideKey: string }> | null>;
 }>;
+
+/** Where an unreadable journal's bytes are kept: this, then a fingerprint of the bytes. */
+export function durableJournalSetAsideKeyPrefix(journalKey: string): string {
+  return `${journalKey}.unreadable.`;
+}
+
+/** Present from the moment a journal was set aside until that has been said (see services/RecoveryRecordNotices.ts). */
+export function durableJournalSetAsideNoticeKey(journalKey: string): string {
+  return `${journalKey}.setAsideNotice`;
+}
+
+/** How many names are tried for one set of bytes before giving up (each further name only after a fingerprint clash). */
+const SET_ASIDE_NAMES_TRIED = 20;
 
 /**
  * A small write-ahead transaction journal for related string stores. Target
@@ -314,7 +338,51 @@ export function createDurableLocalTransactionRepository({
     }
   }
 
-  return Object.freeze({ commit, recover });
+  const setAsideIfUnreadable = () => serialize(async () => {
+    const raw = await storage.getItem(journalKey);
+    if (raw === null) return null;
+    try {
+      parseJournal(raw, journalKey);
+      return null;
+    } catch {
+      // It cannot be read: there is nothing to finish from.
+    }
+    // 1. The bytes, kept as they are. A name already holding these bytes is the copy an earlier start made before
+    //    it was stopped; a name holding other bytes is never written over.
+    let asideKey = '';
+    for (let attempt = 0; attempt < SET_ASIDE_NAMES_TRIED && !asideKey; attempt += 1) {
+      const candidate = `${durableJournalSetAsideKeyPrefix(journalKey)}${bytesFingerprint(raw)}${attempt ? `.${attempt}` : ''}`;
+      const held = await storage.getItem(candidate);
+      if (held === null) await storage.setItem(candidate, raw);
+      else if (held !== raw) continue;
+      if (await storage.getItem(candidate) !== raw) throw new Error('The unreadable record could not be kept under another name.');
+      asideKey = candidate;
+    }
+    if (!asideKey) throw new Error('The unreadable record could not be kept under another name.');
+    // 2. That it was set aside, written before the journal goes: a start stopped after this still says so.
+    const noticeKey = durableJournalSetAsideNoticeKey(journalKey);
+    const notice = JSON.stringify({ asideKey });
+    await storage.setItem(noticeKey, notice);
+    if (await storage.getItem(noticeKey) !== notice) throw new Error('Setting the unreadable record aside could not be written down.');
+    // 3. Only now the journal itself.
+    await storage.removeItem(journalKey);
+    if (await storage.getItem(journalKey) !== null) throw new Error('The unreadable record was kept under another name but could not be removed.');
+    return Object.freeze({ asideKey });
+  });
+
+  return Object.freeze({ commit, recover, setAsideIfUnreadable });
+}
+
+/** A short name for a set of bytes: the same bytes always give the same name, so a repeated start makes no second copy. */
+function bytesFingerprint(raw: string): string {
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < raw.length; index += 1) {
+    const code = raw.charCodeAt(index);
+    first = Math.imul(first ^ code, 0x01000193);
+    second = Math.imul(second ^ (code + index), 0x85ebca6b);
+  }
+  return [raw.length.toString(36), (first >>> 0).toString(36), (second >>> 0).toString(36)].join('-');
 }
 
 function normalizeOperations(

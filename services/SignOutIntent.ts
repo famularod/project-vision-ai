@@ -4,24 +4,75 @@
  * discards and asks first; a sign-in that ended elsewhere (the other device's
  * "Sign Out of All Devices", or the server refusing a refresh, while the app
  * was closed) asks nothing, and must not discard unsaved work with it.
+ *
+ * Open item W1-6 (6 Oct 2026), two places where what the warning said and
+ * what happened differed:
+ *
+ * - An asked sign-out counted as asked for two minutes FROM THE TAP. A
+ *   sign-out that took longer to go through (a slow connection: the expired
+ *   sign-in is refreshed first, then the server is asked) was heard as "not
+ *   asked", and his unsaved dictation was kept for his account though he
+ *   had been told it would be discarded. It now counts as asked for as long
+ *   as it is under way, however long that is, and for two minutes after it
+ *   was answered (a sign-out that was answered is normally heard at once).
+ *
+ * - It did not say WHOSE sign-out was asked. Settings warns about the
+ *   account it shows; when the app had not yet heard which account is signed
+ *   in (opened with no signal), only what was on screen went, and a kept
+ *   recording the warning had named stayed on the phone. The account the
+ *   warning was about is now remembered with the request.
+ *
+ * Review pass 1 of the web area, L7 (6 Oct 2026): "for as long as it is
+ * under way" had no end. A sign-out whose call threw (it neither went
+ * through nor answered "failed") was under way for ever, so a sign-in that
+ * ended on its own hours later was taken for it and his unsaved work was
+ * discarded with no warning; the build before had let it lapse two minutes
+ * after the tap. The mark now has a limit in every case: a sign-out that
+ * has not been answered counts as asked for fifteen minutes from the tap,
+ * far longer than one that is still going to be answered takes (the slow
+ * one above was timed in a test at ten minutes), and well inside the hour
+ * after which a sign-in can end by itself. Settings also clears it at once
+ * when the call throws.
  */
-let askedAt: number | null = null;
-/** How long an asked sign-out waits to be heard (a sign-out with no signal answers at once). */
+let asked: { forAccount: string | null; at: number; answeredAt: number | null } | null = null;
+/** How long an asked sign-out that was answered waits to be heard. */
 const ASKED_SIGN_OUT_WINDOW_MS = 2 * 60_000;
+/** How long an asked sign-out that has not been answered counts as under way. */
+const ASKED_SIGN_OUT_UNDER_WAY_LIMIT_MS = 15 * 60_000;
 
-/** Settings' Sign Out was confirmed on this device. */
-export function noteSignOutAskedHere(now: number = Date.now()): void {
-  askedAt = now;
+/** Settings' Sign Out was confirmed on this device, after its warning about `forAccount`'s work. */
+export function noteSignOutAskedHere(forAccount: string | null = null, now: number = Date.now()): void {
+  asked = { forAccount, at: now, answeredAt: null };
 }
 
-/** It did not happen (it failed, or he was asked to choose again). */
-export function clearSignOutAskedHere(): void {
-  askedAt = null;
+/** The sign-out asked for was answered (it went through). */
+export function noteAskedSignOutAnswered(now: number = Date.now()): void {
+  if (asked) asked.answeredAt = now;
 }
 
-/** Whether the sign-out heard now was asked for here; each asked sign-out is heard once. */
-export function signOutWasAskedHere(now: number = Date.now()): boolean {
-  const asked = askedAt !== null && now - askedAt >= 0 && now - askedAt <= ASKED_SIGN_OUT_WINDOW_MS;
-  askedAt = null;
-  return asked;
+/**
+ * It did not happen (it failed, it threw, or he was asked to choose again).
+ * Says whether it was still waiting to be heard: false when the sign-out
+ * had already been heard, or none was asked.
+ */
+export function clearSignOutAskedHere(): boolean {
+  const waiting = asked !== null;
+  asked = null;
+  return waiting;
+}
+
+/**
+ * The sign-out heard now, when it was asked for here: the account its
+ * warning was about (null when Settings did not know one). Null when it was
+ * not asked for here. Each asked sign-out is heard once.
+ */
+export function signOutAskedHere(now: number = Date.now()): Readonly<{ forAccount: string | null }> | null {
+  const heard = asked;
+  asked = null;
+  if (!heard) return null;
+  // Counted from the answer once there is one, from the tap until then. A clock set back says nothing.
+  const since = heard.answeredAt ?? heard.at;
+  const limit = heard.answeredAt === null ? ASKED_SIGN_OUT_UNDER_WAY_LIMIT_MS : ASKED_SIGN_OUT_WINDOW_MS;
+  if (now < since || now - since > limit) return null;
+  return { forAccount: heard.forAccount };
 }

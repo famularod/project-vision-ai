@@ -7,6 +7,8 @@ import {
   validReportPeriodSnapshot,
   type DAVEReportFormat,
   type DAVEReportSnapshot,
+  sameReportSource,
+  legacyReportSourcesOf,
 } from './DAVEReportSnapshot';
 import {
   carryUpDAVEReportPeriod,
@@ -47,7 +49,17 @@ export const DAVE_WEB_NO_KEYCHAIN: SenderIdKeychain = Object.freeze({
   available: async () => false,
   read: async () => null,
   write: async () => undefined,
+  // R2 item 2: the id a tab of this browser sent under before it took the browser's (see settleSenderId).
+  readFormerWithoutKeychain: async () => {
+    try {
+      return browserLocalStorage()?.getItem(FORMER_SENDER_ID_KEY) ?? null;
+    } catch {
+      return null;
+    }
+  },
 });
+/** The id this browser's sends carried before it took another: it names the browser, never an account, as the sender id does. */
+const FORMER_SENDER_ID_KEY = '@vitruvius/report-sender-id/former/v1';
 
 type BrowserStorage = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> & Partial<Pick<Storage, 'key' | 'length'>>;
 
@@ -131,6 +143,7 @@ export function forgetDAVEWebReportPeriods(ownerId: string): void {
   }
   // The signed-out account's send times are no other account's own sends.
   ownSends.clear();
+  ownSendFacts.clear();
   sentInThisTab.clear();
   // Nor is anything noted for it by an answer from the shared record that arrives after this (review N2 follow-up).
   sharedForgottenAt.set(prefix, ++sharedSeq);
@@ -395,12 +408,41 @@ function settleSenderId(local: BrowserStorage | null): void {
   try {
     if (local.getItem(REPORT_SENDER_ID_KEY) === null) local.setItem(REPORT_SENDER_ID_KEY, mine);
     // A storage that takes it in silence and keeps nothing has not taken it.
-    if (local.getItem(REPORT_SENDER_ID_KEY) === null) return;
+    const kept = local.getItem(REPORT_SENDER_ID_KEY);
+    if (kept === null) return;
+    // R2 item 2 (9 Oct 2026; pass 6, seen): another tab gave the browser an id first, so this tab moves to it, and
+    // the one report it had sent under its own id stayed under that id: later tabs took that report for another
+    // device's. The tab's id is kept as the browser's former id, and its list of own sends is written with what
+    // the browser has, so that report is known as this browser's by the same rule the phone uses for a former id.
+    if (kept !== mine) {
+      if (local.getItem(FORMER_SENDER_ID_KEY) === null) local.setItem(FORMER_SENDER_ID_KEY, mine);
+      keepTabOwnSends(local);
+    }
     tabOnly.delete(REPORT_SENDER_ID_KEY);
   } catch {
     // Still refused: the tab keeps its own.
   }
 }
+
+/** Writes each account's list of own send times that only this tab holds, together with the times the browser already has. */
+function keepTabOwnSends(local: BrowserStorage): void {
+  for (const [key, value] of [...tabOnly]) {
+    if (value === null || !key.startsWith(`${WEB_PREFIX}/`) || !key.endsWith(OWN_SEND_TIMES_KEY)) continue;
+    const times = (raw: string | null): string[] => {
+      try {
+        const parsed: unknown = JSON.parse(raw ?? '[]');
+        return Array.isArray(parsed) ? parsed.filter((time): time is string => typeof time === 'string') : [];
+      } catch {
+        return [];
+      }
+    };
+    local.setItem(key, JSON.stringify([...new Set([...times(local.getItem(key)), ...times(value)])].sort().slice(-50)));
+    profileStorages.get(local)?.add(key);
+    tabOnly.delete(key);
+  }
+}
+/** The store's key for an account's list of its own send times (DAVEReportSnapshotStore OWN_SENDS_KEY). */
+const OWN_SEND_TIMES_KEY = '@vitruvius/report-snapshots/own-sends/v1';
 
 /**
  * This browser profile's storage for report periods: each account's own
@@ -709,19 +751,46 @@ export function daveWebReportSentInThisTab(sentAt: string | null | undefined): b
 export function forgetDAVEWebOwnReportSends(): void {
   ownSends.clear();
   sentInThisTab.clear();
+  ownSendFacts.clear();
 }
 
 /**
- * The sent reports a period remembers, newest first: the one it runs from
- * and the two before it (each saved report keeps the one it replaced, and
- * that one's own: A6 pass 16 L1).
+ * How many sent reports a saved period remembers: the one it runs from and the two before it (each saved report
+ * keeps the one it replaced, and that one's own: A6 pass 16 L1). R1 item 3 (8 Oct 2026): the limit is what the
+ * period itself carries. Each remembered report is a full list of the tasks as they stood, kept in this browser
+ * and in the one shared row per period, so that the next report can be compared with the last and the one before
+ * can still be told apart; three keeps that row bounded. It is not a limit on purpose for Mark as Sent or for
+ * sharing again: those simply cannot recognise a report from before the three, and the page now says so.
  */
+const MOST_SENDS_A_PERIOD_REMEMBERS = 3;
+
+/** The sent reports a period remembers, newest first. */
 function periodSends(snapshot: DAVEReportSnapshot | null | undefined): DAVEReportSnapshot[] {
   const sends: DAVEReportSnapshot[] = [];
-  for (let send = reportPeriodSend(snapshot); send && sends.length < 3; send = reportPeriodSend(send.supersedes)) {
+  for (let send = reportPeriodSend(snapshot); send && sends.length < MOST_SENDS_A_PERIOD_REMEMBERS; send = reportPeriodSend(send.supersedes)) {
     sends.push(send);
   }
   return sends;
+}
+
+/**
+ * R1 item 3 (8 Oct 2026, the owner's open items): whether a report that counted from `preparedKey` is from before
+ * the sent reports `period` remembers. Sharing such a report again (opened from Report history) could not be told
+ * from a report never sent, and the page said "This computer could not record that this report was sent ... The
+ * next report ... may repeat what this one covered", which is not what happened.
+ */
+export function daveWebReportFromBeforeRememberedSends(
+  period: DAVEReportSnapshot | null | undefined,
+  preparedKey: string | null | undefined,
+): boolean {
+  const sends = periodSends(period);
+  // Fewer than it can hold: it remembers every report sent, and this is none of them.
+  if (sends.length < MOST_SENDS_A_PERIOD_REMEMBERS) return false;
+  // A report saved before reports kept their period: not known.
+  const countedFrom = preparedKey === 'none' ? null : preparedKey?.startsWith('sent:') ? preparedKey.slice('sent:'.length) : undefined;
+  if (countedFrom === undefined) return false;
+  const oldest = sendTime(sends[sends.length - 1].deliveredAt);
+  return countedFrom === null || sendTime(countedFrom) < oldest;
 }
 
 /**
@@ -736,8 +805,62 @@ export function daveWebReportSentHereAt(
 ): string | null {
   if (!fingerprint) return null;
   const sent = periodSends(period).find(send =>
-    send.sourceFingerprint === fingerprint && typeof send.deliveredAt === 'string' && ownSends.has(send.deliveredAt));
-  return sent?.deliveredAt ?? null;
+    sameReportSource(send.sourceFingerprint, fingerprint) && typeof send.deliveredAt === 'string' && ownSends.has(send.deliveredAt));
+  if (sent?.deliveredAt) return sent.deliveredAt;
+  // R2 item 1: a report from before the three the period remembers, by this browser's own list of what it sent.
+  // By these facts' fingerprint, or by the one the earlier version gave them when the report was sent (R4 item 4a).
+  if (!period?.reportFormat) return null;
+  for (const facts of [fingerprint, ...legacyReportSourcesOf(fingerprint)]) {
+    const sentAt = ownSendFacts.get(ownSendFactsKey(period.scopeKey, period.reportFormat, facts));
+    if (sentAt) return sentAt;
+  }
+  return null;
+}
+
+/**
+ * R2 item 1 (9 Oct 2026, the owner's answer to R1 item 3: lift the limit on the web). A saved period remembers
+ * three sent reports, so sharing again (and "already recorded") recognised only this computer's last three. This
+ * browser now also keeps, for each account, a short list of the reports it sent: when, for which projects and
+ * format, and the fingerprint of their facts. No report text, no tasks. The last 50; kept under the account's
+ * own prefix, so Sign Out of This Computer and a sign-in the server ended remove it with the report periods
+ * (owner answer Q26). When the browser's storage will not take it, it lasts as long as the tab, and after that
+ * the three the period remembers are what is known, with the sentence R1 wrote for a report older than them.
+ */
+const OWN_SEND_FACTS_KEY = '@vitruvius/report-snapshots/own-send-facts/v1';
+const MOST_OWN_SEND_FACTS_KEPT = 50;
+type OwnSendFacts = Readonly<{ sentAt: string; scopeKey: string; reportFormat: DAVEReportFormat; fingerprint: string }>;
+/** The signed-in account's list as this tab last read it: projects, format and facts to when it was sent. */
+const ownSendFacts = new Map<string, string>();
+const ownSendFactsKey = (scopeKey: string, reportFormat: string, fingerprint: string) => JSON.stringify([scopeKey, reportFormat, fingerprint]);
+
+async function ownSendFactsKept(storage: SnapshotStorage): Promise<OwnSendFacts[]> {
+  try {
+    const parsed: unknown = JSON.parse(await storage.getItem(OWN_SEND_FACTS_KEY) ?? '[]');
+    return (Array.isArray(parsed) ? parsed : []).filter((entry): entry is OwnSendFacts => isRecord(entry) &&
+      typeof entry.sentAt === 'string' && typeof entry.scopeKey === 'string' && typeof entry.fingerprint === 'string' &&
+      (entry.reportFormat === 'project_manager' || entry.reportFormat === 'executive'));
+  } catch {
+    return [];
+  }
+}
+
+/** Reads the account's list into this tab (only that account's: the tab's copy is replaced, not added to). */
+async function recallOwnSendFacts(storage: SnapshotStorage): Promise<void> {
+  const kept = await ownSendFactsKept(storage);
+  ownSendFacts.clear();
+  kept.forEach(entry => ownSendFacts.set(ownSendFactsKey(entry.scopeKey, entry.reportFormat, entry.fingerprint), entry.sentAt));
+}
+
+async function rememberOwnSendFacts(storage: SnapshotStorage, sent: OwnSendFacts): Promise<void> {
+  const key = ownSendFactsKey(sent.scopeKey, sent.reportFormat, sent.fingerprint);
+  const others = (await ownSendFactsKept(storage)).filter(entry => ownSendFactsKey(entry.scopeKey, entry.reportFormat, entry.fingerprint) !== key);
+  await storage.setItem(OWN_SEND_FACTS_KEY, JSON.stringify([...others, sent].slice(-MOST_OWN_SEND_FACTS_KEPT))).catch(() => undefined);
+  ownSendFacts.set(key, sent.sentAt);
+}
+
+/** Whether this browser has its list of sent reports for the signed-in account (it says "the last 50", not "three"). */
+export function daveWebOwnSendFactsKept(): boolean {
+  return ownSendFacts.size > 0;
 }
 
 export type DAVEWebReportPeriodLoad = Readonly<{
@@ -758,6 +881,7 @@ export async function loadDAVEWebReportPeriod(
   format: DAVEReportFormat,
 ): Promise<DAVEWebReportPeriodLoad> {
   const loaded = await loadDAVEReportPeriod(scopeKey, format, store.storage, store.cloud);
+  await recallOwnSendFacts(store.storage);
   // The sends before the one the period runs from too: one of them may be the report now on screen (review N1).
   for (const sent of new Set([loaded.snapshot, ...periodSends(loaded.snapshot)])) {
     if (sent && await reportSnapshotSentHere(sent, store.storage, DAVE_WEB_NO_KEYCHAIN).catch(() => false)) {
@@ -847,7 +971,7 @@ export async function recordDAVEWebReportSend(
   // This computer's own copy holds its approval; the shared copy may already hold a later send.
   const own = (await loadDAVEReportPeriod(period.scopeKey, period.reportFormat, store.storage, LOCAL_ONLY)).snapshot;
   let approval = own;
-  if (!own || own.deliveredAt !== null || (approvedFingerprint !== null && own.sourceFingerprint !== approvedFingerprint)) {
+  if (!own || own.deliveredAt !== null || (approvedFingerprint !== null && !sameReportSource(own.sourceFingerprint, approvedFingerprint))) {
     // No approval of these facts is waiting here. Already sent from here? Its own copy, then the shared period, says.
     const merged = await loadDAVEWebReportPeriod(store, period.scopeKey, period.reportFormat).catch(() => null);
     const sentAt = daveWebReportSentHereAt(own, approvedFingerprint) ?? daveWebReportSentHereAt(merged?.snapshot, approvedFingerprint);
@@ -856,7 +980,15 @@ export async function recordDAVEWebReportSend(
     // The approval waiting in the shared period is of exactly these facts: the report going out now is that
     // approved report, and its send is recorded, where it was dropped with "no approval… on this computer".
     const waiting = merged?.snapshot;
-    if (approvedFingerprint === null || !waiting || waiting.deliveredAt !== null || waiting.sourceFingerprint !== approvedFingerprint) return null;
+    if (approvedFingerprint === null || !waiting || waiting.deliveredAt !== null || !sameReportSource(waiting.sourceFingerprint, approvedFingerprint)) {
+      // R4 (the coordinator's decision): the report another device already sent, unchanged since, approved here to send a
+      // second time. It is that same report, already recorded as sent: not another send, and nothing is wrong. It
+      // read "This computer could not record that this report was sent ..." once the fingerprints agreed.
+      const sent = reportPeriodSend(waiting ?? own);
+      return approvedFingerprint !== null && typeof sent?.deliveredAt === 'string' && sameReportSource(sent.sourceFingerprint, approvedFingerprint)
+        ? { status: 'already_sent', sentAt: sent.deliveredAt }
+        : null;
+    }
     approval = waiting;
   }
   if (!approval) return null;
@@ -869,6 +1001,7 @@ export async function recordDAVEWebReportSend(
   const sentBy = await reportSenderId(store.storage, DAVE_WEB_NO_KEYCHAIN).catch(() => null);
   const delivered = markReportSnapshotDelivered(approval, deliveredAt, sentBy, markedSentAt);
   await saveDAVEReportSnapshot(delivered, store.storage, store.cloud);
+  await rememberOwnSendFacts(store.storage, { sentAt: deliveredAt, scopeKey: period.scopeKey, reportFormat: period.reportFormat, fingerprint: delivered.sourceFingerprint });
   return { status: 'saved', snapshot: delivered };
 }
 

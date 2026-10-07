@@ -261,6 +261,80 @@ export function scheduleProgressFlooredAtManagers(
  * and a merge keeps his latest entry either copy knows
  * (scheduleManagersPercentUnderFileOfBoth).
  */
+/**
+ * Build 231, S3 item 1 (the independent review's F02): when the schedule
+ * showing this row was last made current with the row's percent left
+ * standing (progressStandsSince), while the row still holds that percent;
+ * else 0. A task saved before has none.
+ */
+export function scheduleProgressStandsSince(item: Pick<ScheduleItem, 'progressStandsSince' | 'percentComplete'>): number {
+  const mark = item.progressStandsSince;
+  return mark && typeof mark.at === 'string' && percentOf({ percentComplete: mark.percentComplete }) === percentOf(item) ? timeOf(mark.at) : 0;
+}
+
+/**
+ * The row an activation shows, marked when its percent is left standing
+ * against a percent stated later on the row it hides (scheduleProgressStandsSince):
+ * a file's higher percent over the lower one David entered since on the
+ * hidden row, or David's own percent where the hidden row's file had stated
+ * more after he judged it (a take-over the activation undoes). Null when the
+ * activation changes nothing of that kind.
+ */
+export function scheduleProgressLeftStanding(hidden: ScheduleItem, shown: ScheduleItem, now: string): ScheduleItem | null {
+  const filesOverHisLater = scheduleProgressIsManagers(hidden) && !scheduleProgressIsManagers(shown) &&
+    percentOf(hidden) < percentOf(shown) && progressStatedAt(hidden) > progressStatedAt(shown);
+  const hisAfterTakeOver = scheduleProgressIsManagers(shown) && !scheduleProgressIsManagers(hidden) &&
+    percentOf(hidden) > percentOf(shown) && progressStatedAt(hidden) > progressStatedAt(shown);
+  if (!filesOverHisLater && !hisAfterTakeOver) return null;
+  if (scheduleProgressStandsSince(shown) >= timeOf(now)) return null;
+  // Saved and sent as the activation's other changes are (scheduleProgressCarriedFrom): stamped at the activation.
+  return { ...shown, progressStandsSince: { at: now, percentComplete: percentOf(shown) }, updatedAt: now };
+}
+
+/**
+ * Build 231, S3 item 1 (owner answer Q32, option b, on a task the masters
+ * keep on its dates): whether a master's file took the percent David holds
+ * on `his` copy of a row over, as the other copy of that row records it
+ * (fileProgressPeak): a file stated more than his percent after he judged
+ * it. That copy's percent, a file's still, then stands: the newest master's.
+ * False when that copy keeps no such record (a task saved before), when its
+ * percent is David's own, or when he judged his percent after that file.
+ */
+export function scheduleFileTookHisPercentOver(his: ScheduleItem, files: ScheduleItem): boolean {
+  const peak = files.fileProgressPeak;
+  if (!peak || typeof peak.statedAt !== 'string' || !scheduleProgressIsManagers(his) || scheduleProgressIsManagers(files)) return false;
+  return percentOf({ percentComplete: peak.percentComplete }) > percentOf(his) && timeOf(peak.statedAt) > timeOf(scheduleProgressJudgedAt(his));
+}
+
+/**
+ * Build 231, S4 item 3 (owner answer Q32, option b; two masters approved
+ * apart that both restate one row): the percent the newest master stated,
+ * as the task's, when the two copies of the row together say what one
+ * device would have seen in order: after David judged his percent a master's
+ * file stated MORE (fileProgressPeak: it took the task over), and a master
+ * approved after that one stated the percent in fileProgressLast (the
+ * newest master's replaces a file's, below his too). His percent is kept
+ * under it (owner answer Q22). Null when the two records do not say that:
+ * no such records (a task saved before), his percent judged after the
+ * file's, or his percent at or above every file's.
+ */
+export function scheduleNewestMastersPercentOverHis(
+  row: Pick<ScheduleItem, 'status'>,
+  his: Readonly<{ percent: number; judgedAt: string | null }> | null,
+  peak: ScheduleItem['fileProgressPeak'],
+  last: ScheduleItem['fileProgressLast'],
+): Partial<ScheduleItem> | null {
+  if (!his || !his.judgedAt || !peak || !last || typeof peak.statedAt !== 'string' || typeof last.statedAt !== 'string') return null;
+  const tookOver = percentOf({ percentComplete: peak.percentComplete }) > his.percent && timeOf(peak.statedAt) > timeOf(his.judgedAt);
+  if (!tookOver || timeOf(last.statedAt) < timeOf(peak.statedAt)) return null;
+  const stated = reconcileScheduleProgress(row.status, percentOf({ percentComplete: last.percentComplete }));
+  return {
+    percentComplete: stated.percentComplete, status: stated.status,
+    progressSource: 'project_manager', progressConfirmedBy: SCHEDULE_UPDATE_PROGRESS_CONFIRMER, progressConfirmedAt: last.statedAt,
+    managersPercentUnderFile: his.percent, managersPercentUnderFileJudgedAt: his.judgedAt,
+  };
+}
+
 export function scheduleManagersOwnPercent(item: ScheduleItem): Readonly<{ percent: number; judgedAt: string | null }> | null {
   if (scheduleProgressIsManagers(item)) return { percent: percentOf(item), judgedAt: scheduleProgressJudgedAt(item) };
   const floor = item.managersPercentUnderFile;
@@ -331,7 +405,7 @@ export function scheduleEntryUndone(
  */
 export const SCHEDULE_CARRIED_PROGRESS_FIELDS = [
   'status', 'percentComplete', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt', 'progressJudgment', 'completionVerification',
-  'managersPercentUnderFile', 'managersPercentUnderFileJudgedAt', 'progressCarriedFrom',
+  'managersPercentUnderFile', 'managersPercentUnderFileJudgedAt', 'progressCarriedFrom', 'progressStandsSince',
 ] as const satisfies ReadonlyArray<keyof ScheduleItem>;
 
 const WRITTEN_FIELDS = ['status', 'percentComplete', 'progressSource', 'progressConfirmedBy', 'progressConfirmedAt'] as const;
@@ -388,6 +462,10 @@ export function scheduleTalkUndo(
   if (!now || !holds) return { ok: false, message: `${task.taskName} changed since Talk updated it, so it was not undone.` };
   const { lookaheadOverlay: _noteBeforeTalk, ...restored } = scheduleProgressRestored(before, at);
   // The entry the Undo takes back, so a copy or a floor still holding it is not his word (A5 pass 26 L1).
-  const edit = { ...restored, progressUndone: { percentComplete: percentOf(written), confirmedAt: written.progressConfirmedAt ?? null } };
+  // Build 231, S2 item 4: none when Talk changed nothing (it was asked for the percent the task already showed, and
+  // wrote nothing). The entry noted was then David's own, at its own time: his word read as undone, and a master that
+  // moved the task later could bring back an older percent of his.
+  const talkWrote = WRITTEN_FIELDS.some(field => (before[field] ?? null) !== (written[field] ?? null));
+  const edit = talkWrote ? { ...restored, progressUndone: { percentComplete: percentOf(written), confirmedAt: written.progressConfirmedAt ?? null } } : restored;
   return { ok: true, taskId: now.id, edit };
 }

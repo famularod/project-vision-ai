@@ -19,7 +19,16 @@ import {
 } from './ProjectItemWorkflow';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendarDay';
+import { scheduleEditWithPriorityNoted } from './ScheduleDateEdit';
 import { scheduleItemAsSaved } from './PIEScheduleReconciliation';
+import { scheduleProgressIsManagers } from './ScheduleProgressSource';
+import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
+import {
+  SCHEDULE_DURATION_RANGE_TEXT,
+  scheduleDateRangeText,
+  scheduleDayIsSupported,
+  scheduleDurationIsSupported,
+} from './ScheduleInputLimits';
 import {
   normalizeProjectControls,
   PROJECT_CONTROL_DATA_FIELDS,
@@ -43,6 +52,13 @@ export type DAVEWebTaskDraft = Readonly<{
   owner: string;
   contractor: string;
   percentComplete: number | string;
+  /**
+   * He typed in the form's Percent complete box, and it holds a number (WS1
+   * item 5): what it holds is his own entry, also when it is the percent the
+   * task already had from a schedule file. Absent or false: the box was left
+   * as it opened, or emptied.
+   */
+  percentEntered?: boolean;
   priority: SchedulePriority;
   status: ScheduleStatus;
   notes: string;
@@ -81,6 +97,12 @@ export type DAVEWebProjectListing = Readonly<{
     archived?: boolean | null;
   }>[];
   openCloudProjects?: readonly Readonly<{ id: string; name: string }>[];
+  /** The schedules saved now: which projects each import was approved for (daveWebTaskProjectRepair, WS2 item 6). */
+  referenceDocuments?: readonly Readonly<{
+    importBatchId?: string | null;
+    projectName?: string | null;
+    projectNames?: readonly string[] | null;
+  }>[];
 }>;
 
 export type DAVEWebNewTaskProjectResult =
@@ -127,6 +149,80 @@ export function daveWebNewTaskProjectId(
 /** As OperationalProjectIdentity compares a row's project name with its id's. */
 function projectIdentityKey(value: string | null | undefined): string {
   return (value || '').trim().toLocaleLowerCase('en-US');
+}
+
+/**
+ * Open item, web batch WS1 item 6 (6 Oct 2026). Before whole-app audit A3
+ * pass 9 M1 the Tasks page could save a task under another project's name
+ * with its own project's cloud id, and before A12 pass 5 M1 the Schedule
+ * Builder copied such an id onto new items. Those saves were stopped, but
+ * the tasks already saved that way stayed as they were: the phone refuses
+ * every upload of one ("project name and cloud identity disagree"), and Ask
+ * ECOS counts it under the project of its id while the web lists it under
+ * its name.
+ *
+ * The repair, made when the web next saves that task: its project NAME is
+ * put back to the name of the project its cloud id names. Never the other
+ * way (a project is never chosen from a name: that would move the task's
+ * cloud row to another project), and only when the id names exactly one
+ * open cloud project. An id that names none (the project was closed or
+ * deleted), or a list that gives it two names, repairs nothing. The
+ * schedule-scope name is repaired with it only when it carried the same
+ * wrong name (the old save wrote both); a schedule's own root name stays.
+ *
+ * WS2 item 6 (the coordinator's decision, 6 Oct 2026): ONLY A TASK THAT CAME
+ * FROM AN IMPORT, and only where the import itself says the id is right.
+ * Before A12 pass 5 M1 the Schedule Builder copied the cloud id of another
+ * task of the project onto a NEW item; where that other task was one of
+ * these, the new item carries the RIGHT name and the WRONG id, and a repair
+ * by id would move it to a project he did not put it in: worse than a
+ * mismatched label. A Builder item cannot be told from a hand-made task the
+ * old Tasks page renamed (right id, wrong name): neither row says which
+ * screen made it. So a task with no import is never changed. A task an
+ * import brought names its import (importBatchId, written only by an
+ * import: a new item made on the web has none), and its id was its
+ * project's when that file was approved. It is repaired only when a saved
+ * schedule of that import still lists the project its id names, and does
+ * not also list the name it carries now (a combined schedule for both
+ * projects could mean either). An import whose schedule is no longer saved
+ * proves nothing: nothing is changed.
+ *
+ * Null when there is nothing to repair, or nothing that is certain.
+ */
+export function daveWebTaskProjectRepair(
+  current: Pick<ScheduleItem, 'projectId' | 'projectName' | 'scheduleProjectName' | 'importBatchId' | 'alsoImportedInBatchIds'> | null | undefined,
+  listing: DAVEWebProjectListing | null | undefined,
+): Readonly<{ projectName: string; scheduleProjectName: string }> | null {
+  const projectId = current?.projectId?.trim() || '';
+  if (!current || !projectId || !listing) return null;
+  const rows: DAVEWebProjectListing['projects'] = listing.openCloudProjects ?? listing.projects ?? [];
+  const names = new Map(rows
+    .filter(row => !row.archived && (row.id?.trim() || '') === projectId && row.name.trim())
+    .map(row => [projectIdentityKey(row.name), row.name.trim()] as const));
+  if (names.size !== 1) return null;
+  const [projectName] = [...names.values()];
+  if (projectIdentityKey(current.projectName) === projectIdentityKey(projectName)) return null;
+  // Only a task an import brought, whose import was approved for the id's project and not for the name it carries.
+  // (A task with no import has no schedule to say so, and is never changed.)
+  const batches = new Set(scheduleItemImportBatchIds(current as ScheduleItem).map(projectIdentityKey));
+  const approvedFor = (name: string | null | undefined) => (listing.referenceDocuments ?? []).some(document =>
+    batches.has(projectIdentityKey(document.importBatchId)) &&
+    [document.projectName, ...(document.projectNames ?? [])].some(listed => Boolean(projectIdentityKey(listed)) && projectIdentityKey(listed) === projectIdentityKey(name)));
+  if (!approvedFor(projectName) || approvedFor(current.projectName)) return null;
+  const scope = current.scheduleProjectName || '';
+  return {
+    projectName,
+    scheduleProjectName: !scope.trim() || projectIdentityKey(scope) === projectIdentityKey(current.projectName) ? projectName : scope,
+  };
+}
+
+/** What he is told after a save made that repair, or '' (WS1 item 6). */
+export function daveWebTaskProjectRepairedNotice(
+  before: Pick<ScheduleItem, 'projectName'> | null | undefined,
+  saved: Pick<ScheduleItem, 'projectName'>,
+): string {
+  if (!before || projectIdentityKey(before.projectName) === projectIdentityKey(saved.projectName)) return '';
+  return ` This task was saved under “${(before.projectName || '').trim()}” by mistake: it belongs to “${saved.projectName}” in the cloud, so it is now listed under “${saved.projectName}” and your iPhone and iPad can sync it again.`;
 }
 
 /** Why a web form's Percent complete box cannot be saved. */
@@ -182,15 +278,29 @@ export function buildDAVEWebScheduleItem({
   id,
   now,
   actor,
+  projects = null,
 }: {
   draft: DAVEWebTaskDraft;
   current?: DAVEWebScheduleItem | null;
   id: string;
   now: string;
   actor: string;
+  /**
+   * The web's project list, when the page has it: a task saved earlier under
+   * a project name that is not its cloud id's is repaired by this save
+   * (daveWebTaskProjectRepair, WS1 item 6).
+   */
+  projects?: DAVEWebProjectListing | null;
 }): DAVEWebScheduleItem {
   const taskName = requiredText(draft.taskName, 'Task name');
   const projectName = requiredText(draft.projectName, 'Project');
+  // Independent review R08: a duration or a date beyond what the schedule
+  // supports is refused here, before a task is built or anything calculated.
+  refuseUnsupportedDuration(draft.durationDays);
+  refuseUnsupportedDay('Start date', draft.startDate, current?.startDate);
+  refuseUnsupportedDay('Finish date', draft.finishDate, current?.finishDate);
+  refuseUnsupportedDay('Baseline start', draft.baselineStartDate, current?.baselineStartDate);
+  refuseUnsupportedDay('Baseline finish', draft.baselineFinishDate, current?.baselineFinishDate);
   const normalizedDraftProgress = reconcileScheduleProgress(
     draft.status,
     draft.percentComplete,
@@ -226,12 +336,16 @@ export function buildDAVEWebScheduleItem({
     throw new DAVEWebTaskValidationError(DAVE_WEB_TASK_PROJECT_FIXED_TEXT);
   }
   const keepsCurrentProject = Boolean(current) && namesCurrentProject;
-  const projectNameForRecord = current && keepsCurrentProject
-    ? current.projectName
-    : projectName;
-  const scheduleProjectNameForRecord = current && keepsCurrentProject
-    ? current.scheduleProjectName || current.projectName
-    : projectName;
+  // A task saved earlier under a name that is not its cloud id's project is put back under that project (WS1 item 6).
+  const repaired = daveWebTaskProjectRepair(current, projects);
+  const projectNameForRecord = repaired ? repaired.projectName
+    : current && keepsCurrentProject
+      ? current.projectName
+      : projectName;
+  const scheduleProjectNameForRecord = repaired ? repaired.scheduleProjectName
+    : current && keepsCurrentProject
+      ? current.scheduleProjectName || current.projectName
+      : projectName;
   // The progress is marked as the project manager's only when this save
   // changes its percent or status, as on the phone. Every web save had
   // marked it, so changing only the area of an imported 100% task made the
@@ -244,9 +358,19 @@ export function buildDAVEWebScheduleItem({
   const storedProgress = current
     ? reconcileScheduleProgress(current.status, current.percentComplete)
     : null;
-  const progressEditedHere = !storedProgress ||
+  const progressChangedHere = !storedProgress ||
     storedProgress.status !== progress.status ||
     storedProgress.percentComplete !== progress.percentComplete;
+  // Open item, web batch WS1 item 5 (6 Oct 2026): a percent he typed that is the percent the task already held from a
+  // schedule file (a master's 60% over his 30%, "Schedule update"; a lookahead's; an import's) was no change, so it
+  // stayed the file's: the next file could lower it, and deleting that lookahead with its tasks put his older 30%
+  // back, though he had entered 60% himself. A percent he typed is his entry, at the time he saved it. Only when he
+  // typed in the box (percentEntered): a save that changes something else still leaves the file's percent the file's
+  // (A12 pass 4 M1), and so does an emptied box (A12 pass 5 L1). His own percent typed again is left as it was, with
+  // its time; a close or reopen is the workflow's.
+  const percentEnteredOverAFiles = Boolean(current) && !progressChangedHere && draft.percentEntered === true &&
+    !draft.workflowAction && Number.isFinite(draftPercentNumber) && !scheduleProgressIsManagers(current!);
+  const progressEditedHere = progressChangedHere || percentEnteredOverAFiles;
   const progressMarking: Pick<
     ScheduleItem,
     'progressSource' | 'progressConfirmedAt' | 'progressConfirmedBy' | 'progressJudgment'
@@ -362,6 +486,28 @@ export function buildDAVEWebScheduleItem({
     // What a master's new row took from the task's earlier row (review N3 R3). Dropped by a save here, an owner cleared
     // on this page read as a blank nobody had typed, and an edit from a device that had not heard went over it unasked.
     ...(current?.textFromTask ? { textFromTask: current.textFromTask } : {}),
+    // Kept on a web edit (Build 231, S4 item 4), or the phone's rules that read them fall back to how they were: when
+    // the row's schedule was made current with its percent left standing (it goes with the percent), the highest
+    // percent a master's file stated on the row and the last, and each master's dates for the row.
+    ...(current?.progressStandsSince && !progressEditedHere ? { progressStandsSince: current.progressStandsSince } : {}),
+    ...(current?.fileProgressPeak ? { fileProgressPeak: current.fileProgressPeak } : {}),
+    ...(current?.fileProgressLast ? { fileProgressLast: current.fileProgressLast } : {}),
+    ...(current?.masterDatesOfRow ? { masterDatesOfRow: current.masterDatesOfRow } : {}),
+    // Review pass 1, web L9 (6 Oct 2026): two more marks the phone's rules read, dropped until now by any web edit.
+    // The row a sync carried the task's percent from (A7 pass 28): it goes with the percent, so a percent entered
+    // here leaves it behind. Without it a device still holding that percent read it as his own word on this row, and
+    // its Sync Now sent the old copy over a newer lookahead's dates and percent.
+    ...(current?.progressCarriedFrom && !progressEditedHere ? { progressCarriedFrom: current.progressCarriedFrom } : {}),
+    // The percent Talk wrote that its Undo took back (A5 pass 26): the note goes with the task whatever is edited,
+    // since another device may still hold that entry. Without it such a device kept Talk's undone percent as his
+    // latest entry under a file's percent, and a lookahead that stated less showed it.
+    ...(current?.progressUndone ? { progressUndone: current.progressUndone } : {}),
+    // And the priority the row's own import gave it (schedule batch S6, item 1): without it a priority set here reads as not his.
+    // On a row saved before rows kept it, a priority changed here writes it, as the phone's edit does.
+    ...(current?.priorityAsImported ? { priorityAsImported: current.priorityAsImported }
+      : current ? (noted => (noted ? { priorityAsImported: noted } : {}))(scheduleEditWithPriorityNoted(current as never, { priority: draft.priority }).priorityAsImported) : {}),
+    // And the mark that a priority is one he set, and when (review pass 1, P1-1 / P1-2 / P1-9): kept, and left by a priority changed here.
+    ...(mark => (mark ? { prioritySetByHand: mark } : {}))(current ? scheduleEditWithPriorityNoted(current as never, { priority: draft.priority }, now).prioritySetByHand ?? current.prioritySetByHand : null),
     // The rows of uploaded schedules waiting to restate it at Make Current (A5 pass 18 L3).
     ...(current?.scheduleRowsAwaitingCurrent?.length ? { scheduleRowsAwaitingCurrent: current.scheduleRowsAwaitingCurrent } : {}),
     sourceDocumentId: current?.sourceDocumentId ?? null,
@@ -514,6 +660,12 @@ export function mergeDAVEWebConflictDraft({
     percentComplete: minePercent === null || minePercent === base.percentComplete
       ? latest.percentComplete
       : draft.percentComplete,
+    // A percent he typed that is the one he opened (WS1 item 5) is his entry only while the other device left the
+    // percent alone: over a percent that device changed, the newer value stays, and it is not marked as his.
+    percentEntered: draft.percentEntered === true && minePercent !== null && minePercent === base.percentComplete &&
+      latest.percentComplete !== base.percentComplete
+      ? false
+      : draft.percentEntered,
     priority: draft.priority === (base.priority ?? 'Medium')
       ? latest.priority ?? 'Medium'
       : draft.priority,
@@ -648,6 +800,27 @@ export function scheduleItemForCloud(
   // Every web write of a task passes here: the shown copy's marker (savedLookaheadDates) is never saved, and dates
   // only shown go back to the saved ones (review N1 L1).
   return scheduleItemAsSaved(scheduleItem);
+}
+
+function refuseUnsupportedDuration(value: number | string | null | undefined) {
+  if (value === undefined || value === null || value === '') return;
+  const days = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(days) || !scheduleDurationIsSupported(days)) {
+    throw new DAVEWebTaskValidationError(SCHEDULE_DURATION_RANGE_TEXT);
+  }
+}
+
+/**
+ * A date this save changes must be a day the schedule supports. A date left
+ * as stored is not judged here, and text that names no day ("TBD") is kept
+ * as the forms already keep it.
+ */
+function refuseUnsupportedDay(label: string, value: string | undefined, stored: string | null | undefined) {
+  if (value === undefined || daveWebScheduleDatesMatch(value, stored)) return;
+  const day = scheduleCalendarDay(value);
+  if (day && !scheduleDayIsSupported(day)) {
+    throw new DAVEWebTaskValidationError(scheduleDateRangeText(label));
+  }
 }
 
 function requiredText(value: string, label: string): string {

@@ -20,6 +20,7 @@ import {
   useFieldUpdateDocumentChangeWaiting,
 } from '../../components/field-update-document-change-notice';
 import * as notice from '../../services/FieldUpdateDocumentChangeNotice';
+import { firstProjectPhotoToShow } from '../../services/ProjectPhotoTransport';
 
 const fs = jest.requireActual('fs') as typeof import('fs');
 const path = jest.requireActual('path') as typeof import('path');
@@ -57,6 +58,7 @@ function compileUpdateHistoryCard(): (props: Record<string, unknown>) => React.R
     React, useState: React.useState, View, Text, TouchableOpacity, Image, __DEV__: false,
     Ionicons: () => null, styles: new Proxy({}, { get: () => ({}) }), colors: new Proxy({}, { get: () => '#000' }),
     useProjectPhotoDisplayUri: () => ({ uri: null, onError: () => undefined }), resolveProjectPhotoUri: () => null,
+    firstProjectPhotoToShow, // sync batch Y3, item 1 (landed after this test): the card's thumbnail is its first photo that can be shown. Dep added deliberately.
     useFieldUpdateConflictReview: () => false, useFieldUpdateDocumentChangeWaiting,
     FIELD_UPDATE_CONFLICT_REVIEW_LABEL: 'Needs Review', FIELD_UPDATE_DOCUMENT_CHANGE_WAITING_TEXT,
     queuedStatusCopyForUpdate: () => 'Waiting to sync', countLabel: (count: number, word: string) => `${count} ${word}`,

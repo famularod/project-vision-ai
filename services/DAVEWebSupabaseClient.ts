@@ -25,9 +25,11 @@ import {
   accessTokenIsForBrowserTabSignIn,
   browserTabSignInUserId,
   browserTabStoredSignIn,
+  type BrowserTabStoredSignIn,
   forgetBrowserTabSignIn,
   supabaseSecureAuthStorage,
 } from './SupabaseAuthStorage.web';
+import { createDAVEWebSignInRefreshGuard, type DAVEWebSignInRefreshGuard } from './DAVEWebSignInRefreshGuard';
 import {
   applySupabaseKeysetPage,
   chunkSupabaseFilterValues,
@@ -68,8 +70,11 @@ import {
   enqueueECOSHostedIndex,
   carryECOSHostedIndexStatus,
   loadECOSHostedIndexStatuses,
+  loadECOSScheduleRetirementScope,
   type ScheduleRetirementScope,
 } from './ECOSHostedIndexer';
+import { ECOS_ASK_OWNER_CHECK_LIMIT_MS } from './ECOSAskProgress';
+import { ECOSAskOwnerCheckTimedOutError } from './ECOSAskWait';
 import { askECOSProjectQuestion, type ECOSProjectQuestionControl } from './ECOSProjectQuestion';
 import {
   analyzeECOSDrawingPage,
@@ -207,7 +212,45 @@ export type DAVEWebSupabaseGateway = ReturnType<typeof createDAVEWebSupabaseGate
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL?.trim() ?? '';
 const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY?.trim() ?? '';
 
-const browserClient = SUPABASE_URL && SUPABASE_ANON_KEY
+/**
+ * Batch W1 (6 Oct 2026): this tab never presents a refresh token that tabs
+ * of this browser have replaced twice or more (Chrome's Duplicate Tab; see
+ * DAVEWebSignInRefreshGuard). Every request of the web client goes through
+ * it; only a request for tokens is looked at.
+ */
+const browserSignInGuard = SUPABASE_URL && SUPABASE_ANON_KEY
+  ? createDAVEWebSignInRefreshGuard({
+      fetch: (input, init) => fetch(input, init),
+      shared: () => {
+        try {
+          return typeof window === 'undefined' ? null : window.localStorage;
+        } catch {
+          return null;
+        }
+      },
+      // The key the note's fingerprints are made with stays in this tab's own storage, with its sign-in (review pass 1, web L2).
+      tab: () => {
+        try {
+          return typeof window === 'undefined' ? null : window.sessionStorage;
+        } catch {
+          return null;
+        }
+      },
+      // How a tab tells that another tab is open now and holds a newer token (review pass 1, web L1).
+      locks: () => {
+        try {
+          const locks = typeof navigator === 'undefined' ? null : navigator.locks;
+          return locks
+            ? { request: (name, options, held) => locks.request(name, options, held), query: () => locks.query() }
+            : null;
+        } catch {
+          return null;
+        }
+      },
+    })
+  : null;
+
+const browserClient = SUPABASE_URL && SUPABASE_ANON_KEY && browserSignInGuard
   ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       auth: {
         storage: supabaseSecureAuthStorage,
@@ -215,6 +258,7 @@ const browserClient = SUPABASE_URL && SUPABASE_ANON_KEY
         persistSession: true,
         detectSessionInUrl: false,
       },
+      global: { fetch: browserSignInGuard.fetch },
     })
   : null;
 
@@ -250,7 +294,11 @@ function keepRealtimeOnThisTabsSignIn(client: SupabaseClient): void {
   };
 }
 
-export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
+export function createDAVEWebSupabaseGateway(
+  client: SupabaseClient | null,
+  /** The guard the client's requests go through, when it has one (batch W1). */
+  signInGuard: (Pick<DAVEWebSignInRefreshGuard, 'gaveWay'> & Partial<Pick<DAVEWebSignInRefreshGuard, 'signInOver' | 'vouchedFor' | 'signingOut' | 'signOutConfirmed'>>) | null = null,
+) {
   if (client) keepRealtimeOnThisTabsSignIn(client);
   let artifactPathOwnerId: string | null = null;
   let authorizedPhotoPaths = new Set<string>();
@@ -259,6 +307,8 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
   let cachedAuthorizedRows: DAVEWebRawRows | null = null;
   let authorizationCache: Readonly<{ ownerId: string; expiresAt: number }> | null = null;
   let authorizationInFlight: Promise<string> | null = null;
+  /** When the owner check now on its way was sent. */
+  let authorizationInFlightSince = 0;
   const documentCoverageSummaryCache = new Map<string, Readonly<{
     expiresAt: number;
     summary: ECOSDocumentCoverageSummary;
@@ -299,6 +349,8 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
 
   /** How often this tab's sign-in has changed, or may have: every time what is kept of the owner check is cleared. */
   let signInChanges = 0;
+  /** The Sign Out of This Computer last made in this tab signed it out without the cloud confirming it. */
+  let signedOutUnconfirmed = false;
 
   function invalidateAuthorization() {
     authorizationCache = null;
@@ -335,13 +387,86 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
    * either (owner answer Q26). The account is the one this tab's own
    * storage named when it was last looked at (as the tab started, as its
    * page began to listen, at the event before), never one an event carried.
+   *
+   * Batch W1 (6 Oct 2026): a tab that GAVE WAY (a stale copy made by
+   * Duplicate Tab, which did not present its replaced token) lost its
+   * sign-in in this tab only. The server ended nothing and the account is
+   * still signed in in the working tab, which uses these same report
+   * periods: they stay.
+   *
+   * Review pass 1 of the web area, L1 (6 Oct 2026): they stayed whenever
+   * the tab gave way, also after the phone's "Sign Out of All Devices",
+   * and also when the tab it gave way to had since been closed: nobody
+   * asked the server, and the periods were left in the browser for good.
+   * Giving way is not the server's answer. A tab now gives way only to a
+   * tab that is open (the guard), and the periods stay only while that
+   * sign-in can still be taken as good: its newest hourly token has not
+   * run out, the tab given way to is still there, and the sign-in has not
+   * ended. When any of that stops, this tab removes them, as a sign-in
+   * the server ended does.
+   *
+   * Open item W1-2 (6 Oct 2026): either way this tab then showed the
+   * sign-in page but went on holding, in memory, the rows it had loaded
+   * (and the photo and document addresses it had checked) until the page
+   * was reloaded. Nothing showed them. They are dropped with the sign-in,
+   * as the two sign-outs made here already drop them.
+   *
+   * Second review of the web area, F2 (7 Oct 2026): "when any of that
+   * stops" made the tab that gave way delete the periods although nobody
+   * had signed out: when the working tab was reloaded, when it stayed out
+   * of sight to the end of its hour, and at once when that hour had
+   * already run out. The working tab stayed signed in, and lost this
+   * computer's record of the last report sent and any approval not yet
+   * sent. A tab that only gave way now removes nothing. The periods leave
+   * this browser only when the account's sign-in really ended here: a
+   * sign-out made or heard here, or the server refusing it. The tab whose
+   * sign-in ends removes them, as before. This tab drops what it kept too
+   * once it can tell that the sign-in it gave way for really ended in this
+   * browser (the guard goes by its note): when the tab it gave way to lets
+   * go of its token, and again whenever a sign-out is heard afterwards.
+   * Only that sign-in is looked for, never one an event carried, and
+   * another account's ending changes nothing (owner answer Q26).
    */
-  let tabSignInSeenFor: string | null = client ? browserTabSignInUserId() : null;
+  let tabSignInSeen: BrowserTabStoredSignIn | null = client ? browserTabStoredSignIn() : null;
+  /** The account this tab held when it gave way, while it holds no sign-in since: whose periods it still keeps. */
+  let gaveWayAs: string | null = null;
+  /** Looks for the real end of the sign-in this tab gave way for, and drops what it kept for that account then. */
+  function watchSignInGivenWayFor() {
+    const account = gaveWayAs;
+    if (!account || !signInGuard?.gaveWay()) {
+      gaveWayAs = null;
+      return;
+    }
+    const watching = signInGuard.vouchedFor?.(() => {
+      // Once only: a sign-in of that account made in this browser afterwards has periods of its own.
+      if (gaveWayAs === account) gaveWayAs = null;
+      forgetDAVEWebReportPeriods(account);
+    }) ?? false;
+    if (watching) return;
+    // A guard that cannot say when that sign-in ends: nothing is kept on its strength.
+    gaveWayAs = null;
+    forgetDAVEWebReportPeriods(account);
+  }
   /** `mayHaveEnded`: SIGNED_OUT was heard, or the page is only now starting to listen. */
   function lookAtTabSignIn(mayHaveEnded: boolean) {
-    const held = tabSignInSeenFor;
-    tabSignInSeenFor = browserTabSignInUserId();
-    if (mayHaveEnded && held && !tabSignInSeenFor) forgetDAVEWebReportPeriods(held);
+    const held = tabSignInSeen;
+    tabSignInSeen = browserTabStoredSignIn();
+    if (!mayHaveEnded || tabSignInSeen) return;
+    if (!held) {
+      // A sign-out heard while this tab holds no sign-in. When it gave way earlier, this may be the end of the
+      // sign-in it gave way for (second review, web F2).
+      watchSignInGivenWayFor();
+      return;
+    }
+    forgetSignedInReads();
+    if (signInGuard?.gaveWay()) {
+      gaveWayAs = held.userId;
+      watchSignInGivenWayFor();
+      return;
+    }
+    forgetDAVEWebReportPeriods(held.userId);
+    // The note the Duplicate Tab guard keeps for that sign-in leaves this browser with it (review pass 1, web L2).
+    void signInGuard?.signInOver?.(held.sessionId);
   }
 
   /**
@@ -384,10 +509,39 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       return ownerId;
     });
     authorizationInFlight = request;
+    authorizationInFlightSince = Date.now();
     try {
       return await request;
     } finally {
       if (authorizationInFlight === request) authorizationInFlight = null;
+    }
+  }
+
+  /**
+   * Build 231 E1 item 2: the owner check before an Ask ECOS question has a
+   * time limit of its own, counted from when the check was sent. A check
+   * that never answered held this question, and every later one, to the
+   * full 150 s limit until the page was reloaded: they all waited on the
+   * one check on its way. At the limit this question stops with its own
+   * sentence, and the check is let go of, so the next caller sends a new
+   * one. The old request itself cannot be stopped; if it answers later for
+   * the sign-in the tab still holds, its answer is kept as before.
+   */
+  async function requireAuthorizedOwnerForQuestion(limitMs = ECOS_ASK_OWNER_CHECK_LIMIT_MS): Promise<string> {
+    const check = requireAuthorizedOwnerCached();
+    const waitedFor = authorizationInFlight;
+    if (!waitedFor) return check;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        if (authorizationInFlight === waitedFor) authorizationInFlight = null;
+        reject(new ECOSAskOwnerCheckTimedOutError(limitMs));
+      }, Math.max(0, limitMs - (Date.now() - authorizationInFlightSince)));
+    });
+    try {
+      return await Promise.race([check, limit]);
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -447,7 +601,7 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       closedProjectNames?: readonly string[];
     }) {
       if (!client) throw new Error('The desktop cloud connection is not configured.');
-      await requireAuthorizedOwnerCached();
+      await requireAuthorizedOwnerForQuestion();
       return askECOSProjectQuestion({ client, ...input });
     },
     /**
@@ -560,18 +714,85 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       return { ok: true, session: data.session };
     },
 
-    /** This computer only unless 'global' is asked for (owner answer Q21). */
+    /**
+     * This computer only unless 'global' is asked for (owner answer Q21).
+     *
+     * Review pass 1 of the web area, L3 (6 Oct 2026): Sign Out of This
+     * Computer always signs this tab out, at once. It had been refused,
+     * with the sign-in left in the tab, whenever auth-js could not finish:
+     * for up to ten minutes after the server had answered "too many
+     * requests" to a refresh (batch W1 made the tab wait then, and a
+     * run-out hourly token is refreshed before a sign-out), and whenever
+     * the sign-in server could not be reached. The server is still told
+     * when it can be: auth-js asks it first, for a few seconds at most
+     * (the guard sees to that). Whatever comes of that, the sign-in then
+     * leaves this tab, with the rows read, the account's report periods and
+     * the Duplicate Tab note, as its warning says. A sign-in the server was
+     * not told of stays good only in a tab that was closed or asleep, which
+     * the sign-out choice already says.
+     *
+     * All Devices is unchanged: only the server can sign the other devices
+     * out, so without it nothing is signed out and he is told (Q21).
+     *
+     * Second review of the web area, F5 (7 Oct 2026): nothing said so when
+     * the cloud did not confirm the sign-out. It is noted here, for the
+     * sign-in page to say (`signedOutWithoutCloudConfirmation`).
+     */
     async signOut(scope: DAVEWebSignOutScope = 'local'): Promise<void> {
+      signedOutUnconfirmed = false;
       if (!client) return;
-      const userId = browserTabSignInUserId();
-      const { error } = await client.auth.signOut({ scope });
-      if (error && scope === 'global' && isAuthRetryableFetchError(error)) {
-        throw new DAVEWebSignOutNeedsConnectionError();
+      const ending = browserTabStoredSignIn();
+      const askAuth = () => client.auth.signOut({ scope });
+      /** All Devices is refused below when the cloud did not do it; with nothing to sign out there is nothing to confirm. */
+      let confirmedByCloud = true;
+      if (scope === 'global') {
+        // The sign-out's own refresh is not held back by a "too many requests" wait.
+        const { error } = await (signInGuard?.signingOut ? signInGuard.signingOut('everywhere', askAuth) : askAuth());
+        if (error && isAuthRetryableFetchError(error)) throw new DAVEWebSignOutNeedsConnectionError();
+        if (error) throw new Error('The desktop session could not be closed.');
+      } else {
+        try {
+          const { error } = await (signInGuard?.signingOut ? signInGuard.signingOut('here', askAuth) : askAuth());
+          // What the server itself answered, as the guard heard it; without a guard, auth-js's word that it went through.
+          confirmedByCloud = !ending ||
+            (signInGuard?.signingOut && signInGuard.signOutConfirmed ? signInGuard.signOutConfirmed() : !error);
+        } catch {
+          // Whatever auth-js left in this tab is looked at below.
+          confirmedByCloud = !ending;
+        }
+        // What auth-js could not take out is taken out here. A sign-in made here meanwhile (another session,
+        // or any at all when the tab held none as this sign-out began) is not this sign-out's to remove, as
+        // when another tab's sign-out is heard.
+        const stored = browserTabStoredSignIn();
+        const anotherSignIn = stored !== null && ending !== null &&
+          stored.sessionId !== null && ending.sessionId !== null &&
+          (stored.userId !== ending.userId || stored.sessionId !== ending.sessionId);
+        if (stored && ending && !anotherSignIn) {
+          forgetBrowserTabSignIn();
+          // auth-js tells its listeners of the sign-out it could not finish (no request: nothing is stored now).
+          await client.auth.signOut({ scope: 'local' }).catch(() => undefined);
+        }
       }
-      if (error) throw new Error('The desktop session could not be closed.');
       forgetSignedInReads();
       // The account's report periods leave this browser with its sign-in (review N1).
-      if (userId) forgetDAVEWebReportPeriods(userId);
+      if (ending) forgetDAVEWebReportPeriods(ending.userId);
+      // And so does the note the Duplicate Tab guard keeps for it (review pass 1, web L2).
+      if (ending) await signInGuard?.signInOver?.(ending.sessionId);
+      signedOutUnconfirmed = !confirmedByCloud;
+    },
+
+    /**
+     * Whether the Sign Out of This Computer last made in this tab signed
+     * it out while the cloud did NOT confirm it: no connection, the server
+     * "unavailable" or saying "too many requests", an error of its own, or
+     * no answer in five seconds (second review, web F5). That sign-in may
+     * then still be good on the server, and the sign-in page says so. False
+     * when the cloud took the sign-out, said that sign-in is not there, or
+     * had already ended it; when there was nothing to sign out; and for
+     * Sign Out of All Devices, which is refused when the cloud cannot do it.
+     */
+    signedOutWithoutCloudConfirmation(): boolean {
+      return signedOutUnconfirmed;
     },
 
     /**
@@ -621,6 +842,16 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
      * that: a second ending, started while his sign-in here was out, had
      * shown the sign-in page as it settled, though it had kept his new
      * sign-in and the workspace was open on it.
+     *
+     * Second review of the web area, F5 (7 Oct 2026): this was not given
+     * the limits of a sign-out made in the tab (review pass 1, web L3).
+     * With a server that took the request and never answered, auth-js
+     * never answered either, nothing below ran, and the tab showed the
+     * sign-in page while it KEPT its sign-in: a reload showed his projects.
+     * It now runs as Sign Out of This Computer does: the server is asked
+     * once, for five seconds at most, and then the sign-in leaves this tab.
+     * (With no connection and a run-out hourly token that is one request at
+     * once, where it was eight over half a minute.)
      */
     async signOutThisTabToo(userId: string): Promise<DAVEWebTabSignOutOutcome> {
       if (!client) return 'ended';
@@ -628,7 +859,8 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       if (!ending) return 'ended';
       if (!userId || ending.userId !== userId) return 'kept';
       try {
-        await client.auth.signOut({ scope: 'local' });
+        const askAuth = () => client.auth.signOut({ scope: 'local' });
+        await (signInGuard?.signingOut ? signInGuard.signingOut('here', askAuth) : askAuth());
       } catch {
         // Whatever auth-js left in storage is looked at below.
       }
@@ -643,6 +875,8 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       forgetSignedInReads();
       // This tab's own copies of that account's report periods go too (review N1).
       forgetDAVEWebReportPeriods(userId);
+      // And the note the Duplicate Tab guard keeps for that sign-in (review pass 1, web L2).
+      await signInGuard?.signInOver?.(ending.sessionId);
       return 'ended';
     },
 
@@ -674,7 +908,8 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
           ? readOwnerRows(client, 'project_updates', userId, ROW_ID_KEY, 'created_at')
           : Promise.resolve(cachedRows?.projectUpdates ?? []),
         shouldRead('reference_documents')
-          ? readAuthorizedReferenceDocumentMetadata(client)
+          ? readAuthorizedReferenceDocumentMetadata(client).then(rows => // with the cloud's archived marks (owner answer Q44)
+              withArchivedReferenceDocumentMarks(client, userId, rows, cachedRows?.referenceDocuments ?? []))
           : Promise.resolve(cachedRows?.referenceDocuments ?? []),
         shouldRead('sync_tombstones')
           ? readOwnerRows(client, 'dave_sync_tombstones', userId, DELETION_RECORD_KEY, 'deleted_at')
@@ -1405,6 +1640,20 @@ export function createDAVEWebSupabaseGateway(client: SupabaseClient | null) {
       return updateId;
     },
 
+    /**
+     * Read-only (web batch WS2 item 3, allowed by the coordinator's decision of 6 Oct 2026): what THIS cloud retires
+     * when a schedule is made current, asked before the owner is asked (the phone asks the same function,
+     * loadECOSScheduleRetirementScope): 'project' once the Q15 migration is applied (a combined schedule stays
+     * current for its other projects), 'schedule' before it, null when the cloud gave no answer. Through this tab's
+     * own client and its owner check, like every other read here; it writes nothing and takes no part in how a tab
+     * gets, keeps, refreshes or drops a sign-in.
+     */
+    async loadAuthorizedScheduleRetirementScope(): Promise<ScheduleRetirementScope | null> {
+      if (!client) return null;
+      await requireAuthorizedOwnerCached();
+      return loadECOSScheduleRetirementScope(client);
+    },
+
     async setAuthorizedCurrentSchedule(
       selected: ReferenceDocument & DAVEWebDocumentExtension & { cloudUpdatedAt?: string | null },
       scheduleDocuments: readonly (ReferenceDocument & DAVEWebDocumentExtension & { cloudUpdatedAt?: string | null })[],
@@ -1811,13 +2060,19 @@ function applyDAVEWebRealtimeRows(
   const property = collection ? webRowsProperty(collection) : null;
   const id = readRawString(candidate, 'id');
   if (!collection || !property || !id) return null;
+  // A shared document's live row may come without its record: merged into the row this tab holds, or, where
+  // that row cannot complete it, not applied, so that the list is read again (review of D1, L7).
+  const documentRow = entity === 'reference_document' && payload.eventType !== 'DELETE'
+    ? withHeldDocumentRecord(candidate, rows.referenceDocuments, id)
+    : candidate;
+  if (!documentRow) return null;
   // An archived project row is kept with its flag, so the portfolio still
   // knows the name to keep out.
   const nextCollection = mergeRealtimeRows(
     rows[property],
     entity === 'reference_document' && payload.eventType !== 'DELETE'
-      ? withHeldHostedIndexStatus(candidate, rows.referenceDocuments, id)
-      : candidate,
+      ? withHeldHostedIndexStatus(documentRow, rows.referenceDocuments, id)
+      : documentRow,
     payload.eventType,
     value => readRawString(value, 'id'),
   );
@@ -1825,6 +2080,34 @@ function applyDAVEWebRealtimeRows(
     rows: Object.freeze({ ...rows, [property]: nextCollection }),
     collections: Object.freeze([collection]),
   });
+}
+
+/**
+ * A live row of a shared document that carries no record (review of D1, L7).
+ * A write that leaves a large record untouched, as Archive and Restore do
+ * (they write the archived mark alone, owner answer Q44), is sent by the
+ * cloud's live changes without that record. Put in place of the row this tab
+ * holds, it left the document with a name and a category and nothing else:
+ * no project, no file, until the page was reloaded.
+ *
+ * So it is merged into the held row instead: the held record is kept, and
+ * the live row's own columns (the mark among them) are taken. That is right
+ * only while the held row is the same version of the record, which a write
+ * that did not touch the record leaves unchanged: the same "last changed"
+ * stamp. Where the tab holds no such row, or the stamps differ, nothing is
+ * applied (null), and the list is read from the cloud again, as the phone
+ * does with such a row.
+ */
+function withHeldDocumentRecord(
+  candidate: Readonly<Record<string, unknown>>,
+  heldRows: readonly unknown[],
+  id: string,
+): Readonly<Record<string, unknown>> | null {
+  if (isRecord(candidate.document_data)) return candidate;
+  const held = heldRows.find(row => readRawString(row, 'id') === id);
+  if (!isRecord(held) || !isRecord(held.document_data)) return null;
+  if (readRawString(held, 'updated_at') !== readRawString(candidate, 'updated_at')) return null;
+  return { ...held, ...candidate, document_data: held.document_data };
 }
 
 /**
@@ -1917,7 +2200,7 @@ function readRawString(value: unknown, key: string): string {
   return typeof candidate === 'string' ? candidate.trim() : '';
 }
 
-export const daveWebSupabaseGateway = createDAVEWebSupabaseGateway(browserClient);
+export const daveWebSupabaseGateway = createDAVEWebSupabaseGateway(browserClient, browserSignInGuard);
 
 async function processAuthorizedStorageCleanup(
   client: SupabaseClient,
@@ -2459,4 +2742,52 @@ async function readAuthorizedReferenceDocumentMetadata(
     throw new Error('Authorized reference document metadata could not be loaded.');
   }
   return Object.freeze([...data]);
+}
+
+/**
+ * Owner answer Q44 (6 Oct 2026): an archived compliance document is hidden on
+ * every device and kept in the cloud. The mark is the column
+ * reference_documents.archived_at, which the owner adds by pasting a database
+ * change. The document list above does not carry it, so the table is asked
+ * which of the account's documents have it, and each such row is given its
+ * archived_at, as a live change from the cloud already carries it.
+ *
+ * It never fails the list and shows nothing. "No such column" (before the
+ * database change): no document is archived. No answer at all (no signal, a
+ * stall, a refusal): each row keeps the mark this tab last read for it.
+ * The same rule as the phone's (services/SharedDocumentArchive.ts).
+ */
+async function withArchivedReferenceDocumentMarks(
+  client: SupabaseClient,
+  ownerId: string,
+  rows: readonly unknown[],
+  heldRows: readonly unknown[],
+): Promise<readonly unknown[]> {
+  const marked = (source: ReadonlyMap<string, string>) => Object.freeze(rows.map(row => {
+    const archivedAt = isRecord(row) ? source.get(readRawString(row, 'id')) : undefined;
+    return isRecord(row) && archivedAt ? { ...row, archived_at: archivedAt } : row;
+  }));
+  const held = () => new Map(heldRows.flatMap(row => (
+    isRecord(row) && typeof row.archived_at === 'string' && row.archived_at
+      ? [[readRawString(row, 'id'), row.archived_at] as const]
+      : [])));
+  try {
+    const { data, error } = await client
+      .from('reference_documents')
+      .select('id, archived_at')
+      .eq('owner_id', ownerId)
+      .not('archived_at', 'is', null);
+    if (error) {
+      const message = String(error.message || '').toLowerCase();
+      const noSuchColumn = message.includes('archived_at') && (error.code === '42703' || message.includes('does not exist'));
+      return noSuchColumn ? rows : marked(held());
+    }
+    if (!Array.isArray(data)) return marked(held());
+    return marked(new Map(data.flatMap(row => (
+      isRecord(row) && typeof row.id === 'string' && typeof row.archived_at === 'string' && row.archived_at
+        ? [[row.id, row.archived_at] as const]
+        : []))));
+  } catch {
+    return marked(held());
+  }
 }

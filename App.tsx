@@ -35,7 +35,7 @@ import {
   queueScheduleItemRecord, listScheduleItemsWithEditsWaiting, scheduleItemEditsWaitingAtLastLoad, noteFieldUpdateEditOpened, // each edit's base (owner answer Q28)
   removeOperationalRecordFromSyncQueue, withdrawQueuedChangesOfDeletedProject, cloudProjectsMissedByLists,
   synchronizeLocalData,
-  uploadPendingChanges, withAnalysisResultsLastInCloud, withPhoneAnalysisResults,
+  uploadPendingChanges, withAnalysisResultsLastInCloud, withPhoneAnalysisResults, fieldUpdateCardsWithCloudPhotoResults, subscribeToCloudPhotoResultsKept,
   type FieldUpdateSyncWorkAttempt,
   type MissingSyncPhoto,
   type PhotoStorageUploadFailureCategory,
@@ -93,6 +93,8 @@ import {
 import { afterTextInputBlur } from './components/after-text-input-blur';
 import {
   mailComposerOutcome,
+  reportFileTitleWithDate,
+  reportSubjectWithDate,
   smsComposerOutcome,
   type ReportCommunicationOutcome,
 } from './services/ReportCommunication';
@@ -100,6 +102,7 @@ import { AppShellFrame } from './components/app-shell-frame';
 import { OverlayErrorBoundary } from './components/overlay-error-boundary';
 import { useFieldNoteBackgroundRetry } from './hooks/use-field-note-background-retry';
 import { useHiddenSharedDocuments } from './hooks/use-hidden-shared-documents';
+import { useSharedDocumentArchive } from './hooks/use-shared-document-archive'; import { ArchivedDocumentsSection } from './components/archived-documents-section'; import { withArchivedProjectDocumentsRestored } from './services/SharedDocumentArchive';
 import { useProjectDocumentSharedRecordSync } from './hooks/use-project-document-shared-record-sync';
 import { colors, styles } from './components/app-shell-theme';
 import { LiveAuthorityStatusBanner } from './components/live-authority-status-banner';
@@ -150,7 +153,7 @@ import {
 } from './components/updates-workspace-layout';
 import { DocumentsWideWorkspace } from './components/documents-workspace-layout';
 import { SharedReferenceDocumentCard } from './components/shared-reference-document-card';
-import { buildMobileDocumentWorkspace, type MobileDocumentWorkspaceEntry } from './services/MobileDocumentWorkspace';
+import { buildMobileArchivedDocuments, buildMobileDocumentWorkspace, type MobileDocumentWorkspaceEntry } from './services/MobileDocumentWorkspace';
 import { ProjectDocumentActions, ProjectDocumentsHeader } from './components/project-documents-header';
 import { DocumentUploadDetailsSheet } from './components/document-upload-details-sheet';
 import { ProjectDocumentCard } from './components/project-document-card';
@@ -220,6 +223,7 @@ import {
 } from './hooks/use-async-storage-persistence';
 import { useAccountDisplayName } from './hooks/use-account-display-name';
 import { useKeptWalkMemoryDraft } from './hooks/use-kept-walk-memory-draft';
+import { useKeptDraftLocationNotice } from './hooks/use-kept-draft-location-notice';
 import { settleUnsavedDraftsOnAccountChange } from './hooks/unsaved-drafts-on-account-change';
 import {
   isStartupHydrationReady,
@@ -227,7 +231,7 @@ import {
 } from './hooks/use-startup-hydration';
 import { useRealityModelCacheRecovery } from './hooks/use-reality-model-cache-recovery';
 import { useCommittedText } from './hooks/use-committed-text';
-import { useScheduleProgressDraft } from './hooks/use-schedule-progress-draft';
+import { useScheduleProgressDraft, useScheduleVerificationNoteDraft } from './hooks/use-schedule-progress-draft';
 import { useStartupLocalFirstRecovery } from './hooks/use-startup-local-first-recovery';
 import { useProjectPhotoDisplayUri } from './hooks/use-project-photo-display-uri';
 import { scheduleProgressUndoPoint, scheduleTalkUndo } from './services/ScheduleProgressSource';
@@ -387,6 +391,7 @@ import {
   createBackupRestoreRuntime,
   preflightAppBackup,
 } from './services/BackupRestoreRuntime';
+import { sayRecoveryRecordsSetAsideOnce } from './services/RecoveryRecordNotices';
 import {
   buildCombinedReportAuthorityScope,
   buildDailyReportAuthorityScope,
@@ -414,7 +419,7 @@ import { bindProjectDocumentUploadToAccount, createProjectDocumentUploadRetryRun
 import { useAfterSignInPendingEnds } from './hooks/use-after-sign-in-pending-ends';
 import { legacyOrphanedProjectDocumentBridges, withdrawUnsentProjectDocumentBridge } from './services/ProjectDocumentBridge';
 import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
-import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './services/ProjectPhotoTransport';
+import { firstProjectPhotoToShow, preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './services/ProjectPhotoTransport';
 import { cloudCopyShownOnDevice, documentsUploadedAfterCloudCopy, fieldUpdatesToResendForDocument, withDeviceDocumentUploadState, withoutFieldUpdateDocument } from './services/FieldUpdateDocumentUploadState';
 import { closeProjectMessage, queuedWorkForProject } from './services/ProjectCloseGuard';
 import {
@@ -610,6 +615,7 @@ import { buildVerifiedLearningEventsFromDecisionLedger } from './services/PIEDec
 import type { PIEExecutiveJudgmentRecord } from './services/PIEExecutiveJudgmentRepository';
 import type { PIEReportDraft, PIEReportType } from './services/domains/reporting';
 import {
+  oneAtATime,
   renderNativeReportDrawingPreview,
   resolveNativeReportWordMedia,
 } from './services/ReportWordMedia.native';
@@ -691,7 +697,7 @@ import { useIdentityAliasCleanup } from './hooks/use-identity-alias-cleanup';
 import { useKeptTalkCapture } from './hooks/use-kept-talk-capture';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from './services/ScheduleImportMerge';
-import { scheduleDependenciesAfterScheduleDeleted, scheduleFileOnlyDeleteRefusal, scheduleImportAddsToMaster, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './services/ScheduleLookahead';
+import { scheduleDependenciesAfterScheduleDeleted, scheduleFileOnlyDeleteRefusal, scheduleImportAddsToMaster, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote, scheduleTasksOnMasterDatesOnceLookaheadGone, type ScheduleLookaheadNotesSeen } from './services/ScheduleLookahead';
 import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
 import {
   extractTextFromPdf,
@@ -983,7 +989,7 @@ const projectDeletionRuntime = createProjectDeletionRuntime({
   }),
 });
 // The files a restore placed, kept while it can still finish (independent review R01).
-const restoredMediaLedger = createRestoredMediaLedger({ storage: AsyncStorage, removeFile: expoBackupFileIO.remove, createId: createProjectId,
+const restoredMediaLedger = createRestoredMediaLedger({ storage: AsyncStorage, removeFile: expoBackupFileIO.remove, createId: createProjectId, appFolders: [FileSystem.documentDirectory, FileSystem.cacheDirectory],
   priorityKeys: [UPDATES_STORAGE_KEY, DRAFT_STORAGE_KEY, REFERENCE_DOCUMENTS_STORAGE_KEY, PROJECT_DOCUMENTS_STORAGE_KEY] });
 const backupRestoreRuntime = createBackupRestoreRuntime({
   storage: AsyncStorage, settleRestoredMedia: restoredMediaLedger.settlePending,
@@ -5080,6 +5086,7 @@ function AppShell() {
 
   const [projectDocumentsLoaded, setProjectDocumentsLoaded] =
     useState(false);
+  const sharedDocumentArchive = useSharedDocumentArchive({ cardsLoaded: projectDocumentsLoaded, restoreCards: ids => setProjectDocuments(prev => withArchivedProjectDocumentsRestored(prev, ids)) }); // archived = hidden on every device, kept in the cloud (owner answer Q44)
 
   const [scheduleItemsLoaded, setScheduleItemsLoadedState] =
     useState(false);
@@ -5198,6 +5205,7 @@ function AppShell() {
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const [draftFixTracker] = useState(createDraftFixTracker);
+  useKeptDraftLocationNotice({ ready: startupHydrationReady && draftLoaded, draft, notice: draftLocationNotice, generation: draftFixTracker.generation, setNotice: setDraftLocationNotice }); // a resumed update says why it has no GPS (P1 part B item 3)
   const draftLocationCaptureRef = useRef<ReturnType<typeof captureDraftLocation> | null>(null);
   const [photoAuthRequest, setPhotoAuthRequest] = useState<{
     update: ProjectUpdate;
@@ -5230,7 +5238,10 @@ function AppShell() {
     logStartupDiagnostic('app_shell_mounted', 'App shell mounted.');
   }, []);
 
+  useEffect(() => subscribeToCloudPhotoResultsKept((updateId, cloudCopy) => setSavedUpdates(current => fieldUpdateCardsWithCloudPhotoResults(current, updateId, cloudCopy))), []); // a photo result an upload left out for the cloud's own is on the card at once (sync batch Y4, item 4)
+
   useEffect(() => {
+    void backupRestoreRuntime.recoverBeforeStartupReads().then(() => sayRecoveryRecordsSetAsideOnce(AsyncStorage, FIELD_UPDATE_TRANSACTION_JOURNAL_KEY, Alert.alert)).catch(() => undefined); // an unreadable record set aside is said once (sync batch Y4, item 1)
     void backupRestoreRuntime.recoverBeforeStartupReads()
       .then(() => projectDeletionRuntime.recoverPendingIntentStores())
       .then(() => startupHydration.loaded(PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY, 'pending project deletion cleanup'))
@@ -6006,6 +6017,8 @@ useEffect(() => {
     ensureScheduleParentProjects(scheduleItems);
   }, [scheduleItems, scheduleItemsLoaded, projects, projectsLoaded, startupHydrationReady]);
   useEffect(() => { if (startupHydrationReady && scheduleItemsLoaded) void queueScheduleProgressCarriedToCloud(scheduleItems); }, [scheduleItems, scheduleItemsLoaded, startupHydrationReady]); // a percent the sync merge carried goes up as itself (A7 pass 26 M-1)
+  const lookaheadNotesSeenRef = useRef<ScheduleLookaheadNotesSeen['current']>(null); // S5 item 2: a lookahead's deletion heard from another device runs the date recompute Set Active uses
+  useEffect(() => { if (startupHydrationReady && scheduleItemsLoaded) scheduleTasksOnMasterDatesOnceLookaheadGone(scheduleItems as never, referenceDocuments, lookaheadNotesSeenRef).forEach(({ item, before }) => { scheduleItemsCurrentRef.current = scheduleItemsCurrentRef.current.map(row => (row.id === item.id ? item as unknown as ScheduleItem : row)); setScheduleItems(scheduleItemsCurrentRef.current); void syncScheduleItemRevision(item as unknown as ScheduleItem, advanceScheduleItemSyncGeneration(item.id), ['startDate', 'finishDate', 'updatedAt'], before as unknown as ScheduleItem); }); }, [scheduleItems, referenceDocuments, scheduleItemsLoaded, startupHydrationReady]);
   useEffect(() => {
     // A schedule labelled with projects none of its rows belong to (every
     // project the import could use, before 30 Sep) is narrowed to its rows'
@@ -6455,6 +6468,7 @@ useEffect(() => {
     let realtimeUnsubscribe: () => void = () => undefined;
     void subscribeToDAVEOperationalChanges({
       onChange: (entity, collections, payload) => {
+        sharedDocumentArchive.noteLiveChange(entity, payload); // another device archived or restored a document (owner answer Q44)
         void applyRealtimeOperationalPayload(entity, payload)
           .then(applied => {
             if (!applied) {
@@ -7732,6 +7746,7 @@ useEffect(() => {
       );
       return;
     }
+    if (!hasSavableUpdate(sharedDocumentArchive.unsentUpdate(draftSnapshot, projectDocumentsCurrentRef.current))) return void Alert.alert('Update is blank', 'Add a photo, update notes, field note, or action information before saving.'); // only a document archived since was on it (second review, P2-L5)
 
     const invalidDueDateIndex = findInvalidDueDatePhoto(draftSnapshot);
     if (invalidDueDateIndex >= 0) {
@@ -7753,7 +7768,7 @@ useEffect(() => {
       draftSnapshot.stableSendId || `send-${draftSnapshot.id}`;
     const sendAttempts = (draftSnapshot.sendAttempts || 0) + 1;
     const baseUpdate: ProjectUpdate = {
-      ...draftSnapshot,
+      ...sharedDocumentArchive.unsentUpdate(draftSnapshot, projectDocumentsCurrentRef.current), // a document archived now does not go out with it (second review, P2-L5)
       status: 'ready_to_send',
       stableSendId: idempotencyKey,
       idempotencyKey,
@@ -10139,7 +10154,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     // takes no images and no "not attached" note (whole-app audit A6).
     const images = await reportImageFiles(reportBodyCitesImages(report) ? report : { ...report, locationGroups: [] }, REPORT_EMAIL_IMAGE_LIMIT);
     const compose = (attachments: string[], note: string) => MailComposer.composeAsync({
-      subject: report.subject || report.title,
+      subject: reportSubjectWithDate(report.subject || report.title, report.generatedAt),
       body: report.body + note,
       attachments,
     });
@@ -10287,30 +10302,30 @@ Note: This update was opened through Outlook because PLZ email security may reje
     const relevantUpdates = activeSavedUpdates.filter(update =>
       update.photos.some(photo => reportPhotoIdSet.has(photo.id)));
     // Only the cited photos are fetched, not every cloud-only photo of their
-    // updates, as the email path already does (audit A6).
-    const hydratedUpdates = await Promise.all(
-      relevantUpdates.map(update => hydrateRecoveredProjectUpdatePhotos({
-        ...update,
-        photos: update.photos.filter(photo => reportPhotoIdSet.has(photo.id)),
-      })),
-    );
-    const readableDrawingReferences = await Promise.all(
-      drawingReferences.map(async reference => {
-        try {
-          const readableDocument =
-            await ensureVerifiedReferenceDocumentBytes(reference.excerpt.document);
-          return {
-            ...reference,
-            excerpt: {
-              ...reference.excerpt,
-              document: readableDocument,
-            },
-          };
-        } catch {
-          return reference;
-        }
-      }),
-    );
+    // updates, as the email path already does (audit A6); one photo and one
+    // drawing at a time, not all at once (independent review F04).
+    const hydratedUpdates = await oneAtATime(relevantUpdates, async update => ({
+      ...update,
+      photos: await oneAtATime(
+        update.photos.filter(photo => reportPhotoIdSet.has(photo.id)),
+        async photo => (await hydrateRecoveredProjectUpdatePhotos({ ...update, photos: [photo] })).photos[0],
+      ),
+    }));
+    const readableDrawingReferences = await oneAtATime(drawingReferences, async reference => {
+      try {
+        const readableDocument =
+          await ensureVerifiedReferenceDocumentBytes(reference.excerpt.document);
+        return {
+          ...reference,
+          excerpt: {
+            ...reference.excerpt,
+            document: readableDocument,
+          },
+        };
+      } catch {
+        return reference;
+      }
+    });
     const resolvedMedia = await resolveNativeReportWordMedia({
       updates: hydratedUpdates as unknown as Parameters<
         typeof resolveNativeReportWordMedia
@@ -10319,7 +10334,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       drawingReferences: readableDrawingReferences,
     });
     const fileUri =
-      `${directory}${sanitizeFilename(report.title || 'Vitruvius Project Report')}.docx`;
+      `${directory}${sanitizeFilename(reportFileTitleWithDate(report.title || 'Vitruvius Project Report', report.generatedAt))}.docx`;
 
     try {
       const {
@@ -10341,20 +10356,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
       await FileSystem.writeAsStringAsync(fileUri, base64, {
         encoding: FileSystem.EncodingType.Base64,
       });
-      await Sharing.shareAsync(fileUri, {
-        dialogTitle: shareTitle,
-        mimeType:
-          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        UTI: 'org.openxmlformats.wordprocessingml.document',
-      });
-
       const unavailable = resolvedMedia.unavailableMedia.length;
       if (unavailable > 0) {
         const unavailableDetail = unavailable === 1
           ? `\n\n${resolvedMedia.unavailableMedia[0].label}: ${resolvedMedia.unavailableMedia[0].reason}`
           : '';
-        // Read before anything else is asked (audit A6 pass 4: the Outlook
-        // question opened on top of this notice).
+        // Read before the file is shared (independent review F04: it came
+        // after the share sheet) and before anything else is asked (audit
+        // A6 pass 4: the Outlook question opened on top of this notice).
         await new Promise<void>(resolve => Alert.alert(
           'Word report prepared',
           `${summarizeReportWordUnavailableMedia(resolvedMedia.unavailableMedia)}` +
@@ -10363,6 +10372,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
           { cancelable: true, onDismiss: () => resolve() },
         ));
       }
+      await Sharing.shareAsync(fileUri, {
+        dialogTitle: shareTitle,
+        mimeType:
+          'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        UTI: 'org.openxmlformats.wordprocessingml.document',
+      });
       return true;
     } catch (error) {
       Alert.alert(
@@ -11528,13 +11543,14 @@ Note: This update was opened through Outlook because PLZ email security may reje
       projectDocumentsCurrentRef.current = removeCard(projectDocumentsCurrentRef.current); // an upload finishing meanwhile saves the list without it (audit A8 pass 3 L3)
       setProjectDocuments(removeCard);
       if (!sensitive && sharedRecord) hiddenSharedDocuments.hide(sharedRecord.id); // no card comes back here (audit A8)
+      if (sensitive && sharedRecord && !sharedWithAnotherDocument) sharedDocumentArchive.archive(sharedRecord.id); // hidden on every device, kept in the cloud (owner answer Q44)
       if (!sensitive) void withdrawUnsentProjectDocumentBridge({ // not uploaded later (audit A7 pass 4)
         bridge: findSharedReferenceDocumentForProjectDocument(document, referenceDocumentsCurrentRef.current),
         remainingDocuments: projectDocumentsCurrentRef.current.filter(item => item.id !== documentId),
         isQueued: async id => (await getOfflineQueue()).some(item => item.entity === 'reference_document' && (item.payload as { id?: string }).id === id),
         withdraw: async id => { await removeOperationalRecordFromSyncQueue('reference_document', id); setReferenceDocuments(prev => prev.filter(item => item.id !== id)); },
       }).catch(() => undefined);
-
+      if (sensitive) return; // an archive removes nothing: the document stays on its draft and its field updates, where Restore finds it (review of D1, M1)
       setDraft(prev => ({
         ...prev,
         documents: (prev.documents || []).filter(
@@ -11564,7 +11580,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         .catch(() => Alert.alert('Delete failed', `${document.name} could not be saved as deleted. Try again.`));
     };
 
-    Alert.alert(title, message, sensitive
+    Alert.alert(title, sensitive && sharedRecord && !sharedWithAnotherDocument ? sharedDocumentArchive.question(document.name, document.category) : message, sensitive // every device, once the cloud keeps the mark (owner answer Q44)
       ? [
           { text: 'Cancel', style: 'cancel' },
           { text: `Archive ${document.category}`, style: 'destructive', onPress: () => void removeFromDevice() },
@@ -11578,8 +11594,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
   // Deleted on every device: the durable deletion record first; the cloud
   // then removes the row, its file and its ECOS index.
-  /** The PDF of a lookahead in effect is never deleted on its own (owner answer Q36): he is told why, and nothing changes. */
-  const fileOnlyDeleteRefused = (documentId: string) => { const refusal = scheduleFileOnlyDeleteRefusal(referenceDocumentsCurrentRef.current.find(item => item.id === documentId), referenceDocumentsCurrentRef.current); if (refusal) Alert.alert('Lookahead in effect', refusal); return Boolean(refusal); };
+  /** The PDF of a lookahead in effect, or of the master in effect, is never deleted on its own (owner answers Q36, Q38): he is told why, and nothing changes. */
+  const fileOnlyDeleteRefused = (documentId: string) => { const refusal = scheduleFileOnlyDeleteRefusal(referenceDocumentsCurrentRef.current.find(item => item.id === documentId), referenceDocumentsCurrentRef.current); if (refusal) Alert.alert('PDF not deleted', refusal); return Boolean(refusal); };
   async function removeReferenceDocumentEverywhere(documentId: string) {
     if (fileOnlyDeleteRefused(documentId)) return false; // whoever asks: a dialog left open, another screen (owner answer Q36)
     const tombstone = await recordDAVESyncTombstone('reference_document', documentId);
@@ -11650,10 +11666,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ? scheduleItemsForExactImportBatch(scheduleItems, document).length - relatedScheduleItems.length
       : 0;
 
-    const pdfOnly = !scheduleFileOnlyDeleteRefusal(document, referenceDocuments); // not offered for the lookahead in effect (owner answer Q36)
+    const pdfOnly = !scheduleFileOnlyDeleteRefusal(document, referenceDocuments); // not offered for the lookahead or the master in effect (owner answers Q36, Q38)
     Alert.alert(
       'Delete uploaded schedule?',
-      `${document.name} will be removed${pdfOnly ? '. You can also remove' : ', with'} the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains${pdfOnly ? ' so outdated dates do not confuse Upcoming' : ''}.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}${scheduleLookaheadDeleteNote(scheduleItems as unknown as import('./types').ScheduleItem[], document, relatedScheduleItems as unknown as import('./types').ScheduleItem[], referenceDocuments)}`,
+      `${document.name} will be removed${relatedScheduleItems.length === 0 ? '. It has no schedule items of its own' : `${pdfOnly ? '. You can also remove' : ', with'} the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains${pdfOnly ? ' so outdated dates do not confuse Upcoming' : ''}`}.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}${scheduleLookaheadDeleteNote(scheduleItems as unknown as import('./types').ScheduleItem[], document, relatedScheduleItems as unknown as import('./types').ScheduleItem[], referenceDocuments)}`,
       [
         { text: 'Cancel', style: 'cancel' },
         ...(pdfOnly ? [{
@@ -11785,8 +11801,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
       requestPendingChangesUpload('schedule_item_save_pending');
       if (!scheduleItemSyncWarningsRef.current.has(item.id)) {
         scheduleItemSyncWarningsRef.current.add(item.id);
-        const notice = scheduleTaskSaveNotice({ projectName: item.projectName, errors: result.errors, projectStillUploading: result.projectStillUploading }); // not "still retrying" when its project is not open, nor "device only" while it is on its way (audit A3 pass 6 M1, pass 7 L1)
-        Alert.alert(notice.title, notice.message);
+        const notice = scheduleTaskSaveNotice({ projectName: item.projectName, errors: result.errors, projectStillUploading: result.projectStillUploading, projectDeletedInCloud: result.projectDeletedInCloud }); // not "still retrying" when its project is not open, nor "device only" while it is on its way (audit A3 pass 6 M1, pass 7 L1)
+        if (!result.accountChangedDuringSave) Alert.alert(notice.title, notice.message); // said to nobody when the account changed while the save asked (review pass 1, sync F2)
       }
       return false;
     } catch {
@@ -13347,7 +13363,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     });
     const talkDocuments = await loadECOSTalkReferenceDocuments({
       client: getSupabaseClient(),
-      documents: referenceDocuments,
+      documents: referenceDocuments.filter(document => !sharedDocumentArchive.archivedIds.has(document.id)), // an archived document answers nothing (owner answer Q44)
       question: context.status === 'resolved_follow_up' ? context.effectiveQuestion : transcript,
       projectName,
     });
@@ -13655,7 +13671,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             if (projectName) setSelectedWorkspaceProject(projectName);
           }}
           documentProjects={activeProjects}
-          documentCount={referenceDocuments.length}
+          documentCount={sharedDocumentArchive.listed(referenceDocuments).length}
           selectedDocumentProject={selectedWorkspaceProject}
           onDocumentProjectChange={projectName => {
             if (projectName) setSelectedWorkspaceProject(projectName);
@@ -13709,7 +13725,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {screen === 'AddPhotos' && (
             <AddPhotosScreen
               contentStyle={contentStyle}
-              update={draft}
+              update={sharedDocumentArchive.unsentUpdate(draft, projectDocuments)}
               projectAreas={draftProjectAreas}
               selectedArea={currentDraftArea}
               areaSuggestion={draftAreaSuggestion}
@@ -13745,7 +13761,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           {screen === 'BuildUpdate' && (
             <ScreenScroll contentStyle={contentStyle}>
               <BuildUpdateScreen
-                update={draft}
+                update={sharedDocumentArchive.unsentUpdate(draft, projectDocuments)}
                 selectedArea={currentDraftArea}
                 draftSavedAt={draftSavedAt}
                 pieStatus={draftPIEStatus}
@@ -13922,6 +13938,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                 .some(name => projectDocumentMatchesProject(document, name) ||
                   projectRecords.some(project => project.name === name && project.id === document.projectId)))}
               referenceDocuments={referenceDocuments.filter(document => !hiddenSharedDocuments.hidden.has(document.id))}
+              archive={sharedDocumentArchive}
               projectNames={workspaceScopeNames(selectedWorkspaceProject)}
               projectIdentities={projectRecords}
               onOpenReference={openReferenceDocument}
@@ -16978,7 +16995,7 @@ type ProjectTaskFilter = 'All' | 'At Risk' | 'Due Soon' | 'Complete';
 
 function ProjectTaskControlPanel({
   projectName,
-  scheduleItems, knownScheduleItems,
+  scheduleItems, knownScheduleItems, projectAreas,
   savedUpdates,
   onUpdate,
   onSave,
@@ -16988,6 +17005,7 @@ function ProjectTaskControlPanel({
 }: {
   projectName: string;
   scheduleItems: ScheduleItem[]; knownScheduleItems?: ScheduleItem[]; // every saved task, for the name fallback (A10 pass 6 L2)
+  projectAreas: ProjectArea[]; // for a task card's Area row: it offered no area on this page (P1 part A)
   savedUpdates: ProjectUpdate[];
   onUpdate: (
     itemId: string,
@@ -17193,6 +17211,7 @@ function ProjectTaskControlPanel({
               <ScheduleItemRow
                 key={item.id}
                 item={item}
+                scheduleItems={scheduleItems} projectAreas={projectAreas}
                 fieldWarnings={fieldWarnings.get(item.id) || []}
                 onUpdate={(next, workflowRequest) =>
                   onUpdate(item.id, next, workflowRequest)}
@@ -17539,7 +17558,7 @@ function ProjectWorkspaceScreen({
 
       <ProjectTaskControlPanel
         projectName={projectName}
-        scheduleItems={scheduleItems} knownScheduleItems={knownScheduleItems}
+        scheduleItems={scheduleItems} knownScheduleItems={knownScheduleItems} projectAreas={projectAreas}
         savedUpdates={savedUpdates}
         onUpdate={onUpdateScheduleItem}
         onSave={onSaveScheduleItem}
@@ -17889,7 +17908,7 @@ function ProjectDocumentsScreen({
   contentStyle,
   projectName,
   documents,
-  referenceDocuments,
+  referenceDocuments, archive,
   projectNames,
   projectIdentities,
   onOpenReference,
@@ -17909,7 +17928,7 @@ function ProjectDocumentsScreen({
   contentStyle: StyleProp<ViewStyle>;
   projectName: string;
   documents: ProjectDocument[];
-  referenceDocuments: ReferenceDocument[];
+  referenceDocuments: ReferenceDocument[]; archive: ReturnType<typeof useSharedDocumentArchive>;
   projectNames: string[];
   projectIdentities: readonly { id?: string | null; name: string }[];
   onOpenReference: (document: ReferenceDocument) => void;
@@ -17930,7 +17949,7 @@ function ProjectDocumentsScreen({
   const [categoryFilter, setCategoryFilter] =
     useState<ProjectDocumentCategory | null>(null);
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
-  const workspaceDocuments = buildMobileDocumentWorkspace({ documents, referenceDocuments, projectNames, projectIdentities });
+  const workspaceDocuments = buildMobileDocumentWorkspace({ documents, referenceDocuments, projectNames, projectIdentities, archivedSharedDocumentIds: archive.archivedIds });
   const visibleDocuments = filterDAVEDocumentWorkspace({
     documents: workspaceDocuments,
     category: categoryFilter,
@@ -17968,7 +17987,7 @@ function ProjectDocumentsScreen({
     );
   };
 
-  const listHeader = (
+  const listHeader = (<>
     <ProjectDocumentsHeader
       projectName={projectName}
       categories={PROJECT_DOCUMENT_CATEGORIES}
@@ -17979,7 +17998,8 @@ function ProjectDocumentsScreen({
       onTakePhoto={onTakePhoto}
       showActions={sizeClass !== 'wide'}
     />
-  );
+    <ArchivedDocumentsSection documents={buildMobileArchivedDocuments({ documents, referenceDocuments, projectNames, projectIdentities, archive })} onRestore={archive.restore} />
+  </>);
   const emptyState = workspaceDocuments.length === 0 ? (
     <EmptyState
       title="No documents yet — upload your first document."
@@ -19112,7 +19132,8 @@ function UpdateHistoryCard({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const documents = update.documents || [];
-  const thumbnail = useProjectPhotoDisplayUri(update.photos[0], resolveProjectPhotoUri(update.photos[0] || {}));
+  const thumbnailPhoto = firstProjectPhotoToShow(update.photos, resolveProjectPhotoUri); // not a blank first photo beside ones that exist (sync batch Y3)
+  const thumbnail = useProjectPhotoDisplayUri(thumbnailPhoto, resolveProjectPhotoUri(thumbnailPhoto || {}));
   const conflictReview = useFieldUpdateConflictReview(update.id); // left for Review Conflicts, whatever its status (A7 pass 12 M-1, A4 pass 15 L1)
   const documentChangeWaiting = useFieldUpdateDocumentChangeWaiting(update.id); // VoiceOver reads the card's label, so it says the line too (everyday item 9)
   const statusLine = conflictReview ? null :
@@ -20189,7 +20210,6 @@ function ScheduleItemRow({
       afterTextInputBlur(() => setInternalExpanded(current => !current));
     }
   };
-  const [verificationNote, setVerificationNote] = useState('');
   const normalizedItemType = normalizeProjectItemType(item.itemType);
   const isStructuredProjectItem = normalizedItemType !== 'Task';
   const isStructuredProjectItemClosed =
@@ -20200,6 +20220,7 @@ function ScheduleItemRow({
   const needsCompletionVerification = scheduleItemNeedsCompletionVerification(
     item as unknown as import('./types').ScheduleItem,
   );
+  const [verificationNote, setVerificationNote] = useScheduleVerificationNoteDraft(item.id, needsCompletionVerification ? item.completionVerification : null); // kept for this task's completion report (open item W1-7; review pass 1, L8)
   const completionVerificationLabel = scheduleCompletionVerificationLabel(
     item as unknown as import('./types').ScheduleItem,
   );

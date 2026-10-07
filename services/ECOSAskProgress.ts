@@ -27,6 +27,22 @@ export function ecosAskTimedOutMessage(deadlineMs: number = ECOS_ASK_DEADLINE_MS
 }
 
 /**
+ * How long the desktop waits for its own sign-in check before a question is
+ * sent (Build 231 E1 item 2: a check that never answered held every later
+ * question to the full time limit, until the page was reloaded). The check
+ * is two short requests (who is signed in, and is this the owner); the live
+ * gateway allows its own sign-in check 10 s. 20 s gives each of the two that
+ * much on a slow site connection and is still far inside the 150 s a whole
+ * question may take.
+ */
+export const ECOS_ASK_OWNER_CHECK_LIMIT_MS = 20_000;
+
+export function ecosAskOwnerCheckTimedOutMessage(limitMs: number = ECOS_ASK_OWNER_CHECK_LIMIT_MS): string {
+  return `The sign-in check did not answer within ${ecosAskElapsedLabel(limitMs / 1000)}, so the question was not sent. ` +
+    'No answer has been verified. Your question is still here — try again.';
+}
+
+/**
  * How long the app waits before it asks again when the server says it is
  * still working on this same question (review pass 2 A1: Stop then Try Again
  * was refused with "already reviewing that question"). A refused repeat

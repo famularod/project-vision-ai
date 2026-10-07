@@ -1,4 +1,4 @@
-import type { ReferenceDocument, ScheduleDependency, ScheduleItem } from '../types';
+import type { ProjectItemActivity, ReferenceDocument, ScheduleDependency, ScheduleItem, SchedulePriority } from '../types';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 
 /**
@@ -826,4 +826,124 @@ export function scheduleTaskLinkTargets(
     const link = answering({ scheduleItemId: predecessorId });
     return link && link.basis !== 'stored_task_name' ? link.item : null;
   };
+}
+
+/**
+ * Schedule batch S5, item 1: a row's activity notes with those another row of
+ * the same task holds that it lacks. A note is appended once and never
+ * changed, and carries its own id, so two rows of one task are put together
+ * as two copies of one row are (scheduleItemActivityOfBoth, ScheduleItemEditBase): every note of
+ * both, each once. In the order of their dates, as the task's history reads
+ * (the app shows the last three). Null when the row lacks none, so a row
+ * that already holds them is never rewritten: two devices that each bring
+ * the same notes forward end with each note once.
+ */
+export function scheduleItemActivityWithOtherRows(
+  own: readonly ProjectItemActivity[] | null | undefined,
+  ...others: Array<readonly ProjectItemActivity[] | null | undefined>
+): ProjectItemActivity[] | null {
+  const mine = Array.isArray(own) ? own : [];
+  const known = new Set(mine.map(entry => entry?.id));
+  const lacking: ProjectItemActivity[] = [];
+  others.forEach(list => (Array.isArray(list) ? list : []).forEach(entry => {
+    if (!entry || typeof entry.id !== 'string' || !entry.id || known.has(entry.id)) return;
+    known.add(entry.id);
+    lacking.push(entry);
+  }));
+  if (lacking.length === 0) return null;
+  const when = (entry: ProjectItemActivity) => { const time = Date.parse(entry?.createdAt || ''); return Number.isFinite(time) ? time : 0; };
+  return [...mine, ...lacking].map((entry, index) => ({ entry, index }))
+    .sort((left, right) => when(left.entry) - when(right.entry) || left.index - right.index).map(({ entry }) => entry);
+}
+
+/**
+ * Schedule batch S6, item 1 (7 Oct 2026; puts S5 item 1 right). S5 made a
+ * task's priority follow it to the row a newer master moves it to, always. So
+ * a task David never touched no longer turned High when a master moved it
+ * into the coming week, and a file's Critical column no longer raised it.
+ * Decided: only a priority he SET follows; one he never set is the new row's
+ * own, as before S5.
+ *
+ * How the app tells. No stamp says who set a priority, so a row keeps what
+ * its own import gave it (priorityAsImported, written once on every row an
+ * import adds). The priority is his when
+ *  - the row says it took it from the task with his text (textFromTask): it
+ *    was his there, and whatever the row holds since was set on it; or
+ *  - it reads otherwise than its own import gave it; or
+ *  - the row was saved before rows kept that word, and it is Low: no import
+ *    gives a Low. A Medium or a High there cannot be told from the file's.
+ */
+export function schedulePriorityAsRead(value: unknown): SchedulePriority {
+  return value === 'Low' || value === 'High' ? value : 'Medium';
+}
+
+type PriorityRecord = Pick<ScheduleItem, 'priority' | 'priorityAsImported' | 'textFromTask' | 'prioritySetByHand'>;
+type PriorityMark = NonNullable<ScheduleItem['prioritySetByHand']>;
+
+/**
+ * Review pass 1 of Build 231's schedule round, P1-1, P1-2 and P1-9 (7 Oct
+ * 2026; the coordinator's decision). The comparison above cannot work where
+ * his priority and the file's coincide: back on an older master he set the
+ * priority that row's file gave, and switching forward brought back the Low
+ * he had replaced (P1-2); on a task saved before this build, Medium and then
+ * High left the High not known as his (P1-9); a High set on a row whose newer
+ * row the file also marks High was recorded nowhere (P1-1). Every edit of his
+ * that changes the priority now leaves a mark on the row: the priority he
+ * set, and when (prioritySetByHand, scheduleEditWithPriorityNoted). The mark
+ * goes wherever the priority goes.
+ *
+ * The mark a row holds, while the row still holds the priority it names;
+ * else null (a device on an older build changed the priority since: the mark
+ * says nothing, and the comparison decides as on a row with no mark).
+ */
+export function schedulePriorityHeSet(row: PriorityRecord | null | undefined): PriorityMark | null {
+  const mark = row?.prioritySetByHand;
+  if (!mark || typeof mark.at !== 'string' || !Number.isFinite(Date.parse(mark.at))) return null;
+  if (mark.priority !== 'Low' && mark.priority !== 'Medium' && mark.priority !== 'High') return null;
+  return mark.priority === schedulePriorityAsRead(row!.priority) ? mark : null;
+}
+
+/** Of two rows of a task, or two copies of a row, that hold the same priority: the later of their marks; null when neither has one. */
+export function schedulePriorityMarkOfBoth(one: PriorityRecord | null | undefined, other: PriorityRecord | null | undefined): PriorityMark | null {
+  const [first, second] = [schedulePriorityHeSet(one), schedulePriorityHeSet(other)];
+  if (!first || !second) return first ?? second;
+  return Date.parse(second.at) > Date.parse(first.at) ? second : first;
+}
+
+/**
+ * Whether the priority he set on `other` is his later word than the one he
+ * set on `row` (two rows of one task, to different values): by the marks,
+ * where both rows say when; `otherwise` where one does not (the row changed
+ * later, as before the marks).
+ */
+export function schedulePriorityHeSetLater(other: PriorityRecord | null | undefined, row: PriorityRecord | null | undefined, otherwise: boolean): boolean {
+  const [theirs, own] = [schedulePriorityHeSet(other), schedulePriorityHeSet(row)];
+  return theirs && own && Date.parse(theirs.at) !== Date.parse(own.at) ? Date.parse(theirs.at) > Date.parse(own.at) : otherwise;
+}
+
+/** What the row's own import gave it; for a row saved before that was kept, what it holds (Medium under a Low, which no import gives). */
+export function schedulePriorityItsImportGave(row: PriorityRecord): SchedulePriority {
+  const recorded = row.priorityAsImported;
+  if (recorded === 'Low' || recorded === 'Medium' || recorded === 'High') return recorded;
+  const held = schedulePriorityAsRead(row.priority);
+  return held === 'Low' ? 'Medium' : held;
+}
+
+/** Whether the row's priority is one David set (above): only that follows the task. */
+export function schedulePriorityIsHis(row: PriorityRecord | null | undefined): boolean {
+  if (!row) return false;
+  // The mark his edit left says so outright (review pass 1, P1-1 / P1-2 / P1-9); the rest is for a row with no mark.
+  if (schedulePriorityHeSet(row)) return true;
+  if (row.textFromTask && Object.prototype.hasOwnProperty.call(row.textFromTask, 'priority')) return true;
+  return schedulePriorityAsRead(row.priority) !== schedulePriorityItsImportGave(row);
+}
+
+/**
+ * Whether the row's priority is known to be its own import's, never set by
+ * David: the row keeps what its import gave it and still holds that. A row
+ * saved before rows kept that word is not known either way (unless Low).
+ */
+export function schedulePriorityIsItsImports(row: PriorityRecord | null | undefined): boolean {
+  const recorded = row?.priorityAsImported;
+  return Boolean(row) && (recorded === 'Low' || recorded === 'Medium' || recorded === 'High') && !schedulePriorityIsHis(row);
 }

@@ -190,6 +190,13 @@ export function deleteStoredReferenceDocument(uri: string) {
 
 export async function prepareReferenceDocumentForCloud(
   document: ReferenceDocument,
+  /**
+   * Review pass 1, sync G2 (older; owner answer Q45, 6 Oct 2026). How the file is sent once it has been measured
+   * and hashed (seconds, for a large one). The upload queue and Sync Now hand in their own: the same upload, begun
+   * as the account the document waits for, and not begun at all once that account is no longer the one signed in.
+   * The file used to be sent after those seconds with no account named, as whoever was signed in by then.
+   */
+  upload: typeof uploadPhoto = uploadPhoto,
 ): Promise<ReferenceDocument> {
   if (!document.uri) return document;
   const resolvedUri = resolveReferenceDocumentUri(document.uri);
@@ -211,7 +218,7 @@ export async function prepareReferenceDocumentForCloud(
   };
   if (document.storagePath) return { ...document, ...integrity };
   const storagePath = `mobile/${document.id}/${sanitizeFilename(document.originalFileName)}`;
-  const uploaded = await uploadPhoto({
+  const uploaded = await upload({
     bucket: REFERENCE_DOCUMENT_BUCKET,
     path: storagePath,
     uri: resolvedUri,

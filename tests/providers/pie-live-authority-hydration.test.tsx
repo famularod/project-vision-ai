@@ -36,6 +36,8 @@ jest.mock('../../services/PIERuntime', () => ({
 }));
 
 jest.mock('../../services/DAVEProjectTruth', () => ({
+  // R4: the provider hands Project Truth a project's own updates through this; the stand-in hands them on as they are.
+  daveProjectTruthUpdatesFor: jest.fn((input: { updates: unknown[] }) => input.updates),
   buildDAVEProjectTruth: jest.fn((input: { projectId: string; projectName: string }) => ({
     projectId: input.projectId,
     projectName: input.projectName,

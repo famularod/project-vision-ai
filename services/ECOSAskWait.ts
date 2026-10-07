@@ -1,9 +1,11 @@
 import * as Crypto from 'expo-crypto';
 import {
   ECOS_ASK_DEADLINE_MS,
+  ECOS_ASK_OWNER_CHECK_LIMIT_MS,
   ECOS_ASK_REFUSAL_GRACE_MS,
   ECOS_ASK_STOPPED_MESSAGE,
   ecosAskInProgressRetryMs,
+  ecosAskOwnerCheckTimedOutMessage,
   ecosAskTimedOutMessage,
 } from './ECOSAskProgress';
 
@@ -20,10 +22,45 @@ export class ECOSAskStoppedError extends Error {
   }
 }
 
-/** Whether a question ended because the app stopped waiting, not because the server answered. */
+/**
+ * The desktop's own sign-in check did not answer in time, so the question
+ * was never sent (Build 231 E1 item 2).
+ */
+export class ECOSAskOwnerCheckTimedOutError extends Error {
+  readonly code = 'owner_check_timed_out';
+  constructor(limitMs: number = ECOS_ASK_OWNER_CHECK_LIMIT_MS) {
+    super(ecosAskOwnerCheckTimedOutMessage(limitMs));
+    this.name = 'ECOSAskOwnerCheckTimedOutError';
+  }
+}
+
+/**
+ * Whether a question ended because the app stopped waiting, not because the
+ * server answered. Nothing came back from the server for it, so the
+ * conversation stands.
+ */
 export function isECOSAskStopped(error: unknown): boolean {
   const code = (error as { code?: unknown } | null | undefined)?.code;
-  return code === 'question_timed_out' || code === 'question_cancelled';
+  return code === 'question_timed_out' || code === 'question_cancelled' || code === 'owner_check_timed_out';
+}
+
+/**
+ * Whether the conversation stands after a question failed, so that asking
+ * again sends the same question after the same earlier turn.
+ *
+ * It stands when the app stopped waiting (isECOSAskStopped): nothing came
+ * back. And it stands when the server ran out of time (review pass 1, L4):
+ * the screen says "Your question is still here — try again", but Try Again
+ * sent a follow-up as a new conversation with no earlier turn, so "And on
+ * the south side?" went out as a question on its own. The request code marks
+ * that failure (ECOSProjectQuestionError.serverRanOutOfTime).
+ *
+ * After any other failure the next question starts a new conversation, as
+ * before.
+ */
+export function ecosAskConversationStands(error: unknown): boolean {
+  return isECOSAskStopped(error) ||
+    (error as { serverRanOutOfTime?: unknown } | null | undefined)?.serverRanOutOfTime === true;
 }
 
 /** Whether the server refused because it is still working on this same question from an earlier ask. */

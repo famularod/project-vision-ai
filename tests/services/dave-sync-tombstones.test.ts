@@ -239,3 +239,111 @@ describe('DAVESyncTombstones durability (audit P1-28)', () => {
     expect(mockUpsertTombstone).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Sync batch Y3, item 7 (6 Oct 2026). Open item: "Sync Now can reuse a
+ * deletion-history download that was already under way, so 'caught up' can
+ * be recorded slightly early." Settings records this device as caught up
+ * from the moment Sync Now was pressed (audit A6 pass 11), but the deletion
+ * history it used could be one whose read of the cloud began before that.
+ */
+describe('a sync that must use a deletion history read after it was asked for (sync batch Y3, item 7)', () => {
+  const deletion = (recordId: string) => ({
+    entityType: 'schedule_item' as const, recordId, deletedAt: '2026-10-06T12:00:00.000Z',
+  });
+  /** The cloud's deletion history, answered when the test lets each read go. */
+  function slowCloud() {
+    const inCloud: Array<ReturnType<typeof deletion>> = [];
+    const waiting: Array<() => void> = [];
+    mockListTombstones.mockImplementation(() => {
+      const asRead = [...inCloud]; // what the cloud holds when this read begins
+      return new Promise(resolve => { waiting.push(() => resolve(cloudOk(asRead))); });
+    });
+    const settle = async () => { for (let turn = 0; turn < 20; turn += 1) await Promise.resolve(); };
+    return {
+      inCloud,
+      reads: () => mockListTombstones.mock.calls.length,
+      answerNext: async () => { waiting.shift()?.(); await settle(); },
+      settle,
+    };
+  }
+
+  it('Sync Now pressed while a background synchronization is under way: it reads the history again, and hears a deletion made in between', async () => {
+    const cloud = slowCloud();
+    const background = synchronizeDAVESyncTombstones(); // already under way: its read began before the press
+    await cloud.settle();
+    expect(cloud.reads()).toBe(1);
+    cloud.inCloud.push(deletion('deleted-on-the-ipad-just-now'));
+    const pressedAt = new Date().toISOString();
+    const syncNow = synchronizeDAVESyncTombstones({ beganAfterThisCall: true });
+    await cloud.settle();
+    expect(cloud.reads()).toBe(1); // two never run at once: it waits for the one under way
+
+    await cloud.answerNext();
+    expect((await background).tombstones).toEqual([]);
+    expect(cloud.reads()).toBe(2); // and then reads again, for itself
+    await cloud.answerNext();
+    const result = await syncNow;
+    expect(result.cloudAuthoritative).toBe(true);
+    expect(result.tombstones.map(item => item.recordId)).toEqual(['deleted-on-the-ipad-just-now']);
+    expect(Date.parse(result.readStartedAt!)).toBeGreaterThanOrEqual(Date.parse(pressedAt));
+  });
+
+  it('as before: any other caller shares the synchronization under way, and one read serves them all', async () => {
+    const cloud = slowCloud();
+    const first = synchronizeDAVESyncTombstones();
+    const second = synchronizeDAVESyncTombstones();
+    await cloud.settle();
+    await cloud.answerNext();
+    expect(await first).toBe(await second);
+    expect(cloud.reads()).toBe(1);
+  });
+
+  it('a synchronization that began after Sync Now was pressed is as good as its own: a second Sync Now caller shares it', async () => {
+    const cloud = slowCloud();
+    const syncNow = synchronizeDAVESyncTombstones({ beganAfterThisCall: true });
+    await cloud.settle();
+    const other = synchronizeDAVESyncTombstones(); // a background caller joins Sync Now's
+    await cloud.settle();
+    expect(cloud.reads()).toBe(1);
+    await cloud.answerNext();
+    expect(await other).toBe(await syncNow);
+    expect(cloud.reads()).toBe(1);
+  });
+
+  it('two callers that each need a fresh read, waiting behind one under way: one new read serves both', async () => {
+    const cloud = slowCloud();
+    const background = synchronizeDAVESyncTombstones();
+    await cloud.settle();
+    const one = synchronizeDAVESyncTombstones({ beganAfterThisCall: true });
+    const two = synchronizeDAVESyncTombstones({ beganAfterThisCall: true });
+    await cloud.settle();
+    await cloud.answerNext();
+    await background;
+    await cloud.settle();
+    await cloud.answerNext();
+    expect(await one).toBe(await two);
+    expect(cloud.reads()).toBe(2);
+  });
+
+  it('the one under way fails: the fresh read is still made, and its answer is the one used', async () => {
+    const cloud = slowCloud();
+    mockListTombstones.mockImplementationOnce(() => new Promise((_resolve, reject) => { setTimeout(() => reject(new Error('offline')), 1); }));
+    const background = synchronizeDAVESyncTombstones();
+    const syncNow = synchronizeDAVESyncTombstones({ beganAfterThisCall: true });
+    expect((await background).cloudAuthoritative).toBe(false);
+    await cloud.settle();
+    await cloud.answerNext();
+    expect((await syncNow).cloudAuthoritative).toBe(true);
+  });
+
+  it("Settings' Sync Now asks for it: Full Sync reads the deletion history that way, and only Full Sync does", () => {
+    const fs = jest.requireActual('fs') as typeof import('fs');
+    const path = jest.requireActual('path') as typeof import('path');
+    const source = fs.readFileSync(path.resolve(__dirname, '../../services/SyncService.ts'), 'utf8');
+    const fullSync = source.slice(source.indexOf('export async function synchronizeLocalData'));
+    expect(fullSync.slice(0, fullSync.indexOf('\nexport ', 10)))
+      .toContain("const tombstoneSync = await synchronizeDAVESyncTombstones({ beganAfterThisCall: true });");
+    expect(source.split('synchronizeDAVESyncTombstones({ beganAfterThisCall: true })')).toHaveLength(2);
+  });
+});

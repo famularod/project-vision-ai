@@ -28,7 +28,9 @@ describe('A4 pass 4 lows', () => {
 
 describe('A6 pass 4 lows', () => {
   it('the Word "prepared" notice is read before the Outlook question; the citation check ignores case', () => {
-    expect(app).toMatch(/await new Promise<void>\(resolve => Alert\.alert\(\n\s+'Word report prepared',[\s\S]*?\[\{ text: 'OK', onPress: \(\) => resolve\(\) \}\],\n\s+\{ cancelable: true, onDismiss: \(\) => resolve\(\) \},\n\s+\)\);\n\s+\}\n\s+return true;/);
+    // Independent review F04 (Build 231 E1 item 6): the notice is now read before the share sheet too, so the
+    // share sits between it and the return; both are still waited for before the caller asks anything.
+    expect(app).toMatch(/await new Promise<void>\(resolve => Alert\.alert\(\n\s+'Word report prepared',[\s\S]*?\[\{ text: 'OK', onPress: \(\) => resolve\(\) \}\],\n\s+\{ cancelable: true, onDismiss: \(\) => resolve\(\) \},\n\s+\)\);\n\s+\}\n\s+await Sharing\.shareAsync\(fileUri, \{[^}]*\}\);\n\s+return true;/);
     expect(app).toContain("return reportFormat !== 'executive' && /\\bSee Images?\\s+\\d/i.test(report.body);");
   });
 
@@ -41,9 +43,10 @@ describe('A6 pass 4 lows', () => {
     // fingerprint alone. Behaviour in owner-q17-report-period-per-format.
     // Whole-app audit A6 pass 8 M1 (30 Sep 2026): the mark also carries the started report's session key
     // (sentStateKey), so the approval it sent moves to this send; the parameters are one per line.
-    expect(screen).toMatch(/const markReportDelivered = \(\n\s+sentFingerprint: string,\n\s+sentPeriod: [^\n]*,\n\s+sentStateKey: string,\n\s+\) => \{\n\s+const sentPeriodKey = reportPeriodKey\(sentPeriod\);\n\s+const pending = pendingReportSnapshotSaveRef\.current;\n\s+if \(pending && pending\.snapshot\.sourceFingerprint === sentFingerprint && reportPeriodKey\(pending\.snapshot\) === sentPeriodKey\) \{\n\s+void pending\.save\.then\(\(\) => markSavedReportDelivered\(pending\.snapshot, sentFingerprint, sentStateKey\), \(\) => undefined\);\n\s+return;\n\s+\}/);
+    expect(screen).toMatch(/const markReportDelivered = \(\n\s+sentFingerprint: string,\n\s+sentPeriod: [^\n]*,\n\s+sentStateKey: string,\n\s+\) => \{\n\s+const sentPeriodKey = reportPeriodKey\(sentPeriod\);\n\s+const pending = pendingReportSnapshotSaveRef\.current;\n\s+if \(pending && sameReportSource\(pending\.snapshot\.sourceFingerprint, sentFingerprint\) && reportPeriodKey\(pending\.snapshot\) === sentPeriodKey\) \{\n\s+void pending\.save\.then\(\(\) => markSavedReportDelivered\(pending\.snapshot, sentFingerprint, sentStateKey\), \(\) => undefined\);\n\s+return;\n\s+\}/);
     // Everyday item 1 (2 Oct 2026): the mark now resolves whether it saved (Mark as Sent says so), so the
     // guard returns Promise.resolve(false); pin updated deliberately. Behaviour in everyday-1-report-mark-sent.
-    expect(screen).toContain("if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return Promise.resolve(false);");
+    // R4 item 4a (deliberate): the saved report is known by the same facts, also when it was approved under the earlier fingerprint version.
+    expect(screen).toContain("if (!saved || !sameReportSource(saved.sourceFingerprint, sentFingerprint) || saved.deliveredAt !== null) return Promise.resolve(false);");
   });
 });

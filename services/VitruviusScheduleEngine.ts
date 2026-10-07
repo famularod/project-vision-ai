@@ -7,14 +7,32 @@ import {
   type PIEScheduleDependencyNetwork,
 } from './PIEScheduleDependencyNetwork';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
+import {
+  SCHEDULE_FIRST_YEAR,
+  SCHEDULE_LAST_YEAR,
+  SCHEDULE_MAX_DURATION_WORKING_DAYS,
+  scheduleDayIsSupported,
+} from './ScheduleInputLimits';
 
 export type VitruviusScheduleIssueCode =
   | 'dependency_cycle'
   | 'invalid_task_date'
   | 'missing_predecessor'
   | 'missing_predecessor_finish'
-  | 'completed_task_locked';
+  | 'completed_task_locked'
+  | 'unsupported_task_duration';
 
+/**
+ * An 'error' is a fault in the plan (a circle of links, a link to a task that
+ * is gone, a date that cannot be read, completed work that would have to
+ * move): nothing calculated is applied until it is corrected.
+ *
+ * A 'warning' is a note about one task whose new dates the calculation cannot
+ * give: a line longer than the schedule walks, or a task that would land
+ * outside the years the schedule takes. That task is left as it is and named;
+ * every other change is still calculated and can be applied (review pass 1,
+ * L2: one such line made the whole page's calculation unsafe).
+ */
 export type VitruviusScheduleIssue = Readonly<{
   code: VitruviusScheduleIssueCode;
   severity: 'error' | 'warning';
@@ -40,6 +58,8 @@ export type VitruviusSchedulePreview = Readonly<{
   network: PIEScheduleDependencyNetwork;
   safeToApply: boolean;
 }>;
+
+const OTHER_CHANGES_STILL_APPLY = 'The other date changes can still be applied.';
 
 export class VitruviusScheduleCalculationError extends Error {
   constructor(message: string) {
@@ -145,9 +165,31 @@ export function previewVitruviusFinishToStartSchedule(
       }
 
       const durationDays = scheduleDurationDays(item, currentStart);
+      // Checked before the duration is walked day by day (independent review
+      // R08: a stored or imported duration of a billion days did not finish).
+      // It is a note about this one task, which is left as it is; he did not
+      // type this value in the change being reviewed (review pass 1, L2).
+      if (durationDays > SCHEDULE_MAX_DURATION_WORKING_DAYS) {
+        issues.push(Object.freeze({
+          code: 'unsupported_task_duration',
+          severity: 'warning',
+          itemId,
+          message: `${item.taskName} is longer than the ${SCHEDULE_MAX_DURATION_WORKING_DAYS.toLocaleString('en-US')} working days the schedule supports, so its dates were not calculated. Its predecessors now put its start on or after ${formatScheduleDate(requiredStart)}: move it yourself. ${OTHER_CHANGES_STILL_APPLY}`,
+        }));
+        return;
+      }
       const nextFinish = item.isMilestone
         ? requiredStart
         : addWorkingDays(requiredStart, Math.max(0, durationDays - 1));
+      if (!scheduleDayIsSupported(requiredStart) || !scheduleDayIsSupported(nextFinish)) {
+        issues.push(Object.freeze({
+          code: 'invalid_task_date',
+          severity: 'warning',
+          itemId,
+          message: `${item.taskName} would be moved to ${formatScheduleDate(requiredStart)}, outside ${SCHEDULE_FIRST_YEAR} through ${SCHEDULE_LAST_YEAR}, so its dates were left as they are. Correct its predecessors' dates. ${OTHER_CHANGES_STILL_APPLY}`,
+        }));
+        return;
+      }
       const nextItem: ScheduleItem = {
         ...item,
         startDate: formatScheduleDate(requiredStart),
@@ -297,10 +339,18 @@ function scheduleDurationDays(item: ScheduleItem, parsedStart: Date | null) {
   }
   const finish = parseScheduleDate(item.finishDate);
   if (parsedStart && finish && finish.getTime() >= parsedStart.getTime()) {
+    // More calendar days than the longest supported duration covers are not
+    // counted out one by one; the caller refuses the task (review R08).
+    if (finish.getTime() - parsedStart.getTime() > LONGEST_SUPPORTED_SPAN_MS) {
+      return SCHEDULE_MAX_DURATION_WORKING_DAYS + 1;
+    }
     return Math.max(1, workingDaySpan(parsedStart, finish));
   }
   return 1;
 }
+
+/** The calendar time the longest supported duration can cover: seven days for every five worked, and a week over. */
+const LONGEST_SUPPORTED_SPAN_MS = (Math.ceil(SCHEDULE_MAX_DURATION_WORKING_DAYS / 5) * 7 + 7) * 86_400_000;
 
 function workingDaySpan(start: Date, finish: Date) {
   let count = 0;

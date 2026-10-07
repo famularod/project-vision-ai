@@ -18,6 +18,7 @@ import {
   type PIEScheduleImportBatch,
 } from '../services/PIEScheduleImportBatch';
 import { ScheduleImportReviewError } from '../services/ScheduleImportScopeGuard';
+import { scheduleDatesToCheck } from '../services/ScheduleInputLimits';
 import { scheduleImportPairingQuestions, scheduleImportReviewPairingQuestions, type ScheduleImportPairingQuestion } from '../services/ScheduleImportMerge';
 import {
   scheduleImportAddsToMaster,
@@ -443,6 +444,8 @@ export function ScheduleImportFlow({
             {pendingBatch?.items.map((item, index) => {
               const missing = scheduleImportReviewFields(item);
               const needsReview = missing.length > 0;
+              // A date outside 2000 to 2100 is pointed out on the row, with the date named (review pass 1, L3).
+              const dateChecks = scheduleDatesToCheck(item);
               const needsCompletionVerification = scheduleItemNeedsCompletionVerification(item);
               const verificationLabel = scheduleCompletionVerificationLabel(item);
               const expanded = expandedItemIds.includes(item.id);
@@ -465,6 +468,9 @@ export function ScheduleImportFlow({
                     />
                   </View>
 
+                  {dateChecks.map(check => (
+                    <Text key={check.which} style={styles.verificationTitle}>{check.text}</Text>
+                  ))}
                   {expanded ? (
                     <>
                       {needsCompletionVerification ? (
@@ -478,7 +484,7 @@ export function ScheduleImportFlow({
                       <ReviewInput label="Task" value={item.taskName} onChangeText={taskName => updatePendingItem(item.id, { taskName })} highlight={missing.includes('task')} disabled={saveBusy} />
                       <ReviewInput label="Project" value={item.projectName} onChangeText={projectName => updatePendingItem(item.id, { projectName })} highlight={missing.includes('project')} disabled={saveBusy} />
                       <ReviewInput label="Area" value={item.locationName} onChangeText={locationName => updatePendingItem(item.id, { locationName })} highlight={missing.includes('area')} disabled={saveBusy} />
-                      <ReviewInput label="Finish / due date" value={item.finishDate} onChangeText={finishDate => updatePendingItem(item.id, { finishDate })} placeholder="MM/DD/YYYY" highlight={missing.includes('date')} disabled={saveBusy} />
+                      <ReviewInput label="Finish / due date" value={item.finishDate} onChangeText={finishDate => updatePendingItem(item.id, { finishDate })} placeholder="MM/DD/YYYY" highlight={missing.includes('date') || dateChecks.some(check => check.which !== 'start')} disabled={saveBusy} />
                       <ReviewInput label="Owner" value={item.owner} onChangeText={owner => updatePendingItem(item.id, { owner })} highlight={missing.includes('owner')} disabled={saveBusy} />
                     </>
                   ) : (

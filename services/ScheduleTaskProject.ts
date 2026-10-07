@@ -99,10 +99,18 @@ export function scheduleTaskSaveNotice(
     errors?: readonly string[] | null;
     /** From runScheduleItemCloudSync: the project's create or reopen still waits on this phone. */
     projectStillUploading?: boolean | null;
+    /** From runScheduleItemCloudSync: the project has a deletion record, and the task was not left waiting (sync batch Y4, item 3). */
+    projectDeletedInCloud?: boolean | null;
   }>,
 ): Readonly<{ title: string; message: string }> {
   const kind = operationalProjectIdentityFailureKind((input.errors || []).join(' '));
   const projectName = input.projectName?.trim();
+  if (input.projectDeletedInCloud) {
+    return {
+      title: 'Task saved on this device only',
+      message: `${projectName ? `“${projectName}”` : 'This task’s project'} has been deleted, so this task was not sent and other devices will not get it.`,
+    };
+  }
   if (kind === 'not_open' && input.projectStillUploading) {
     return {
       title: 'Task saved on this device',

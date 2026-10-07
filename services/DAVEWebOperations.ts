@@ -16,7 +16,7 @@ import {
   buildDAVEReportSourceFingerprint,
   type DAVEReportBriefing,
 } from './DAVEReportIntelligence';
-import type { DAVEReportSnapshot } from './DAVEReportSnapshot';
+import { sameReportSource, type DAVEReportSnapshot } from './DAVEReportSnapshot';
 import {
   bindPIEScheduleImportBatchProvenance,
   dedupeScheduleImportItems,
@@ -31,11 +31,23 @@ import {
   findExactScheduleTaskForCompletionClaim,
   mergeReportedCompletionClaim,
 } from './DAVECompletionVerification';
-import { mergeApprovedScheduleImportItems, scheduleImportPairingQuestions, type ScheduleImportPairingQuestion } from './ScheduleImportMerge';
-import { scheduleDependenciesAfterScheduleDeleted, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './ScheduleLookahead';
+import { mergeApprovedScheduleImportItems, scheduleImportPairingQuestions, scheduleImportReviewPairingQuestions, scheduleItemsVisibleBeforeImport, type ScheduleImportPairingQuestion } from './ScheduleImportMerge';
+import {
+  scheduleDependenciesAfterScheduleDeleted,
+  scheduleItemsAfterScheduleDeleted,
+  scheduleLookaheadDeleteNote,
+  suggestScheduleImportRole,
+  withScheduleImportRole,
+  type ScheduleImportRole,
+  type ScheduleImportRoleSuggestion,
+} from './ScheduleLookahead';
+import { scheduleDocumentsAfterApproval } from './ScheduleDocumentLabels';
 import { scheduleTaskProjectKey } from './ScheduleTaskRevisions';
+import { scheduleItemIdsDeletedWithTask } from './DAVEDeletedTaskEvidence';
+import { dependencyChangesForDeletedTask } from './VitruviusScheduleEngine';
 import { scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
-import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
+import { buildDAVEReportProjectTruths } from './DAVEReportProjectTruths';
+import { daveWebListedDocuments } from './DAVEWebDocumentManagement';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 import type { GoogleDriveLinkedSource } from './GoogleDriveWebProvider';
 
@@ -183,6 +195,15 @@ export function createDAVEWebId(prefix: string, now = Date.now()): string {
   return `${prefix}-${random}`;
 }
 
+/**
+ * Web batch WS2 item 7 (6 Oct 2026): a schedule file this browser cannot read tasks from can still be stored as a
+ * full schedule's prior version, but it cannot be added as a lookahead here (a lookahead is its tasks), and the
+ * review said nothing about that: the Lookahead choice simply was not there. Said plainly, after what the review
+ * already says of such a file.
+ */
+export const DAVE_WEB_UNREADABLE_LOOKAHEAD_TEXT =
+  'If it is a lookahead: this file could not be read here. Import it on the phone or iPad.';
+
 export function prepareDAVEWebDocumentUpload({
   fileName,
   mimeType,
@@ -255,7 +276,7 @@ export function prepareDAVEWebDocumentUpload({
     return Object.freeze({
       document,
       scheduleItems: Object.freeze([]),
-      reviewMessage: 'The schedule file can be stored now, but this browser could not extract dated activities. Keep it as a prior version, or use a CSV/text schedule so tasks can be reviewed before making it current.',
+      reviewMessage: `The schedule file can be stored now, but this browser could not extract dated activities. Keep it as a prior version, or use a CSV/text schedule so tasks can be reviewed before making it current. ${DAVE_WEB_UNREADABLE_LOOKAHEAD_TEXT}`,
       extractionStatus: 'needs_manual_review',
     });
   }
@@ -295,7 +316,7 @@ export function prepareDAVEWebDocumentUpload({
     return Object.freeze({
       document,
       scheduleItems: Object.freeze([]),
-      reviewMessage: 'No dated schedule activities were found. Check the column headings or upload a CSV with Task, Project, Location, Start, Finish, Owner, Status, and Percent Complete.',
+      reviewMessage: `No dated schedule activities were found. Check the column headings or upload a CSV with Task, Project, Location, Start, Finish, Owner, Status, and Percent Complete. ${DAVE_WEB_UNREADABLE_LOOKAHEAD_TEXT}`,
       extractionStatus: 'needs_manual_review',
     });
   }
@@ -371,34 +392,192 @@ export type DAVEWebScheduleImportPlan = Readonly<{
  * current): the row is noted on the task and restates it at Make Current
  * (scheduleProgressCarriedToShownTasks with the schedules before and after).
  */
+/**
+ * Every saved task the web's upload pairs against, as the phone's approval is
+ * given them (open item, web batch WS1 item 1; 6 Oct 2026): the tasks the web
+ * shows, as saved, and after them the saved rows it does not show, with the
+ * test of which are shown. The upload was given only the tasks shown, so a
+ * task one master left out and a later master lists again had nothing to
+ * come back to: it came in as a new task at 0%, unasked, and what David had
+ * set stayed on the hidden row (the phone asks since S2 item 1).
+ *
+ * A snapshot read before the web kept every saved task (no
+ * knownScheduleItems) pairs as before, on the tasks shown alone.
+ */
+type DAVEWebImportSnapshot =
+  Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'> & Partial<Pick<DAVEWebReadOnlySnapshot, 'knownScheduleItems' | 'referenceDocuments'>>;
+
+function daveWebSavedTasksForImport(
+  snapshot: DAVEWebImportSnapshot,
+): Readonly<{
+  saved: readonly Readonly<{ item: ScheduleItem; cloudUpdatedAt: string | null }>[];
+  isShown: (item: ScheduleItem) => boolean;
+}> {
+  // Paired on the saved tasks, as the phone's approval pairs them: a task a replaced lookahead moved is shown on the
+  // master's dates, saved on the lookahead's (owner answer Q25, gen26 follow-up).
+  const shown = snapshot.scheduleItems.map(item => ({
+    item: scheduleItemForCloud(scheduleItemAsSaved(item)),
+    cloudUpdatedAt: item.cloudUpdatedAt ?? null,
+  }));
+  const shownIds = new Set(shown.map(entry => entry.item.id));
+  const hidden = ((snapshot.knownScheduleItems ?? []) as readonly DAVEWebScheduleItem[])
+    .filter(item => !shownIds.has(item.id))
+    .map(item => ({ item: scheduleItemForCloud(item), cloudUpdatedAt: item.cloudUpdatedAt ?? null }));
+  return { saved: [...shown, ...hidden], isShown: item => shownIds.has(item.id) };
+}
+
+/** The schedule file an upload brings, as far as the planner reads it. */
+export type DAVEWebUploadDocument = Pick<ReferenceDocument, 'scheduleRole' | 'category' | 'name' | 'originalFileName' | 'notes' | 'importBatchId'>;
+
+/** An upload he chose "Lookahead" for: its file says so (withDAVEWebScheduleUploadRole), as a saved lookahead does. */
+function daveWebUploadIsLookahead(document: DAVEWebUploadDocument | null | undefined): boolean {
+  return Boolean(document) && scheduleDocumentAddsToMaster(document as ReferenceDocument);
+}
+
+/**
+ * What a lookahead uploaded on the web is merged against (WS1 item 2): what
+ * the phone's approval of a lookahead is given. Every saved task as saved,
+ * and the phone's own test of which were shown before this import
+ * (scheduleItemsVisibleBeforeImport), which also tells the merge which
+ * lookahead files are still saved (review N2 F2). A snapshot without every
+ * saved task or the schedules falls back to the tasks shown.
+ */
+function daveWebSavedTasksForLookahead(
+  snapshot: DAVEWebImportSnapshot,
+  rows: readonly ScheduleItem[],
+  document?: DAVEWebUploadDocument | null,
+): ReturnType<typeof daveWebSavedTasksForImport> {
+  const known = snapshot.knownScheduleItems as readonly DAVEWebScheduleItem[] | undefined;
+  const documents = snapshot.referenceDocuments;
+  if (!known || !documents) return daveWebSavedTasksForImport(snapshot);
+  const saved = known.map(item => ({ item: scheduleItemForCloud(item), cloudUpdatedAt: item.cloudUpdatedAt ?? null }));
+  const importBatchId = (document?.importBatchId || '').trim() ||
+    rows.map(row => (typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '')).find(Boolean) || '';
+  return { saved, isShown: scheduleItemsVisibleBeforeImport(saved.map(({ item }) => item), documents, importBatchId) };
+}
+
+/** The web's words for the two ways a schedule file can be used (owner answer Q22); the lookahead's are the phone's. */
+export const DAVE_WEB_SCHEDULE_ROLE_CHOICES: readonly Readonly<{ role: ScheduleImportRole; title: string; detail: string }>[] = Object.freeze([
+  Object.freeze({
+    role: 'master' as const,
+    title: 'Full schedule (replaces)',
+    detail: 'Use this file as the whole schedule for its projects. It is saved as a prior version first, and replaces the schedule in use for them when you choose Make Current Schedule.',
+  }),
+  Object.freeze({
+    role: 'lookahead' as const,
+    title: 'Lookahead / partial (adds to the master)',
+    detail: 'Keep the master schedule. A task in both files shows once, with this file’s dates and progress. Tasks only in this file are added. The master’s other tasks stay. It applies as soon as it is uploaded, and a newer lookahead for the same project replaces it.',
+  }),
+]);
+
+/**
+ * WS1 item 2 (open item, medium; 6 Oct 2026): "How should Vitruvius use this
+ * schedule?" at the web's upload review. The web could only upload a full
+ * schedule. The default is the phone's own suggestion
+ * (suggestScheduleImportRole) from the schedules and tasks saved now. Null
+ * when the upload is not a schedule with tasks to review: a lookahead with no
+ * task of its own to state would replace the lookahead in effect with nothing.
+ */
+export function daveWebScheduleUploadRoleSuggestion({
+  snapshot,
+  prepared,
+}: {
+  snapshot: DAVEWebImportSnapshot | null | undefined;
+  prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'extractionStatus'> | null | undefined;
+}): ScheduleImportRoleSuggestion | null {
+  if (!snapshot || !prepared || prepared.extractionStatus !== 'ready' || normalized(prepared.document.category) !== 'schedules') return null;
+  const { scheduleRole: _role, ...file } = prepared.document;
+  return suggestScheduleImportRole({
+    batch: { documents: [file as ReferenceDocument], items: [...prepared.scheduleItems] },
+    documents: snapshot.referenceDocuments ?? [],
+    scheduleItems: snapshot.knownScheduleItems ?? snapshot.scheduleItems,
+  });
+}
+
+export const DAVE_WEB_LOOKAHEAD_NEEDS_TASK_TEXT =
+  'A lookahead needs at least one task from the file. Keep a task in the list above, or choose Full schedule.';
+
+/**
+ * The reviewed upload as the role David chose (WS1 item 2). "Lookahead": the
+ * schedule file is marked as the phone's review marks it
+ * (withScheduleImportRole) and labelled with the projects its rows belong
+ * to, as the phone's approval labels it (scheduleDocumentsAfterApproval): a
+ * lookahead replaces an older lookahead only for the projects it covers
+ * (owner answer Q25), so it must not cover a project it lists no task for.
+ * The rows are not marked (WS2, the coordinator's decision 4): the planner
+ * is handed the file itself and reads its role. (The mark a task a
+ * lookahead ADDS carries once saved, importedAsLookahead, stays: the phone's
+ * merge writes it, because such a task outlives its file, which can be
+ * deleted on its own while the task is kept.)
+ * "Full schedule": the upload as every schedule uploaded before.
+ */
+export function withDAVEWebScheduleUploadRole<T extends DAVEWebPreparedUpload>(prepared: T, role: ScheduleImportRole): T {
+  if (normalized(prepared.document.category) !== 'schedules') return prepared;
+  if (role !== 'lookahead') {
+    if (prepared.document.scheduleRole !== 'lookahead') return prepared;
+    const { scheduleRole: _role, ...document } = prepared.document;
+    return { ...prepared, document: { ...document, webContentReview: 'Schedule activities must be reviewed before this file can become current.' } };
+  }
+  const scheduleItems = prepared.scheduleItems;
+  const marked = withScheduleImportRole({ documents: [prepared.document] }, 'lookahead').documents;
+  const [document] = scheduleItems.length > 0
+    ? scheduleDocumentsAfterApproval({ documents: [], approvedDocuments: marked, approvedItems: [...scheduleItems], updatedAt: prepared.document.importedAt })
+    : marked;
+  return {
+    ...prepared,
+    document: { ...document, webContentReview: 'Lookahead: it adds to the master schedule and is in effect until a newer lookahead for the same project replaces it.' },
+  };
+}
+
+/** Why the reviewed upload cannot go up as the role chosen, or null. */
+export function daveWebScheduleUploadRoleRefusal(
+  prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems'>,
+  role: ScheduleImportRole | null,
+): string | null {
+  return role === 'lookahead' && normalized(prepared.document.category) === 'schedules' && prepared.scheduleItems.length === 0
+    ? DAVE_WEB_LOOKAHEAD_NEEDS_TASK_TEXT
+    : null;
+}
+
 export function planDAVEWebScheduleImport({
   snapshot,
   importedScheduleItems,
   pairingChoices,
+  document,
 }: {
-  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'>;
+  snapshot: DAVEWebImportSnapshot;
   importedScheduleItems: readonly ScheduleItem[];
   /** David's answers at the upload review (owner answer Q30): a row's id to the saved task's, or null for a new task. */
   pairingChoices?: Readonly<Record<string, string | null>> | null;
+  /**
+   * The schedule file being uploaded, as reviewed (WS2, the coordinator's decision 4): its role says whether the
+   * rows are a lookahead's. Without it the rows are a full schedule's, as before the web could upload a lookahead.
+   */
+  document?: DAVEWebUploadDocument | null;
 }): DAVEWebScheduleImportPlan {
   if (importedScheduleItems.length === 0) {
     return Object.freeze({ additions: Object.freeze([]), revisions: Object.freeze([]) });
   }
-  // Paired on the saved tasks, as the phone's approval pairs them: a task a replaced lookahead moved is shown on the
-  // master's dates, saved on the lookahead's (owner answer Q25, gen26 follow-up).
-  const saved = snapshot.scheduleItems.map(item => ({
-    item: scheduleItemForCloud(scheduleItemAsSaved(item)),
-    cloudUpdatedAt: item.cloudUpdatedAt ?? null,
-  }));
+  // WS1 item 2: the rows of a file he chose "Lookahead" for at the review (withDAVEWebScheduleUploadRole) are merged
+  // as the phone's approval merges a lookahead: it restates the master's tasks in place, adds its own, and is in
+  // effect at once (owner answer Q22), so nothing waits for Make Current. The file's own role says so (WS2).
+  const overlay = daveWebUploadIsLookahead(document);
+  // Every saved task, with which of them the web shows, as the phone's approval is given them (WS1 item 1): a row may
+  // be a task no longer shown only by its Unique ID or by his answer at the review (scheduleTasksNoLongerShown).
+  const { saved, isShown } = overlay
+    ? daveWebSavedTasksForLookahead(snapshot, importedScheduleItems, document)
+    : daveWebSavedTasksForImport(snapshot);
   const merged = mergeApprovedScheduleImportItems({
     existing: saved.map(({ item }) => item),
     imported: importedScheduleItems,
-    completionMatch: findExactScheduleTaskForCompletionClaim,
+    // A completion claim is for a task he sees, as before: never merged into a row that is not shown.
+    completionMatch: (importedItem, items) => findExactScheduleTaskForCompletionClaim(importedItem, items.filter(isShown)),
     mergeCompletion: mergeReportedCompletionClaim,
-    // Every task offered is one the web shows.
-    isCurrent: () => true,
-    // Uploaded, not current: a task entered by hand is restated at Make Current (whole-app audit A5 pass 18 L3).
-    current: false,
+    isCurrent: isShown,
+    overlay,
+    // A full schedule is uploaded, not current: a task entered by hand is restated at Make Current (whole-app audit
+    // A5 pass 18 L3). A lookahead is in effect as soon as it is saved.
+    current: overlay,
     pairingChoices,
   });
   const savedById = new Map(saved.map(entry => [entry.item.id, entry]));
@@ -424,15 +603,38 @@ export function planDAVEWebScheduleImport({
 export function daveWebScheduleImportPairingQuestions({
   snapshot,
   importedScheduleItems,
+  document,
 }: {
-  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'> | null | undefined;
+  snapshot: DAVEWebImportSnapshot | null | undefined;
   importedScheduleItems: readonly ScheduleItem[];
+  /** The file as reviewed: a lookahead's rows are asked about as a lookahead's (WS2, decision 4). */
+  document?: DAVEWebUploadDocument | null;
 }): ScheduleImportPairingQuestion[] {
   if (!snapshot || importedScheduleItems.length === 0) return [];
+  // WS1 item 2: a lookahead's rows are asked about as the phone's review asks about a lookahead's, by the phone's
+  // review function, from every saved task and the schedules saved now.
+  if (daveWebUploadIsLookahead(document)) {
+    const importBatchId = (document?.importBatchId || '').trim() ||
+      importedScheduleItems.map(row => (typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '')).find(Boolean) || '';
+    if (snapshot.knownScheduleItems && snapshot.referenceDocuments) {
+      return scheduleImportReviewPairingQuestions({
+        saved: snapshot.knownScheduleItems.map(scheduleItemForCloud),
+        documents: snapshot.referenceDocuments,
+        importBatchId,
+        imported: importedScheduleItems,
+        overlay: true,
+      });
+    }
+    const shown = daveWebSavedTasksForImport(snapshot);
+    return scheduleImportPairingQuestions({ existing: shown.saved.map(({ item }) => item), imported: importedScheduleItems, isCurrent: shown.isShown, overlay: true });
+  }
+  // WS1 item 1: with the saved rows the web does not show, so a task that was on an earlier schedule and is listed
+  // again is asked about ("the same task, or new work?") by the phone's own function, in the phone's own words.
+  const { saved, isShown } = daveWebSavedTasksForImport(snapshot);
   return scheduleImportPairingQuestions({
-    existing: snapshot.scheduleItems.map(item => scheduleItemForCloud(scheduleItemAsSaved(item))),
+    existing: saved.map(({ item }) => item),
     imported: importedScheduleItems,
-    isCurrent: () => true,
+    isCurrent: isShown,
   });
 }
 
@@ -509,10 +711,19 @@ export function planDAVEWebScheduleDocumentDelete({
  * the same helper, with the web's button): " Delete Document + 2 Tasks also
  * puts back the earlier progress of 1 task this lookahead changed." The
  * dialog said nothing, and that button lowers a percent the lookahead's file
- * gave. Empty for a schedule that is not a lookahead, for one with no linked
- * task (only "Delete Document" is offered, which keeps the percent), and when
- * nothing goes back.
+ * gave. Empty for a schedule that is not a lookahead and when nothing goes
+ * back.
+ *
+ * WS1 item 4 (open item; 6 Oct 2026): a replaced lookahead with no task of
+ * its own (it only re-dated or re-stated the master's tasks) was offered
+ * "Delete Document" alone, which keeps the dates and percent it gave; the
+ * web had no button that puts them back, where the phone offers "Delete PDF
+ * + Items" for the same lookahead. The same sentence is now given for it,
+ * with the web's button for that ("Delete Document + Its Changes"), and the
+ * dialog offers that button whenever the sentence says something goes back.
  */
+export const DAVE_WEB_DELETE_WITH_CHANGES_LABEL = 'Delete Document + Its Changes';
+
 export function daveWebScheduleDocumentDeleteNote({
   snapshot,
   document,
@@ -521,7 +732,7 @@ export function daveWebScheduleDocumentDeleteNote({
   document: DAVEWebReferenceDocument;
 }): string {
   const count = document.linkedScheduleItems.length;
-  if (count === 0 || !scheduleDocumentAddsToMaster(document)) return '';
+  if (!scheduleDocumentAddsToMaster(document)) return '';
   const saved = snapshot.knownScheduleItems ?? snapshot.scheduleItems;
   const linked = new Set(document.linkedScheduleItems.map(item => item.id));
   return scheduleLookaheadDeleteNote(
@@ -529,8 +740,102 @@ export function daveWebScheduleDocumentDeleteNote({
     document,
     saved.filter(item => linked.has(item.id)),
     snapshot.referenceDocuments,
-    `Delete Document + ${count} Task${count === 1 ? '' : 's'}`,
+    count === 0 ? DAVE_WEB_DELETE_WITH_CHANGES_LABEL : `Delete Document + ${count} Task${count === 1 ? '' : 's'}`,
   );
+}
+
+/**
+ * Open item, web batch WS1 item 8 (6 Oct 2026): deleting a task on the web's
+ * Tasks page recorded the task (and the hidden rows of its revision chain)
+ * as deleted and wrote nothing else, so every task that listed it as a
+ * predecessor went on naming a row that no longer exists: "Missing" on the
+ * web's Schedule, "Map predecessor" on the phone, and a finish-to-start
+ * calculation that is unsafe to apply. The phone drops those links when it
+ * deletes a task (dropDeletedPredecessors); "Delete Document + N Tasks"
+ * already moves or drops them (planDAVEWebScheduleDocumentDelete).
+ *
+ * The rows a task's delete takes, by the phone's own helper, as the web's
+ * delete itself works them out.
+ */
+export function daveWebTaskDeleteRowIds(
+  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems' | 'knownScheduleItems' | 'referenceDocuments'>,
+  task: ScheduleItem,
+): string[] {
+  return scheduleItemIdsDeletedWithTask(snapshot.knownScheduleItems ?? snapshot.scheduleItems, task, snapshot.referenceDocuments);
+}
+
+/**
+ * The saved tasks that still list a deleted row as a predecessor, each
+ * without those links (the phone's helper, dependencyChangesForDeletedTask,
+ * over every saved row, hidden ones included), to be saved while its cloud
+ * revision is the one read. The links are stamped as changed now, as a link
+ * he unticks is, so they stay removed when the task moves between rows.
+ */
+export function planDAVEWebLinksRemovedWithTasks({
+  snapshot,
+  deletedIds,
+  updatedAt = new Date().toISOString(),
+}: {
+  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems' | 'knownScheduleItems'>;
+  deletedIds: readonly string[];
+  updatedAt?: string;
+}): readonly DAVEWebScheduleItem[] {
+  const saved = (snapshot.knownScheduleItems ?? snapshot.scheduleItems) as readonly DAVEWebScheduleItem[];
+  const byId = new Map(saved.map(item => [item.id, item] as const));
+  return Object.freeze(dependencyChangesForDeletedTask(saved, deletedIds).flatMap(change => {
+    const before = byId.get(change.id);
+    return before
+      ? [{ ...scheduleItemForCloud(before), dependencies: change.dependencies, dependenciesUpdatedAt: updatedAt, updatedAt, cloudUpdatedAt: before.cloudUpdatedAt ?? null } as DAVEWebScheduleItem]
+      : [];
+  }));
+}
+
+/**
+ * Review pass 1, web L6 (6 Oct 2026; caused by WS1 item 8): the tasks that
+ * still list a deleted task as a predecessor after its delete, by why each
+ * link could not be taken. He was told "N other tasks still list it as a
+ * predecessor, because they were being changed on another device at that
+ * moment." whatever had happened (a dropped connection and an ended sign-in
+ * included), and N counted every saved row, the hidden ones he cannot open
+ * too. These count tasks the schedule shows.
+ */
+export type DAVEWebLinksLeftAfterDelete = Readonly<{
+  /** Another device changed the task at that moment (the cloud refused the save as out of date, twice). */
+  changedElsewhere: number;
+  /** The save failed and it was no other device: the cloud did not take it, or could not be reached. */
+  notSaved: number;
+  /** The cloud no longer accepted this browser's sign-in. */
+  signedOut: number;
+  /**
+   * The save of the links was cut short and the cloud could not be read again to finish: the count is of the tasks
+   * that were to lose the link, and some of them may have lost it.
+   */
+  unsure?: boolean;
+}>;
+
+/** What he is told after Delete Task: the delete, then each link left with its true reason and what to do. */
+export function daveWebTaskDeletedNotice(left: DAVEWebLinksLeftAfterDelete | null): string {
+  const deleted = 'Task deleted and protected from returning on another device.';
+  const total = left ? left.changedElsewhere + left.notSaved + left.signedOut : 0;
+  if (!left || total === 0) return deleted;
+  const those = total === 1 ? 'that task' : 'those tasks';
+  if (left.unsure) {
+    // One task shown here means the links cut short were its own and those of rows the schedule does not show.
+    const may = total === 1 ? '1 other task may still list it as a predecessor' : `Up to ${total} other tasks may still list it as a predecessor`;
+    const still = total === 1 ? 'if it is still listed' : 'where it is still listed';
+    return left.signedOut > 0
+      ? `${deleted} ${may}, because this browser's sign-in was no longer accepted before every link was removed. Sign in again, then open ${those} in Schedule and untick the deleted task ${still}.`
+      : `${deleted} ${may}: removing ${total === 1 ? 'the' : 'those'} links was interrupted, and the schedule could not then be read from the cloud to finish (the connection may have dropped). Open ${those} in Schedule and untick the deleted task ${still}.`;
+  }
+  const kinds: Array<readonly [number, (count: number) => string]> = [
+    [left.changedElsewhere, count => `${count === 1 ? 'it was' : 'they were'} being changed on another device at that moment`],
+    [left.notSaved, count => `the change to ${count === 1 ? 'it' : 'them'} could not be saved just then (the connection may have dropped)`],
+    [left.signedOut, count => `this browser's sign-in was no longer accepted when ${count === 1 ? 'its link was' : 'their links were'} to be removed`],
+  ];
+  const clauses = kinds.filter(([count]) => count > 0).map(([count, why], index) => index === 0
+    ? `${count} other task${count === 1 ? ' still lists' : 's still list'} it as a predecessor, because ${why(count)}`
+    : `${count} more still list${count === 1 ? 's' : ''} it, because ${why(count)}`);
+  return `${deleted} ${clauses.join('; ')}. ${left.signedOut > 0 ? 'Sign in again, then open' : 'Open'} ${those} in Schedule and untick the deleted task.`;
 }
 
 function canonicalSha256(value: string): string | null {
@@ -664,7 +969,8 @@ export function daveWebReportSourceIsCurrent(
   sourceFingerprint: string | null | undefined,
   currentSource: DAVEWebReportSource,
 ): boolean {
-  return Boolean(sourceFingerprint && sourceFingerprint === currentSource.fingerprint);
+  // The same facts, also when the report was prepared under the earlier fingerprint version (R4 item 4a).
+  return sameReportSource(sourceFingerprint, currentSource.fingerprint);
 }
 
 function buildDAVEWebProjectTruths(
@@ -678,34 +984,17 @@ function buildDAVEWebProjectTruths(
     id: project.id,
     name: project.name,
   }));
-  const updates = snapshot.projectUpdates.map(update => update.updateData);
-  return projects.map(project => {
-    const projectId = project.id || normalized(project.name);
-    const scope = buildDailyReportAuthorityScope({
-      selectedProjectName: project.name,
-      selectedProjectNames: [project.name],
-      projectRecords,
-      updates,
-      scheduleItems: snapshot.scheduleItems,
-      referenceDocuments: snapshot.referenceDocuments,
-    });
-    return buildDAVEProjectTruth({
-      projectId,
-      projectName: project.name,
-      updates: scope.updates.map(update => ({ ...update, projectName: project.name })),
-      scheduleItems: scope.scheduleItems,
-      knownScheduleItems: snapshot.knownScheduleItems, // the name fallback checks the update's own schedule (A10 pass 6 L2)
-      // What a newer lookahead replaced, for "since the last report", as the phone reads it (owner answer 3 Oct 2026).
-      knownScheduleDocuments: snapshot.referenceDocuments,
-      reportLookaheadReplacement: true,
-      projectAreas: scope.projectAreas,
-      referenceDocuments: scope.referenceDocuments.map(document => ({
-        ...document,
-        projectId,
-        projectName: project.name,
-      })),
-      now: snapshot.refreshedAt,
-    });
+  // One recipe with the phone's Reports screen (open item, 6 Oct 2026).
+  return buildDAVEReportProjectTruths({
+    projects: projects.map(project => ({ name: project.name, projectId: project.id || normalized(project.name) })),
+    projectRecords,
+    updates: snapshot.projectUpdates.map(update => update.updateData),
+    scheduleItems: snapshot.scheduleItems,
+    knownScheduleItems: snapshot.knownScheduleItems,
+    knownScheduleDocuments: snapshot.referenceDocuments,
+    // A document the cloud marks archived is not counted (owner answer Q44; review of D1, L10); with none, this is the list itself.
+    referenceDocuments: daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds),
+    now: snapshot.refreshedAt,
   });
 }
 

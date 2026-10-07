@@ -212,9 +212,10 @@ describe('Review N2 W1: the web\'s delete dialog says what "+ Tasks" also puts b
     expect(webSays).toBe(phoneSays.replace('Delete PDF + Items', 'Delete Document + 1 Task'));
   });
 
-  it('nothing for a lookahead with no linked task (only "Delete Document" is offered, which keeps the percent), a master, or when nothing goes back', () => {
+  it('for a lookahead with no linked task, the same sentence with the button that puts it back (WS1 item 4: it said nothing, and only "Delete Document" was offered); nothing for a master, or when nothing goes back', () => {
     const noDetail = approve(approve(onM, L1, [FRAMING_60]), L2, [ROOF_L2]);
-    expect(daveWebScheduleDocumentDeleteNote({ snapshot: webSnapshot(noDetail), document: webDocument(noDetail, L1) })).toBe('');
+    expect(daveWebScheduleDocumentDeleteNote({ snapshot: webSnapshot(noDetail), document: webDocument(noDetail, L1) }))
+      .toBe(' Delete Document + Its Changes also puts back the earlier progress of 1 task this lookahead changed.');
     expect(daveWebScheduleDocumentDeleteNote({ snapshot: webSnapshot(onL2), document: webDocument(onL2, M) })).toBe('');
     const plain = approve(approve(onM, L1, ['Inspect rebar,Alpha,Lot,10/05/2026,10/07/2026,']), L2, [ROOF_L2]);
     expect(daveWebScheduleDocumentDeleteNote({ snapshot: webSnapshot(plain), document: webDocument(plain, L1) })).toBe('');

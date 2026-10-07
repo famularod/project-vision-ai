@@ -36,6 +36,11 @@ const mockAuth: Record<string, any> = {
 jest.mock('../../components/web-shell/desktop-auth-provider', () => ({
   useDesktopAuth: () => mockAuth,
 }));
+// A save that adds a predecessor first reads the cloud, to refuse a link that would close a circle with a link made
+// elsewhere (WS1 item 7). The cloud here holds no link.
+jest.mock('../../services/DAVEWebReadOnlyRepository', () => ({
+  loadDAVEWebReadOnlySnapshot: jest.fn(async () => ({ scheduleItems: [], knownScheduleItems: [] })),
+}));
 
 beforeEach(() => {
   jest.clearAllMocks();

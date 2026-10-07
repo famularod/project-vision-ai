@@ -2,6 +2,7 @@ import {
   describeReportSendTime,
   otherDeviceSendNotReceived,
   reportBaselineSnapshot,
+  sameReportSource,
   reportPeriodSend,
   reportPeriodSentAt,
   validReportPeriodSnapshot,
@@ -269,6 +270,33 @@ export function daveWebReportRecordedMessage(sentAt: string, shared: 'checked' |
 }
 
 /**
+ * R1 item 1 (8 Oct 2026): what the "Recorded as sent" line becomes once a later report stands. It went on saying
+ * "The next report on every device runs from this one" after another device had sent a newer report.
+ */
+export function daveWebReportRecordedThenOvertakenMessage(
+  sentAt: string,
+  laterSentAt: string,
+  /** The later report was sent from this browser (another tab or window): never called "your other device". */
+  fromThisBrowser = false,
+): string {
+  const who = fromThisBrowser ? 'Another tab of this browser' : 'Your other device';
+  return `Recorded as sent ${describeReportSendTime(sentAt)}. ${who} sent a later report ${describeReportSendTime(laterSentAt)}, so the next report counts from that one.`;
+}
+
+/**
+ * R1 item 1: what a "Recorded as sent" line reads once the period on the page (the same projects and format the
+ * line speaks of) runs from a later send; null while the line still stands as it was written.
+ */
+export function daveWebReportRecordedLineNow(
+  recorded: Readonly<{ sentAt: string; scopeKey: string; reportFormat: string }>,
+  page: Readonly<{ scopeKey: string; reportFormat: string; periodSentAt: string | null; periodSendFromThisBrowser: boolean }>,
+): string | null {
+  if (recorded.scopeKey !== page.scopeKey || recorded.reportFormat !== page.reportFormat) return null;
+  if (!page.periodSentAt || !(Date.parse(page.periodSentAt) > Date.parse(recorded.sentAt))) return null;
+  return daveWebReportRecordedThenOvertakenMessage(recorded.sentAt, page.periodSentAt, page.periodSendFromThisBrowser);
+}
+
+/**
  * Review N2 (5 Oct 2026): what Sign Out says before it goes ahead when a
  * report sent from this computer could not be confirmed in the shared record
  * (it was sent while the record could not be reached, and one more try at
@@ -303,6 +331,16 @@ export function daveWebReportSendsNotSharedWarning(sentAts: readonly string[]): 
  * sent and would be lost (review N1 L5). Said plainly: what was not
  * recorded, and what follows.
  */
+/**
+ * R1 item 3 (8 Oct 2026): an older report shared again, from before the last three this computer remembers sending.
+ * Nothing is wrong and nothing new is recorded; the page said it "could not record that this report was sent".
+ */
+export const DAVE_WEB_REPORT_OLDER_THAN_REMEMBERED =
+  'This is an older report. This computer remembers the last three reports it sent, and this one is from before them, so it cannot tell whether it was sent from here and has not recorded it as sent again. The next report still counts from the last report recorded as sent.';
+/** R2 item 1 (9 Oct 2026): the same, where this browser keeps its list of the last 50 reports it sent and the report is on neither. */
+export const DAVE_WEB_REPORT_OLDER_THAN_THE_LIST =
+  'This is an older report. This computer remembers the last 50 reports it sent, and this one is not among them, so it cannot tell whether it was sent from here and has not recorded it as sent again. The next report still counts from the last report recorded as sent.';
+
 export const DAVE_WEB_REPORT_SEND_NOT_RECORDED =
   'This computer could not record that this report was sent: no approval of it is waiting here, and it cannot take one now (the project facts have changed since it was prepared, or another approved report is waiting to be marked sent). The next report will count from the last report recorded as sent, and may repeat what this one covered.';
 
@@ -338,6 +376,30 @@ export function daveWebReportAlreadyMarkedSentMessage(sentAt: string): string {
 /** The same, after the share menu or an email draft: nothing is asked, since nothing more is recorded (review N1 M2). */
 export function daveWebReportAlreadySentNote(sentAt: string): string {
   return `This report was already recorded as sent ${describeReportSendTime(sentAt)}, so sending it again is not counted as another send.`;
+}
+
+/**
+ * Under "Since the last report", when the report on this page is the one
+ * another device already sent, unchanged since (R4, the coordinator's decision: the
+ * web reads it as the phone and iPad do). The phone's own sentence.
+ */
+export function daveWebReportAlreadySentElsewhereNote(sentAt: string): string {
+  return `Your other device already sent this report ${describeReportSendTime(sentAt)}. Approve it only if you want to send it a second time.`;
+}
+
+/**
+ * When another device sent the very report this page shows (the same facts
+ * as the last report the period runs from), or null: not sent, not the same
+ * facts, or this browser's own send (`ownSends`), which the review panel
+ * speaks of in its own words.
+ */
+export function daveWebReportAlreadySentElsewhereAt(
+  period: DAVEReportSnapshot | null | undefined,
+  fingerprint: string,
+  ownSends: ReadonlySet<string>,
+): string | null {
+  if (!period || typeof period.deliveredAt !== 'string' || ownSends.has(period.deliveredAt)) return null;
+  return sameReportSource(period.sourceFingerprint, fingerprint) ? reportPeriodSentAt(period) : null;
 }
 
 /** What the review panel says of an approved report this computer sent (review N1 M2). */

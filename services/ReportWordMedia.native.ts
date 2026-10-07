@@ -13,6 +13,7 @@ import {
   planReportDrawingCrop,
   reportDrawingCropBounds,
 } from './ReportDrawingCrop';
+import { readReportImageHeaderSize, type ReportImageHeaderSize } from './ReportImageHeader';
 import {
   convertedReportImageMimeType,
   detectReportImageSignature,
@@ -26,6 +27,13 @@ import type {
   ReportWordMedia,
   ReportWordUnavailableMedia,
 } from './ReportWordDocument';
+import {
+  REPORT_PHOTO_AS_IS_MAX_BYTES,
+  reportDrawingScanTooLarge,
+  reportDrawingScanTooLargeMessage,
+  reportPictureFit,
+  reportPictureFits,
+} from './ReportWordMediaLimits';
 import type { ReportDrawingReference } from './ReportDrawingReferences';
 
 /**
@@ -40,10 +48,35 @@ export type ResolvedNativeReportWordMedia = Readonly<{
 }>;
 
 /**
+ * Runs `work` for each item in order, starting one only when the one before
+ * it has finished (independent review F04: a large report fetched every
+ * cited photo and every drawing at once).
+ */
+export async function oneAtATime<T, R>(
+  items: readonly T[],
+  work: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  for (const item of items) results.push(await work(item));
+  return results;
+}
+
+/**
  * Resolves report media that can be embedded directly on iPhone and iPad.
  * Field photos and current drawing excerpts are embedded from app-owned
  * storage. PDF excerpts are rendered locally with Apple PDFKit so the source
  * bytes never leave the device.
+ *
+ * One picture is opened at a time, and each goes in no larger than
+ * services/ReportWordMediaLimits allows (independent review F04).
+ *
+ * "One at a time" has to be made true by this file (review pass 1, L6). The
+ * image tool keeps every picture it opens, and every picture it hands back,
+ * until release() is called on it or the garbage collector gets to it, so
+ * each one is released here as soon as its bytes are saved, on every path.
+ * A picture that needs no work is never given to the tool, and a scan that
+ * is too large is refused before the tool loads it, both from the file's
+ * own header (services/ReportImageHeader) where the header can be read.
  */
 export async function resolveNativeReportWordMedia(args: {
   updates: readonly ProjectUpdate[];
@@ -181,6 +214,63 @@ function localFileFormat(uri: string): ReportImageFormat {
 }
 
 /**
+ * A local picture's size as it is shown upright, read from the header of its
+ * file: a few short reads, with nothing decoded and the file not loaded
+ * (review pass 1, L6 and L7). Null when this app does not read a size from
+ * that kind of header or the file cannot be read; the device is asked then,
+ * as it was before.
+ */
+function localHeaderSize(uri: string, format: ReportImageFormat): ReportImageHeaderSize | null {
+  try {
+    const handle = new File(uri.trim()).open();
+    try {
+      return readReportImageHeaderSize(format, {
+        read(offset, length) {
+          handle.offset = offset;
+          return handle.readBytes(length);
+        },
+      });
+    } finally {
+      handle.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+/** The image tool's work on one picture, and a picture it hands back. Each holds a picture in memory. */
+type ImageToolWork = ReturnType<typeof ImageManipulator.manipulate>;
+type ImageToolPicture = Awaited<ReturnType<ImageToolWork['renderAsync']>>;
+
+/**
+ * Lets go of a picture the image tool is holding, or of the tool's work on
+ * one. The tool keeps each until this is called or the garbage collector
+ * gets to it (review pass 1, L6). Safe to call twice and on nothing.
+ */
+function letGo(held: { release(): void } | null | undefined) {
+  try {
+    held?.release();
+  } catch {
+    // Already let go of.
+  }
+}
+
+/**
+ * The size of the picture the tool has loaded, upright. The tool answers by
+ * handing back the picture itself; only its size is wanted, so it is let go
+ * of at once and the full-size picture can be freed as soon as the smaller
+ * one has been drawn from it.
+ */
+async function loadedSize(context: ImageToolWork) {
+  const upright = await context.renderAsync();
+  try {
+    return { width: upright.width, height: upright.height };
+  } finally {
+    letGo(upright);
+  }
+}
+
+/**
  * Whether a drawing file is a PDF. Its stored type and name are asked only
  * when its bytes are none this app recognises.
  */
@@ -198,28 +288,41 @@ async function localRaster(uri: string | null | undefined) {
   if (!file.exists) throw new Error('The local image file is missing.');
   const format = localFileFormat(normalizedUri);
   const mimeType = reportWordEmbedMimeType(format);
-  if (!mimeType) return convertedRaster(normalizedUri, format);
-  const [data, dimensions] = await Promise.all([
-    file.bytes(),
-    imageDimensions(normalizedUri),
-  ]);
-  return {
-    data,
-    mimeType,
-    width: dimensions.width,
-    height: dimensions.height,
-  };
+  // As it is only when Word takes its type, its file is small enough and it
+  // is no larger than a report picture may be (independent review F04: a
+  // 12-megapixel photo went in at 4032 x 3024 px and several megabytes).
+  // Its size comes from its own header, so a photo that needs no work is
+  // never opened; the device is asked only when the header cannot be read.
+  if (mimeType && file.size <= REPORT_PHOTO_AS_IS_MAX_BYTES) {
+    const dimensions = localHeaderSize(normalizedUri, format) ?? await imageDimensions(normalizedUri);
+    if (reportPictureFits(dimensions.width, dimensions.height)) {
+      return {
+        data: await file.bytes(),
+        mimeType,
+        width: dimensions.width,
+        height: dimensions.height,
+      };
+    }
+  }
+  return convertedRaster(normalizedUri, format);
 }
 
 /**
- * Converts a picture Word cannot take as it is (HEIC, WebP, TIFF and the
- * rest) to JPEG, and labels the result by reading it back.
+ * Saves a picture again as a JPEG no larger than a report picture may be,
+ * and labels the result by reading it back: a picture Word cannot take as
+ * it is (HEIC, WebP, TIFF and the rest), and one that is too large to go in
+ * as it is. It is always redrawn, so what is saved is an ordinary 8-bit
+ * colour picture.
  */
 async function convertedRaster(uri: string, format: ReportImageFormat) {
   let renderedFile: File | null = null;
+  let context: ImageToolWork | null = null;
+  let imageRef: ImageToolPicture | null = null;
   try {
-    const context = ImageManipulator.manipulate(uri);
-    const imageRef = await context.renderAsync();
+    context = ImageManipulator.manipulate(uri);
+    const upright = await loadedSize(context);
+    context.resize(reportPictureFit(upright.width, upright.height));
+    imageRef = await context.renderAsync();
     const rendered = await imageRef.saveAsync({
       compress: 0.88,
       format: SaveFormat.JPEG,
@@ -240,6 +343,8 @@ async function convertedRaster(uri: string, format: ReportImageFormat) {
       ? `${reportImageNotPreparedMessage(format)} ${errorMessage(error, 'Image conversion failed.')}`
       : reportImageNotPreparedMessage(format));
   } finally {
+    letGo(imageRef);
+    letGo(context);
     if (renderedFile?.exists) renderedFile.delete();
   }
 }
@@ -249,27 +354,54 @@ async function convertedRaster(uri: string, format: ReportImageFormat) {
  * the picture upright as it loads it, so the size read here is the size the
  * area was measured on (independent review R06: the whole sheet was embedded
  * and described as an excerpt).
+ *
+ * The excerpt is always redrawn at its own size before it is saved (Build
+ * 231 E1 item 4). The image tool Build 231 has (expo-image-manipulator
+ * 57.0.21) opens a picture saved for print (CMYK) or as 16-bit grey, which
+ * 57.0.20 could not, and a crop keeps the picture's form: a CMYK crop saved
+ * as it was is a CMYK JPEG, which Word does not show reliably. The redraw
+ * makes it an ordinary 8-bit colour picture. When the tool cannot open the
+ * picture at all, it is left out and the reason says why.
  */
 async function renderDrawingImageExcerpt(
   uri: string,
   region: ReferenceDocumentRegion,
 ) {
-  const context = ImageManipulator.manipulate(uri);
-  const upright = await context.renderAsync().catch(() => {
-    throw new Error(reportDrawingNotCroppedMessage(localFileFormat(uri)));
-  });
-  const crop = planReportDrawingCrop(region, upright);
-  context.crop({
-    originX: crop.originX,
-    originY: crop.originY,
-    width: crop.width,
-    height: crop.height,
-  });
-  if (crop.outputWidth !== crop.width || crop.outputHeight !== crop.height) {
-    context.resize({ width: crop.outputWidth, height: crop.outputHeight });
+  // Cropping needs the scan decoded; a very large one is left out with the
+  // reason rather than risk iOS closing the app (independent review F04).
+  // The header answers before the image tool is given the file, because the
+  // tool loads the whole file to tell its size and redraws a picture stored
+  // on its side at full size first (review pass 1, L7). JPEG, PNG, GIF, BMP,
+  // WebP and ordinary TIFF are refused here; a HEIC, an AVIF, a BigTIFF or a
+  // file with a damaged header is refused below, once the tool has loaded it.
+  const headerSize = localHeaderSize(uri, localFileFormat(uri));
+  if (headerSize && reportDrawingScanTooLarge(headerSize.width, headerSize.height)) {
+    throw new Error(reportDrawingScanTooLargeMessage(headerSize.width, headerSize.height));
   }
-  const excerpt = await context.renderAsync();
-  return excerpt.saveAsync({ compress: 0.88, format: SaveFormat.JPEG });
+  let context: ImageToolWork | null = null;
+  let excerpt: ImageToolPicture | null = null;
+  try {
+    context = ImageManipulator.manipulate(uri);
+    const upright = await loadedSize(context).catch(() => {
+      throw new Error(reportDrawingNotCroppedMessage(localFileFormat(uri)));
+    });
+    if (reportDrawingScanTooLarge(upright.width, upright.height)) {
+      throw new Error(reportDrawingScanTooLargeMessage(upright.width, upright.height));
+    }
+    const crop = planReportDrawingCrop(region, upright);
+    context.crop({
+      originX: crop.originX,
+      originY: crop.originY,
+      width: crop.width,
+      height: crop.height,
+    });
+    context.resize({ width: crop.outputWidth, height: crop.outputHeight });
+    excerpt = await context.renderAsync();
+    return await excerpt.saveAsync({ compress: 0.88, format: SaveFormat.JPEG });
+  } finally {
+    letGo(excerpt);
+    letGo(context);
+  }
 }
 
 async function localDrawingImageExcerpt(
@@ -305,11 +437,11 @@ async function localPdfExcerpt(reference: ReportDrawingReference) {
   // One rule decides whether the cited area is usable, for a PDF as for a picture.
   reportDrawingCropBounds(reference.excerpt.region);
 
-  const rendered = await renderPdfExcerpt(
+  const rendered = await boundedExcerpt(await renderPdfExcerpt(
     documentUri,
     reference.excerpt.pageNumber,
     reference.excerpt.region,
-  );
+  ));
   const renderedFile = new File(rendered.uri);
   try {
     if (!renderedFile.exists) {
@@ -324,6 +456,29 @@ async function localPdfExcerpt(reference: ReportDrawingReference) {
     };
   } finally {
     if (renderedFile.exists) renderedFile.delete();
+  }
+}
+
+/**
+ * A PDF excerpt no larger than a report picture may be (independent review
+ * F04: it went in at whatever size the page rendered, several times the
+ * 1600 x 1200 a picture drawing's excerpt is held to). A larger one is saved
+ * again smaller, and the file the renderer made is removed.
+ */
+async function boundedExcerpt(rendered: Readonly<{ uri: string; width: number; height: number }>) {
+  if (reportPictureFits(rendered.width, rendered.height)) return rendered;
+  const larger = new File(rendered.uri);
+  let context: ImageToolWork | null = null;
+  let smaller: ImageToolPicture | null = null;
+  try {
+    context = ImageManipulator.manipulate(rendered.uri);
+    context.resize(reportPictureFit(rendered.width, rendered.height));
+    smaller = await context.renderAsync();
+    return await smaller.saveAsync({ compress: 0.88, format: SaveFormat.JPEG });
+  } finally {
+    letGo(smaller);
+    letGo(context);
+    if (larger.exists) larger.delete();
   }
 }
 
@@ -436,11 +591,11 @@ async function renderDrawingPreviewFile(reference: ReportDrawingReference) {
   const source = new File(document.uri);
   if (!source.exists) throw new Error('The current drawing PDF is missing on this device.');
   reportDrawingCropBounds(reference.excerpt.region);
-  const rendered = await renderPdfExcerpt(
+  const rendered = await boundedExcerpt(await renderPdfExcerpt(
     document.uri,
     reference.excerpt.pageNumber,
     reference.excerpt.region,
-  );
+  ));
   return rendered.uri;
 }
 

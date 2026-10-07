@@ -55,12 +55,54 @@ export const fakeMedia = {
   modified: new Map<string, number>(),
   /** Whether the phone refuses to move a file (a full disk, a folder that cannot be made). */
   moveFails: false,
+  /** The size the phone reports for a local file, when a test needs a large one; otherwise its fake bytes' length. */
+  fileSizes: new Map<string, number>(),
+  /**
+   * What the phone's image tool is holding (review pass 1, L6). The real tool
+   * (expo-image-manipulator 57.0.21, ios/ImageManipulatorContext.swift and
+   * ImageRef.swift) keeps every picture it opens, and every picture it hands
+   * back, until release() is called on it or the garbage collector gets to
+   * it. Saving a picture lets go of nothing. So this fake lets go only on
+   * release(), and a test can read how much was held.
+   *
+   * deviceOpenNow / deviceOpenAtOnce: pictures opened and not yet released
+   * (one per manipulate()), now and the most at once.
+   * devicePicturesNow / devicePicturesAtOnce: decoded pictures in memory, now
+   * and the most at once. Making a picture smaller, cropping it, or turning
+   * it upright needs the picture and its copy at the same moment, so one
+   * picture handled properly holds two at its peak and none afterwards.
+   * devicePixelsNow / devicePixelsAtOnce: the pixels in those pictures (at
+   * about 4 bytes each, the memory they stand for).
+   */
+  deviceOpenNow: 0,
+  deviceOpenAtOnce: 0,
+  devicePicturesNow: 0,
+  devicePicturesAtOnce: 0,
+  devicePixelsNow: 0,
+  devicePixelsAtOnce: 0,
+  /** The pixels held each time the tool wrote a picture to a file (the full-size one should be gone by then). */
+  devicePixelsWhileSaving: [] as number[],
+  /** Local pictures the phone was asked the size of (react-native Image.getSize reads the whole file to answer). */
+  deviceSizeAsked: [] as string[],
   /**
    * Local pictures the phone's image tool cannot open although their type is an
    * ordinary one: a CMYK JPEG, a 16-bit grey PNG (its first step cannot make a
    * bitmap for them).
    */
   deviceCannotOpen: new Set<string>(),
+  /**
+   * Local pictures saved for print (CMYK) or as 16-bit grey that the phone's
+   * image tool does open (expo-image-manipulator 57.0.21, Build 231). A crop
+   * keeps that form; only a redraw (resize) makes it an ordinary 8-bit
+   * colour picture. Saved as a JPEG without one, a CMYK picture is a CMYK
+   * JPEG, and a 16-bit grey one an ordinary 8-bit grey JPEG (run on macOS
+   * ImageIO, notes/impl-r06r07r10/NOTES-e1.txt).
+   */
+  devicePrintForm: new Map<string, 'CMYK' | '16-bit grey'>(),
+  /** Pictures the phone's image tool wrote that are still CMYK, by picture id. */
+  savedAsCmyk: new Set<string>(),
+  /** Pictures whose file keeps them turned a quarter, by picture id: the image tool redraws these upright as it loads them. */
+  storedOnItsSide: new Set<string>(),
   /** Protected cloud files the desktop downloads, by URL. */
   remote: new Map<string, { bytes: Uint8Array; contentType: string | null }>(),
   pictures: new Map<string, FakePicture>(),
@@ -79,7 +121,19 @@ export const fakeMedia = {
     this.files.clear();
     this.modified.clear();
     this.moveFails = false;
+    this.fileSizes.clear();
+    this.deviceOpenNow = 0;
+    this.deviceOpenAtOnce = 0;
+    this.devicePicturesNow = 0;
+    this.devicePicturesAtOnce = 0;
+    this.devicePixelsNow = 0;
+    this.devicePixelsAtOnce = 0;
+    this.devicePixelsWhileSaving.length = 0;
+    this.deviceSizeAsked.length = 0;
     this.deviceCannotOpen.clear();
+    this.devicePrintForm.clear();
+    this.savedAsCmyk.clear();
+    this.storedOnItsSide.clear();
     this.remote.clear();
     this.pictures.clear();
     this.deviceCrops.length = 0;
@@ -185,12 +239,87 @@ function sampled(length: number) {
   return points;
 }
 
+export type FakeImageFile = Readonly<{
+  /**
+   * 'stored on its side': the file keeps the picture turned a quarter and
+   * says so (EXIF orientation 6, as a phone held upright writes a photo).
+   * The picture given is still the upright one a device shows. JPEG and TIFF.
+   */
+  stored?: 'upright' | 'stored on its side';
+  /** 'cut short': the file ends before the part of its header that gives the size. */
+  header?: 'whole' | 'cut short';
+}>;
+
+const be16 = (value: number) => [(value >> 8) & 0xff, value & 0xff];
+const le16 = (value: number) => [value & 0xff, (value >> 8) & 0xff];
+const be32 = (value: number) => [(value >>> 24) & 0xff, (value >>> 16) & 0xff, (value >>> 8) & 0xff, value & 0xff];
+const le32 = (value: number) => [value & 0xff, (value >>> 8) & 0xff, (value >>> 16) & 0xff, (value >>> 24) & 0xff];
+
+/** A little-endian TIFF directory, as a TIFF file and an EXIF block both start. */
+const tiffEntries = (entries: readonly (readonly [number, number])[]) => [
+  ...le16(entries.length),
+  // Orientation (274) is a 2-byte number, as cameras write it; the rest are 4-byte numbers.
+  ...entries.flatMap(([tag, value]) => [...le16(tag), ...le16(tag === 274 ? 3 : 4), ...le32(1), ...le32(value)]),
+  ...le32(0),
+];
+
+/**
+ * The real header of a file of this type holding a picture of this size,
+ * after the signature: the same bytes a camera, a scanner or an editor
+ * writes there, so the app's own header reader is run on them. The id of the
+ * picture a device would decode follows in a place the format allows.
+ */
+function fakeHeaderAfterSignature(
+  format: FakeImageFormat,
+  picture: FakePicture | undefined,
+  id: string,
+  file: FakeImageFile,
+): number[] {
+  const mark = text(`|${id}|`);
+  if (!picture || file.header === 'cut short') return mark;
+  const onItsSide = file.stored === 'stored on its side';
+  const width = onItsSide ? picture.height : picture.width;
+  const height = onItsSide ? picture.width : picture.height;
+  if (format === 'jpeg') {
+    // After FF D8 FF E0: the JFIF block, an EXIF block when turned, a comment, then the frame header.
+    const exif = [...text('Exif\0\0'), 0x49, 0x49, 0x2a, 0x00, ...le32(8), ...tiffEntries([[274, 6]])];
+    return width > 0xffff || height > 0xffff ? mark : [
+      ...be16(16), ...text('JFIF\0'), 1, 1, 0, 0, 1, 0, 1, 0, 0,
+      ...(onItsSide ? [0xff, 0xe1, ...be16(exif.length + 2), ...exif] : []),
+      0xff, 0xfe, ...be16(mark.length + 2), ...mark,
+      0xff, 0xc0, ...be16(17), 8, ...be16(height), ...be16(width), 3, 1, 0x22, 0, 2, 0x11, 1, 3, 0x11, 1,
+      0xff, 0xda,
+    ];
+  }
+  if (format === 'png') {
+    return [
+      ...be32(13), ...text('IHDR'), ...be32(width), ...be32(height), 8, 6, 0, 0, 0, 0, 0, 0, 0,
+      ...be32(mark.length), ...text('tEXt'), ...mark, 0, 0, 0, 0,
+      ...be32(0), ...text('IDAT'), 0, 0, 0, 0,
+    ];
+  }
+  if (format === 'gif') return width > 0xffff || height > 0xffff ? mark : [...le16(width), ...le16(height), 0, 0, 0, ...mark];
+  if (format === 'bmp') return [...le32(width), ...le32(height), ...le16(1), ...le16(24), ...mark];
+  if (format === 'webp') {
+    // After "RIFF....WEBPVP8 ": the chunk size, a key frame's tag and start code, then 14-bit sizes.
+    return width > 0x3fff || height > 0x3fff ? mark : [
+      ...le32(10 + mark.length), 0x10, 0, 0, 0x9d, 0x01, 0x2a, ...le16(width), ...le16(height), ...mark,
+    ];
+  }
+  if (format === 'tiff') {
+    return [...tiffEntries([[256, width], [257, height], ...(onItsSide ? [[274, 6] as const] : [])]), ...mark];
+  }
+  // HEIC, AVIF and the rest keep their size deeper in the file; the app does not read it there.
+  return mark;
+}
+
 /** A file in the given format that decodes to the given picture. */
-export function fakeImageBytes(format: FakeImageFormat, picture?: FakePicture): Uint8Array {
+export function fakeImageBytes(format: FakeImageFormat, picture?: FakePicture, file: FakeImageFile = {}): Uint8Array {
   fakeMedia.nextId += 1;
   const id = `picture-${fakeMedia.nextId}`;
   if (picture) fakeMedia.pictures.set(id, picture);
-  return Uint8Array.from([...FAKE_SIGNATURES[format], ...text(`|${id}|`)]);
+  if (file.stored === 'stored on its side') fakeMedia.storedOnItsSide.add(id);
+  return Uint8Array.from([...FAKE_SIGNATURES[format], ...fakeHeaderAfterSignature(format, picture, id, file)]);
 }
 
 export function fakeFormatOf(bytes: Uint8Array): FakeImageFormat {
@@ -203,6 +332,12 @@ export function fakeFormatOf(bytes: Uint8Array): FakeImageFormat {
 export function fakePictureIn(bytes: Uint8Array): FakePicture | null {
   const id = /\|(picture-\d+)\|/.exec(String.fromCharCode(...bytes))?.[1];
   return (id && fakeMedia.pictures.get(id)) || null;
+}
+
+/** Whether a picture the phone's image tool wrote is still CMYK (it was saved with no redraw). */
+export function fakeSavedAsCmyk(bytes: Uint8Array): boolean {
+  const id = /\|(picture-\d+)\|/.exec(String.fromCharCode(...bytes))?.[1];
+  return Boolean(id && fakeMedia.savedAsCmyk.has(id));
 }
 
 function decoded(bytes: Uint8Array, decodes: readonly FakeImageFormat[]): FakePicture | null {
@@ -243,7 +378,7 @@ export function fakeFileSystem() {
       return fakeMedia.files.has(this.uri);
     }
     get size() {
-      return fakeMedia.files.get(this.uri)?.byteLength ?? 0;
+      return fakeMedia.fileSizes.get(this.uri) ?? fakeMedia.files.get(this.uri)?.byteLength ?? 0;
     }
     get modificationTime() {
       return fakeMedia.modified.get(this.uri) ?? 0;
@@ -263,12 +398,13 @@ export function fakeFileSystem() {
     open() {
       const bytes = fakeMedia.files.get(this.uri);
       if (!bytes) throw new Error('No such file.');
-      let offset = 0;
+      // As the real handle: reading moves on from `offset`, and `offset` can be set to read elsewhere.
       return {
         size: bytes.byteLength,
+        offset: 0,
         readBytes(length: number) {
-          const chunk = bytes.slice(offset, offset + length);
-          offset += chunk.byteLength;
+          const chunk = bytes.slice(this.offset, this.offset + length);
+          this.offset += chunk.byteLength;
           return chunk;
         },
         close() {},
@@ -287,29 +423,110 @@ export function fakeImageGetSize(
   success: (width: number, height: number) => void,
   failure?: (error: unknown) => void,
 ) {
+  fakeMedia.deviceSizeAsked.push(uri);
   const source = fakeMedia.files.get(uri);
   const picture = source ? decoded(source, DEVICE_DECODES) : null;
   if (picture) success(picture.width, picture.height);
   else failure?.(new Error('The image size could not be read.'));
 }
 
-/** expo-image-manipulator: loads a local picture upright, crops, resizes and saves it. */
+/** A decoded picture in the image tool's memory, and how many of its objects still hold it. */
+type FakeHeldPicture = { picture: FakePicture; holders: number };
+
+function holdPicture(held: FakeHeldPicture) {
+  held.holders += 1;
+  if (held.holders > 1) return;
+  fakeMedia.devicePicturesNow += 1;
+  fakeMedia.devicePixelsNow += held.picture.width * held.picture.height;
+  fakeMedia.devicePicturesAtOnce = Math.max(fakeMedia.devicePicturesAtOnce, fakeMedia.devicePicturesNow);
+  fakeMedia.devicePixelsAtOnce = Math.max(fakeMedia.devicePixelsAtOnce, fakeMedia.devicePixelsNow);
+}
+
+function dropPicture(held: FakeHeldPicture) {
+  held.holders -= 1;
+  if (held.holders > 0) return;
+  fakeMedia.devicePicturesNow -= 1;
+  fakeMedia.devicePixelsNow -= held.picture.width * held.picture.height;
+}
+
+/** What the real objects do once released: any further use throws. */
+const usedAfterRelease = () => new Error('This object was released; its picture is gone.');
+
+/**
+ * What one picture handled properly costs at its peak: the picture and the
+ * copy being made from it (smaller, cropped, or turned upright).
+ */
+export const FAKE_DEVICE_PICTURES_FOR_ONE = 2;
+
+/**
+ * Fails the test that calls it when the phone's image tool was left holding
+ * anything, or held more at once than handling one picture at a time needs
+ * (review pass 1, L6). Call it after every test that uses the tool.
+ */
+export function expectFakeDeviceLetGoOfEveryPicture(media: typeof fakeMedia = fakeMedia) {
+  const held = {
+    'pictures still open (never released)': media.deviceOpenNow,
+    'decoded pictures still in memory': media.devicePicturesNow,
+    'most pictures open at once': media.deviceOpenAtOnce,
+    'most decoded pictures in memory at once': media.devicePicturesAtOnce,
+  };
+  const allowed = {
+    'pictures still open (never released)': 0,
+    'decoded pictures still in memory': 0,
+    'most pictures open at once': Math.min(1, media.deviceOpenAtOnce),
+    'most decoded pictures in memory at once': Math.min(FAKE_DEVICE_PICTURES_FOR_ONE, media.devicePicturesAtOnce),
+  };
+  if (JSON.stringify(held) !== JSON.stringify(allowed)) {
+    throw new Error(
+      'The image tool was left holding pictures, or held more than one picture\'s worth at once.\n' +
+      `held:    ${JSON.stringify(held)}\nallowed: ${JSON.stringify(allowed)}`,
+    );
+  }
+}
+
+/**
+ * expo-image-manipulator: loads a local picture upright, crops, resizes and
+ * saves it. Like the real tool it holds every picture until release():
+ * manipulate() gives a context that keeps the picture it is working on,
+ * renderAsync() gives a second object that keeps that picture too, and
+ * saveAsync() writes a file and lets go of nothing.
+ */
 export function fakeImageManipulator() {
   const SaveFormat = { JPEG: 'jpeg', PNG: 'png', WEBP: 'webp' } as const;
   const ImageManipulator = {
     manipulate(uri: string) {
       fakeMedia.deviceOpened.push(uri);
       const source = fakeMedia.files.get(uri);
-      let picture = source && !fakeMedia.deviceCannotOpen.has(uri) ? decoded(source, DEVICE_DECODES) : null;
+      const loaded = source && !fakeMedia.deviceCannotOpen.has(uri) ? decoded(source, DEVICE_DECODES) : null;
+      let printForm = fakeMedia.devicePrintForm.get(uri) ?? null;
       let pendingCrop: FakeCrop | null = null;
+      let contextReleased = false;
+      fakeMedia.deviceOpenNow += 1;
+      fakeMedia.deviceOpenAtOnce = Math.max(fakeMedia.deviceOpenAtOnce, fakeMedia.deviceOpenNow);
+      // The picture the context is working on. Each step makes a new one from it and lets the old one go.
+      let current: FakeHeldPicture | null = null;
+      const moveOnTo = (picture: FakePicture) => {
+        const next = { picture, holders: 0 };
+        holdPicture(next);
+        if (current) dropPicture(current);
+        current = next;
+      };
+      if (loaded) {
+        moveOnTo(loaded);
+        // A picture stored on its side is redrawn upright, at full size, as it is loaded.
+        const id = /\|(picture-\d+)\|/.exec(String.fromCharCode(...source!))?.[1];
+        if (id && fakeMedia.storedOnItsSide.has(id)) moveOnTo(loaded);
+      }
       const context = {
         crop(rect: Pick<FakeCrop, 'originX' | 'originY' | 'width' | 'height'>) {
+          if (contextReleased) throw usedAfterRelease();
           pendingCrop = { ...rect, outputWidth: rect.width, outputHeight: rect.height };
           fakeMedia.deviceCrops.push(pendingCrop);
-          if (picture) picture = cropped(picture, rect);
+          if (current) moveOnTo(cropped(current.picture, rect));
           return context;
         },
         resize(size: { width: number; height: number }) {
+          if (contextReleased) throw usedAfterRelease();
           if (pendingCrop) {
             // The record of this crop also carries the size it was saved at.
             fakeMedia.deviceCrops[fakeMedia.deviceCrops.length - 1] = {
@@ -318,25 +535,48 @@ export function fakeImageManipulator() {
               outputHeight: size.height,
             };
           }
-          if (picture) picture = resized(picture, size.width, size.height);
+          if (current) moveOnTo(resized(current.picture, size.width, size.height));
+          // A resize redraws the picture into an ordinary 8-bit colour bitmap.
+          printForm = null;
           return context;
         },
         async renderAsync() {
-          if (!picture) throw new Error('The image data could not be read.');
-          const rendered = picture;
+          if (contextReleased) throw usedAfterRelease();
+          if (!current) throw new Error('The image data could not be read.');
+          const held = current;
+          const rendered = held.picture;
+          // The object handed back keeps the picture as well, until it is released itself.
+          holdPicture(held);
+          let imageReleased = false;
           return {
             width: rendered.width,
             height: rendered.height,
             async saveAsync(options?: { format?: FakeImageFormat }) {
+              if (imageReleased) throw usedAfterRelease();
+              fakeMedia.devicePixelsWhileSaving.push(fakeMedia.devicePixelsNow);
               const format = fakeMedia.deviceWrites || options?.format || 'jpeg';
               // A JPEG has no transparency. Apple's encoder puts the picture on white
               // (run on macOS ImageIO by the pass-4 reviewer, notes/p4-ecos/probe.swift).
               const bytes = fakeImageBytes(format, format === 'jpeg' ? flattened(rendered, 'white') : rendered);
+              if (printForm === 'CMYK' && format === 'jpeg') fakeMedia.savedAsCmyk.add(`picture-${fakeMedia.nextId}`);
               const savedUri = `file:///cache/ImageManipulator/${fakeMedia.nextId}.${format}`;
               fakeMedia.files.set(savedUri, bytes);
+              // Writing takes a moment: work started meanwhile would overlap this picture.
+              await Promise.resolve();
               return { uri: savedUri, width: rendered.width, height: rendered.height };
             },
+            release() {
+              if (!imageReleased) dropPicture(held);
+              imageReleased = true;
+            },
           };
+        },
+        release() {
+          if (contextReleased) return;
+          contextReleased = true;
+          fakeMedia.deviceOpenNow -= 1;
+          if (current) dropPicture(current);
+          current = null;
         },
       };
       return context;

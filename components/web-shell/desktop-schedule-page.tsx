@@ -16,12 +16,14 @@ import {
   DAVE_WEB_CONFLICT_CHOICE_TEXT,
   daveWebNewTaskProjectId,
   daveWebPercentFromBox,
+  daveWebTaskProjectRepairedNotice,
   daveWebScheduleDateForSave,
   mergeDAVEWebConflictDraft,
   type DAVEWebScheduleItem,
   type DAVEWebTaskDraft,
 } from '../../services/DAVEWebTaskEditing';
 import { DAVEWebTaskMutationError } from '../../services/DAVEWebSupabaseClient';
+import { daveWebLinkCircleRefusal } from '../../services/DAVEWebTaskLinkCircle';
 import {
   buildVitruviusGanttModel,
   parseVitruviusScheduleDate,
@@ -47,8 +49,15 @@ import {
   planningDependenciesFromIds,
   scheduleParentOptions,
   schedulePredecessorOptions,
+  scheduleSuccessorIds,
 } from '../../services/VitruviusScheduleWorkspace';
 import { scheduleCalendarDay } from '../../services/ScheduleCalendarDay';
+import {
+  scheduleDateRangeText,
+  scheduleDayIsSupported,
+  scheduleDurationBoxProblem,
+  scheduleLagBoxProblem,
+} from '../../services/ScheduleInputLimits';
 import { scheduleTaskLinkTargets } from '../../services/ScheduleTaskRevisions';
 import type { ScheduleItem, ScheduleStatus } from '../../types';
 import { colors, spacing } from '../../theme';
@@ -80,6 +89,8 @@ type ScheduleEditorState = Readonly<{
   owner: string;
   contractor: string;
   percentComplete: string;
+  /** He typed in the Percent complete box and it holds something (WS1 item 5): his own entry. */
+  percentEntered?: boolean;
   status: ScheduleStatus;
   notes: string;
 }>;
@@ -94,9 +105,28 @@ export function DesktopSchedulePage({
   selectedProject: string | null;
 }) {
   const auth = useDesktopAuth();
-  // A link to a row a master hid reads as the row shown for its task (owner answer Q29).
+  // Review pass 1, web M1 (6 Oct 2026; caused by WS1 item 8). `tasks` is what the page lists: the tasks of the
+  // project chosen at the top of the workspace (those filed under that schedule name). It is not the schedule. The
+  // page took "not among the tasks I was handed" for "not in the schedule": with a project chosen, a predecessor
+  // that is alive and shown but filed under another schedule name read "Missing" in the list, and WS1 item 8's
+  // editor called it "A task no longer in the schedule" and told him to untick it. The case found: a task added by
+  // hand on the web (filed under its building's name) that starts after a task of a Microsoft Project master (filed
+  // under the master's own root name). What a link names is now read from the whole schedule the workspace shows,
+  // whatever is chosen at the top: the tasks handed, with every other task shown.
+  const workspaceTasks = auth.snapshot?.scheduleItems;
+  const scheduleTasks = useMemo(() => {
+    const handed = new Set(tasks.map(task => task.id));
+    const others = (workspaceTasks ?? []).filter(task => !handed.has(task.id));
+    return others.length > 0 ? [...tasks, ...others] : tasks;
+  }, [tasks, workspaceTasks]);
+  // A link to a row a master hid reads as the row shown for its task (owner answer Q29). The rule the web's circle
+  // check and its deletes use for "is this task in the schedule shown" (scheduleTaskLinkTargets over every task shown).
   const knownTasks = auth.snapshot?.knownScheduleItems;
-  const linkTarget = useMemo(() => scheduleTaskLinkTargets(tasks, knownTasks ?? []), [tasks, knownTasks]);
+  const linkTarget = useMemo(() => scheduleTaskLinkTargets(scheduleTasks, knownTasks ?? []), [scheduleTasks, knownTasks]);
+  /** The row shown for a link's predecessor id: a link the editor re-points there is not a new link (WS1 item 7). */
+  const shownLinkId = (predecessorId: string) => linkTarget(predecessorId)?.id ?? predecessorId;
+  /** The schedule this tab shows, for the sentence of a refused link: a circle all in it was not made elsewhere (second review, F7). */
+  const scheduleHere = { scheduleItems: scheduleTasks as DAVEWebScheduleItem[], knownScheduleItems: (knownTasks ?? scheduleTasks) as DAVEWebScheduleItem[] };
   const [editor, setEditor] = useState<ScheduleEditorState | null>(null);
   const [editingTask, setEditingTask] = useState<DAVEWebScheduleItem | null>(null);
   const [workspaceView, setWorkspaceView] = useState<ScheduleWorkspaceView>('builder');
@@ -139,10 +169,50 @@ export function DesktopSchedulePage({
           (editingTask.dependencies || []).some(dependency => dependency.predecessorItemId === task.id)),
       )
     : [];
+  // The predecessors the editor opened with, as the rows shown: one of them that also comes after the item is part of
+  // a circle saved from two places, and is listed so that he can always untick it (WS1 item 7).
+  const editorOpenedPredecessorIds = useMemo(
+    () => (editingTask ? scheduleEditorStateFor(editingTask, linkTarget).predecessorItemIds : []),
+    [editingTask, linkTarget],
+  );
+  // A predecessor the item still names that is no task shown now: its task was deleted (a delete on the web used to
+  // leave the link behind), or its schedule is not the current one. Listed so that he can untick it (WS1 item 8).
+  // By the schedule the workspace shows, not by the tasks handed (M1): a task shown under another project is alive.
+  const editingTaskId = editingTask?.id ?? null;
+  const editorMissingPredecessorIds = useMemo(
+    () => editorOpenedPredecessorIds.filter(id =>
+      !tasks.some(task => task.id === id) && !livePredecessor(linkTarget, id, editingTaskId)),
+    [editorOpenedPredecessorIds, tasks, linkTarget, editingTaskId],
+  );
+  // The tasks that come after the item in the schedule shown: one of them as its predecessor too is a circle.
+  const editorSuccessorIds = useMemo(
+    () => (editingTaskId ? scheduleSuccessorIds(editingTaskId, scheduleTasks) : new Set<string>()),
+    [editingTaskId, scheduleTasks],
+  );
+  // The predecessors the item has, or holds ticked in the open form, that are in the schedule shown but in none of
+  // the editor's lists (M1): filed under another schedule name than the one chosen at the top, or in another project
+  // altogether. Each under the id the link names, with the task shown for it. Listed by name with where they are
+  // filed, ticked: he can untick one as he can any other, and none is called missing.
+  const editorPredecessorsElsewhere = (() => {
+    if (!editor || !editingTask) return [];
+    const listed = new Set([...editorProjectTasks, ...editorLinksElsewhere].map(task => task.id));
+    const found = new Set<string>();
+    return [...editor.predecessorItemIds, ...editorOpenedPredecessorIds].flatMap(id => {
+      if (listed.has(id) || found.has(id)) return [];
+      const item = livePredecessor(linkTarget, id, editingTask.id);
+      if (!item || listed.has(item.id) || found.has(item.id)) return [];
+      found.add(id).add(item.id);
+      return [{ id, item, circular: editorSuccessorIds.has(item.id) }];
+    });
+  })();
   const editorScenario = useMemo(() => {
     if (!editor || !editingTask || editor.kind === 'phase') return null;
     return buildVitruviusScheduleChangeScenario({
-      items: tasks,
+      // The schedule shown, not the tasks handed (M1): the item's own schedule is then whole whatever is chosen at
+      // the top (also when the choice changes under the open editor and the item is no longer among the tasks
+      // handed), and a predecessor shown under another schedule name is found.
+      items: scheduleTasks,
+      shownTaskOf: linkTarget,
       itemId: editingTask.id,
       draft: {
         startDate: editor.startDate,
@@ -164,7 +234,7 @@ export function DesktopSchedulePage({
           : editingTask.percentComplete,
       },
     });
-  }, [editingTask, editor, tasks]);
+  }, [editingTask, editor, scheduleTasks, linkTarget]);
 
   const openNew = (kind: ScheduleEditorKind, parentItemId: string | null = null) => {
     const projectTasks = tasks.filter(task => inProject(task, defaultProject));
@@ -247,6 +317,13 @@ export function DesktopSchedulePage({
     ) {
       return { ok: false, message: 'Finish date cannot be before the start date.' };
     }
+    // Independent review R08: the limits are checked here, before the save
+    // builds or calculates anything. A phase's duration, lag and dates are
+    // not in its form.
+    if (form.kind !== 'phase') {
+      const limitProblem = scheduleEditorLimitProblem(form, opened);
+      if (limitProblem) return { ok: false, message: limitProblem };
+    }
     const projectTasks = tasks.filter(task => inProject(task, form.projectName));
     // A new item's cloud project is looked up by its project's name among
     // the open projects, as on the Tasks page. It had been copied from
@@ -300,6 +377,7 @@ export function DesktopSchedulePage({
         owner: form.owner,
         contractor: form.contractor,
         percentComplete,
+        percentEntered: form.percentEntered === true && Boolean(form.percentComplete.trim()),
         priority: opened?.priority || 'Medium',
         status: form.status,
         notes: form.notes,
@@ -356,14 +434,22 @@ export function DesktopSchedulePage({
         id: editingTask?.id || createDAVEWebTaskId(),
         now,
         actor: auth.userEmail || 'Project manager',
+        projects: auth.snapshot, // a task saved earlier under another project's name is repaired here (WS1 item 6)
       });
+      // A predecessor added here that already comes after this item in the cloud (linked the other way on another
+      // device or in another tab) would close a circle: refused, with what he typed kept (WS1 item 7).
+      const circle = editingTask ? await daveWebLinkCircleRefusal({ item, opened: editingTask, shownIdOf: shownLinkId, here: scheduleHere }) : null;
+      if (circle) {
+        setNotice({ tone: 'danger', text: circle });
+        return;
+      }
       if (editingTask) await auth.updateTask(item);
       else await auth.createTask(item);
       closeEditor();
       setNotice({
         tone: 'good',
         text: editingTask
-          ? 'Schedule item updated and synced.'
+          ? `Schedule item updated and synced.${daveWebTaskProjectRepairedNotice(editingTask, item)}`
           : 'Schedule item created and synced.',
       });
     } catch (error) {
@@ -402,7 +488,7 @@ export function DesktopSchedulePage({
 
   const loadLatestAfterConflict = () => {
     if (!conflict || pending) return;
-    const latest = tasks.find(task => task.id === conflict.taskId) ?? null;
+    const latest = scheduleTasks.find(task => task.id === conflict.taskId) ?? null;
     if (!latest) {
       closeEditor();
       setNotice({
@@ -422,7 +508,7 @@ export function DesktopSchedulePage({
 
   const applyMyChangesAfterConflict = async () => {
     if (!conflict || !editor || pending) return;
-    const latest = tasks.find(task => task.id === conflict.taskId) ?? null;
+    const latest = scheduleTasks.find(task => task.id === conflict.taskId) ?? null;
     if (!latest) {
       closeEditor();
       setNotice({
@@ -457,7 +543,14 @@ export function DesktopSchedulePage({
         id: latest.id,
         now,
         actor,
+        projects: auth.snapshot,
       });
+      // As in Save: a link this adds must not close a circle with what the cloud holds now (WS1 item 7).
+      const circle = await daveWebLinkCircleRefusal({ item, opened: latest, shownIdOf: shownLinkId, here: scheduleHere });
+      if (circle) {
+        setNotice({ tone: 'danger', text: circle });
+        return;
+      }
       await auth.updateTask(item);
       closeEditor();
       setNotice({
@@ -573,11 +666,15 @@ export function DesktopSchedulePage({
     }
     setImpactPendingItemId('all');
     setNotice(null);
+    // Tasks the calculation could not give dates to are left as they are and said so (review pass 1, L2).
+    const leftAsItIs = analysis.impactPreview.issues.filter(issue => issue.severity === 'warning').length;
     try {
       const updated = await auth.updateTasks(updates);
       setNotice({
         tone: 'good',
-        text: `${updated} calculated date change${updated === 1 ? '' : 's'} applied and synced.`,
+        text: `${updated} calculated date change${updated === 1 ? '' : 's'} applied and synced.` + (leftAsItIs > 0
+          ? ` ${leftAsItIs} task${leftAsItIs === 1 ? ' could not be calculated and was left as it is' : 's could not be calculated and were left as they are'}; see the note${leftAsItIs === 1 ? '' : 's'} in the impact preview.`
+          : ''),
       });
     } catch (error) {
       setNotice({
@@ -700,6 +797,9 @@ export function DesktopSchedulePage({
           projects={projectNames}
           projectTasks={editorProjectTasks}
           linksElsewhere={editorLinksElsewhere}
+          predecessorsElsewhere={editorPredecessorsElsewhere}
+          openedPredecessorIds={editorOpenedPredecessorIds}
+          missingPredecessorIds={editorMissingPredecessorIds}
           scenario={editorScenario}
           pending={pending}
           awaitingConflictChoice={Boolean(conflict)}
@@ -748,9 +848,11 @@ export function DesktopSchedulePage({
                 if (ancestorIsCollapsed(row.item, group.tasks, collapsedIds)) return null;
                 const dependencyLabels = (row.item.dependencies || []).map(dependency => {
                   // One in another building under the same root is not missing (set when the page grouped by root).
+                  // Nor is one the schedule shows anywhere else, outside the project chosen at the top (M1).
                   const predecessor = group.tasks.find(task => task.id === dependency.predecessorItemId) ??
                     tasks.find(task => task.id === dependency.predecessorItemId && sameRoot(task, row.item)) ??
-                    shownLinkTarget(linkTarget, dependency.predecessorItemId, row.item);
+                    shownLinkTarget(linkTarget, dependency.predecessorItemId, row.item) ??
+                    livePredecessor(linkTarget, dependency.predecessorItemId, row.item.id);
                   const label = predecessor?.wbsCode || predecessor?.taskName || 'Missing';
                   return `${label}${dependency.lagDays ? ` +${dependency.lagDays}d` : ''}`;
                 });
@@ -1408,7 +1510,9 @@ function ImpactPreviewPanel({
       ) : null}
       {analytics.impactPreview.changes.length === 0 ? (
         <Text style={styles.impactEmpty}>
-          Current task dates already satisfy the saved finish-to-start relationships.
+          {analytics.impactPreview.issues.length > 0
+            ? `No other date changes are needed. See the note${analytics.impactPreview.issues.length === 1 ? '' : 's'} above.`
+            : 'Current task dates already satisfy the saved finish-to-start relationships.'}
         </Text>
       ) : analytics.impactPreview.changes.map(change => (
         <View key={change.itemId} style={styles.impactChange}>
@@ -1498,6 +1602,9 @@ function ScheduleEditor({
   projects,
   projectTasks,
   linksElsewhere = [],
+  predecessorsElsewhere = [],
+  openedPredecessorIds = [],
+  missingPredecessorIds = [],
   scenario,
   pending,
   awaitingConflictChoice = false,
@@ -1511,6 +1618,16 @@ function ScheduleEditor({
   projectTasks: readonly DAVEWebScheduleItem[];
   /** The task's parent and predecessors in another building under the same root (A5 pass 13 L1). */
   linksElsewhere?: readonly DAVEWebScheduleItem[];
+  /**
+   * The item's predecessors that are in the schedule shown but in neither list above: filed outside the project
+   * chosen at the top, or in another project (review pass 1, web M1). `id` is the id the link names; `circular`,
+   * that the task also comes after this item.
+   */
+  predecessorsElsewhere?: readonly Readonly<{ id: string; item: ScheduleItem; circular: boolean }>[];
+  /** The predecessors the item had when the editor opened, as the rows shown (WS1 item 7). */
+  openedPredecessorIds?: readonly string[];
+  /** Predecessors the item still names that are no task shown now (WS1 item 8). */
+  missingPredecessorIds?: readonly string[];
   scenario: VitruviusScheduleChangeScenario | null;
   pending: boolean;
   /** Another device's newer version is waiting for Load Latest or Apply My Changes. */
@@ -1525,14 +1642,67 @@ function ScheduleEditor({
     ...scheduleParentOptions(editingTask?.id || null, projectTasks),
     ...linksElsewhere.filter(item => item.id === editingTask?.parentItemId?.trim()),
   ];
+  const eligiblePredecessors = schedulePredecessorOptions(editingTask?.id || null, projectTasks);
+  // Open item, web batch WS1 item 7 (6 Oct 2026): a task that already comes after this item is not offered as a
+  // predecessor, so that one editor cannot make a circle. But two links made in opposite directions from two places
+  // are both saved, and then each task is the other's predecessor AND comes after it: neither editor listed the
+  // other, so he could not untick the link, and Save stayed "Correct Schedule Issues". A predecessor the item
+  // already has is always listed, so it can always be removed; and so is one he has ticked in this form that the
+  // schedule, refreshed under the open editor, now shows coming after the item (the other link was just made
+  // elsewhere): it had dropped out of the list while still ticked.
+  const notOffered = editingTask
+    ? projectTasks.filter(item =>
+        item.id !== editingTask.id &&
+        (openedPredecessorIds.includes(item.id) || state.predecessorItemIds.includes(item.id)) &&
+        !eligiblePredecessors.some(option => option.id === item.id))
+    : [];
+  // Review pass 1, web L4 (6 Oct 2026; caused by WS1 item 7): every one of those was labelled "(circular link)",
+  // with the line "... is set to finish before this item and also to start after it. That is a circle ...". The
+  // editor does not offer two kinds of task: one that comes after the item (a circle if it is also a predecessor),
+  // and a phase. A task that starts after a phase is in no circle. Only a task that comes after the item is called
+  // a circle now; a phase is called a phase, with its own line.
+  const comesAfter = editingTask ? scheduleSuccessorIds(editingTask.id, projectTasks) : new Set<string>();
+  const circlePredecessors = notOffered.filter(item => comesAfter.has(item.id));
   const predecessorOptions = [
-    ...schedulePredecessorOptions(editingTask?.id || null, projectTasks),
+    ...eligiblePredecessors,
     ...linksElsewhere.filter(item =>
       (editingTask?.dependencies || []).some(dependency => dependency.predecessorItemId === item.id),
     ),
+    ...notOffered,
   ];
+  const inCircle = (item: ScheduleItem) => circlePredecessors.some(link => link.id === item.id);
+  /** A predecessor that is a phase, and in no circle (L4). */
+  const isPhaseLink = (item: ScheduleItem) => item.isSummary === true && !inCircle(item);
   const buildingLabel = (item: ScheduleItem) =>
-    linksElsewhere.some(link => link.id === item.id) ? ` (${taskProjectName(item)})` : '';
+    inCircle(item) ? ' (circular link)'
+      : linksElsewhere.some(link => link.id === item.id) ? ` (${taskProjectName(item)})` : '';
+  /** What follows a predecessor's name in the list: a circle, a phase (with its building when it is in another), or its building. */
+  const predecessorLabel = (item: ScheduleItem) => {
+    if (!isPhaseLink(item)) return buildingLabel(item);
+    const building = linksElsewhere.some(link => link.id === item.id) ? taskProjectName(item) : '';
+    return ` (a phase${building ? `, ${building}` : ''})`;
+  };
+  // A circle through a task filed under another schedule name is a circle all the same (M1): named with the others,
+  // and it holds the save while it is ticked. The calculation holds the save for a circle within the item's own
+  // schedule; it takes a task filed elsewhere on the dates it has, and so cannot see a circle through one.
+  const circlesElsewhere = predecessorsElsewhere.filter(link => link.circular);
+  const circleNames = [...circlePredecessors, ...circlesElsewhere.map(link => link.item)].map(item => `“${item.taskName}”`);
+  // (Not for a phase: its predecessors are not in its form, and its save keeps them as stored.)
+  const circleTicked = state.kind !== 'phase' && (
+    circlePredecessors.some(item => state.predecessorItemIds.includes(item.id)) ||
+    circlesElsewhere.some(link => state.predecessorItemIds.includes(link.id)));
+  /** Where a predecessor outside the editor's lists is filed: its project, or its schedule's name in this project. */
+  const filedUnder = (item: ScheduleItem) =>
+    normalize(taskProjectName(item)) === normalize(state.projectName)
+      ? item.scheduleProjectName?.trim() || taskProjectName(item)
+      : taskProjectName(item);
+  // The phases this item is ticked to start after, wherever they are listed (L4), for the line that names them. The
+  // web's schedule places an item after tasks and milestones only (its critical path leaves phases out), so the
+  // calculation holds the save while one is ticked: what the line says.
+  const phasesTicked = [
+    ...predecessorOptions.filter(item => isPhaseLink(item) && state.predecessorItemIds.includes(item.id)),
+    ...predecessorsElsewhere.filter(link => link.item.isSummary === true && !link.circular && state.predecessorItemIds.includes(link.id)).map(link => link.item),
+  ];
   const areaOptions = uniqueText(projectTasks.map(item => item.locationName));
   const canCaptureBaseline = Boolean(
     state.startDate.trim() &&
@@ -1540,8 +1710,7 @@ function ScheduleEditor({
   );
   const scheduleIssues = Boolean(
     editingTask &&
-    scenario &&
-    !scenario.safety.safeToApply,
+    ((scenario && !scenario.safety.safeToApply) || circleTicked),
   );
   const saveBlocked = pending || awaitingConflictChoice || scheduleIssues;
   const update = <K extends keyof ScheduleEditorState>(
@@ -1643,9 +1812,49 @@ function ScheduleEditor({
         <View style={styles.relationshipSection}>
           <Text style={styles.fieldLabel}>Finish-to-start predecessors</Text>
           <Text style={styles.helpText}>Select work that must finish before this item can start.</Text>
+          {circleNames.length > 0 ? (
+            <Text style={styles.scenarioIssue} accessibilityRole="alert">
+              {`${circleNames.join(' and ')} ${circleNames.length === 1 ? 'is' : 'are'} set to finish before this item and also to start after it. That is a circle, and the schedule cannot place it. Untick ${circleNames.length === 1 ? 'it' : 'one'} below, then save.`}
+            </Text>
+          ) : null}
+          {phasesTicked.length > 0 ? (
+            <Text style={styles.scenarioIssue} accessibilityRole="alert">
+              {`${phasesTicked.map(item => `“${item.taskName}”`).join(' and ')} ${phasesTicked.length === 1 ? 'is a phase' : 'are phases'}, and this schedule can only place an item after tasks and milestones: it cannot place this item while it starts after a phase. Untick ${phasesTicked.length === 1 ? 'it' : 'them'} below, then save. To keep the order, tick the ${phasesTicked.length === 1 ? 'task' : 'tasks'} this item should follow instead.`}
+            </Text>
+          ) : null}
+          {missingPredecessorIds.length > 0 ? (
+            <Text style={styles.scenarioIssue} accessibilityRole="alert">
+              {`This item is set to start after ${missingPredecessorIds.length === 1 ? 'a task that is' : `${missingPredecessorIds.length} tasks that are`} no longer in the schedule (deleted, or on a schedule that is not the current one). The schedule cannot place it until ${missingPredecessorIds.length === 1 ? 'that link is' : 'those links are'} removed. Untick ${missingPredecessorIds.length === 1 ? 'it' : 'them'} below, then save.`}
+            </Text>
+          ) : null}
           <View style={styles.choiceWrap}>
+            {missingPredecessorIds.map(id => {
+              const selected = state.predecessorItemIds.includes(id);
+              return (
+                <Pressable
+                  key={`missing-${id}`}
+                  style={[styles.choiceChip, selected && styles.choiceChipSelected]}
+                  onPress={() => update(
+                    'predecessorItemIds',
+                    selected ? state.predecessorItemIds.filter(other => other !== id) : [...state.predecessorItemIds, id],
+                  )}
+                  accessibilityRole="checkbox"
+                  accessibilityLabel="A task no longer in the schedule"
+                  accessibilityState={{ checked: selected }}
+                >
+                  <Ionicons
+                    name={selected ? 'checkbox' : 'square-outline'}
+                    size={17}
+                    color={selected ? desktopSurfaces.onAccent : desktopSurfaces.accent}
+                  />
+                  <Text style={[styles.choiceChipText, selected && styles.choiceChipTextSelected]}>A task no longer in the schedule</Text>
+                </Pressable>
+              );
+            })}
             {predecessorOptions.length === 0 ? (
-              <Text style={styles.helpText}>No eligible predecessor tasks yet.</Text>
+              missingPredecessorIds.length === 0 && predecessorsElsewhere.length === 0
+                ? <Text style={styles.helpText}>No eligible predecessor tasks yet.</Text>
+                : null
             ) : predecessorOptions.map(item => {
               const selected = state.predecessorItemIds.includes(item.id);
               return (
@@ -1659,6 +1868,8 @@ function ScheduleEditor({
                       : [...state.predecessorItemIds, item.id],
                   )}
                   accessibilityRole="checkbox"
+                  {...(inCircle(item) ? { accessibilityLabel: `${item.taskName}, circular link` }
+                    : isPhaseLink(item) ? { accessibilityLabel: `${item.taskName}, a phase` } : {})}
                   accessibilityState={{ checked: selected }}
                 >
                   <Ionicons
@@ -1667,7 +1878,35 @@ function ScheduleEditor({
                     color={selected ? desktopSurfaces.onAccent : desktopSurfaces.accent}
                   />
                   <Text style={[styles.choiceChipText, selected && styles.choiceChipTextSelected]}>
-                    {item.wbsCode ? `${item.wbsCode} · ` : ''}{item.taskName}{buildingLabel(item)}
+                    {item.wbsCode ? `${item.wbsCode} · ` : ''}{item.taskName}{predecessorLabel(item)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+            {predecessorsElsewhere.map(({ id, item, circular }) => {
+              // In the schedule, outside these lists (M1): by name, with where it is filed. Ticked by the id the link names.
+              const selected = state.predecessorItemIds.includes(id);
+              const phase = item.isSummary === true && !circular; // a phase is called a phase here too (L4)
+              return (
+                <Pressable
+                  key={`elsewhere-${id}`}
+                  style={[styles.choiceChip, selected && styles.choiceChipSelected]}
+                  onPress={() => update(
+                    'predecessorItemIds',
+                    selected ? state.predecessorItemIds.filter(other => other !== id) : [...state.predecessorItemIds, id],
+                  )}
+                  accessibilityRole="checkbox"
+                  {...(circular ? { accessibilityLabel: `${item.taskName}, circular link` }
+                    : phase ? { accessibilityLabel: `${item.taskName}, a phase` } : {})}
+                  accessibilityState={{ checked: selected }}
+                >
+                  <Ionicons
+                    name={selected ? 'checkbox' : 'square-outline'}
+                    size={17}
+                    color={selected ? desktopSurfaces.onAccent : desktopSurfaces.accent}
+                  />
+                  <Text style={[styles.choiceChipText, selected && styles.choiceChipTextSelected]}>
+                    {item.wbsCode ? `${item.wbsCode} · ` : ''}{item.taskName}{circular ? ' (circular link)' : ` (${phase ? 'a phase, ' : ''}${filedUnder(item)})`}
                   </Text>
                 </Pressable>
               );
@@ -1678,16 +1917,24 @@ function ScheduleEditor({
 
       <View style={styles.formGrid}>
         <EditorField label="Contractor" value={state.contractor} onChange={value => update('contractor', value)} />
-        <EditorField label="Percent complete" value={state.percentComplete} onChange={value => update('percentComplete', value)} numeric />
+        <EditorField
+          label="Percent complete"
+          value={state.percentComplete}
+          // He typed it: his own entry, also when it is the percent a schedule file gave (WS1 item 5).
+          onChange={value => onChange({ ...state, percentComplete: value, percentEntered: Boolean(value.trim()) })}
+          numeric
+        />
       </View>
       <View style={styles.relationshipSection}>
         <Text style={styles.fieldLabel}>Status</Text>
-        <View style={styles.choiceWrap}>
+        <View style={styles.choiceWrap} accessibilityRole="radiogroup" accessibilityLabel="Status">
           {(['Not Started', 'In Progress', 'Waiting', 'Complete'] as ScheduleStatus[]).map(status => (
             <Pressable
               key={status}
               style={[styles.choiceChip, state.status === status && styles.choiceChipSelected]}
               onPress={() => update('status', status)}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: state.status === status }}
             >
               <Text style={[styles.choiceChipText, state.status === status && styles.choiceChipTextSelected]}>{status}</Text>
             </Pressable>
@@ -1704,6 +1951,7 @@ function ScheduleEditor({
           style={[styles.input, styles.notesInput]}
           placeholder="Optional schedule note"
           placeholderTextColor="#7D8794"
+          accessibilityLabel="Planning notes"
         />
       </View>
       {editingTask && scenario ? (
@@ -1796,11 +2044,13 @@ function EditorField({
   return (
     <View style={[styles.formField, wide && styles.formFieldWide]}>
       <Text style={styles.fieldLabel}>{label}</Text>
+      {/* Named by its label, as the date, area and list boxes are (independent review F03). */}
       <TextInput
         value={value}
         onChangeText={onChange}
         inputMode={numeric ? 'numeric' : 'text'}
         style={styles.input}
+        accessibilityLabel={label}
       />
     </View>
   );
@@ -2025,6 +2275,20 @@ function ancestorIsCollapsed(
   return false;
 }
 
+/**
+ * The task the schedule shows for a predecessor id, wherever it is filed, or null: the link is then to a task that
+ * is no longer in the schedule (review pass 1, web M1). A link that names an earlier row of the task itself is no
+ * predecessor.
+ */
+function livePredecessor(
+  linkTarget: (predecessorId: string) => ScheduleItem | null,
+  predecessorId: string,
+  taskId: string | null,
+): ScheduleItem | null {
+  const target = linkTarget(predecessorId);
+  return target && target.id !== taskId ? target : null;
+}
+
 /** The task shown a link names, in the task's project or under its root (owner answer Q29). */
 function shownLinkTarget(
   linkTarget: (predecessorId: string) => ScheduleItem | null,
@@ -2118,6 +2382,31 @@ function calculatedDatesAsStored(
  */
 function dateInputValue(value: string | null | undefined) {
   return scheduleCalendarDay(value) ?? '';
+}
+
+/**
+ * Why the editor's duration, lag or dates cannot be saved, in a plain
+ * sentence, or null (independent review R08). A date box left showing the
+ * stored day is not judged; a milestone has no duration box.
+ */
+function scheduleEditorLimitProblem(
+  form: ScheduleEditorState,
+  opened: DAVEWebScheduleItem | null,
+): string | null {
+  const dateBoxes: ReadonlyArray<readonly [string, string, string | null | undefined]> = [
+    [form.kind === 'milestone' ? 'Milestone date' : 'Start date', form.startDate, opened?.startDate],
+    ...(form.kind === 'milestone' ? [] : [['Finish date', form.finishDate, opened?.finishDate] as const]),
+    ['Baseline start', form.baselineStartDate, opened?.baselineStartDate],
+    ...(form.kind === 'milestone' ? [] : [['Baseline finish', form.baselineFinishDate, opened?.baselineFinishDate] as const]),
+  ];
+  for (const [label, value, stored] of dateBoxes) {
+    const text = value.trim();
+    if (!text || (opened && text === dateInputValue(stored))) continue;
+    const day = scheduleCalendarDay(text);
+    if (!day || !scheduleDayIsSupported(day)) return scheduleDateRangeText(label);
+  }
+  return (form.kind === 'milestone' ? null : scheduleDurationBoxProblem(form.durationDays)) ||
+    scheduleLagBoxProblem(form.lagDays);
 }
 
 function shortDate(value: string) {

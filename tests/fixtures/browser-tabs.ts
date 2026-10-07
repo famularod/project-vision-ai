@@ -306,3 +306,99 @@ export function recordTabAuthEvents(client: SupabaseClient) {
   });
   return { events, stop: () => data.subscription.unsubscribe() };
 }
+
+/**
+ * Supabase Auth's rule for refresh tokens, added to the stand-in cloud
+ * (batch W1, 6 Oct 2026; the cloud above takes any refresh token it ever
+ * issued). Every refresh REPLACES the session's refresh token. A tab that
+ * presents the token just before the newest one is forgiven and handed the
+ * newest again (its last answer was lost). A token two or more behind is
+ * "reuse": the server then ends that sign-in for every tab holding it
+ * (gotrue, token_refresh.go). An ended sign-in refuses every refresh, and
+ * /user says the session no longer exists. A sign-out ends its session too.
+ *
+ * `refreshes` lists what each refresh was given: 'replaced', 'forgiven',
+ * 'ended-the-sign-in' or 'refused'.
+ */
+export function withRefreshTokenRule(cloud: TabCloud) {
+  type Family = { active: string; parent: string | null; ended: boolean };
+  const families = new Map<string, Family>();
+  const sessionOfToken = new Map<string, string>();
+  const refreshes: Array<Readonly<{ userId: string | null; outcome: 'replaced' | 'forgiven' | 'ended-the-sign-in' | 'refused' }>> = [];
+  const json = (status: number, body: unknown) => new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json', 'x-supabase-api-version': '2024-01-01' },
+  });
+  const sessionIdOf = (accessToken: unknown) => {
+    const claims = accessTokenClaims(typeof accessToken === 'string' ? accessToken : null);
+    return typeof claims?.session_id === 'string' ? claims.session_id : `no-session-id:${String(claims?.sub ?? '')}`;
+  };
+  const userOf = (refreshToken: string) => refreshToken.split(':')[1] ?? null;
+  const alreadyUsed = () => json(400, { code: 'refresh_token_already_used', message: 'Invalid Refresh Token: Already Used' });
+
+  const fetch: TabCloud['fetch'] = async (input, init) => {
+    const url = new URL(String(typeof input === 'string' ? input : (input as { url: string }).url));
+    const bearer = new Headers(init?.headers).get('Authorization')?.replace(/^Bearer\s+/i, '');
+    if (url.pathname === '/auth/v1/token' && url.searchParams.get('grant_type') === 'refresh_token') {
+      const presented = String((JSON.parse(String(init?.body ?? '{}')) as { refresh_token?: string }).refresh_token ?? '');
+      const known = sessionOfToken.get(presented);
+      const family = known ? families.get(known) : undefined;
+      if (family?.ended) {
+        refreshes.push({ userId: userOf(presented), outcome: 'refused' });
+        return alreadyUsed();
+      }
+      if (family && presented !== family.active && presented !== family.parent) {
+        family.ended = true;
+        refreshes.push({ userId: userOf(presented), outcome: 'ended-the-sign-in' });
+        return alreadyUsed();
+      }
+      const answer = await cloud.fetch(input, init);
+      if (!answer.ok) return answer;
+      const issued = await answer.clone().json() as { access_token: string; refresh_token: string };
+      if (family && presented === family.parent) {
+        // Forgiven: the newest token again, with a new access token.
+        refreshes.push({ userId: userOf(presented), outcome: 'forgiven' });
+        return json(200, { ...issued, refresh_token: family.active });
+      }
+      // The newest token (or the first this cloud sees of a stored sign-in): replaced.
+      const sessionId = known ?? sessionIdOf(issued.access_token);
+      if (families.get(sessionId)?.ended) {
+        // A stored sign-in whose session was ended before this cloud saw any of its tokens.
+        refreshes.push({ userId: userOf(presented), outcome: 'refused' });
+        return alreadyUsed();
+      }
+      families.set(sessionId, { active: issued.refresh_token, parent: presented, ended: false });
+      sessionOfToken.set(presented, sessionId);
+      sessionOfToken.set(issued.refresh_token, sessionId);
+      refreshes.push({ userId: userOf(presented), outcome: 'replaced' });
+      return answer;
+    }
+    if (url.pathname === '/auth/v1/token' && url.searchParams.get('grant_type') === 'password') {
+      const answer = await cloud.fetch(input, init);
+      if (!answer.ok) return answer;
+      const issued = await answer.clone().json() as { access_token: string; refresh_token: string };
+      const sessionId = sessionIdOf(issued.access_token);
+      families.set(sessionId, { active: issued.refresh_token, parent: null, ended: false });
+      sessionOfToken.set(issued.refresh_token, sessionId);
+      return answer;
+    }
+    const ended = families.get(sessionIdOf(bearer))?.ended === true;
+    if (url.pathname === '/auth/v1/user' && ended) {
+      return json(403, { code: 'session_not_found', message: 'Session from session_id claim in JWT does not exist' });
+    }
+    const answer = await cloud.fetch(input, init);
+    if (url.pathname === '/auth/v1/logout' && answer.ok) {
+      const sessionId = sessionIdOf(bearer);
+      families.set(sessionId, { active: '', parent: null, ...families.get(sessionId), ended: true });
+    }
+    return answer;
+  };
+
+  return {
+    ...cloud,
+    fetch,
+    refreshes,
+    /** Whether the server has ended the sign-in an access token belongs to. */
+    signInEnded: (accessToken: string | null | undefined) => families.get(sessionIdOf(accessToken))?.ended === true,
+  };
+}

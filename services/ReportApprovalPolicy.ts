@@ -42,6 +42,15 @@ const AUTHORITY_ADVISORY: Partial<Record<PIELiveAuthorityStateName, string>> = {
 };
 
 /**
+ * "Ready", yet report generation is off: the app's own check of its reading
+ * of the project did not pass (it wants more evidence, or a person's look).
+ * The other states with generation off each say why; this one said nothing
+ * and the report could be approved unseen (open item, A6 pass 4, 30 Sep 2026).
+ */
+export const REPORT_READING_NOT_CHECKED_ADVISORY =
+  'Vitruvius could not finish checking its own reading of this project. The report is built from your saved tasks and field updates; check it against what you know.';
+
+/**
  * The reviewer is the control. Hard blocks are limited to cases where there is
  * nothing trustworthy to review (data still loading, no trusted project
  * connection, no evidence, wrong project). Everything else is shown to the
@@ -82,7 +91,9 @@ export function evaluateReportApprovalPolicy({
   const waitingForProjectData = authorityState === 'loading';
   const untrustedConnection =
     authorityState === 'blocked_identity' || authorityState === 'blocked_organization';
-  const authorityAdvisory = authorityState ? AUTHORITY_ADVISORY[authorityState] : undefined;
+  const authorityAdvisory = authorityState
+    ? AUTHORITY_ADVISORY[authorityState] ?? (authorityState === 'ready' ? REPORT_READING_NOT_CHECKED_ADVISORY : undefined)
+    : undefined;
   const legacyAuthorityBlock = authorityState === undefined && !reportGenerationAllowed;
   if (authorityAdvisory && !reportGenerationAllowed) {
     items.unshift({

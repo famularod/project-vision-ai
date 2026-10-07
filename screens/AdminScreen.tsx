@@ -20,8 +20,9 @@ import { KeyboardAvoidingModalCard } from '../components/KeyboardAvoidingModalCa
 import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPending } from '../components/native-workspace-owner';
 import { unsavedFieldNoteExists } from '../hooks/use-field-note-draft';
 import { unsavedWalkMemoryExists } from '../hooks/use-kept-walk-memory-draft';
+import { unusedScheduleVerificationNoteExists } from '../hooks/use-schedule-progress-draft';
 import { keptVoiceRecordingExists } from '../services/KeptVoiceRecording';
-import { clearSignOutAskedHere, noteSignOutAskedHere } from '../services/SignOutIntent';
+import { clearSignOutAskedHere, noteAskedSignOutAnswered, noteSignOutAskedHere } from '../services/SignOutIntent';
 import { fieldNotesNeedingReview, fieldNotesWaitingToSync } from '../services/FieldNotesWaitingToSync';
 import { queuedDocumentChangesSnapshot, subscribeToQueuedDocumentChanges } from '../services/FieldUpdateDocumentChangeNotice';
 import { signOutNotInCloudSentences } from '../services/SignOutNotInCloudWarning';
@@ -74,6 +75,8 @@ import {
   refreshFieldUpdateConflictCloudCopies,
   refreshScheduleItemConflictCloudCopies,
   resolveProjectUpdateSyncConflict,
+  keepCloudOnNewerPhoneTaskEdits,
+  newerPhoneCopyForScheduleItemConflict,
   resolveScheduleItemSyncConflict,
   synchronizeLocalData,
   syncConflictChoiceStopReason,
@@ -924,8 +927,11 @@ export function AdminScreen({
   function confirmConflictResolution(
     conflict: SyncConflict,
     resolution: 'keep_local' | 'keep_cloud',
-    /** Keep Cloud: a newer edit saved on this phone during the conflict, which it withdraws too (A4 pass 15b F1). */
-    newerPhoneEdit = false,
+    /**
+     * Keep Cloud: a newer edit saved on this phone during the conflict, which it withdraws too (A4 pass 15b F1).
+     * For a task, what Keep Cloud will really do with it (review pass 1, sync F4): see keepCloudOnNewerPhoneTaskEdits.
+     */
+    newerPhoneEdit: boolean | 'discarded' | 'sent' | 'both' = false,
   ) {
     const update = conflictUpdate(conflict, resolution);
     const task = conflictScheduleItem(conflict, resolution);
@@ -933,7 +939,7 @@ export function AdminScreen({
     const title = resolution === 'keep_local' ? 'Keep Phone Copy?' : 'Keep Cloud Copy?';
     const message = resolution === 'keep_local'
       ? `The version saved on this phone for ${recordName} will replace the cloud copy.`
-      : `The cloud version for ${recordName} will replace the copy saved on this phone.${newerPhoneEdit ? ` ${CONFLICT_NEWER_PHONE_EDIT_DISCARDED}` : ''}`;
+      : `The cloud version for ${recordName} will replace the copy saved on this phone.${newerPhoneEdit ? ` ${newerPhoneEdit === 'sent' ? CONFLICT_NEWER_PHONE_EDIT_SENT : newerPhoneEdit === 'both' ? CONFLICT_NEWER_PHONE_EDIT_SOME_OF_EACH : CONFLICT_NEWER_PHONE_EDIT_DISCARDED}` : ''}`;
 
     Alert.alert(title, message, [
       { text: 'Cancel', style: 'cancel' },
@@ -951,14 +957,19 @@ export function AdminScreen({
     conflict: SyncConflict,
     resolution: 'keep_local' | 'keep_cloud',
   ) {
-    /** The conflicts and sync status read again after the choice; `closed`: the conflict was closed without it. */
-    const showConflictsAfterChoice = async (closed: string | null) => {
+    /**
+     * The conflicts and sync status read again after the choice; `closed`: the conflict was closed without it.
+     * `afterOwnRetry`: read again once Settings' own send of a newer edit has ended; the line is then written only
+     * when a conflict is open after all, so that it does not go over a line something else has put there since.
+     */
+    const showConflictsAfterChoice = async (closed: string | null, afterOwnRetry = false) => {
       const [nextConflicts, nextStatus] = await Promise.all([
         getSyncConflicts(),
         getSyncStatus(),
       ]);
       setSyncConflicts(nextConflicts);
       setSyncStatus(nextStatus);
+      if (afterOwnRetry && nextConflicts.length === 0) return;
       const remaining = nextConflicts.length > 0
         ? `${nextConflicts.length} ${nextConflicts.length === 1 ? 'conflict remains' : 'conflicts remain'} to review.`
         : null;
@@ -1028,7 +1039,11 @@ export function AdminScreen({
           const card: ArchivableUpdate = kept.isArchived && !(phoneCopy as ArchivableUpdate).isArchived
             ? { ...phoneCopy!, isArchived: true, archivedAt: kept.archivedAt ?? null }
             : phoneCopy!;
-          void onRetryUpdateSync(card, { automatic: true }).catch(() => undefined);
+          // And when that send has ended, the conflicts and the line under Sync are read again (sync batch Y1, item
+          // 5): the line below was written while it was still going, so "Cloud conflicts resolved." stayed on screen
+          // when the newer edit then met a conflict of its own, or could not be sent.
+          void onRetryUpdateSync(card, { automatic: true }).catch(() => undefined)
+            .then(() => showConflictsAfterChoice(null, true)).catch(() => undefined);
         }
       }
 
@@ -1236,7 +1251,10 @@ export function AdminScreen({
     const notInCloudCount = unsyncedCount + waitingFieldNotes;
     const discarded = (unsavedFieldNote ? 'The field note you have not saved will be discarded. ' : '') +
       (unsavedWalkMemory ? 'The Project Walk memory you have not saved will be discarded. ' : '') +
-      (keptRecording ? 'The recording waiting for signal will be discarded. ' : '');
+      (keptRecording ? 'The recording waiting for signal will be discarded. ' : '') +
+      // Review pass 1, L8: the optional verification note typed on a task and not yet used goes too, and is named.
+      // Second review, F6: this account's own note only; another account's kept note is neither named nor discarded.
+      (unusedScheduleVerificationNoteExists(fieldNoteOwnerKey) ? 'The verification note you have typed will be discarded. ' : '');
     const message =
       notInCloudCount > 0
         // A11 pass 7 L1: "syncs after you sign in" covers only items not marked Review needed.
@@ -1259,9 +1277,22 @@ export function AdminScreen({
     try {
       // Asked for here, after the warning: what it discards goes (everyday item 7). A sign-out
       // this device did not ask for sets the unsaved work aside for the account instead.
-      noteSignOutAskedHere();
-      const result = await signOut(scope);
-      if (!result.ok) clearSignOutAskedHere();
+      // Open item W1-6: for the account the warning above was about, and for as long as the
+      // sign-out takes (it counted as asked for two minutes from the tap only).
+      noteSignOutAskedHere(fieldNoteOwnerKey);
+      let result: Awaited<ReturnType<typeof signOut>>;
+      try {
+        result = await signOut(scope);
+      } catch {
+        // Review pass 1, L7: a sign-out whose call threw is not one he asked for that then happened. It
+        // stood as "asked for here" with no limit, and a sign-in ending by itself hours later discarded
+        // his unsaved work unasked. Unless the sign-out was already heard (then it did happen, and his
+        // work went as he was told), he is told it did not finish, as when it answers that it failed.
+        if (clearSignOutAskedHere()) Alert.alert('Sign Out did not finish', 'Try Sign Out again.');
+        return;
+      }
+      if (result.ok) noteAskedSignOutAnswered();
+      else clearSignOutAskedHere();
       if (result.code === SIGN_OUT_OF_ALL_DEVICES_NEEDS_SIGNAL) {
         // No silent sign-out of this device alone (owner answer Q21): he is
         // told why, and this device is his to choose.
@@ -1516,7 +1547,7 @@ function SyncConflictReviewModal({
   resolvingConflictId: string | null;
   onKeepPhone: (conflict: SyncConflict) => void;
   /** `newerPhoneEdit`: the phone side shown is an edit saved during the conflict, which Keep Cloud discards too. */
-  onKeepCloud: (conflict: SyncConflict, newerPhoneEdit: boolean) => void;
+  onKeepCloud: (conflict: SyncConflict, newerPhoneEdit: boolean | 'discarded' | 'sent' | 'both') => void;
   onClose: () => void;
 }) {
   return (
@@ -1576,7 +1607,7 @@ function SyncConflictReviewList({
   conflicts: SyncConflict[];
   resolvingConflictId: string | null;
   onKeepPhone: (conflict: SyncConflict) => void;
-  onKeepCloud: (conflict: SyncConflict, newerPhoneEdit: boolean) => void;
+  onKeepCloud: (conflict: SyncConflict, newerPhoneEdit: boolean | 'discarded' | 'sent' | 'both') => void;
 }) {
   const queue = useSyncExternalStore(subscribeToQueuedDocumentChanges, queuedDocumentChangesSnapshot);
   return (
@@ -1585,7 +1616,10 @@ function SyncConflictReviewList({
         const newerPhoneUpdate = conflictNewerPhoneUpdate(conflict, queue);
         const phoneUpdate = newerPhoneUpdate ?? conflictUpdate(conflict, 'keep_local');
         const cloudUpdate = conflictUpdate(conflict, 'keep_cloud');
-        const phoneTask = conflictScheduleItem(conflict, 'keep_local');
+        // A task's side as Keep Phone will send it (sync batch Y1, item 5): with a newer edit of his that still waits.
+        // The line showed the copy saved with the conflict; Keep Phone sent the newer value, Keep Cloud gave it up.
+        const newerPhoneTask = conflict.entity === 'schedule_item' ? newerPhoneCopyForScheduleItemConflict(conflict, queue) : null;
+        const phoneTask = newerPhoneTask ?? conflictScheduleItem(conflict, 'keep_local');
         const cloudTask = conflictScheduleItem(conflict, 'keep_cloud');
         // A task's fields changed on both devices (owner answer Q28): those fields, as each copy has them.
         const askedFields = scheduleItemConflictFields(conflict.localPayload);
@@ -1615,7 +1649,7 @@ function SyncConflictReviewList({
                 ? askedFields.length > 0 ? scheduleItemConflictCopyOfFields(phoneTask, askedFields) : formatTaskConflictCopy(phoneTask)
                 : formatConflictCopy(phoneUpdate)}
             </Text>
-            {newerPhoneUpdate ? (
+            {newerPhoneUpdate || newerPhoneTask ? (
               <Text style={styles.settingsRowDetail}>{CONFLICT_NEWER_PHONE_EDIT_NOTE}</Text>
             ) : null}
             <Text style={styles.settingsRowDetail}>
@@ -1634,7 +1668,7 @@ function SyncConflictReviewList({
               <SecondaryButton
                 label={resolving ? 'Saving…' : 'Keep Cloud'}
                 icon="cloud-outline"
-                onPress={() => onKeepCloud(conflict, Boolean(newerPhoneUpdate))}
+                onPress={() => onKeepCloud(conflict, newerPhoneTask ? keepCloudOnNewerPhoneTaskEdits(conflict, queue) ?? true : Boolean(newerPhoneUpdate))}
                 disabled={Boolean(resolvingConflictId)}
                 compact
               />
@@ -1652,6 +1686,9 @@ type ArchivableUpdate = ProjectUpdate & { isArchived?: boolean; archivedAt?: str
 const CONFLICT_NEWER_PHONE_EDIT_NOTE = 'Includes a change you made after the conflict was found.';
 /** Keep Cloud withdraws every copy of the update waiting on this phone, that edit too, and the card takes the cloud's copy. */
 const CONFLICT_NEWER_PHONE_EDIT_DISCARDED = 'The change you made after the conflict was found will also be discarded.';
+/** A task only (review pass 1, sync F4): that change is to another part of the task than the card is about, and Keep Cloud does not give it up. */
+const CONFLICT_NEWER_PHONE_EDIT_SENT = 'The change you made after the conflict was found is to another part of this task: it will be sent first, not discarded.';
+const CONFLICT_NEWER_PHONE_EDIT_SOME_OF_EACH = 'Of the changes you made after the conflict was found, what changes the part this card shows will also be discarded; what changes another part of this task will be sent first, not discarded.';
 
 /** The field update edit saved on this phone during the conflict that Keep Phone sends last, if any (A4 pass 15b F1). */
 function conflictNewerPhoneUpdate(

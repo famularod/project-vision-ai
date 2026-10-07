@@ -73,8 +73,10 @@ test('photos not yet sent, and the update itself, stay with the account that sav
 
   const staged = await stageProjectUpdateForSync(update as never);
 
-  // Only the uploads already started (three at a time) went out.
-  expect(mockUploadPhoto).toHaveBeenCalledTimes(3);
+  // Only the photo whose file had already left went out. (Until sync batch Y4, owner answer Q45, it was three: the
+  // photos are begun three at a time, and the two whose check in the cloud was still waiting when the account
+  // changed had their files sent after it, as the next account. One photo's upload is several requests too.)
+  expect(mockUploadPhoto).toHaveBeenCalledTimes(1);
   expect(staged.workAttempt.errors.join(' ')).toMatch(/account changed during sync/);
   // The update is still queued for owner-a only, not re-queued as owner-b's.
   const queued = (await getOfflineQueue()).filter(item => item.entity === 'project_update');

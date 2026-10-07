@@ -96,3 +96,48 @@ export function scheduleEditWithDateChangedAlone(
     },
   };
 }
+
+/**
+ * Schedule batch S6, item 1, second part (7 Oct 2026). Only a priority David
+ * set follows a task a newer master moves, and the app tells by comparing the
+ * priority with what the row's own import gave it (priorityAsImported). A
+ * row saved before this build keeps no such word, so a Medium or a High he
+ * set on a task he already had could not be told from the file's, even when
+ * he set it after installing this build: it was lost at the task's next move.
+ *
+ * An edit that changes the priority of such a row now writes that word
+ * beside it: what the row held before he first changed it. (Under a Low,
+ * which no import gives and was his already, the other of the two an import
+ * gives.) Written once: a row that has the word, or says it took its
+ * priority from the task, is left as it is. Set back to that value later,
+ * the priority reads as untouched again, as on a row an import made.
+ *
+ * Review pass 1 of Build 231's schedule round, P1-1, P1-2 and P1-9 (7 Oct
+ * 2026; the coordinator's decision). That word cannot tell his priority from
+ * the file's where the two coincide: set back to it, his priority read as
+ * untouched (P1-2: a Low he had replaced came back at Set Active); under a
+ * Low the word was a guess, and the other value he set later read as the
+ * file's (P1-9); and a priority that equals what a newer row's file gave was
+ * recorded nowhere (P1-1). Every edit of his that changes the priority now
+ * also leaves a mark that it is his, whatever the value: the priority he
+ * set, and when (prioritySetByHand). The word stays as the fallback for a
+ * row with no mark, written as before.
+ *
+ * Not his edit, and left as it is: a whole row saved over this one (Set
+ * Active, a schedule's delete, Keep Cloud), which brings the task's id and
+ * its own word and mark.
+ */
+export function scheduleEditWithPriorityNoted(
+  current: ScheduleItem,
+  edit: Partial<ScheduleItem>,
+  /** When the edit is made. */
+  at = new Date().toISOString(),
+): Partial<ScheduleItem> {
+  const read = (value: unknown) => (value === 'Low' || value === 'High' ? value : 'Medium');
+  if (edit.priority === undefined || 'priorityAsImported' in edit || 'prioritySetByHand' in edit || 'id' in edit || read(edit.priority) === read(current.priority)) return edit;
+  const his = { ...edit, prioritySetByHand: { priority: read(edit.priority), at } } as Partial<ScheduleItem>;
+  const known = current.priorityAsImported === 'Low' || current.priorityAsImported === 'Medium' || current.priorityAsImported === 'High';
+  if (known || (current.textFromTask && Object.prototype.hasOwnProperty.call(current.textFromTask, 'priority'))) return his;
+  const held = read(current.priority);
+  return { ...his, priorityAsImported: held !== 'Low' ? held : read(edit.priority) === 'Medium' ? 'High' : 'Medium' };
+}

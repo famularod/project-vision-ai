@@ -121,10 +121,12 @@ export function reportImageNotPreparedMessage(format: ReportImageFormat): string
 
 /**
  * Why a picture drawing has no excerpt when the phone's image tool cannot
- * open a picture of an ordinary type (review pass 2 W1). Its first step
- * fails for a CMYK JPEG and for a 16-bit grey PNG, whatever is asked of it
- * next, so there is nothing to crop and no second way to try on the phone.
- * The whole sheet is not shown instead; the reason says what can be done.
+ * open a picture of an ordinary type (review pass 2 W1). Up to Build 230
+ * its first step failed for a CMYK JPEG and for a 16-bit grey PNG, whatever
+ * was asked of it next. Build 231's tool opens both (E1 item 4), so this is
+ * now for a picture it still cannot open. There is nothing to crop then and
+ * no second way to try on the phone. The whole sheet is not shown instead;
+ * the reason says what can be done.
  */
 export function reportDrawingNotCroppedMessage(format: ReportImageFormat): string {
   if (!isWordEmbedded(format)) return reportImageNotPreparedMessage(format);

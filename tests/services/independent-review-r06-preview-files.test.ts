@@ -27,6 +27,15 @@ function previewBytes(fakes: Fakes, uri: string): Uint8Array | null {
 }
 
 /**
+ * Every app opened by a test. Review pass 1, L6: the image tool holds a picture
+ * until it is released, as the real one does, so each is checked afterwards.
+ */
+const opened: Fakes[] = [];
+afterEach(() => {
+  for (const fakes of opened.splice(0)) fakes.expectFakeDeviceLetGoOfEveryPicture();
+});
+
+/**
  * The preview function and the phone's files, as in an app that has just been
  * opened. `disk`: what an earlier run of the app left on the phone.
  */
@@ -39,6 +48,7 @@ function openApp(disk?: Fakes['fakeMedia']) {
     preview = require('../../services/ReportWordMedia.native').renderNativeReportDrawingPreview;
     renderPdf = require('../../modules/dave-text-recognition').renderPdfExcerpt;
   });
+  opened.push(fakes);
   const { fakeMedia, fakeImageBytes, fakePictureIn, labelsIn, quadrantSheet } = fakes;
   if (disk) {
     // The files outlive the app; what the app remembered does not.

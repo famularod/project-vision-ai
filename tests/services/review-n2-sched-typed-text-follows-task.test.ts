@@ -145,6 +145,7 @@ describe('Review N3 C: what else he sets on a task goes with it to the row a mas
     expect([dates(framing), ...controlsOf(framing), framing.nextAction, framing.milestone]).toEqual(['10/05/2026-10/15/2026', 'Pending', 5, 'Lee', 'Order rebar', 'Slab pour']);
     // The row says which task's row it replaces (review N3 R3) and what that row had of his text, a blank too (review P4 F1).
     // (And the hand links it was made with, none here: review P5-2.)
+    // (Not the task's priority, which he never set: schedule batch S6, item 1. S5 had the row always take it.)
     expect(framing.textFromTask).toEqual({ taskId: framingF, owner: '', contractor: '', notes: '', nextAction: 'Order rebar', milestone: 'Slab pour', dependencies: [] });
   });
 

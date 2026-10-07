@@ -15,6 +15,7 @@ const reporter = read('services/PIEReporter.ts');
 const runtime = read('services/PIERuntime.ts');
 const evidenceFusion = read('services/PIEEvidenceFusion.ts');
 const reportScope = read('services/ReportAuthorityScope.ts');
+const reportProjectTruths = read('services/DAVEReportProjectTruths.ts');
 const reportIntelligence = read('services/DAVEReportIntelligence.ts');
 
 assert(core.includes('buildPIEReportDraftFromExecutiveJudgment'), 'Live Core must build reports from persisted Executive Judgment.');
@@ -109,10 +110,13 @@ assert(
     reportScope.includes('sourceBatchIds.has(normalizeKey(importBatchId))'),
   'Empty report-scoped supporting arrays must remain empty and unrelated schedule documents must not fall back into report authority.',
 );
+// The per-project recipe is one function, shared with the web's Reports page (R3 item 1, 6 Oct 2026).
 assert(
-  reports.includes('buildDailyReportAuthorityScope({') &&
-    reports.includes('const reportProjectId = `report:') &&
-    reports.includes('updates: scopedTruthInput.updates.map(update => ({ ...update, projectName: selectedName }))') &&
+  reports.includes('buildDAVEReportProjectTruths({') &&
+    reports.includes("projectId: `report:${reportProjectKey(name) || 'project'}`") &&
+    reportProjectTruths.includes('buildDailyReportAuthorityScope({') &&
+    reportProjectTruths.includes('updates: scope.updates.map(update => ({ ...update, projectName: project.name }))') &&
+    read('services/DAVEWebOperations.ts').includes('buildDAVEReportProjectTruths({') &&
     !reports.includes('const liveTruth = liveAuthority.projectTruth'),
   'Combined report UI must build safe per-project truth inputs instead of relying on an empty portfolio-named Project Truth.',
 );

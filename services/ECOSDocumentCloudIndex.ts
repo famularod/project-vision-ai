@@ -20,9 +20,12 @@ export type ECOSCloudIndexSaveResult = Readonly<{
 export async function replaceECOSDocumentCloudIndex({
   client,
   document,
+  requestHeaders,
 }: {
   client: SupabaseClient;
   document: ReferenceDocument;
+  /** Put on the request as it is built: the phone's upload names the account the document is sent for (review pass 1, sync G4). */
+  requestHeaders?: Readonly<Record<string, string>>;
 }): Promise<ECOSCloudIndexSaveResult> {
   if (!document.id || !document.extractedPages?.length) {
     return Object.freeze({
@@ -32,12 +35,14 @@ export async function replaceECOSDocumentCloudIndex({
       message: 'No searchable pages were available for the shared index.',
     });
   }
-  const { data, error } = await client.rpc('ecos_replace_document_index', {
+  const request = client.rpc('ecos_replace_document_index', {
     p_document_id: document.id,
     p_source_sha256: canonicalSha256(document.indexedContentSha256 || document.contentSha256),
     p_extraction_method: document.extractionMethod || null,
     p_pages: document.extractedPages,
   });
+  Object.entries(requestHeaders ?? {}).forEach(([name, value]) => request.setHeader(name, value));
+  const { data, error } = await request;
   if (error) {
     const unavailable = error.code === '42883' || error.code === 'PGRST202';
     return Object.freeze({

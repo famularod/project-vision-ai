@@ -2,7 +2,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { Link } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { useECOSConversation } from '../../hooks/use-ecos-conversation';
-import { createECOSAskWait, isECOSAskStopped, type ECOSAskControl } from '../../services/ECOSAskWait';
+import { createECOSAskWait, ecosAskConversationStands, type ECOSAskControl } from '../../services/ECOSAskWait';
 import type { ECOSConversationRequest } from '../../services/ECOSConversation';
 import {
   ActivityIndicator,
@@ -96,9 +96,9 @@ export function DesktopAskECOSWorkspace({
       setAnswer(nextAnswer);
     } catch (reason) {
       if (!turn.isCurrent()) return;
-      // Stopped or timed out: nothing came back, so the conversation stands
-      // and asking again repeats this same request.
-      if (!isECOSAskStopped(reason)) turn.accept(null);
+      // Stopped or timed out, by the app or by the server: the conversation
+      // stands, and asking again sends this question after the same earlier turn.
+      if (!ecosAskConversationStands(reason)) turn.accept(null);
       setError(reason instanceof Error ? reason.message : 'Ask ECOS could not complete the question.');
     } finally {
       if (turn.isCurrent()) setLoading(false);

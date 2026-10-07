@@ -36,6 +36,7 @@ import {
   RESTORED_MEDIA_LEDGER_KEY,
   createNameSearch,
   createRestoredMediaLedger,
+  restoredFileAddresses,
   fileNameOf,
 } from '../../services/RestoredMediaLedger';
 import { importProjectDocumentIntoOwnedStorage } from '../../services/ProjectDocumentLifecycle';
@@ -847,6 +848,104 @@ describe('independent review pass 4: a held restore finishes at the next start t
   });
 });
 
+describe('sync batch Y4, item 1: a held restore whose record cannot be read is set aside, and its files are settled by what any saved value names', () => {
+  /** How the record is damaged where it lies. The last is whole, but not this build's to read. */
+  const DAMAGE: Array<[string, (raw: string) => string]> = [
+    ['cut off after a few characters', raw => raw.slice(0, 60)],
+    ['cut off at four fifths', raw => raw.slice(0, Math.floor(raw.length * 0.8))],
+    ['of a version this build does not know', raw => raw.replace('{"version":1,', '{"version":2,')],
+  ];
+  const asideCopies = (device: Device) => [...device.values.keys()].filter(key => key.startsWith(`${BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY}.unreadable.`));
+
+  it.each(DAMAGE)('at every write the restore can stop at, its record then %s: the app starts, every attachment a record names opens its bytes, and a file stays exactly when a saved value names it', async (_name, damage) => {
+    const total = await cleanRestoreMutationCount();
+    let held = 0;
+    let closedPartWay = 0;
+    const kept = new Set<number>();
+    for (let at = 3; at < total; at += 1) {
+      const device = newDevice();
+      const session = startApp(device);
+      device.mutations = 0;
+      device.fault = { at, mode: 'writes_fail_until_restart', tripped: false };
+      await session.restore();
+      const raw = device.values.get(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY);
+      if (session.locked.length === 0 || raw === undefined) continue;
+      held += 1;
+      expect(session.alerts).toEqual(['Restore recovery required']);
+      const damaged = damage(raw);
+      expect(damaged).not.toBe(raw);
+      device.values.set(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY, damaged);
+      const placed = restoredFilesOn(device);
+      expect(placed).toHaveLength(6);
+
+      // The first start is closed at one of the three steps of the setting aside: it is refused as it always was,
+      // and not one file has been removed, because the record still waits.
+      const step = at % 3;
+      device.fault = null;
+      const closed = startApp(device);
+      device.mutations = 0;
+      device.fault = { at: step, mode: 'writes_fail_until_restart', tripped: false };
+      await expect(closed.runtime.recoverBeforeStartupReads()).rejects.toThrow();
+      closedPartWay += 1;
+      expect({ at, step, record: device.values.get(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY) === damaged, files: restoredFilesOn(device).length })
+        .toEqual({ at, step, record: true, files: 6 });
+
+      // It threw at every start. Three starts: the first sets the record aside, the next two find nothing to do.
+      for (let start = 1; start <= 3; start += 1) await restart(device);
+
+      expect({ at, record: device.values.has(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY), copies: asideCopies(device).map(key => device.values.get(key) === damaged) })
+        .toEqual({ at, record: false, copies: [true] });
+      expect({ at, ledger: device.values.get(RESTORED_MEDIA_LEDGER_KEY) ?? null }).toEqual({ at, ledger: null });
+      // Every attachment a saved record names opens its own bytes: the restore's where the list is the restore's,
+      // the device's own where the list is the one from before it.
+      storedAttachments(device).forEach(attachment => {
+        const bytes = device.files.get(attachment.uri);
+        const expected = attachment.id === 'old-p' ? bytesOf(77) : EXPECTED_BYTES[attachment.id];
+        expect({ at, id: attachment.id, found: bytes instanceof Uint8Array ? Array.from(bytes) : null }).toEqual({ at, id: attachment.id, found: Array.from(expected) });
+      });
+      // R01, to the letter: a placed file is on the device exactly when some saved value names it. The record that
+      // was set aside is a saved value too, so a file only it names stays (left behind, never lost).
+      const saved = [...device.values.values()].join('\n');
+      placed.forEach(uri => {
+        expect({ at, file: fileNameOf(uri), onDevice: device.files.has(uri) }).toEqual({ at, file: fileNameOf(uri), onDevice: saved.includes(fileNameOf(uri)) });
+      });
+      kept.add(restoredFilesOn(device).length);
+      expect({ at, cache: [...device.files.keys()].filter(uri => uri.startsWith(CACHE_DIR)) }).toEqual({ at, cache: [] });
+    }
+    expect(held).toBeGreaterThan(10);
+    expect(closedPartWay).toBe(held);
+    // A record cut off at its start names nothing, so only what the written lists name is left; one that is whole names all six.
+    if (_name === 'cut off after a few characters') expect(Math.min(...kept)).toBeLessThan(6);
+    if (_name === 'of a version this build does not know') expect([...kept]).toEqual([6]);
+  });
+
+  it('with the record set aside, a second restore of the same backup goes through: its six attachments open, and what is left over is only what a list of the first attempt named', async () => {
+    const device = newDevice();
+    const session = startApp(device);
+    device.mutations = 0;
+    device.fault = { at: 4, mode: 'writes_fail_until_restart', tripped: false };
+    await session.restore();
+    expect(session.alerts).toEqual(['Restore recovery required']);
+    device.values.set(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY, (device.values.get(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY) as string).slice(0, 60));
+    const again = await restart(device);
+    // The first attempt had written the updates list: its two photos are named by a saved record, and stay.
+    const namedByTheFirstAttempt = restoredFilesOn(device).sort();
+    expect(namedByTheFirstAttempt.map(fileNameOf)).toEqual(['rid000001-IMG-0001.jpg', 'rid000002-IMG-0002.jpg']);
+
+    await again.restore();
+
+    expect(again.alerts).toEqual(['Device backup restored']);
+    expect(isRestored(device)).toBe(true);
+    const attachments = storedAttachments(device);
+    expect(attachments.map(attachment => attachment.id).sort()).toEqual(['o1', 'o2', 'p1', 'p2', 'p9', 'r1']);
+    attachments.forEach(attachment => expect(device.files.get(attachment.uri)).toEqual(EXPECTED_BYTES[attachment.id]));
+    // As after any restore over records that had files: the files of the records it replaced are not removed
+    // (the device's own photo from before stays the same way). Left behind, never lost.
+    expect(restoredFilesOn(device).sort()).toEqual([...attachments.map(attachment => attachment.uri), ...namedByTheFirstAttempt].sort());
+    expect(device.values.get(RESTORED_MEDIA_LEDGER_KEY) ?? null).toBeNull();
+  });
+});
+
 describe('independent review R01: the restored-file ledger', () => {
   const memory = () => {
     const values = new Map<string, string>();
@@ -983,6 +1082,96 @@ describe('independent review R01: the restored-file ledger', () => {
     await device.ledger().settlePending();
     expect([...device.files]).toEqual([]);
     expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(false);
+  });
+
+  /**
+   * Sync batch Y3, item 6 (b) (6 Oct 2026). Open item: "If the app's storage
+   * folder moves (an iOS update can do this) while a restore is waiting to be
+   * rolled back, that restore's files are left behind." The list keeps each
+   * file's address as it was when placed; after the move nothing is at that
+   * address, so removing there "worked" and the list was cleared, with the
+   * files still on the device under the new address.
+   */
+  describe("the app's folder moved while a restore was held (sync batch Y3, item 6b)", () => {
+    const OLD = 'file:///var/mobile/Containers/Data/Application/OLD-1111/';
+    const NEW = 'file:///var/mobile/Containers/Data/Application/NEW-2222/';
+    const inside = ['Documents/project-photos/aaaa1111-IMG_1.jpg', 'Documents/owned-project-documents/bbbb2222/permit.pdf',
+      'Library/Caches/cccc3333-drawing.pdf'];
+    const appFolders = [`${NEW}Documents/`, `${NEW}Library/Caches/`];
+    /** A restore placed its files and was held for recovery; then iOS moved the app's folder, files and all. */
+    async function heldThenMoved(device: ReturnType<typeof memory>) {
+      inside.forEach(path => device.files.add(`${OLD}${path}`));
+      await (await device.ledger().track(inside.map(path => `${OLD}${path}`))).settle('recovery_required');
+      device.files.clear();
+      inside.forEach(path => device.files.add(`${NEW}${path}`));
+    }
+    const ledgerNow = (device: ReturnType<typeof memory>, removeFile = async (uri: string) => { device.files.delete(uri); }) =>
+      createRestoredMediaLedger({ storage: device.storage, removeFile, createId: () => 'later', appFolders });
+
+    it('the restore is rolled back: its files, which nothing names, are removed where they are now, and none is left behind', async () => {
+      const device = memory();
+      await heldThenMoved(device);
+      await ledgerNow(device).settlePending();
+      expect([...device.files]).toEqual([]);
+      expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(false);
+    });
+
+    it('the restore finishes instead: every file a saved record names stays, under the new address or the old one in the record', async () => {
+      const device = memory();
+      await heldThenMoved(device);
+      device.values.set('updates', JSON.stringify([{ photos: [{ uri: `${OLD}${inside[0]}` }] }])); // the record still gives the old address
+      device.values.set('project-documents', JSON.stringify([{ localUri: `${NEW}${inside[1]}` }]));
+      await ledgerNow(device).settlePending();
+      expect([...device.files]).toEqual([`${NEW}${inside[0]}`, `${NEW}${inside[1]}`]);
+      expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(false);
+    });
+
+    it('a file that cannot be removed where it is now stays written down, and is removed at the next start', async () => {
+      const device = memory();
+      await heldThenMoved(device);
+      const busy = `${NEW}${inside[0]}`;
+      await ledgerNow(device, async uri => {
+        if (uri === busy) throw new Error('file busy');
+        device.files.delete(uri);
+      }).settlePending();
+      expect([...device.files]).toEqual([busy]);
+      expect(JSON.parse(device.values.get(RESTORED_MEDIA_LEDGER_KEY) as string)).toEqual([expect.objectContaining({ uris: [`${OLD}${inside[0]}`] })]);
+      await ledgerNow(device).settlePending();
+      expect([...device.files]).toEqual([]);
+      expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(false);
+    });
+
+    it('as before when nothing moved, and for a restore that is refused at once: each file is removed once, at its own address', async () => {
+      const device = memory();
+      const removed: string[] = [];
+      const here = createRestoredMediaLedger({
+        storage: device.storage, createId: () => 'now', appFolders: [`${OLD}Documents/`, `${OLD}Library/Caches/`],
+        removeFile: async uri => { removed.push(uri); device.files.delete(uri); },
+      });
+      inside.forEach(path => device.files.add(`${OLD}${path}`));
+      await (await here.track(inside.map(path => `${OLD}${path}`))).settle('recovery_required');
+      await here.settlePending();
+      expect(removed).toEqual(inside.map(path => `${OLD}${path}`));
+      removed.length = 0;
+      inside.forEach(path => device.files.add(`${OLD}${path}`));
+      await (await here.track(inside.map(path => `${OLD}${path}`))).settle('aborted');
+      expect(removed).toEqual(inside.map(path => `${OLD}${path}`));
+      expect([...device.files]).toEqual([]);
+    });
+
+    it("only ever the same file: an address outside the app's folders, or one that is a folder, is never turned into another", () => {
+      expect(restoredFileAddresses(`${OLD}${inside[0]}`, appFolders)).toEqual([`${OLD}${inside[0]}`, `${NEW}${inside[0]}`]);
+      expect(restoredFileAddresses(`${OLD}${inside[2]}`, appFolders)).toEqual([`${OLD}${inside[2]}`, `${NEW}${inside[2]}`]);
+      expect(restoredFileAddresses(`${NEW}${inside[0]}`, appFolders)).toEqual([`${NEW}${inside[0]}`]);
+      expect(restoredFileAddresses('file:///photos/aaaa1111-IMG_1.jpg', appFolders)).toEqual(['file:///photos/aaaa1111-IMG_1.jpg']);
+      expect(restoredFileAddresses(`${OLD}Documents/`, appFolders)).toEqual([`${OLD}Documents/`]);
+      expect(restoredFileAddresses(`${OLD}Documents/project-photos/`, appFolders)).toEqual([`${OLD}Documents/project-photos/`]);
+      expect(restoredFileAddresses(`${OLD}${inside[0]}`, [null, undefined, '', '/'])).toEqual([`${OLD}${inside[0]}`]);
+    });
+
+    it("App.tsx gives the list the app's folders as they are now", () => {
+      expect(APP).toContain('appFolders: [FileSystem.documentDirectory, FileSystem.cacheDirectory],');
+    });
   });
 
   it('never removes a file whose name could not be told apart in the saved values', async () => {

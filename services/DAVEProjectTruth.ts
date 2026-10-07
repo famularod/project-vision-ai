@@ -235,8 +235,57 @@ export type DAVEProjectTruth = {
    * 2026). Left out of the report's fingerprint.
    */
   lookaheadReplacement?: DAVELookaheadReplacementTruth;
+  /**
+   * Only on a truth built for a report, from every saved task: the earlier
+   * rows of the tasks shown (R5 item 1, the returning task). Left out of the
+   * report's fingerprint: they say which task a row is and how it last
+   * stood, not what the project's facts are now.
+   */
+  earlierRows?: DAVETaskEarlierRowTruth[];
+  /**
+   * Only on a truth built for a report: the tasks shown whose own row a
+   * lookahead added (importedAsLookahead), whether or not a master lists it
+   * now (R5 item 1). Such a task began as a lookahead's own row. Left out of
+   * the report's fingerprint.
+   */
+  lookaheadAddedTaskIds?: string[];
   verificationQueue: DAVEVerificationRequest[];
   briefing: DAVEPMBriefing;
+};
+
+/**
+ * R5 item 1 (the returning task, report side). An earlier row of a task
+ * shown: a saved row the task answers to (revisedFromTaskIds) that is not
+ * shown now, as it was last saved. Since schedule batch S2 a task one master
+ * leaves out and a later master lists again is the same task, on a new row
+ * that answers to the row it left on. A report made while it was out said
+ * "removed"; the next one must read the task as back, against how it last
+ * stood, and the last report no longer has it. The row it left on is still
+ * saved, with what he had set on it.
+ */
+export type DAVETaskEarlierRowTruth = {
+  /** The task shown now that answers to this row. */
+  taskId: string;
+  /** The earlier row. */
+  earlierTaskId: string;
+  /** When the row came in: its import, or else when it was made. */
+  savedAt: string | null;
+  /**
+   * When the row SHOWN came in, told the same way. A row shown that is older
+   * than the last report is the task's own row shown again: the row it left
+   * on, so no earlier row of it says how it last stood (R5 item 1, fourth part).
+   */
+  taskSavedAt: string | null;
+  /** A row a lookahead added (no master had listed it): the task began as a lookahead's own row. */
+  addedByLookahead?: true;
+  taskName: string;
+  areaName: string | null;
+  owner: string | null;
+  status: string;
+  percentComplete: number;
+  finishDate: string | null;
+  approvalStatus: string | null;
+  estimatedScheduleImpactDays: number | null;
 };
 
 /**
@@ -413,6 +462,13 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
   const lookaheadReplacement = input.reportLookaheadReplacement && input.knownScheduleItems
     ? tasksLeftByLookaheadReplacement(input, projectKey, scheduleItems)
     : null;
+  // The earlier rows of the tasks shown, for a task a report said was removed that is back (R5 item 1).
+  const earlierRows = input.reportLookaheadReplacement && input.knownScheduleItems
+    ? earlierRowsOfTasksShown(input, projectKey, scheduleItems)
+    : [];
+  const lookaheadAddedTaskIds = input.reportLookaheadReplacement && input.knownScheduleItems
+    ? scheduleItems.filter(item => item.importedAsLookahead === true).map(item => item.id)
+    : [];
   const evidence = summarizeEvidence(records);
   const verificationQueue = buildVerificationQueue(evidence, photoComparisons, schedule, reasoning);
   const briefing = buildPMBriefing({
@@ -441,9 +497,142 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     reasoning,
     schedule,
     ...(lookaheadReplacement ? { lookaheadReplacement } : {}),
+    ...(earlierRows.length > 0 ? { earlierRows } : {}),
+    ...(lookaheadAddedTaskIds.length > 0 ? { lookaheadAddedTaskIds } : {}),
     verificationQueue,
     briefing,
   });
+}
+
+/**
+ * The field updates as the saved Project Truth should take them (R4, the
+ * owner's open item: "Project Truth keeps only updates whose project name
+ * matches exactly, so older updates filed under a building name are left
+ * out"). An update started from a task on an older schedule names the
+ * building ("Building 2321") as its project. Project Truth kept an update
+ * only when the name it was filed under was the project's, so those dropped
+ * out of the home and workspace summaries, though the reports had them.
+ *
+ * An update is this project's, whatever name it was filed under, when what
+ * identifies it says so: the parent project kept on it, or its task being
+ * one of this project's saved tasks (shown or hidden). It is handed on under
+ * the project's name, as the reports hand theirs. An update with neither is
+ * left as it is: a building name alone is not an identity.
+ */
+export function daveProjectTruthUpdatesFor(input: {
+  projectName: string;
+  updates: readonly ProjectUpdate[];
+  scheduleItems: readonly ScheduleItem[];
+  knownScheduleItems?: readonly ScheduleItem[];
+}): ProjectUpdate[] {
+  const projectKey = normalizedKey(input.projectName);
+  if (!projectKey) return [...input.updates];
+  const taskIds = new Set([...input.scheduleItems, ...(input.knownScheduleItems ?? [])]
+    .filter(item => scheduleMatchesProject(projectKey, item))
+    .map(item => clean(item.id))
+    .filter((id): id is string => Boolean(id)));
+  return input.updates.map(update => {
+    if (projectMatches(projectKey, update.projectName)) return update;
+    const taskId = clean(update.scheduleItemId || '');
+    const itsOwn = projectMatches(projectKey, update.scheduleProjectName) || Boolean(taskId && taskIds.has(taskId));
+    return itsOwn ? { ...update, projectName: input.projectName } : update;
+  });
+}
+
+/** A stable-order view's truth as it was built (R4 item 4a); kept beside the view, never inside it. */
+const truthAsBuilt = new WeakMap<DAVEProjectTruth, DAVEProjectTruth>();
+
+/** A task date as a number, read the same way on every device ("10/08/2026", "2026-10-08…"); unreadable or blank: null. */
+function stableDateValue(value: string | null | undefined): number | null {
+  const text = (value || '').trim();
+  const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(text);
+  if (us) return Date.UTC(Number(us[3]), Number(us[1]) - 1, Number(us[2]));
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
+  return iso ? Date.UTC(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3])) : null;
+}
+const plainOrder = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0);
+
+/**
+ * The tasks in an order that does not depend on the order they were saved in:
+ * by finish date, then start date (a task with no date last), then name,
+ * area and id. Compared by code unit, never by locale, so the phone and the
+ * web put them in the same order.
+ */
+function scheduleTruthInStableOrder(schedule: readonly DAVEScheduleTruth[]): DAVEScheduleTruth[] {
+  const key = (task: DAVEScheduleTruth) => [
+    stableDateValue(task.finishDate) ?? Number.MAX_SAFE_INTEGER,
+    stableDateValue((task as { startDate?: string | null }).startDate) ?? Number.MAX_SAFE_INTEGER,
+  ] as const;
+  return [...schedule].sort((left, right) => {
+    const [leftFinish, leftStart] = key(left);
+    const [rightFinish, rightStart] = key(right);
+    return leftFinish - rightFinish || leftStart - rightStart ||
+      plainOrder(left.taskName, right.taskName) || plainOrder(left.areaName || '', right.areaName || '') || plainOrder(left.taskId, right.taskId);
+  });
+}
+
+/**
+ * The truth a report is written from, with nothing in it left in the order
+ * the tasks happened to be saved in (R4 item 4a, the owner's open item "task
+ * save order can reorder Current Work lines"). The app saves tasks in the
+ * order a sync leaves them. Project Truth kept that order in its lists, and
+ * its own summary lines took "the first" of them ("The schedule state for
+ * <the first saved task> is not corroborated ...", the first five risks), so
+ * a sync that only reordered the rows changed the written report and its
+ * fingerprint, and Reports offered a fresh report for the same facts.
+ *
+ * The lists are put in a stable order and the summary lines and the
+ * verification queue written again from them, by the same code. Nothing is
+ * added or dropped. The truth as built (as the build before built it,
+ * `asBuiltBefore`) is kept beside the view (`daveProjectTruthAsBuilt`) for
+ * the earlier fingerprint version only.
+ * For a report's truth (built without a runtime or core), as the report
+ * recipe builds it.
+ */
+export function daveProjectTruthInStableOrder(
+  truth: DAVEProjectTruth,
+  /** The same project's truth as the build before scoped its updates, where that differs (for the 1.0 fingerprint). */
+  asBuiltBefore: DAVEProjectTruth = truth,
+): DAVEProjectTruth {
+  if (truthAsBuilt.has(truth)) return truth;
+  const schedule = scheduleTruthInStableOrder(truth.schedule);
+  const place = new Map(schedule.map((task, index) => [task.taskId, index]));
+  const byTask = <T extends { taskId: string }>(items: readonly T[]): T[] => [...items].sort((left, right) =>
+    (place.get(left.taskId) ?? Number.MAX_SAFE_INTEGER) - (place.get(right.taskId) ?? Number.MAX_SAFE_INTEGER) || plainOrder(left.taskId, right.taskId));
+  const byText = <T,>(items: readonly T[]): T[] => items.map(item => ({ item, text: JSON.stringify(item) }))
+    .sort((left, right) => plainOrder(left.text, right.text)).map(entry => entry.item);
+  const reasoning = { ...truth.reasoning, decisions: byTask(truth.reasoning.decisions), criticalDecisions: byTask(truth.reasoning.criticalDecisions) };
+  const correlations = { ...truth.correlations, tasks: byTask(truth.correlations.tasks) };
+  const photoComparisons = byText(truth.photoComparisons);
+  const byId = <T extends { id: string }>(items: readonly T[]): T[] => [...items].sort((left, right) => plainOrder(left.id, right.id));
+  const evidence = { ...truth.evidence, records: byId(truth.evidence.records), unresolvedRecords: byId(truth.evidence.unresolvedRecords) };
+  const verificationQueue = buildVerificationQueue(evidence, photoComparisons, schedule, reasoning);
+  const stable = deepFreeze({
+    ...truth,
+    evidence,
+    photoComparisons,
+    correlations,
+    reasoning,
+    schedule,
+    verificationQueue,
+    briefing: buildPMBriefing({
+      projectName: truth.projectName,
+      intelligence: truth.intelligence,
+      evidence,
+      photoComparisons,
+      correlations,
+      reasoning,
+      schedule,
+      verificationQueue,
+    }),
+  }) as DAVEProjectTruth;
+  truthAsBuilt.set(stable, asBuiltBefore);
+  return stable;
+}
+
+/** The truth as the build before built it, for a stable-order view; any other truth is its own. */
+export function daveProjectTruthAsBuilt(truth: DAVEProjectTruth): DAVEProjectTruth {
+  return truthAsBuilt.get(truth) ?? truth;
 }
 
 /**
@@ -508,6 +697,53 @@ function tasksLeftByLookaheadReplacement(
     replaced: uniqueText([...replaced.map(keyOf), ...tasksLeft.map(task => task.lookahead)]).sort(),
     tasksLeft,
   };
+}
+
+/**
+ * The saved rows the tasks shown answer to, oldest first for each task (R5
+ * item 1): this project's own rows only, read from the saved tasks as the
+ * shown list is, with nothing written. A row deleted since is not here, and
+ * the task then has nothing earlier to be compared with.
+ */
+function earlierRowsOfTasksShown(
+  input: BuildDAVEProjectTruthInput,
+  projectKey: string,
+  shown: readonly ScheduleItem[],
+): DAVETaskEarlierRowTruth[] {
+  const idOf = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  const shownIds = new Set(shown.map(item => idOf(item.id)));
+  const wanted = new Set(shown.flatMap(item => scheduleTaskEarlierIds(item)).filter(id => !shownIds.has(id)));
+  if (wanted.size === 0) return [];
+  const saved = (input.knownScheduleItems ?? []).filter(item => wanted.has(idOf(item.id)));
+  if (saved.length === 0) return [];
+  // The row's own project decides, as when the shown list is worked out.
+  const ofProject = new Map(canonicalizeDAVEScheduleItems([...saved], {
+    projectNames: Array.from(new Set([
+      input.projectName,
+      ...saved.flatMap(item => [item.scheduleProjectName || '', item.projectName]),
+    ].filter(Boolean))),
+    projectAreas: input.projectAreas || [],
+  }).items.filter(item => scheduleMatchesProject(projectKey, item)).map(item => [idOf(item.id), item] as const));
+  return shown.flatMap(task => scheduleTaskEarlierIds(task).flatMap((id): DAVETaskEarlierRowTruth[] => {
+    const row = ofProject.get(id);
+    if (!row) return [];
+    const controls = row.projectControls;
+    return [{
+      taskId: task.id,
+      earlierTaskId: id,
+      savedAt: validDate(clean(row.importedAt) || clean(row.createdAt) || undefined),
+      taskSavedAt: validDate(clean(task.importedAt) || clean(task.createdAt) || undefined),
+      ...(row.importedAsLookahead === true ? { addedByLookahead: true as const } : {}),
+      taskName: row.taskName,
+      areaName: clean(row.locationName),
+      owner: clean(row.owner) || clean(row.contractor),
+      status: row.status,
+      percentComplete: row.percentComplete,
+      finishDate: clean(row.finishDate),
+      approvalStatus: clean(controls?.approvalStatus),
+      estimatedScheduleImpactDays: finiteNumber(controls?.estimatedScheduleImpactDays),
+    }];
+  }));
 }
 
 function buildEvidenceLedger(
