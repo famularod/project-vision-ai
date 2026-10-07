@@ -11,7 +11,7 @@ import { createElement, type ReactNode } from 'react';
 import { AppState } from 'react-native';
 import { NativeWorkspaceOwnerContext } from '../../components/native-workspace-owner';
 import { useSharedDocumentArchive } from '../../hooks/use-shared-document-archive';
-import { sharedDocumentArchiveSettled, sharedDocumentArchiveView } from '../../services/SharedDocumentArchive';
+import { sharedDocumentArchiveSettled, sharedDocumentArchiveView, withArchivedProjectDocumentsRestored } from '../../services/SharedDocumentArchive';
 import { createSharedDocumentCloud, type SharedDocumentCloud } from '../fixtures/shared-document-cloud';
 
 const mockStorage = new Map<string, string>();
@@ -40,6 +40,8 @@ let owner = 'owner-0';
 let accounts = 0;
 let becameActive: () => void;
 const restoreCards = jest.fn();
+/** The calls that put a card back. (The shell is also handed what is archived, with no card to put back: review of D1, L13.) */
+const cardsPutBack = () => restoreCards.mock.calls.map(([ids]: [readonly string[]]) => [...ids]).filter(ids => ids.length > 0);
 const logged: string[] = [];
 const originalError = console.error;
 
@@ -236,10 +238,10 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     expect(restoreCards).not.toHaveBeenCalled(); // the cards are not loaded yet: nothing to put back into
     device.rerender({ cardsLoaded: true });
     await device.quiet();
-    expect(restoreCards.mock.calls).toEqual([[[PERMIT]]]);
+    expect(cardsPutBack()).toEqual([[PERMIT]]);
     await act(async () => { await mockCloudService.listener!(cloud.client, owner); });
     await device.quiet();
-    expect(restoreCards).toHaveBeenCalledTimes(1);
+    expect(cardsPutBack()).toHaveLength(1);
     device.unmount();
   });
 
@@ -248,11 +250,11 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     const device = start();
     await waitFor(() => expect(hidden(device)).toEqual([PERMIT]));
     act(() => { device.result.current.restore({ key: 'attachment:card-1', name: 'Grading permit.pdf', category: 'Permit Card', cardId: 'card-1', sharedDocumentId: PERMIT, scope: 'everywhere' }); });
-    expect(restoreCards.mock.calls).toEqual([[['card-1', PERMIT]]]);
+    expect(cardsPutBack()).toEqual([['card-1', PERMIT]]);
     await waitFor(() => expect(cloud.row(PERMIT)?.archived_at).toBeNull());
     await device.quiet();
     expect(hidden(device)).toEqual([]);
-    expect(restoreCards).toHaveBeenCalledTimes(1); // its own restore is not reported back as "restored elsewhere"
+    expect(cardsPutBack()).toHaveLength(1); // its own restore is not reported back as "restored elsewhere"
     device.unmount();
   });
 
@@ -288,7 +290,7 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     cloud.remove(PERMIT);
     await act(async () => { becameActive(); });
     await device.quiet();
-    expect(restoreCards).not.toHaveBeenCalled();
+    expect(cardsPutBack()).toEqual([]);
     expect(hidden(device)).toEqual([]);
 
     // A second document: archived with no signal, then deleted from all devices; the phone's deletion history has it.
@@ -339,6 +341,55 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     await act(async () => { jest.advanceTimersByTime(10 * 60_000); });
     await device.quiet();
     expect(cloud.requests.length).toBe(asked);
+    device.unmount();
+  });
+
+  it('review of D1, L13: this device\'s cards follow the mark: the shell is handed what is archived once its cards are loaded, and a document restored here is not put away again', async () => {
+    cloud.add('doc-contract', owner);
+    cloud.paste();
+    cloud.row(PERMIT)!.archived_at = AT; // archived on another device
+    const device = start(owner, false);
+    await device.quiet();
+    expect(hidden(device)).toEqual([PERMIT]);
+    expect(restoreCards).not.toHaveBeenCalled(); // its cards are not loaded yet
+    device.rerender({ cardsLoaded: true });
+    await device.quiet();
+    const handed = () => restoreCards.mock.calls.map(([change]: [readonly string[] & { archivedSharedDocumentIds?: ReadonlySet<string> }]) => ({
+      restored: [...change], archived: [...(change.archivedSharedDocumentIds ?? [])].sort(),
+    }));
+    expect(handed()).toEqual([{ restored: [], archived: [PERMIT] }]);
+    // The real card updater puts a card for it away, and leaves the others.
+    const cards = [{ id: PERMIT, referenceDocumentId: PERMIT, isArchived: false }, { id: 'doc-contract', referenceDocumentId: 'doc-contract', isArchived: false }];
+    expect(withArchivedProjectDocumentsRestored(cards, restoreCards.mock.calls[0][0]).map(card => card.isArchived)).toEqual([true, false]);
+
+    // He restores it here, with no signal: the card comes back, and nothing handed on afterwards puts it away again.
+    cloud.state.offline = true;
+    restoreCards.mockClear();
+    act(() => {
+      device.result.current.restore({ key: 'attachment:doc-permit', name: 'Grading permit.pdf', category: 'Permit Card', cardId: PERMIT, sharedDocumentId: PERMIT, scope: 'everywhere' });
+    });
+    await device.quiet();
+    // Another document is archived elsewhere meanwhile (told live).
+    await act(async () => {
+      device.result.current.noteLiveChange('reference_document', { eventType: 'UPDATE', newRow: { id: 'doc-contract', owner_id: owner, archived_at: AT }, oldRow: null, raw: null });
+    });
+    await device.quiet();
+    expect(handed()[0]).toEqual({ restored: [PERMIT, PERMIT], archived: [] });
+    expect(handed().slice(1).every(change => !change.archived.includes(PERMIT))).toBe(true);
+    expect(handed()[handed().length - 1]).toEqual({ restored: [], archived: ['doc-contract'] });
+    device.unmount();
+  });
+
+  it('review of D1, L1: the one rule for a count: archived documents are left out, and with none archived the same list comes back', async () => {
+    const device = start();
+    await device.quiet();
+    const documents = [{ id: PERMIT }, { id: 'doc-drawing' }];
+    expect(device.result.current.listed(documents)).toBe(documents);
+    await act(async () => {
+      device.result.current.noteLiveChange('reference_document', { eventType: 'UPDATE', newRow: { id: PERMIT, owner_id: owner, archived_at: AT }, oldRow: null, raw: null });
+    });
+    await device.quiet();
+    expect(device.result.current.listed(documents)).toEqual([{ id: 'doc-drawing' }]);
     device.unmount();
   });
 

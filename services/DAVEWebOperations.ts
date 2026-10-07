@@ -47,6 +47,7 @@ import { scheduleItemIdsDeletedWithTask } from './DAVEDeletedTaskEvidence';
 import { dependencyChangesForDeletedTask } from './VitruviusScheduleEngine';
 import { scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
 import { buildDAVEReportProjectTruths } from './DAVEReportProjectTruths';
+import { daveWebListedDocuments } from './DAVEWebDocumentManagement';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 import type { GoogleDriveLinkedSource } from './GoogleDriveWebProvider';
 
@@ -991,7 +992,8 @@ function buildDAVEWebProjectTruths(
     scheduleItems: snapshot.scheduleItems,
     knownScheduleItems: snapshot.knownScheduleItems,
     knownScheduleDocuments: snapshot.referenceDocuments,
-    referenceDocuments: snapshot.referenceDocuments,
+    // A document the cloud marks archived is not counted (owner answer Q44; review of D1, L10); with none, this is the list itself.
+    referenceDocuments: daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds),
     now: snapshot.refreshedAt,
   });
 }

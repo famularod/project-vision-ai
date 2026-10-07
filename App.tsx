@@ -13668,7 +13668,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
             if (projectName) setSelectedWorkspaceProject(projectName);
           }}
           documentProjects={activeProjects}
-          documentCount={referenceDocuments.length}
+          documentCount={sharedDocumentArchive.listed(referenceDocuments).length}
           selectedDocumentProject={selectedWorkspaceProject}
           onDocumentProjectChange={projectName => {
             if (projectName) setSelectedWorkspaceProject(projectName);

@@ -494,3 +494,61 @@ describe('review of D1, M1: an archive removes nothing from any record', () => {
     tree.unmount();
   });
 });
+
+describe('review of D1, L1 and L13: every list and count uses the one rule', () => {
+  it('F-L1: an iPad: the side rail\'s Documents count does not count a document that is archived and not listed', async () => {
+    act(() => { Dimensions.set({ window: WIDE, screen: WIDE }); });
+    await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(PROJECTS));
+    await AsyncStorage.setItem(SHARED, JSON.stringify([sharedCopy]));
+    const tree = await launch('app-rail-brand');
+    await openLot9Documents(tree);
+    await reachTheCloud();
+    // Before it is archived: listed, and the rail counts it.
+    await waitFor(() => expect(tree.getAllByText('Grading permit').length).toBeGreaterThan(0), COLD);
+    expect(tree.queryAllByLabelText('Documents, 1 document').length).toBe(1);
+
+    // Archived on the phone; this iPad hears of it.
+    cloud.row('doc-permit')!.archived_at = '2026-10-06T18:00:00.000Z';
+    await reachTheCloud();
+    await waitFor(() => expect(tree.queryAllByText('Grading permit').length).toBe(0), COLD);
+    expect(tree.queryAllByText('Archived (1)').length).toBe(1);
+
+    // Nothing is listed, so the count beside "Documents" does not still say 1.
+    expect(tree.queryAllByLabelText('Documents, 1 document').length).toBe(0);
+
+    // Restored there: counted again.
+    await press(tree, tree.getByText('Archived (1)'));
+    await press(tree, tree.getByLabelText('Restore Grading permit'));
+    await waitFor(() => expect(tree.queryAllByLabelText('Documents, 1 document').length).toBe(1), COLD);
+    await reachTheCloud();
+    tree.unmount();
+  });
+
+  it('L13: a card a backup brought back, for a document archived since, is put away on this phone like the rest, and Restore brings it back for good', async () => {
+    await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(PROJECTS));
+    await AsyncStorage.setItem(CARDS, JSON.stringify([permitCard])); // as the backup held it: not archived
+    await AsyncStorage.setItem(SHARED, JSON.stringify([sharedCopy]));
+    cloud.row('doc-permit')!.archived_at = '2026-10-06T18:00:00.000Z'; // archived after the backup was made
+    const card = async () => (await stored<{ id: string; isArchived?: boolean }>(CARDS)).find(item => item.id === 'doc-permit');
+    const tree = await launch();
+    await openLot9Documents(tree);
+    await reachTheCloud();
+
+    // Not in Documents, and the card itself is put away: every place that lists cards by their own "archived"
+    // (the project page, an update's count) leaves it out too.
+    await waitFor(() => expect(tree.queryByText('Grading permit.pdf')).toBeNull(), COLD);
+    await waitFor(async () => expect((await card())?.isArchived).toBe(true), COLD);
+    await press(tree, tree.getByText('Archived (1)'));
+    expect(tree.getByText('Hidden on all your devices. Kept in the cloud.')).toBeTruthy();
+
+    // Restore: the card comes back and stays back, here and in the cloud.
+    await press(tree, tree.getByLabelText('Restore Grading permit.pdf'));
+    await waitFor(() => expect(tree.queryByText(/^Archived \(/)).toBeNull(), COLD);
+    await reachTheCloud();
+    await reachTheCloud();
+    expect(cloud.row('doc-permit')?.archived_at).toBeNull();
+    await waitFor(async () => expect((await card())?.isArchived).toBe(false), COLD);
+    expect(tree.getByText('Grading permit.pdf')).toBeTruthy();
+    tree.unmount();
+  });
+});

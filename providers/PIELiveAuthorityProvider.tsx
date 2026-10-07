@@ -54,6 +54,7 @@ import {
 } from '../services/PIELiveAuthorityStateMachine';
 import { useDebouncedSnapshot } from '../hooks/use-debounced-snapshot';
 import { useProjectLocalDay } from '../hooks/use-project-local-day';
+import { useListedSharedDocuments } from '../hooks/use-listed-shared-documents';
 import {
   buildPIERecommendationTrace,
   type PIERecommendationTrace,
@@ -190,9 +191,16 @@ export function PIELiveAuthorityProvider({
     (Array.isArray(suppliedInput.scheduleItems) ? suppliedInput.scheduleItems : [])
       .find(item => item.projectTimeZone)?.projectTimeZone,
   );
+  // An archived shared document is not evidence (owner answer Q44; review of D1, L10): Project Truth and the
+  // report draft do not count it. With nothing archived this is the supplied list itself, and the input is unchanged.
+  const listedReferenceDocuments = useListedSharedDocuments(suppliedInput.referenceDocuments);
   const input = useMemo(
-    () => suppliedInput.asOfDay ? suppliedInput : { ...suppliedInput, asOfDay },
-    [asOfDay, suppliedInput],
+    () => {
+      const listed = listedReferenceDocuments === suppliedInput.referenceDocuments
+        ? suppliedInput : { ...suppliedInput, referenceDocuments: listedReferenceDocuments };
+      return listed.asOfDay ? listed : { ...listed, asOfDay };
+    },
+    [asOfDay, listedReferenceDocuments, suppliedInput],
   );
   const [core, setCore] = useState<PIECoreOutput | null>(null);
   const [fallbackRuntime, setFallbackRuntime] =

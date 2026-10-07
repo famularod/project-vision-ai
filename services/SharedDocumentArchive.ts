@@ -1,5 +1,25 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+import {
+  EMPTY_SHARED_DOCUMENT_ARCHIVE_VIEW as EMPTY_VIEW,
+  NO_SHARED_DOCUMENT_ARCHIVE_NOTICES as NO_NOTICES,
+  publishSharedDocumentArchiveView,
+  sharedDocumentArchiveView,
+  type SharedDocumentArchiveNotice,
+  type SharedDocumentRestoreWaiting,
+} from './SharedDocumentArchiveView';
+
+// What the device knows right now, and the one rule for lists, live in a file of their own that loads no device
+// storage (review of D1, L10); everything that used to import them from here still can.
+export {
+  sharedDocumentArchiveView,
+  sharedDocumentsListed,
+  subscribeSharedDocumentArchive,
+  type SharedDocumentArchiveNotice,
+  type SharedDocumentArchiveView,
+  type SharedDocumentRestoreWaiting,
+} from './SharedDocumentArchiveView';
+
 /**
  * Owner answer Q44 (6 Oct 2026): "Archive" for a compliance document means
  * hidden on every device, kept in the cloud. Nothing is deleted, and it can
@@ -95,16 +115,6 @@ type WaitingMark = Readonly<{
   held?: true;
 }>;
 
-/** A Restore made on this device that the cloud has not been told yet (review of D1, L5). */
-export type SharedDocumentRestoreWaiting = Readonly<{ documentId: string; name?: string; refused: boolean }>;
-
-/** A tap that was let go without being sent, to be told to the owner in a line he dismisses (review of D1, L2). */
-export type SharedDocumentArchiveNotice = Readonly<{
-  documentId: string;
-  tap: 'archive' | 'restore';
-  why: 'archived_again_on_another_device' | 'deleted_from_all_devices';
-  name?: string;
-}>;
 const NOTICE_LIMIT = 20;
 const OWN_RESTORE_LIMIT = 500;
 /** At most this many documents are asked about one by one in a pass (review of D1, L4); the rest wait for the next. */
@@ -128,28 +138,6 @@ type OwnerRecord = Readonly<{
   ownRestores: Readonly<Record<string, string>>;
 }>;
 
-export type SharedDocumentArchiveView = Readonly<{
-  installed: boolean | null;
-  /** Every shared document to leave out of this device's lists. */
-  archivedIds: ReadonlySet<string>;
-  /** Archived here, not yet told to the cloud. */
-  waitingIds: ReadonlySet<string>;
-  /** Waiting, and the cloud has answered and not taken it: said plainly, and tried again (review of D1, L3). */
-  refusedIds: ReadonlySet<string>;
-  /** When what waits is next due to be sent (milliseconds; 0 = now), or null when nothing waits. */
-  nextTryAt: number | null;
-  restoredElsewhere: readonly string[];
-  /** Taps that were let go without being sent, until the owner dismisses each line (review of D1, L2). */
-  notices: readonly SharedDocumentArchiveNotice[];
-  /**
-   * Restores made here that a pass to the cloud has not been able to send:
-   * the document is listed on this device and still hidden on the others
-   * (review of D1, L5). One tapped with signal is sent at once and is never
-   * in this list.
-   */
-  waitingRestores: readonly SharedDocumentRestoreWaiting[];
-}>;
-
 export type SharedDocumentArchiveCloudAnswer = 'installed' | 'not_installed' | 'unknown';
 
 type CloudError = Readonly<{ code?: string | null; message?: string | null }>;
@@ -160,15 +148,9 @@ export type SharedDocumentArchiveClient = Readonly<{
   auth?: { getSession?: () => Promise<{ data?: { session?: { user?: { id?: string | null } | null } | null } | null }> } | null;
 }>;
 
-const NO_NOTICES: readonly SharedDocumentArchiveNotice[] = Object.freeze([]);
 const EMPTY_RECORD: OwnerRecord = Object.freeze({
   installed: null, marks: Object.freeze({}), waiting: [], restoredElsewhere: [], notices: NO_NOTICES, ownRestores: Object.freeze({}),
 });
-const EMPTY_VIEW: SharedDocumentArchiveView = Object.freeze({
-  installed: null, archivedIds: new Set<string>(), waitingIds: new Set<string>(), refusedIds: new Set<string>(), nextTryAt: null,
-  restoredElsewhere: Object.freeze([]) as readonly string[], notices: NO_NOTICES, waitingRestores: Object.freeze([]) as readonly SharedDocumentRestoreWaiting[],
-});
-
 /** Two marks are the same mark: both empty, or the same moment (the cloud and the device write a time differently). */
 function sameMark(one: CloudMark | undefined, other: CloudMark | undefined): boolean {
   const first = one ?? null;
@@ -180,8 +162,6 @@ function sameMark(one: CloudMark | undefined, other: CloudMark | undefined): boo
 let records = new Map<string, OwnerRecord>();
 let loaded: Promise<void> | null = null;
 let activeOwnerId: string | null = null;
-let view: SharedDocumentArchiveView = EMPTY_VIEW;
-const listeners = new Set<() => void>();
 let storageWrite: Promise<unknown> = Promise.resolve();
 let cloudWork: Promise<unknown> = Promise.resolve();
 
@@ -272,12 +252,13 @@ function change(ownerId: string, next: (record: OwnerRecord) => OwnerRecord): vo
 function publish(): void {
   const record = activeOwnerId ? records.get(activeOwnerId) : null;
   if (!record) {
-    if (view === EMPTY_VIEW) return;
-    view = EMPTY_VIEW;
-  } else {
+    if (sharedDocumentArchiveView() !== EMPTY_VIEW) publishSharedDocumentArchiveView(EMPTY_VIEW);
+    return;
+  }
+  {
     const waitingArchive = record.waiting.filter(mark => mark.archived).map(mark => mark.documentId);
     const waitingRestore = new Set(record.waiting.filter(mark => !mark.archived).map(mark => mark.documentId));
-    view = Object.freeze({
+    publishSharedDocumentArchiveView(Object.freeze({
       installed: record.installed,
       archivedIds: new Set([...Object.keys(record.marks), ...waitingArchive].filter(id => !waitingRestore.has(id))),
       waitingIds: new Set(waitingArchive.filter(id => !(id in record.marks))),
@@ -286,10 +267,9 @@ function publish(): void {
       restoredElsewhere: record.restoredElsewhere,
       notices: record.notices,
       waitingRestores: record.waiting.filter(mark => !mark.archived && mark.held)
-        .map(mark => ({ documentId: mark.documentId, ...(mark.name ? { name: mark.name } : {}), refused: mark.attempts > 0 })),
-    });
+        .map((mark): SharedDocumentRestoreWaiting => ({ documentId: mark.documentId, ...(mark.name ? { name: mark.name } : {}), refused: mark.attempts > 0 })),
+    }));
   }
-  listeners.forEach(listener => listener());
 }
 
 /** Opens the signed-in account's copy; the lists then follow it. */
@@ -297,15 +277,6 @@ export async function openSharedDocumentArchive(ownerId: string | null): Promise
   activeOwnerId = ownerId;
   publish();
   await load(true);
-}
-
-export function sharedDocumentArchiveView(): SharedDocumentArchiveView {
-  return view;
-}
-
-export function subscribeSharedDocumentArchive(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => { listeners.delete(listener); };
 }
 
 /** Whatever this device still has to save has been saved (used by tests and before the app closes its account). */
@@ -648,17 +619,46 @@ export async function noteSharedDocumentArchiveLiveRow(input: Readonly<{
   });
 }
 
-/** The phone's own cards for these documents are no longer archived (Restore, here or on another device). */
+/**
+ * What the hook hands the shell's card updater: the documents whose cards
+ * are no longer archived, and with them the shared documents this device
+ * knows are archived (review of D1, L13).
+ */
+export type SharedDocumentCardChange = readonly string[] & Readonly<{ archivedSharedDocumentIds?: ReadonlySet<string> }>;
+
+export function sharedDocumentCardChange(restoredIds: readonly string[], archivedSharedDocumentIds: ReadonlySet<string>): SharedDocumentCardChange {
+  return Object.assign([...restoredIds], { archivedSharedDocumentIds });
+}
+
+/**
+ * The phone's own cards kept in step with the mark.
+ * - Cards for `documentIds` are no longer archived (Restore, here or on
+ *   another device).
+ * - A card whose shared copy this device knows is archived is put away too
+ *   (review of D1, L13): a card a backup brought back, or one on a second
+ *   device, for a document archived since. So every place that lists cards
+ *   by their own "archived" (the project page, an update's count) follows
+ *   the same rule as the Documents list. A card being restored in the same
+ *   call is never put away by it.
+ */
 export function withArchivedProjectDocumentsRestored<T extends Readonly<{
   id: string; referenceDocumentId?: string | null; isArchived?: boolean;
-}>>(cards: readonly T[], documentIds: readonly string[], restoredAt: string = new Date().toISOString()): T[] {
-  const restored = new Set(documentIds);
+}>>(cards: readonly T[], documentIds: SharedDocumentCardChange, at: string = new Date().toISOString()): T[] {
+  const restored = new Set<string>(documentIds);
+  const archived = documentIds.archivedSharedDocumentIds;
   let changed = false;
   const next = cards.map(card => {
-    const shared = card.referenceDocumentId?.trim();
-    if (!card.isArchived || !(restored.has(card.id) || (shared && restored.has(shared)))) return card;
-    changed = true;
-    return { ...card, isArchived: false, archivedAt: null, updatedAt: restoredAt };
+    const ids = [card.id, card.referenceDocumentId?.trim()].filter((id): id is string => Boolean(id));
+    const isRestored = ids.some(id => restored.has(id));
+    if (card.isArchived && isRestored) {
+      changed = true;
+      return { ...card, isArchived: false, archivedAt: null, updatedAt: at };
+    }
+    if (!card.isArchived && !isRestored && archived && ids.some(id => archived.has(id))) {
+      changed = true;
+      return { ...card, isArchived: true, archivedAt: at, updatedAt: at };
+    }
+    return card;
   });
   return changed ? next : cards as T[];
 }

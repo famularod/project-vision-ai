@@ -13,6 +13,8 @@ import {
   requestSharedDocumentArchive,
   sharedDocumentArchiveQuestion,
   sharedDocumentArchiveView,
+  sharedDocumentCardChange,
+  sharedDocumentsListed,
   subscribeSharedDocumentArchive,
   syncSharedDocumentArchiveWithCloud,
 } from '../services/SharedDocumentArchive';
@@ -57,7 +59,10 @@ async function deletedSharedDocumentIds(): Promise<string[]> {
  *
  * `restoreCards`: called with the ids of documents that are no longer
  * archived (restored here, or on another device), once `cardsLoaded`; the
- * shell takes the archived state off this device's own cards for them.
+ * shell takes the archived state off this device's own cards for them. It is
+ * also called with the shared documents this device knows are archived, so a
+ * card for one of them (brought back by a backup, or on a second device) is
+ * put away like the rest (review of D1, L13).
  */
 export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly<{
   cardsLoaded: boolean;
@@ -68,6 +73,19 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
   const restoreCardsRef = useRef(restoreCards);
   restoreCardsRef.current = restoreCards;
   const syncRef = useRef<() => Promise<void>>(async () => undefined);
+  const cardsLoadedRef = useRef(cardsLoaded);
+  cardsLoadedRef.current = cardsLoaded;
+  // Restored on this device a moment ago: not put away again by what the device knew just before.
+  const justRestoredRef = useRef(new Set<string>());
+  /** This device's cards follow what it knows is archived (review of D1, L13). The shell changes nothing when they already do. */
+  const followRef = useRef(() => undefined as void);
+  followRef.current = () => {
+    const known = sharedDocumentArchiveView().archivedIds;
+    justRestoredRef.current.forEach(id => { if (!known.has(id)) justRestoredRef.current.delete(id); });
+    if (!cardsLoadedRef.current || known.size === 0) return;
+    const archived = justRestoredRef.current.size === 0 ? known : new Set([...known].filter(id => !justRestoredRef.current.has(id)));
+    if (archived.size > 0) restoreCardsRef.current(sharedDocumentCardChange([], archived));
+  };
 
   useEffect(() => {
     if (!ownerId) return undefined;
@@ -84,6 +102,7 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
         // Nothing is shown: the device keeps what it last knew and tries again.
       }
       if (!active) return;
+      followRef.current(); // cards put in place since (a backup restored) follow too
       if (retry) clearTimeout(retry);
       retry = undefined;
       const now = sharedDocumentArchiveView();
@@ -118,6 +137,9 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
     void consumeSharedDocumentsRestoredElsewhere(view.restoredElsewhere);
   }, [cardsLoaded, view.restoredElsewhere]);
 
+  // Archived, as far as this device knows: its own card for it is put away too.
+  useEffect(() => { followRef.current(); }, [cardsLoaded, view.archivedIds]);
+
   const ask = useCallback((documentId: string, archived: boolean, name?: string) => {
     void requestSharedDocumentArchive(documentId, archived, undefined, name).then(() => syncRef.current());
   }, []);
@@ -130,11 +152,14 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
     archivedIds: view.archivedIds,
     waitingIds: view.waitingIds,
     refusedIds: view.refusedIds,
+    /** The one rule for a list or a count of shared documents: archived ones are left out (review of D1, L1). */
+    listed: <L extends readonly Readonly<{ id: string }>[]>(documents: L): L => sharedDocumentsListed(documents, view.archivedIds),
     /** The owner archived this shared document on this device. */
     archive: (documentId: string) => ask(documentId, true, askedAboutRef.current),
     /** Restore, from "Archived (n)": this device's card comes back and the cloud's mark is emptied. */
     restore: (document: MobileArchivedDocument) => {
       const ids = [document.cardId, document.sharedDocumentId].filter((id): id is string => Boolean(id));
+      ids.forEach(id => justRestoredRef.current.add(id));
       restoreCardsRef.current(ids);
       if (document.sharedDocumentId) ask(document.sharedDocumentId, false, document.name);
     },

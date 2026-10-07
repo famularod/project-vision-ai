@@ -157,6 +157,8 @@ import {
   type ReportDrawingReference,
 } from '../services/ReportDrawingReferences';
 
+import { useListedSharedDocuments } from '../hooks/use-listed-shared-documents';
+
 const EMPTY_REVIEW_IDS: readonly string[] = Object.freeze([]);
 
 export function ReportsScreen({
@@ -176,7 +178,7 @@ export function ReportsScreen({
   currentUpdate,
   projectAreas,
   contacts,
-  referenceDocuments,
+  referenceDocuments: suppliedReferenceDocuments,
   syncMetadata,
   decisionLedger,
   layer4Identity,
@@ -289,6 +291,9 @@ export function ReportsScreen({
   ) => Promise<string | null>;
   onResolvePhotoPreview?: (photoId: string) => Promise<string | null>;
 }) {
+  // The one place shared documents are handed to the report (owner answer Q44; review of D1, L10): an archived one
+  // is not counted. With nothing archived this is the supplied list itself, and the report's fingerprint does not move.
+  const referenceDocuments = useListedSharedDocuments(suppliedReferenceDocuments);
   const { sizeClass } = useAppShellLayout();
   const [reportApproved, setReportApproved] = useState(false);
   const [reportEditing, setReportEditing] = useState(false);
