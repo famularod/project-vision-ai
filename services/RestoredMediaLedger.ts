@@ -125,11 +125,23 @@ export function createRestoredMediaLedger({
   const removeFiles = async (uris: readonly string[], whereverTheyAreNow = false): Promise<string[]> => {
     const left: string[] = [];
     for (const uri of uris) {
-      try {
-        for (const address of whereverTheyAreNow ? restoredFileAddresses(uri, appFolders) : [uri]) await removeFile(address);
-      } catch {
-        left.push(uri);
+      const addresses = whereverTheyAreNow ? restoredFileAddresses(uri, appFolders) : [uri];
+      // Review pass 1, sync F1. Each address is tried on its own. They were tried one after the other inside one
+      // "try": on a device the removal REFUSES an address outside the app's folders as they are now (the folder
+      // the app had before it moved: expo-file-system's deleteAsync checks that the file's folder may be written,
+      // and one that is no longer there may not), and that refusal ended the loop before the file's present
+      // address was tried. The file stayed, and so did its entry, at every start. A refusal at such an address,
+      // when the file also has an address under the present folders, means "not there": nothing of this app's can
+      // be there any more. A refusal anywhere else is a failure, and the file stays written down for the next start.
+      let failed = false;
+      for (const address of addresses) {
+        try {
+          await removeFile(address);
+        } catch {
+          if (addresses.length === 1 || isUnderAppFolders(address, appFolders)) failed = true;
+        }
       }
+      if (failed) left.push(uri);
     }
     return left;
   };
@@ -270,6 +282,14 @@ export function restoredFileAddresses(uri: string, appFolders: readonly (string 
     if (!addresses.includes(now)) addresses.push(now);
   }
   return addresses;
+}
+
+/** Whether an address lies under one of the app's own folders as they are now. */
+function isUnderAppFolders(address: string, appFolders: readonly (string | null | undefined)[]): boolean {
+  return appFolders.some(folder => {
+    const root = typeof folder === 'string' ? folder.replace(/\/+$/, '') : '';
+    return Boolean(root) && address.startsWith(`${root}/`);
+  });
 }
 
 /**
