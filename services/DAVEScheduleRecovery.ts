@@ -372,13 +372,18 @@ function progressCarriedToRevisedTasks(records: ScheduleItem[], deleted: readonl
     if (!moved) return;
     const superseded = new Set(moved.flatMap(scheduleTaskEarlierIds).map(normalized));
     const newest = moved.filter(record => !superseded.has(normalized(record.id)));
-    if (newest.length !== 1) return;
-    // A percent judged before the newest row's import passes only rows between that this device still knows (A5 pass 23 M),
-    // or whose word a later row between it knows holds as his own (A5 pass 24 L3).
-    if (timestamp(scheduleProgressJudgedAt(earlier)) <= timestamp(newest[0].importedAt || newest[0].createdAt) &&
-      rowsBetweenUnheard(rowsBetween(earlier, newest[0], known))) return;
-    const taken = from.get(newest[0]);
-    if (!taken || timestamp(scheduleProgressJudgedAt(earlier)) > timestamp(scheduleProgressJudgedAt(taken))) from.set(newest[0], earlier);
+    // Build 231, S4 item 2 (a): EACH row that answers to it and that no other such row answers to. Two schedules that
+    // both moved the task (a master approved on each of two devices; one approved on the phone and one uploaded on the
+    // web) each have its newest row. With two such rows the carry was skipped for both, so the row shown kept an older
+    // percent of his, or 0%, with no notice. Each is weighed by the same rule, on its own.
+    newest.forEach(row => {
+      // A percent judged before the newest row's import passes only rows between that this device still knows (A5 pass 23 M),
+      // or whose word a later row between it knows holds as his own (A5 pass 24 L3).
+      if (timestamp(scheduleProgressJudgedAt(earlier)) <= timestamp(row.importedAt || row.createdAt) &&
+        rowsBetweenUnheard(rowsBetween(earlier, row, known))) return;
+      const taken = from.get(row);
+      if (!taken || timestamp(scheduleProgressJudgedAt(earlier)) > timestamp(scheduleProgressJudgedAt(taken))) from.set(row, earlier);
+    });
   });
   if (from.size === 0) return records;
   return records.map(record => {

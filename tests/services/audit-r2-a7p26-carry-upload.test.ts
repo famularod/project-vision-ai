@@ -1538,7 +1538,7 @@ describe('A7 p27 L2: a carry the queue-only upload refuses leaves no old copy fo
       .toEqual([[own.id, 30]]);
   });
 
-  it('pure: weighed with every task, as the download weighs it: a newer percent on the old row does not go to a row with a sibling (seed 4235 of the A7 p27 comparisons)', () => {
+  it('pure: weighed with every task, as the download weighs it: a newer percent on the old row goes to a row with a sibling too, and the upload sends what the download gave (seed 4235 of the A7 p27 comparisons; S4 item 2 a)', () => {
     // The iPad's 100% on F's row went to G's row with G's import; the phone's newer 80% on F's row; the phone's P row also answers to F's.
     const ipadOld = { ...rowsOf(F, [F_ROW])[0], percentComplete: 100, status: 'Complete', progressSource: 'project_manager', progressConfirmedAt: BEFORE_G, progressConfirmedBy: 'David', updatedAt: BEFORE_G } as ScheduleItem;
     const phoneOld = { ...ipadOld, percentComplete: 80, status: 'In Progress', progressConfirmedAt: AFTER_G, updatedAt: AFTER_G } as ScheduleItem;
@@ -1546,9 +1546,13 @@ describe('A7 p27 L2: a carry the queue-only upload refuses leaves no old copy fo
     const sibling = { ...rowsOf(H, ['Framing,Alpha,Lot,10/25/2026,11/04/2026,'])[0], percentComplete: 80, status: 'In Progress', progressSource: 'project_manager', progressConfirmedAt: AFTER_G, progressConfirmedBy: 'David', revisedFromTaskIds: [ipadOld.id, 'MASTER P-1'] } as ScheduleItem;
     // The cloud's copy of G's row changed since (a note typed on the phone).
     const gCloud = { ...gRowCopy, notes: 'Crew short Tuesday', updatedAt: '2026-09-16T00:00:00.000Z' } as ScheduleItem;
-    // The download leaves G's row at 100% (two rows answer to F's: no carry); so the upload sends nothing.
-    expect(recoverDAVEScheduleRecords({ local: [ipadOld, gRowCopy], cloud: [phoneOld, gCloud, sibling], allowCloudOnly: true }).find(row => row.id === gRowCopy.id)!.percentComplete).toBe(100);
-    expect(daveScheduleItemsNeedingCloudUpload({ local: [ipadOld, gRowCopy], cloud: [phoneOld, gCloud, sibling] })).toEqual([]);
+    // Build 231, S4 item 2 (a). This pinned "two rows answer to F's: no carry", so G's row kept his OLDER 100% beside the
+    // 80% he entered after it: the gap. What the seed was for still holds: the upload weighs as the download does. The
+    // download now gives G's row his newer 80%, with the note typed on the phone, and the upload sends exactly that row.
+    expect(recoverDAVEScheduleRecords({ local: [ipadOld, gRowCopy], cloud: [phoneOld, gCloud, sibling], allowCloudOnly: true }).map(row => [row.id, row.percentComplete]))
+      .toEqual([[ipadOld.id, 80], [gRowCopy.id, 80], [sibling.id, 80]]);
+    expect(daveScheduleItemsNeedingCloudUpload({ local: [ipadOld, gRowCopy], cloud: [phoneOld, gCloud, sibling] }).map(row => [row.id, row.percentComplete, row.notes]))
+      .toEqual([[gRowCopy.id, 80, 'Crew short Tuesday']]);
   });
 
   it('pure: a percent of his given back on the device after the cloud\'s copy last changed is weighed alone, as before (sweep seeds 9093, 9036)', () => {
@@ -2620,6 +2624,28 @@ describe('S3 item 4: the automatic upload does not send back a task deleted on a
     const undo = deletionLandsDuringTheNextPass();
     try { await backgroundUpload(again.ipad); } finally { undo(); cloudService.listDAVESyncTombstonesForRecords = ask; }
     expect(cloudRow('MASTER F-1')?.percentComplete).toBe(30);
+  });
+});
+
+/* Build 231, S4 item 2 (a): two rows that both answer to the old row each take his percent from it, by the carry's own rule. */
+describe('S4 item 2 (a): the carry reaches each of two rows that answer to the old row', () => {
+  const davids = (percent: number, at: string) => ({ ...rowsOf(F, [F_ROW])[0], percentComplete: percent, status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'David', progressConfirmedAt: at, updatedAt: at }) as ScheduleItem;
+  const answering = (source: ReferenceDocument, line: string) => ({ ...rowsOf(source, [line])[0], revisedFromTaskIds: ['MASTER F-1'] }) as ScheduleItem;
+  const percents = (rows: ScheduleItem[]) => recoverDAVEScheduleRecords({ local: rows, cloud: rows, allowCloudOnly: true }).map(row => [row.id, row.percentComplete]);
+
+  it('his 30% on F\'s row; G (approved on one device) and H (on the other) each moved the task: both rows show 30% (both showed 0%)', () => {
+    expect(percents([davids(30, AFTER_G), answering(G, G_ROW()), answering(H, 'Framing,Alpha,Lot,10/25/2026,11/04/2026,')]))
+      .toEqual([['MASTER F-1', 30], ['MASTER G-1', 30], ['MASTER H-1', 30]]);
+  });
+
+  it('each sibling by the rule: a file that states more than his percent keeps its own; one that states less takes his', () => {
+    expect(percents([davids(30, BEFORE_G), answering(G, G_ROW('60')), answering(H, 'Framing,Alpha,Lot,10/25/2026,11/04/2026,10')]))
+      .toEqual([['MASTER F-1', 30], ['MASTER G-1', 60], ['MASTER H-1', 30]]);
+  });
+
+  it('unchanged: a row another row answers to is not the newest and takes nothing', () => {
+    const h = { ...answering(H, 'Framing,Alpha,Lot,10/25/2026,11/04/2026,'), revisedFromTaskIds: ['MASTER F-1', 'MASTER G-1'] } as ScheduleItem;
+    expect(percents([davids(30, AFTER_G), answering(G, G_ROW()), h])).toEqual([['MASTER F-1', 30], ['MASTER G-1', 0], ['MASTER H-1', 30]]);
   });
 });
 
