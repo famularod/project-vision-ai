@@ -16979,7 +16979,7 @@ type ProjectTaskFilter = 'All' | 'At Risk' | 'Due Soon' | 'Complete';
 
 function ProjectTaskControlPanel({
   projectName,
-  scheduleItems, knownScheduleItems,
+  scheduleItems, knownScheduleItems, projectAreas,
   savedUpdates,
   onUpdate,
   onSave,
@@ -16989,6 +16989,7 @@ function ProjectTaskControlPanel({
 }: {
   projectName: string;
   scheduleItems: ScheduleItem[]; knownScheduleItems?: ScheduleItem[]; // every saved task, for the name fallback (A10 pass 6 L2)
+  projectAreas: ProjectArea[]; // for a task card's Area row: it offered no area on this page (P1 part A)
   savedUpdates: ProjectUpdate[];
   onUpdate: (
     itemId: string,
@@ -17194,6 +17195,7 @@ function ProjectTaskControlPanel({
               <ScheduleItemRow
                 key={item.id}
                 item={item}
+                scheduleItems={scheduleItems} projectAreas={projectAreas}
                 fieldWarnings={fieldWarnings.get(item.id) || []}
                 onUpdate={(next, workflowRequest) =>
                   onUpdate(item.id, next, workflowRequest)}
@@ -17540,7 +17542,7 @@ function ProjectWorkspaceScreen({
 
       <ProjectTaskControlPanel
         projectName={projectName}
-        scheduleItems={scheduleItems} knownScheduleItems={knownScheduleItems}
+        scheduleItems={scheduleItems} knownScheduleItems={knownScheduleItems} projectAreas={projectAreas}
         savedUpdates={savedUpdates}
         onUpdate={onUpdateScheduleItem}
         onSave={onSaveScheduleItem}
