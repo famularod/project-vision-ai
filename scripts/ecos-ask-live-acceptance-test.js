@@ -511,8 +511,28 @@ void (async () => {
       writeStandInFile(archived, 'CANONICAL.md', '# Canonical Ask ECOS runtime\n');
       assert.equal(runtimeRepoRoot(), archived);
       writeStandInFile(archived, 'CANONICAL.md', '\n# This repository is ARCHIVED. Do not edit it.\n\nCanonical: elsewhere\n');
-      assert.throws(() => runtimeRepoRoot(), /says it is archived \("This repository is ARCHIVED\. Do not edit it\."\)/);
-      assert.throws(() => acceptanceContractHash(), /says it is archived/);
+      // Review pass 1, L12: the sentence now says what in the notice it turned on (it was "says it is archived").
+      assert.throws(() => runtimeRepoRoot(), /its CANONICAL\.md says it is archived or retired \("This repository is ARCHIVED\. Do not edit it\."\)/);
+      assert.throws(() => acceptanceContractHash(), /says it is archived or retired/);
+      // Review pass 1, L12: only the first non-blank line was read, for the word
+      // "archived". The whole notice is read now and it fails closed: a checkout
+      // is used only when its notice says plainly that it is the canonical one.
+      for (const [notice, used] of [
+        ['# This repository is ARCHIVED. Do not edit it.\n\nCanonical: elsewhere\n', false],
+        ['# Canonical Ask ECOS runtime\n', true],
+        ['# Ask ECOS runtime\n\nARCHIVED. This copy no longer answers. The canonical runtime is elsewhere.\n', false],
+        ['# RETIRED\n\nThis repository was retired on 21 September.\n', false],
+        ['<!-- do not remove this notice -->\n# This repository is ARCHIVED. Do not edit it.\n', false],
+        ['# This is the canonical Ask ECOS runtime. The archived copy is in the old runtime folder.\n', true],
+        // Fails closed: a notice that does not say, or says the canonical runtime is somewhere else.
+        ['# Runtime notes\n', false],
+        ['**Canonical Ask ECOS runtime: `/somewhere/else/runtime`**\n', false],
+        ['', false],
+      ]) {
+        writeStandInFile(archived, 'CANONICAL.md', notice);
+        if (used) assert.equal(runtimeRepoRoot(), archived, `A checkout whose notice reads ${JSON.stringify(notice)} must be used.`);
+        else assert.throws(() => runtimeRepoRoot(), /cannot be used for release evidence: its CANONICAL\.md /, `A checkout whose notice reads ${JSON.stringify(notice)} must be refused.`);
+      }
     } finally {
       fs.rmSync(archived, { recursive: true, force: true });
     }

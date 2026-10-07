@@ -518,22 +518,84 @@ function runtimeRepoRoot() {
       'Set ECOS_RUNTIME_REPO to the runtime checkout; release evidence must bind to the answering code.',
     );
   }
-  const archived = archivedRepositoryNotice(resolved);
-  if (archived) {
+  const refusal = runtimeCheckoutRefusal(resolved);
+  if (refusal) {
     throw new Error(
-      `The repository at ${resolved} says it is archived ("${archived}"). ` +
+      `The repository at ${resolved} cannot be used for release evidence: ${refusal}. ` +
       'Set ECOS_RUNTIME_REPO to the canonical runtime checkout; release evidence must bind to the answering code.',
     );
   }
   return resolved;
 }
 
-/** The first line of a checkout's CANONICAL.md when it says the repository is archived; otherwise ''. */
-function archivedRepositoryNotice(root) {
+/** Why a checkout must not be used, from its CANONICAL.md; '' when it may be. A checkout with no such file may be. */
+function runtimeCheckoutRefusal(root) {
   const noticePath = path.join(root, 'CANONICAL.md');
   if (!fs.existsSync(noticePath)) return '';
-  const firstLine = fs.readFileSync(noticePath, 'utf8').split(/\r?\n/).map(line => text(line)).find(Boolean) || '';
-  return /archived/i.test(firstLine) ? firstLine.replace(/^#+\s*/, '').slice(0, 160) : '';
+  let notice;
+  try {
+    notice = fs.readFileSync(noticePath, 'utf8');
+  } catch {
+    // Fails closed: a notice that is there and cannot be read is not a notice that says "canonical".
+    return 'its CANONICAL.md could not be read';
+  }
+  const verdict = canonicalNoticeVerdict(notice);
+  return verdict.use ? '' : verdict.because;
+}
+
+const NOT_IN_USE = '(?:archived|retired|deprecated|superseded|obsolete|decommissioned|frozen|read[- ]only)';
+const THIS_CHECKOUT = '(?:this|the)\\s+(?:repository|repo|checkout|copy|folder|directory|runtime|tree|code)';
+
+/**
+ * What a checkout's CANONICAL.md says about the checkout itself (review
+ * pass 1, L12). Only the first non-blank line used to be read, for the word
+ * "archived": a title with ARCHIVED on the next line, "RETIRED", or a
+ * comment first was taken for a checkout in use, and a canonical checkout
+ * that mentioned where the archived copy is was refused.
+ *
+ * The whole notice is read, comments and markdown marks aside, and it fails
+ * closed. A checkout is used only when the notice says plainly that this
+ * checkout is the canonical one, and nothing in it says it is archived,
+ * retired or the like. Anything else is refused with the reason: it says it
+ * is archived; it says the canonical runtime is somewhere else; or it does
+ * not say.
+ */
+function canonicalNoticeVerdict(notice) {
+  const lines = String(notice)
+    .replace(/<!--[\s\S]*?-->/g, '\n')
+    .replace(/<!--[\s\S]*$/, '')
+    .split(/\r?\n/)
+    // Markdown marks say nothing: headings, quotes, list marks, emphasis, code marks.
+    .map(line => line.replace(/[*_`]/g, '').replace(/^[\s#>-]+/, '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const quoted = line => `"${line.slice(0, 160)}"`;
+  const saysNotInUse = line =>
+    // "ARCHIVED", "Retired on ...", "Status: archived"
+    new RegExp(`^(?:status\\s*[:=]\\s*)?${NOT_IN_USE}\\b`, 'i').test(line) ||
+    // "This repository is ARCHIVED", "The runtime in this folder is superseded", "This repo has been retired"
+    (new RegExp(`\\b${THIS_CHECKOUT}\\b[^.!?]{0,80}?\\b(?:is|was|has been)\\s+(?:now\\s+)?${NOT_IN_USE}\\b`, 'i').test(line) &&
+      !new RegExp(`\\b(?:is|was|has been)\\s+not\\s+${NOT_IN_USE}\\b`, 'i').test(line)) ||
+    // "This checkout is no longer the canonical runtime", "This repository is not canonical"
+    new RegExp(`\\b${THIS_CHECKOUT}\\b[^.!?]{0,80}?\\bis\\s+(?:no longer|not)\\s+(?:the\\s+)?(?:canonical|current|live|used|maintained)\\b`, 'i').test(line);
+  const saysCanonical = line =>
+    /^status\s*[:=]\s*canonical\b/i.test(line) ||
+    // "This repository is the canonical runtime", "This is the canonical Ask ECOS runtime"
+    new RegExp(`\\b(?:this|${THIS_CHECKOUT})\\s+is\\s+(?:the\\s+)?canonical\\b`, 'i').test(line) ||
+    // A title that names it and points nowhere: "Canonical Ask ECOS runtime"
+    /^canonical\b[^:=]*$/i.test(line);
+  // "Canonical Ask ECOS runtime: /somewhere", "Canonical: elsewhere", "The canonical runtime is at ..."
+  const saysCanonicalIsElsewhere = line =>
+    /\bcanonical\b[^.!?]*[:=]\s*\S/i.test(line) || /\bcanonical\b[^.!?]*\b(?:is|lives|moved)\s+(?:at|in|to|elsewhere)\b/i.test(line);
+
+  const notInUse = lines.find(saysNotInUse);
+  if (notInUse) return { use: false, because: `its CANONICAL.md says it is archived or retired (${quoted(notInUse)})` };
+  if (lines.some(saysCanonical)) return { use: true, because: 'its CANONICAL.md says it is the canonical checkout' };
+  const elsewhere = lines.find(saysCanonicalIsElsewhere);
+  if (elsewhere) return { use: false, because: `its CANONICAL.md says the canonical runtime is somewhere else (${quoted(elsewhere)})` };
+  return {
+    use: false,
+    because: 'its CANONICAL.md does not say plainly that this checkout is the canonical one. If it is, add the line "Status: canonical" to that file',
+  };
 }
 
 function runtimeContractFiles(root = runtimeRepoRoot()) {
@@ -714,6 +776,7 @@ module.exports = {
   RUNTIME_CONTRACT_FILES,
   answeringPackageFailures,
   answeringPackageOf,
+  canonicalNoticeVerdict,
   deployedRuntimePackageSha256,
   runtimeContractFiles,
   runtimeRepoRoot,
