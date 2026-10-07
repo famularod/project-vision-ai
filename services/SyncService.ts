@@ -44,7 +44,7 @@ import {
   projectDocumentBridgeOrphaned,
 } from './ProjectDocumentBridge';
 import { getStoredJson, setStoredJson } from './StorageService';
-import { subscribeToOwnerStorageSwitch } from './OwnerStorageSandbox';
+import { ownerWhoseStorageIsInFront, subscribeToOwnerStorageSwitch } from './OwnerStorageSandbox';
 import {
   deletedDAVERecordIds,
   loadDAVEOperationalTombstones,
@@ -1273,9 +1273,12 @@ function mutateOfflineQueue<T>(
     result: T;
     persist?: boolean;
   },
+  /** A choice in Review Conflicts: the list is its account's, or it is not touched (stopChoiceWhoseAccountChanged). */
+  itsAccount: ChoiceAccount = {},
 ): Promise<T> {
   return serializeOfflineQueueMutation(async () => {
     const { queue } = await readOfflineQueueUnsafe();
+    stopChoiceWhoseAccountChanged(itsAccount);
     const mutation = mutator(queue);
     if (mutation.persist !== false) {
       await persistVerifiedOfflineQueue(mutation.nextQueue);
@@ -5650,7 +5653,7 @@ async function cleanupSyncQueueValue(value: string) {
   };
 }
 
-export async function clearResolvedConflict(conflictId: string): Promise<void> {
+export async function clearResolvedConflict(conflictId: string, itsAccount: ChoiceAccount = {}): Promise<void> {
   await serializeSyncConflictMutation(async () => {
     const conflicts = await readSyncConflictsUnsafe();
     const conflict = conflicts.find(item => item.id === conflictId);
@@ -5660,14 +5663,16 @@ export async function clearResolvedConflict(conflictId: string): Promise<void> {
           ? item.entity !== conflict.entity || item.localId !== conflict.localId
           : item.id !== conflictId,
       ),
+      itsAccount,
     );
   });
 }
 
 export async function clearScheduleItemSyncConflicts(
   itemId: string,
+  itsAccount: ChoiceAccount = {},
 ): Promise<void> {
-  await clearConflictsForLocalRecord('schedule_item', itemId);
+  await clearConflictsForLocalRecord('schedule_item', itemId, itsAccount);
 }
 
 /**
@@ -6428,6 +6433,7 @@ async function recordTaskCloudCopyIfChanged(
   row: ScheduleItem,
   phoneCopies: readonly unknown[],
   seen: unknown = conflict.remotePayload,
+  itsAccount: ChoiceAccount = {},
 ): Promise<boolean> {
   if (sameTaskContent(row, seen) || phoneCopies.some(copy => sameTaskContent(row, copy))) return false;
   return serializeSyncConflictMutation(async () => {
@@ -6435,7 +6441,7 @@ async function recordTaskCloudCopyIfChanged(
     if (!conflicts.some(item => item.id === conflict.id)) return false;
     await writeSyncConflicts(conflicts.map(item => item.id === conflict.id
       ? { ...item, remotePayload: row, remoteChangedAt: row.updatedAt ?? item.remoteChangedAt }
-      : item));
+      : item), itsAccount);
     return true;
   });
 }
@@ -6453,13 +6459,15 @@ async function recordTaskCloudCopyIfChanged(
  * shown stays. Run when Review Conflicts opens and before a choice. The id
  * each moved card has now (null: closed), by the id it had.
  */
-async function moveScheduleItemConflictsWithTheirTasks(): Promise<Map<string, string | null>> {
+async function moveScheduleItemConflictsWithTheirTasks(itsAccount: ChoiceAccount = {}): Promise<Map<string, string | null>> {
   const moved = new Map<string, string | null>();
   const fieldCards = (await getSyncConflicts())
     .filter(conflict => conflict.entity === 'schedule_item' && scheduleItemConflictFields(conflict.localPayload).length > 0);
   if (fieldCards.length === 0) return moved;
   // The tasks shown, as the web desktop works them out: the cloud's rows under the cloud's schedules.
-  const [list, documents, tombstoneSync] = await Promise.all([listScheduleItems(), listReferenceDocuments(), synchronizeDAVESyncTombstones()]);
+  // (Before a choice, as the choice's account: second review, sync N3. When Review Conflicts opens, as before.)
+  const [list, documents, tombstoneSync] = await Promise.all([asItsAccount(itsAccount, () => listScheduleItems()),
+    asItsAccount(itsAccount, () => listReferenceDocuments()), synchronizeDAVESyncTombstones()]);
   if (!list.ok || list.stubbed || !Array.isArray(list.data) || !documents.ok || documents.stubbed || !Array.isArray(documents.data) ||
     !tombstoneSync.cloudAuthoritative) return moved;
   const deletedIds = (entity: 'schedule_item' | 'reference_document') =>
@@ -6508,7 +6516,7 @@ async function moveScheduleItemConflictsWithTheirTasks(): Promise<Map<string, st
       conflicts = [...others.filter(item => item !== onRow), next];
       moved.set(conflict.id, next.id);
     }
-    if (conflicts !== before) await writeSyncConflicts(conflicts);
+    if (conflicts !== before) await writeSyncConflicts(conflicts, itsAccount);
   });
   return moved;
 }
@@ -6604,7 +6612,7 @@ function taskEditWaitsBesideCard(
 }
 
 /** Takes a task's waiting edits off the queue; the edits taken. One that `stays` is left waiting. */
-function withdrawScheduleItemFromSyncQueue(itemId: string, stays: (edit: SyncQueueItem) => boolean = () => false): Promise<SyncQueueItem[]> {
+function withdrawScheduleItemFromSyncQueue(itemId: string, stays: (edit: SyncQueueItem) => boolean = () => false, itsAccount: ChoiceAccount = {}): Promise<SyncQueueItem[]> {
   const queueItemId = scheduleItemQueueItemId(itemId);
   return mutateOfflineQueue(queue => {
     const withdrawn = queue.filter(item => item.id === queueItemId && !stays(item));
@@ -6613,11 +6621,11 @@ function withdrawScheduleItemFromSyncQueue(itemId: string, stays: (edit: SyncQue
       result: withdrawn,
       persist: withdrawn.length > 0,
     };
-  });
+  }, itsAccount);
 }
 
 /** A task's edits on the queue again, oldest first, under what waits for the task now: one record, as the queue keeps a task. */
-function putTaskEditsBackOnSyncQueue(itemId: string, edits: readonly SyncQueueItem[]): Promise<void> {
+function putTaskEditsBackOnSyncQueue(itemId: string, edits: readonly SyncQueueItem[], itsAccount: ChoiceAccount = {}): Promise<void> {
   const queueItemId = scheduleItemQueueItemId(itemId);
   return mutateOfflineQueue(queue => {
     const existing = queue.find(item => item.id === queueItemId);
@@ -6625,7 +6633,7 @@ function putTaskEditsBackOnSyncQueue(itemId: string, edits: readonly SyncQueueIt
     const together = [...edits, ...(existing ? [existing] : [])]
       .reduce<SyncQueueItem | undefined>((merged, edit) => mergeScheduleItemQueueChangeScope(merged, edit), undefined);
     return { nextQueue: [...queue.filter(item => item.id !== queueItemId), ...(together ? [together] : [])], result: undefined };
-  });
+  }, itsAccount);
 }
 
 /**
@@ -6642,6 +6650,8 @@ async function putBackTaskConflictAsItWas(
   edits: readonly SyncQueueItem[],
   /** Those of `edits` that never left this phone, as JSON text (sync batch Y4, item 2). */
   neverSent: ReadonlySet<string> = new Set(),
+  /** The account whose card it is: saved in its storage, or not saved here at all (second review, sync N3). */
+  itsAccount: ChoiceAccount = {},
 ): Promise<void> {
   const unique = edits.filter((edit, index) =>
     edits.findIndex(other => JSON.stringify(other) === JSON.stringify(edit)) === index);
@@ -6652,8 +6662,35 @@ async function putBackTaskConflictAsItWas(
     const base = open ?? conflict;
     const { withdrawnEditsNeverSent: _marksBefore, ...payload } = base.localPayload as ScheduleItemRecordPayload;
     const saved = { ...base, localPayload: { ...payload, withdrawnEdits: unique, ...(marks.length > 0 ? { withdrawnEditsNeverSent: marks } : {}) } };
-    await writeSyncConflicts(open ? conflicts.map(item => item === open ? saved : item) : [...conflicts, saved]);
+    await writeSyncConflicts(open ? conflicts.map(item => item === open ? saved : item) : [...conflicts, saved], itsAccount);
   });
+}
+
+/**
+ * Second review, sync N3. What a task's Keep Cloud that was cut by a change of account had taken off its account's
+ * waiting list, put back once that account's storage is in front again (putBackWhenItsAccountIsBack). By what that
+ * storage holds then, since nothing read after the account changed can be trusted:
+ *  - the card is still open: nothing of the choice was decided. What it took off the waiting list waits there again,
+ *    as before he chose (not an edit that is on the card already);
+ *  - the card is gone: an edit of this phone's that landed during the choice closed it. It is saved again with the
+ *    edits waiting on it, as putBackTaskConflictAsItWas does for a Keep Cloud that could not finish: any of them may
+ *    be in the cloud's row, so none is marked "never sent" but those an earlier Keep Cloud had marked.
+ */
+async function putBackWhatCutTaskKeepCloudTook(
+  conflict: SyncConflict,
+  waitingAtChoice: readonly SyncQueueItem[],
+  taken: readonly SyncQueueItem[],
+  itsAccount: ChoiceAccount,
+): Promise<void> {
+  const payload = conflict.localPayload as ScheduleItemRecordPayload;
+  const open = (await getSyncConflicts()).find(item => item.entity === conflict.entity && item.localId === conflict.localId);
+  if (!open) {
+    await putBackTaskConflictAsItWas(conflict, [...(payload.withdrawnEdits ?? []), ...waitingAtChoice, ...taken],
+      new Set(payload.withdrawnEditsNeverSent ?? []), itsAccount);
+    return;
+  }
+  const onCard = new Set(((open.localPayload as Partial<ScheduleItemRecordPayload>).withdrawnEdits ?? []).map(edit => JSON.stringify(edit)));
+  await putTaskEditsBackOnSyncQueue(conflict.localId, taken.filter(edit => !onCard.has(JSON.stringify(edit))), itsAccount);
 }
 
 /** Whether a waiting edit of a task changes a field the card does not ask about; a whole copy may change any. */
@@ -6702,6 +6739,8 @@ async function weighTaskEditsWaitingBesideCard(
   resolution: 'keep_local' | 'keep_cloud',
   /** The cloud's copy as the screen showed it. */
   shown: unknown,
+  /** The choice's account (second review, sync N3): what this saves on the phone is its own, or is not saved. */
+  itsAccount: ChoiceAccount = {},
 ): Promise<{ cardId: string; fields: string[]; sent: boolean } | null> {
   const queueItemId = scheduleItemQueueItemId(conflict.localId);
   const waits = async () => (await getOfflineQueue()).find(item => item.id === queueItemId);
@@ -6711,7 +6750,7 @@ async function weighTaskEditsWaitingBesideCard(
   if (waiting?.operation === 'delete' || !(held.some(beyond) || (waiting && beyond(waiting)))) return null;
   if (held.some(beyond)) {
     // On the queue first, then off the card: at no moment are they in neither.
-    await putTaskEditsBackOnSyncQueue(conflict.localId, held);
+    await putTaskEditsBackOnSyncQueue(conflict.localId, held, itsAccount);
     await serializeSyncConflictMutation(async () => {
       const conflicts = await readSyncConflictsUnsafe();
       await writeSyncConflicts(conflicts.map(item => {
@@ -6721,14 +6760,15 @@ async function weighTaskEditsWaitingBesideCard(
         // The marks of the edits that stay on the card stay with them (sync batch Y4, item 2).
         const marks = (withdrawnEditsNeverSent ?? []).filter(text => left.some(edit => JSON.stringify(edit) === text));
         return { ...item, localPayload: left.length > 0 ? { ...payload, withdrawnEdits: left, ...(marks.length > 0 ? { withdrawnEditsNeverSent: marks } : {}) } : payload };
-      }));
+      }), itsAccount);
     });
   }
   const record = await waits();
   const recordPayload = record?.payload as Partial<ScheduleItemRecordPayload> | undefined;
   const fields = Array.isArray(recordPayload?.changedFields) ? recordPayload.changedFields.map(String).filter(field => field !== 'updatedAt') : [];
+  stopChoiceWhoseAccountChanged(itsAccount); // no upload is begun for a choice whose account has gone
   let result = await uploadPendingChanges();
-  if (!result.itemOutcomes?.[queueItemId] && await waits()) result = await uploadPendingChanges();
+  if (!result.itemOutcomes?.[queueItemId] && await waits() && !passAccountChanged(itsAccount)) result = await uploadPendingChanges();
   const open = (await getSyncConflicts()).find(item => item.entity === 'schedule_item' && item.localId === conflict.localId);
   // Whether something of his went up (follow-up 2): the cloud's row now holds a value of that record where the screen
   // showed another. So not a record that could not be sent; and not a write of the row as the cloud had it with only
@@ -6737,7 +6777,7 @@ async function weighTaskEditsWaitingBesideCard(
   // upload reported.
   const rowAfter: unknown = open && open.id !== conflict.id
     ? open.remotePayload
-    : await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
+    : await currentCloudScheduleItem(conflict.localId, itsAccount).catch(() => undefined);
   const sent = Boolean(record) && (rowAfter === undefined
     ? result.itemOutcomes?.[queueItemId] === 'uploaded'
     : isRecord(rowAfter) && taskFieldsHoldingPhoneEdits(rowAfter as unknown as ScheduleItem, shown, record ? [record] : []).length > 0);
@@ -6830,8 +6870,20 @@ export async function resolveScheduleItemSyncConflict(
   options: Parameters<typeof chooseScheduleItemSyncConflictCopy>[2] = {},
 ): Promise<ScheduleItem> {
   taskConflictChoicesUnderWay += 1;
+  // Review pass 1, sync G3 (older; owner answer Q45, 6 Oct 2026): the account this choice is made for, taken before
+  // anything is waited on. Every read of the cloud's row in the choice, and Keep Cloud's own write that takes a
+  // landed edit back out of it, is made as this account or not at all. They were made as whoever was signed in by
+  // then: 15 of the 16 places that write to the cloud went through the account check, and Keep Cloud's undo was the
+  // sixteenth. With another account signed in, that write (made only over the row version this account read)
+  // changed nothing, the next read came back empty, and the card closed as "deleted on another device".
+  // Second review, sync N3: and so is everything the choice saves on this phone (ChoiceAccount).
+  const itsAccount: ChoiceAccount = { account: options.choiceAccount ?? currentCloudOwner() };
   try {
-    return await chooseScheduleItemSyncConflictCopy(conflictId, resolution, options);
+    return await chooseScheduleItemSyncConflictCopy(conflictId, resolution, options, itsAccount);
+  } catch (error) {
+    // However a choice ends once its account has gone, what it had taken is kept for that account.
+    if (passAccountChanged(itsAccount)) keepWhatCutChoiceTook(itsAccount);
+    throw error;
   } finally {
     taskConflictChoicesUnderWay -= 1;
   }
@@ -6857,14 +6909,9 @@ async function chooseScheduleItemSyncConflictCopy(
      */
     weighedBesideCard?: readonly string[];
   } = {},
+  /** The account this choice is made for (resolveScheduleItemSyncConflict). */
+  itsAccount: ChoiceAccount = { account: choiceAccount ?? currentCloudOwner() },
 ): Promise<ScheduleItem> {
-  // Review pass 1, sync G3 (older; owner answer Q45, 6 Oct 2026): the account this choice is made for, taken before
-  // anything is waited on. Every read of the cloud's row below, and Keep Cloud's own write that takes a landed
-  // edit back out of it, is made as this account or not at all. They were made as whoever was signed in by then:
-  // 15 of the 16 places that write to the cloud went through the account check, and Keep Cloud's undo was the
-  // sixteenth. With another account signed in, that write (made only over the row version this account read)
-  // changed nothing, the next read came back empty, and the card closed as "deleted on another device".
-  const itsAccount = { account: choiceAccount ?? currentCloudOwner() };
   // This phone's waiting edits of the task, before anything else: an upload
   // already under way takes one off the queue once it has landed it.
   const queueAtChoice = await getOfflineQueue();
@@ -6879,7 +6926,7 @@ async function chooseScheduleItemSyncConflictCopy(
   // finding 2): the same choice, when that row holds what the card showed for those fields; else David reviews the
   // card again, with that row. With none of its fields left to ask about, it has closed.
   const askedFields = scheduleItemConflictFields(conflict.localPayload);
-  const movedTo = askedFields.length > 0 ? (await moveScheduleItemConflictsWithTheirTasks()).get(conflict.id) : undefined;
+  const movedTo = askedFields.length > 0 ? (await moveScheduleItemConflictsWithTheirTasks(itsAccount)).get(conflict.id) : undefined;
   if (movedTo !== undefined) {
     const now = movedTo ? (await getSyncConflicts()).find(item => item.id === movedTo) : undefined;
     if (!now) throw new Error('sync_conflict_closed');
@@ -6898,7 +6945,7 @@ async function chooseScheduleItemSyncConflictCopy(
   const itemWasDeleted = deletedDAVERecordIds(tombstones, 'schedule_item')
     .some(recordId => recordId.trim().toLowerCase() === normalizedConflictId);
   if (itemWasDeleted) {
-    await clearScheduleItemSyncConflicts(conflict.localId);
+    await clearScheduleItemSyncConflicts(conflict.localId, itsAccount);
     throw new Error('sync_conflict_record_deleted');
   }
 
@@ -6932,7 +6979,7 @@ async function chooseScheduleItemSyncConflictCopy(
     if ((!cardFields && !wholeTaskDifference) || weighedBesideCard !== undefined) return null;
     let beside: Awaited<ReturnType<typeof weighTaskEditsWaitingBesideCard>>;
     try {
-      beside = await weighTaskEditsWaitingBesideCard(conflict, besideCard, resolution, shown);
+      beside = await weighTaskEditsWaitingBesideCard(conflict, besideCard, resolution, shown, itsAccount);
     } catch (error) {
       // An edit of his that lands closes a card about the whole task, as it always has (settleScheduleItemConflicts):
       // the cloud's row then holds the cloud's side of the difference with his other field on it, which is what Keep
@@ -6966,7 +7013,7 @@ async function chooseScheduleItemSyncConflictCopy(
     // written back, and its conflict is closed.
     const cloudItem = await currentCloudScheduleItem(conflict.localId, itsAccount);
     if (!cloudItem) {
-      await clearScheduleItemSyncConflicts(conflict.localId);
+      await clearScheduleItemSyncConflicts(conflict.localId, itsAccount);
       throw new Error('sync_conflict_record_deleted');
     }
     // Remove both the conflict-era edit and any newer queued local revision,
@@ -6977,9 +7024,13 @@ async function chooseScheduleItemSyncConflictCopy(
     const waitsBesideCard = async () => (cardFields !== null || wholeTaskDifference !== null) &&
       (await getOfflineQueue()).some(item => item.id === scheduleItemQueueItemId(conflict.localId) && besideCard(item));
     if (await waitsBesideCard()) throw new Error('sync_conflict_save_failed');
-    const withdrawn = await withdrawScheduleItemFromSyncQueue(conflict.localId, besideCard);
+    const withdrawn = await withdrawScheduleItemFromSyncQueue(conflict.localId, besideCard, itsAccount);
+    // From here the choice holds edits it took off the waiting list. Cut by a change of account, it cannot put them
+    // back (the list in front is no longer its account's): they are kept for its account (second review, sync N3).
+    itsAccount.cut = () => putBackWhenItsAccountIsBack(itsAccount.account, as => putBackWhatCutTaskKeepCloudTook(conflict, waitingEdits, withdrawn, as));
+    stopChoiceWhoseAccountChanged(itsAccount); // no upload is begun for a choice whose account has gone
     await uploadPendingChanges();
-    withdrawn.push(...await withdrawScheduleItemFromSyncQueue(conflict.localId, besideCard));
+    withdrawn.push(...await withdrawScheduleItemFromSyncQueue(conflict.localId, besideCard, itsAccount));
     // With those an earlier Keep Cloud that could not finish withdrew (A7 pass 16 L-2).
     const phoneEdits = [...(localPayload.withdrawnEdits ?? []), ...waitingEdits, ...withdrawn];
     // An edit of this phone's can be in the cloud only when one landed during
@@ -6993,7 +7044,7 @@ async function chooseScheduleItemSyncConflictCopy(
     // One of another field saved in that last moment, still waiting, with the card still open: nothing is decided
     // over it. What was taken off the queue waits there again, with it.
     if (!closedDuringChoice && await waitsBesideCard()) {
-      await putTaskEditsBackOnSyncQueue(conflict.localId, withdrawn);
+      await putTaskEditsBackOnSyncQueue(conflict.localId, withdrawn, itsAccount);
       throw new Error('sync_conflict_save_failed');
     }
     // Sync batch Y4, item 2: of the edits an earlier Keep Cloud left on the card, the ones it had taken off the queue
@@ -7018,13 +7069,13 @@ async function chooseScheduleItemSyncConflictCopy(
     // the cloud's too.
     const reread = await currentCloudScheduleItem(conflict.localId, itsAccount).catch(() => undefined);
     if (reread === null) {
-      await clearScheduleItemSyncConflicts(conflict.localId);
+      await clearScheduleItemSyncConflicts(conflict.localId, itsAccount);
       throw new Error('sync_conflict_record_deleted');
     }
     // None landed: the cloud's row is kept as it is, and nothing is written.
     // The first read stands in when this one fails.
     if (!phoneEditMayHaveLanded) {
-      await clearResolvedConflict(conflict.id);
+      await clearResolvedConflict(conflict.id, itsAccount);
       return reread ?? cloudItem;
     }
     try {
@@ -7045,7 +7096,7 @@ async function chooseScheduleItemSyncConflictCopy(
         const phoneFields = taskFieldsHoldingPhoneEdits(cloudNow, shown, editsThatMayHaveLanded)
           .filter(field => !cardFields || cardFields.has(field));
         if (phoneFields.length === 0) {
-          await clearResolvedConflict(conflict.id);
+          await clearResolvedConflict(conflict.id, itsAccount);
           return cloudNow;
         }
         const restored = withPhoneEditsUndone(cloudNow, phoneFields, cloudItem, shown);
@@ -7059,7 +7110,7 @@ async function chooseScheduleItemSyncConflictCopy(
         // out on it, as a queued edit is weighed again; a row that keeps changing leaves the choice to be made again.
         const restore = await asItsAccount(itsAccount, () => upsertScheduleItem(restored, ...cloudRowWriteConditionFor(cloudNow))).catch(() => null);
         if (restore?.ok && !restore.stubbed) {
-          await clearResolvedConflict(conflict.id);
+          await clearResolvedConflict(conflict.id, itsAccount);
           return restored;
         }
         if (restore?.code !== CLOUD_ROW_CHANGED_SINCE_READ) throw new Error('sync_conflict_save_unconfirmed');
@@ -7069,10 +7120,10 @@ async function chooseScheduleItemSyncConflictCopy(
         cloudNow = rowNow;
       }
     } catch (error) {
-      await putBackTaskConflictAsItWas(conflict, phoneEdits, neverSent);
+      await putBackTaskConflictAsItWas(conflict, phoneEdits, neverSent, itsAccount);
       throw error;
     }
-    await clearScheduleItemSyncConflicts(conflict.localId);
+    await clearScheduleItemSyncConflicts(conflict.localId, itsAccount);
     throw new Error('sync_conflict_record_deleted');
   }
 
@@ -7098,10 +7149,10 @@ async function chooseScheduleItemSyncConflictCopy(
   // back, and its conflict is closed.
   const cloudNow = await currentCloudScheduleItem(conflict.localId, itsAccount);
   if (!cloudNow) {
-    await clearScheduleItemSyncConflicts(conflict.localId);
+    await clearScheduleItemSyncConflicts(conflict.localId, itsAccount);
     throw new Error('sync_conflict_record_deleted');
   }
-  if (await recordTaskCloudCopyIfChanged(conflict, cloudNow, phoneCopiesOfTaskInConflict(conflict, await getOfflineQueue()), shownWithOwn(cloudNow))) {
+  if (await recordTaskCloudCopyIfChanged(conflict, cloudNow, phoneCopiesOfTaskInConflict(conflict, await getOfflineQueue()), shownWithOwn(cloudNow), itsAccount)) {
     throw new Error('sync_conflict_cloud_copy_changed');
   }
   // The conflict closed meanwhile (whole-app audit A7 pass 16 L-6): an edit
@@ -7175,9 +7226,16 @@ async function chooseScheduleItemSyncConflictCopy(
       ...(ownerId ? { ownerId } : {}),
     };
     return { nextQueue: [...queue.filter(item => item.id !== queueItemId), kept], result: { keptItem, before: existing } };
-  });
+    // Second review, sync N3: saved only while the choice's account is still the one signed in. The mark of whose
+    // copy it is was read after the choice's reads: with another account signed in by then, the kept copy was
+    // marked as that account's and sent as it. Not saved at all now, so the mark above is always the choice's own.
+  }, itsAccount);
   if (editBesideCard) throw new Error('sync_conflict_save_failed');
   keptTaskCopiesRefused.delete(localItem.id);
+  // (No upload is begun for a choice whose account has gone. Its kept copy stays where it was saved, in its own
+  // account's waiting list, marked as that account's: that account's next upload sends it, as after the app closed
+  // in the middle of a Keep Phone.)
+  stopChoiceWhoseAccountChanged(itsAccount);
   let result = await uploadPendingChanges();
   let remainingQueue = await getOfflineQueue();
   let exactItemStillQueued = remainingQueue.some(item => item.id === queueItemId);
@@ -7187,6 +7245,7 @@ async function chooseScheduleItemSyncConflictCopy(
     exactItemStillQueued &&
     (!exactOutcome || exactOutcome === 'uploaded')
   ) {
+    stopChoiceWhoseAccountChanged(itsAccount);
     result = await uploadPendingChanges();
     remainingQueue = await getOfflineQueue();
     exactItemStillQueued = remainingQueue.some(item => item.id === queueItemId);
@@ -7210,7 +7269,7 @@ async function chooseScheduleItemSyncConflictCopy(
       }
       const others = queue.filter(item => item.id !== queueItemId);
       return { nextQueue: before ? [...others, before] : others, result: undefined };
-    });
+    }, itsAccount);
     // Independent review pass 3: the kept copy is written only over the row Keep Phone checked. Refused (another
     // device wrote the task in the moment after that check), nothing was sent: the row is read once more and, as when
     // it had changed before the choice, the conflict is saved with it and David reviews again. A task deleted in that
@@ -7219,10 +7278,10 @@ async function chooseScheduleItemSyncConflictCopy(
     if (keptTaskCopiesRefused.delete(localItem.id)) {
       const rowAfter = await currentCloudScheduleItem(conflict.localId, itsAccount).catch(() => undefined);
       if (rowAfter === null) {
-        await clearScheduleItemSyncConflicts(conflict.localId);
+        await clearScheduleItemSyncConflicts(conflict.localId, itsAccount);
         throw new Error('sync_conflict_record_deleted');
       }
-      if (rowAfter && await recordTaskCloudCopyIfChanged(conflict, rowAfter, phoneCopiesOfTaskInConflict(conflict, await getOfflineQueue()), shownWithOwn(rowAfter))) {
+      if (rowAfter && await recordTaskCloudCopyIfChanged(conflict, rowAfter, phoneCopiesOfTaskInConflict(conflict, await getOfflineQueue()), shownWithOwn(rowAfter), itsAccount)) {
         throw new Error('sync_conflict_cloud_copy_changed');
       }
       if (rowAfter && refusedBefore < QUEUED_RECORD_WEIGH_AGAIN_LIMIT) {
@@ -7243,7 +7302,7 @@ async function chooseScheduleItemSyncConflictCopy(
     if (!landed) throw new Error(result.errors[0] || 'sync_conflict_save_failed');
   }
 
-  await clearResolvedConflict(conflict.id);
+  await clearResolvedConflict(conflict.id, itsAccount);
   // With this phone's edits that went up beside the card (pass 4), as the cloud's row has them: the copy returned
   // becomes the task on this phone, and the card's own copy is older than they are.
   return weighedBesideCard?.length
@@ -7292,6 +7351,74 @@ const CLOUD_ACCOUNT_CHANGED_ANSWER = Object.freeze({
 function passAccountChanged(context: Pick<QueueUploadContext, 'account'>): boolean {
   return Boolean(context.account && !cloudOwnerUnchanged(context.account));
 }
+
+/**
+ * Second review, sync N3 (caused by the G3 fix; owner answer Q45, 6 Oct 2026: "always save an item under the account
+ * that made it"). The account a choice in Review Conflicts was begun under, for everything the choice saves on the
+ * PHONE: a card, a waiting change, the mark of whose it is.
+ *
+ * The G3 fix made a choice's reads and its write of the CLOUD the choosing account's. What it then saved on the phone
+ * still went into whatever storage the phone held by then. A Keep Cloud cut by a change of account put its card
+ * back "as it was" into the next account's saved conflicts; a cut choice could answer as made; Keep Phone could mark
+ * its kept copy as the next account's and have it sent as that account.
+ *
+ * The app is told of a sign-out or sign-in before the phone's storage is switched (the sign-in events reach the
+ * account binding first, entry.ts switches the storage after). So while the choosing account is still the one the
+ * app knows to be signed in, the storage in front is its own. Every save of a choice looks at that in the instant
+ * before it writes (here), and once the account has changed it writes nothing and the choice stops as "the cloud
+ * cannot be read": nothing is decided, nothing is said to be made. `cut`, when set, is what the choice had already
+ * taken off the phone's lists and now cannot put back: it is kept for its account (putBackWhenItsAccountIsBack).
+ */
+type ChoiceAccount = Pick<QueueUploadContext, 'account'> & { cut?: () => void };
+
+function stopChoiceWhoseAccountChanged(itsAccount: ChoiceAccount): void {
+  if (!passAccountChanged(itsAccount)) return;
+  keepWhatCutChoiceTook(itsAccount);
+  throw new Error('sync_conflict_cloud_copy_unreadable');
+}
+
+/** Once, for a choice whose account has gone: what it had taken off the phone's lists is kept for that account. */
+function keepWhatCutChoiceTook(itsAccount: ChoiceAccount): void {
+  const cut = itsAccount.cut;
+  itsAccount.cut = undefined;
+  cut?.();
+}
+
+/**
+ * What choices cut by a change of account had taken off the phone's lists, by the account that chose. Kept in memory
+ * only: it is put back when that account's storage is the one in front again in this run of the app, and is gone if
+ * the app is closed first (the account's storage is then as it was when it signed out).
+ */
+const putBacksWaitingForTheirAccount = new Map<string, Array<(as: ChoiceAccount) => Promise<void>>>();
+
+function putBackWhenItsAccountIsBack(account: CloudOwnerBinding | undefined, putBack: (as: ChoiceAccount) => Promise<void>): void {
+  const ownerId = account?.ownerId;
+  if (typeof ownerId !== 'string' || !ownerId) return;
+  putBacksWaitingForTheirAccount.set(ownerId, [...(putBacksWaitingForTheirAccount.get(ownerId) ?? []), putBack]);
+  void putBackForTheAccountInFront().catch(() => undefined);
+}
+
+/**
+ * Puts back what waits for the account that is signed in now, once the phone's storage is that account's: the
+ * boundary's own record must say so (the app hears of a sign-in before the storage has been switched to it), and
+ * each save looks at the account again as any save of a choice does. Never for another account, and never while a
+ * switch is half done.
+ */
+async function putBackForTheAccountInFront(): Promise<void> {
+  const account = currentCloudOwner();
+  const ownerId = account.ownerId;
+  if (typeof ownerId !== 'string' || !putBacksWaitingForTheirAccount.has(ownerId)) return;
+  if (await ownerWhoseStorageIsInFront(AsyncStorage) !== ownerId || !cloudOwnerUnchanged(account)) return;
+  const waiting = putBacksWaitingForTheirAccount.get(ownerId) ?? [];
+  putBacksWaitingForTheirAccount.delete(ownerId);
+  for (const putBack of waiting) {
+    await putBack({ account }).catch(() => {
+      // Cut again by another change of account: it still waits for its account.
+      if (!cloudOwnerUnchanged(account)) putBackWhenItsAccountIsBack(account, putBack);
+    });
+  }
+}
+subscribeToOwnerStorageSwitch(() => { void putBackForTheAccountInFront().catch(() => undefined); });
 
 type QueueUploadContext = {
   /** The account this pass began with: every cloud call of an item is made as it, or not at all (sync batch Y4). */
@@ -9197,6 +9324,7 @@ async function recordConflict(conflict: SyncConflict): Promise<void> {
 async function clearConflictsForLocalRecord(
   entity: SyncEntity,
   localId: string,
+  itsAccount: ChoiceAccount = {},
 ): Promise<void> {
   await serializeSyncConflictMutation(async () => {
     const conflicts = await readSyncConflictsUnsafe();
@@ -9204,7 +9332,7 @@ async function clearConflictsForLocalRecord(
       item.entity !== entity || item.localId !== localId,
     );
     if (nextConflicts.length !== conflicts.length) {
-      await writeSyncConflicts(nextConflicts);
+      await writeSyncConflicts(nextConflicts, itsAccount);
     }
   });
 }
@@ -9223,7 +9351,8 @@ export function subscribeToSyncConflicts(listener: (conflicts: readonly SyncConf
   };
 }
 
-async function writeSyncConflicts(conflicts: SyncConflict[]): Promise<void> {
+async function writeSyncConflicts(conflicts: SyncConflict[], itsAccount: ChoiceAccount = {}): Promise<void> {
+  stopChoiceWhoseAccountChanged(itsAccount);
   await setStoredJson(SYNC_CONFLICTS_STORAGE_KEY, conflicts);
   const saved = normalizeSyncConflicts(conflicts);
   syncConflictListeners.forEach(listener => {

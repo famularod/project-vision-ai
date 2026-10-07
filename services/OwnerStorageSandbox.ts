@@ -278,6 +278,25 @@ function setAsideRecordNamesAnotherAccount(raw: string | null, ownerId: string):
   }
 }
 
+/**
+ * Second review, sync N3 (owner answer Q45, 6 Oct 2026). The account whose stored data is in front on this phone
+ * right now, by the boundary's own record: null when nobody's is, while a switch of storage is half done, or when
+ * the record cannot be read. Reads only.
+ *
+ * The app is told of a sign-in before the storage has been switched to that account, so "who is signed in" alone
+ * does not say whose data is in front. Asked before something kept in memory for one account is saved again.
+ */
+export async function ownerWhoseStorageIsInFront(
+  storage: Pick<OwnerScopedStorage, 'getItem'>,
+): Promise<string | null> {
+  try {
+    if (await storage.getItem(OWNER_STORAGE_SANDBOX_JOURNAL_KEY)) return null;
+    return parseMetadata(await storage.getItem(OWNER_STORAGE_SANDBOX_METADATA_KEY), '').activeOwnerId;
+  } catch {
+    return null;
+  }
+}
+
 export function isOwnerSensitiveCanonicalStorageKey(key: string): boolean {
   return (
     key.startsWith('projectPhotoUpdate.') ||
