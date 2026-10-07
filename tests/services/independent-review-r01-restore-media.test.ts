@@ -36,6 +36,7 @@ import {
   RESTORED_MEDIA_LEDGER_KEY,
   createNameSearch,
   createRestoredMediaLedger,
+  restoredFileAddresses,
   fileNameOf,
 } from '../../services/RestoredMediaLedger';
 import { importProjectDocumentIntoOwnedStorage } from '../../services/ProjectDocumentLifecycle';
@@ -983,6 +984,96 @@ describe('independent review R01: the restored-file ledger', () => {
     await device.ledger().settlePending();
     expect([...device.files]).toEqual([]);
     expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(false);
+  });
+
+  /**
+   * Sync batch Y3, item 6 (b) (6 Oct 2026). Open item: "If the app's storage
+   * folder moves (an iOS update can do this) while a restore is waiting to be
+   * rolled back, that restore's files are left behind." The list keeps each
+   * file's address as it was when placed; after the move nothing is at that
+   * address, so removing there "worked" and the list was cleared, with the
+   * files still on the device under the new address.
+   */
+  describe("the app's folder moved while a restore was held (sync batch Y3, item 6b)", () => {
+    const OLD = 'file:///var/mobile/Containers/Data/Application/OLD-1111/';
+    const NEW = 'file:///var/mobile/Containers/Data/Application/NEW-2222/';
+    const inside = ['Documents/project-photos/aaaa1111-IMG_1.jpg', 'Documents/owned-project-documents/bbbb2222/permit.pdf',
+      'Library/Caches/cccc3333-drawing.pdf'];
+    const appFolders = [`${NEW}Documents/`, `${NEW}Library/Caches/`];
+    /** A restore placed its files and was held for recovery; then iOS moved the app's folder, files and all. */
+    async function heldThenMoved(device: ReturnType<typeof memory>) {
+      inside.forEach(path => device.files.add(`${OLD}${path}`));
+      await (await device.ledger().track(inside.map(path => `${OLD}${path}`))).settle('recovery_required');
+      device.files.clear();
+      inside.forEach(path => device.files.add(`${NEW}${path}`));
+    }
+    const ledgerNow = (device: ReturnType<typeof memory>, removeFile = async (uri: string) => { device.files.delete(uri); }) =>
+      createRestoredMediaLedger({ storage: device.storage, removeFile, createId: () => 'later', appFolders });
+
+    it('the restore is rolled back: its files, which nothing names, are removed where they are now, and none is left behind', async () => {
+      const device = memory();
+      await heldThenMoved(device);
+      await ledgerNow(device).settlePending();
+      expect([...device.files]).toEqual([]);
+      expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(false);
+    });
+
+    it('the restore finishes instead: every file a saved record names stays, under the new address or the old one in the record', async () => {
+      const device = memory();
+      await heldThenMoved(device);
+      device.values.set('updates', JSON.stringify([{ photos: [{ uri: `${OLD}${inside[0]}` }] }])); // the record still gives the old address
+      device.values.set('project-documents', JSON.stringify([{ localUri: `${NEW}${inside[1]}` }]));
+      await ledgerNow(device).settlePending();
+      expect([...device.files]).toEqual([`${NEW}${inside[0]}`, `${NEW}${inside[1]}`]);
+      expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(false);
+    });
+
+    it('a file that cannot be removed where it is now stays written down, and is removed at the next start', async () => {
+      const device = memory();
+      await heldThenMoved(device);
+      const busy = `${NEW}${inside[0]}`;
+      await ledgerNow(device, async uri => {
+        if (uri === busy) throw new Error('file busy');
+        device.files.delete(uri);
+      }).settlePending();
+      expect([...device.files]).toEqual([busy]);
+      expect(JSON.parse(device.values.get(RESTORED_MEDIA_LEDGER_KEY) as string)).toEqual([expect.objectContaining({ uris: [`${OLD}${inside[0]}`] })]);
+      await ledgerNow(device).settlePending();
+      expect([...device.files]).toEqual([]);
+      expect(device.values.has(RESTORED_MEDIA_LEDGER_KEY)).toBe(false);
+    });
+
+    it('as before when nothing moved, and for a restore that is refused at once: each file is removed once, at its own address', async () => {
+      const device = memory();
+      const removed: string[] = [];
+      const here = createRestoredMediaLedger({
+        storage: device.storage, createId: () => 'now', appFolders: [`${OLD}Documents/`, `${OLD}Library/Caches/`],
+        removeFile: async uri => { removed.push(uri); device.files.delete(uri); },
+      });
+      inside.forEach(path => device.files.add(`${OLD}${path}`));
+      await (await here.track(inside.map(path => `${OLD}${path}`))).settle('recovery_required');
+      await here.settlePending();
+      expect(removed).toEqual(inside.map(path => `${OLD}${path}`));
+      removed.length = 0;
+      inside.forEach(path => device.files.add(`${OLD}${path}`));
+      await (await here.track(inside.map(path => `${OLD}${path}`))).settle('aborted');
+      expect(removed).toEqual(inside.map(path => `${OLD}${path}`));
+      expect([...device.files]).toEqual([]);
+    });
+
+    it("only ever the same file: an address outside the app's folders, or one that is a folder, is never turned into another", () => {
+      expect(restoredFileAddresses(`${OLD}${inside[0]}`, appFolders)).toEqual([`${OLD}${inside[0]}`, `${NEW}${inside[0]}`]);
+      expect(restoredFileAddresses(`${OLD}${inside[2]}`, appFolders)).toEqual([`${OLD}${inside[2]}`, `${NEW}${inside[2]}`]);
+      expect(restoredFileAddresses(`${NEW}${inside[0]}`, appFolders)).toEqual([`${NEW}${inside[0]}`]);
+      expect(restoredFileAddresses('file:///photos/aaaa1111-IMG_1.jpg', appFolders)).toEqual(['file:///photos/aaaa1111-IMG_1.jpg']);
+      expect(restoredFileAddresses(`${OLD}Documents/`, appFolders)).toEqual([`${OLD}Documents/`]);
+      expect(restoredFileAddresses(`${OLD}Documents/project-photos/`, appFolders)).toEqual([`${OLD}Documents/project-photos/`]);
+      expect(restoredFileAddresses(`${OLD}${inside[0]}`, [null, undefined, '', '/'])).toEqual([`${OLD}${inside[0]}`]);
+    });
+
+    it("App.tsx gives the list the app's folders as they are now", () => {
+      expect(APP).toContain('appFolders: [FileSystem.documentDirectory, FileSystem.cacheDirectory],');
+    });
   });
 
   it('never removes a file whose name could not be told apart in the saved values', async () => {

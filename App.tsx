@@ -984,7 +984,7 @@ const projectDeletionRuntime = createProjectDeletionRuntime({
   }),
 });
 // The files a restore placed, kept while it can still finish (independent review R01).
-const restoredMediaLedger = createRestoredMediaLedger({ storage: AsyncStorage, removeFile: expoBackupFileIO.remove, createId: createProjectId,
+const restoredMediaLedger = createRestoredMediaLedger({ storage: AsyncStorage, removeFile: expoBackupFileIO.remove, createId: createProjectId, appFolders: [FileSystem.documentDirectory, FileSystem.cacheDirectory],
   priorityKeys: [UPDATES_STORAGE_KEY, DRAFT_STORAGE_KEY, REFERENCE_DOCUMENTS_STORAGE_KEY, PROJECT_DOCUMENTS_STORAGE_KEY] });
 const backupRestoreRuntime = createBackupRestoreRuntime({
   storage: AsyncStorage, settleRestoredMedia: restoredMediaLedger.settlePending,

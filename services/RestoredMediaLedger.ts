@@ -29,6 +29,15 @@
  *   about to replace the ones the files are checked against. When that
  *   restore has been committed, what waited is settled then, so the files of
  *   an earlier restore that it replaced are not left behind for good.
+ *
+ * Sync batch Y3, item 6 (b): the app's folder can move between two starts (an
+ * iOS update does this). The list keeps each file's address as it was when
+ * the file was placed. A held restore that was then rolled back had its
+ * files removed at that old address, where nothing is any more: the removal
+ * "worked", the list was cleared, and the files stayed for good under the new
+ * address (left behind, never lost). A file nothing names is now removed
+ * where it was placed AND where the same file sits under the app's folders
+ * as they are now: the part of its address inside the folder is the same.
  */
 import { runExclusiveLocalStorageMutation } from './LocalStorageMutationCoordinator';
 
@@ -69,12 +78,15 @@ export function createRestoredMediaLedger({
   removeFile,
   createId,
   priorityKeys = [],
+  appFolders = [],
 }: Readonly<{
   storage: RestoredMediaLedgerStorage;
   removeFile: (uri: string) => Promise<void>;
   createId: () => string;
   /** Read first when looking for a file's name: where a restore's records are kept. */
   priorityKeys?: readonly string[];
+  /** The app's own folders as they are now (its documents folder, its caches folder): see restoredFileAddresses. */
+  appFolders?: readonly (string | null | undefined)[];
 }>): RestoredMediaLedger {
   const active = new Set<string>();
   let tail: Promise<unknown> = Promise.resolve();
@@ -106,12 +118,15 @@ export function createRestoredMediaLedger({
     }
   };
 
-  /** Remove the files; the ones that could not be removed are returned. */
-  const removeFiles = async (uris: readonly string[]): Promise<string[]> => {
+  /**
+   * Remove the files; the ones that could not be removed are returned, under the address they were placed at.
+   * `whereverTheyAreNow`: also under the app's folders as they are now, for a list settled at a later start.
+   */
+  const removeFiles = async (uris: readonly string[], whereverTheyAreNow = false): Promise<string[]> => {
     const left: string[] = [];
     for (const uri of uris) {
       try {
-        await removeFile(uri);
+        for (const address of whereverTheyAreNow ? restoredFileAddresses(uri, appFolders) : [uri]) await removeFile(address);
       } catch {
         left.push(uri);
       }
@@ -194,7 +209,7 @@ export function createRestoredMediaLedger({
           const name = fileNameOf(uri);
           return isSearchableFileName(name) && !named.has(name);
         });
-        const left = await removeFiles(unnamed);
+        const left = await removeFiles(unnamed, true);
         if (left.length > 0) next.push({ id: entry.id, uris: left });
       }
       await writeEntries(next);
@@ -234,6 +249,27 @@ function readableEntries(raw: string): { entries: LedgerEntry[]; damaged: boolea
 export function fileNameOf(uri: string): string {
   const path = uri.split(/[?#]/)[0].replace(/\/+$/, '');
   return path.slice(path.lastIndexOf('/') + 1);
+}
+
+/**
+ * Where a placed file may be now: the address it was placed at, and the same file under each of the app's folders
+ * as they are now. The folder's own name ("Documents", "Caches") is found in the old address, and what follows it
+ * is put under the folder as it is today. An address that does not pass through a folder of that name has only
+ * itself. With the app's folder where it was, both are the same address, once.
+ */
+export function restoredFileAddresses(uri: string, appFolders: readonly (string | null | undefined)[]): string[] {
+  const addresses = [uri];
+  for (const folder of appFolders) {
+    const root = typeof folder === 'string' ? folder.replace(/\/+$/, '') : '';
+    const name = root.slice(root.lastIndexOf('/') + 1);
+    const inside = name ? uri.indexOf(`/${name}/`) : -1;
+    if (inside < 0) continue;
+    const now = `${root}/${uri.slice(inside + name.length + 2)}`;
+    // Only ever the same file: never the folder itself, whatever the old address looked like.
+    if (!fileNameOf(uri) || fileNameOf(now) !== fileNameOf(uri) || now.endsWith('/')) continue;
+    if (!addresses.includes(now)) addresses.push(now);
+  }
+  return addresses;
 }
 
 /**
