@@ -823,6 +823,63 @@ export function scheduleTasksOnNotedDatesWhenCurrent({
 }
 
 /**
+ * Schedule batch S5, item 2 (7 Oct 2026; uncovered by S4 item 1, the
+ * reviewer's generator seed 5178): what this device has seen of the tasks'
+ * lookahead notes and of the lookahead files, kept between two looks
+ * (scheduleTasksOnMasterDatesOnceLookaheadGone). In memory only.
+ */
+export type ScheduleLookaheadNotesSeen = { current: { noted: Map<string, readonly string[]>; waiting: Map<string, readonly string[]> } | null };
+
+/**
+ * Schedule batch S5, item 2. The iPad deleted a lookahead with its items
+ * while master J was in effect there, so Survey went back to J's 10/14. The
+ * phone had made master H current BEFORE it heard of that delete: on the
+ * phone the lookahead still held Survey on 10/14 then, so Set Active had
+ * nothing to move. When the delete arrived, Survey's row came with J's 10/14
+ * and no note, under master H, which gives 10/12: every device ended on
+ * 10/14, where one device doing the same steps in order ends on 10/12
+ * (delete, then Set Active, whose recompute gives H's dates).
+ *
+ * A lookahead's deletion that is heard now runs the recompute Set Active
+ * uses (scheduleTasksOnNotedDatesWhenCurrent), for the tasks it took the
+ * note from: a task shown whose note is gone since the last look, once every
+ * lookahead that note named is no longer saved on this device (so the
+ * documents have been heard too: a refresh brings the tasks first, then the
+ * documents, with any master made current elsewhere). Such a row keeps each
+ * master's dates (masterDatesOfRow) and takes the dates of the master in
+ * effect here, unless its dates were moved by hand. Returns each task to
+ * save with the row as it was heard (the copy the change starts from).
+ * Looked at once per deletion: the device that deleted the lookahead itself
+ * finds its tasks already on those dates.
+ *
+ * Not covered, recorded: a task whose note still names another lookahead
+ * (the delete's own rules decide its dates, and Set Active's differ there);
+ * a deletion heard while the app was closed between the tasks and the
+ * documents arriving (nothing is kept on disk).
+ */
+export function scheduleTasksOnMasterDatesOnceLookaheadGone(
+  items: readonly ScheduleItem[],
+  documents: readonly ReferenceDocument[],
+  seen: ScheduleLookaheadNotesSeen,
+  now: string = new Date().toISOString(),
+): Array<Readonly<{ item: ScheduleItem; before: ScheduleItem }>> {
+  const noted = new Map(items.flatMap(item => { const overlay = overlayOf(item); return overlay ? [[item.id, overlay.lookaheads.map(entry => key(entry.batchId))] as const] : []; }));
+  const before = seen.current;
+  const byId = new Map(items.map(item => [item.id, item] as const));
+  // Still waiting from an earlier look, and the tasks whose note is gone since then.
+  const waiting = new Map([...(before?.waiting ?? []), ...[...(before?.noted ?? [])].filter(([id]) => !noted.has(id))].filter(([id]) => byId.has(id) && !noted.has(id)));
+  seen.current = { noted, waiting };
+  if (waiting.size === 0) return [];
+  const saved = new Set(documents.filter(scheduleDocumentAddsToMaster).map(document => key(document.importBatchId)));
+  const ready = [...waiting].filter(([, lookaheads]) => lookaheads.every(batchId => !saved.has(batchId))).map(([id]) => id);
+  if (ready.length === 0) return [];
+  ready.forEach(id => waiting.delete(id));
+  const shown = new Set(selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] }).map(item => item.id));
+  return ready.filter(id => shown.has(id)).flatMap(id => scheduleTasksOnNotedDatesWhenCurrent({ after: [byId.get(id)!], documentsBefore: [], documentsAfter: documents, now })
+    .map(item => ({ item, before: byId.get(id)! })));
+}
+
+/**
  * When a percent a lookahead's delete gives back is confirmed (whole-app
  * audit A5 pass 12 K2, 1 Oct 2026). It was confirmed at the delete, and sync
  * orders David's percents by that confirmation: Master 20%, David 40% (10

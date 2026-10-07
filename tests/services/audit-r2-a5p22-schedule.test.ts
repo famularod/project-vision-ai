@@ -27,7 +27,7 @@ import {
   mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation, scheduleProgressCarriedToShownTasks,
 } from '../../services/ScheduleImportMerge';
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
-import { scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookahead';
+import { scheduleItemsAfterScheduleDeleted, scheduleTasksOnMasterDatesOnceLookaheadGone, type ScheduleLookaheadNotesSeen } from '../../services/ScheduleLookahead';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
 
 type State = { items: ScheduleItem[]; documents: ReferenceDocument[] };
@@ -690,5 +690,82 @@ describe('S3 item 3: a lookahead note gives the dates of the master in effect, n
       expect(copies(deleteWithItems(onG, L3, '2026-09-14T11:00:00.000Z'), 'Framing')).toEqual([L1_DATES]);
     });
   });
-});
 
+  /*
+   * Schedule batch S5, item 2 (uncovered by S4 item 1; the reviewer's generator seed 5178). The iPad deletes the
+   * lookahead with its items while G is in effect there: Framing on G's dates, no note left. The phone made F current
+   * BEFORE it heard of that delete: the lookahead still held Framing then, so Set Active moved nothing. When the
+   * delete arrives the row says G's dates under master F. One device doing the same in order (delete, then Set
+   * Active) ends on F's dates. A lookahead's deletion that is heard now runs Set Active's own recompute.
+   */
+  describe('S5 item 2: a lookahead deleted on another device, heard after this device made another master current', () => {
+    const LATER = '2026-09-13T10:00:00.000Z';
+    const framing = (state: State) => state.items.find(item => item.taskName === 'Framing' && shown(state).some(row => row.id === item.id))!;
+    /** The phone: F made current while L1 still holds Framing; then the iPad's rows and the lookahead's deletion arrive. */
+    const phoneOnF = () => setActive(underG(), F, BACK);
+    const ipadDeleted = () => deleteWithItems(underG(), L1, GONE);
+    /** The phone's list once it has heard the iPad's rows; the lookahead's file gone too when `documentsToo`. */
+    const heard = (phone: State, documentsToo: boolean): State => {
+      const fromIpad = new Map(ipadDeleted().items.map(item => [item.id, item]));
+      return { items: phone.items.map(item => fromIpad.get(item.id) || item), documents: documentsToo ? phone.documents.filter(saved => saved.id !== L1.id) : phone.documents };
+    };
+    const look = (state: State, seen: ScheduleLookaheadNotesSeen) => scheduleTasksOnMasterDatesOnceLookaheadGone(state.items, state.documents, seen, LATER);
+    const datesOf = (found: ReturnType<typeof look>) => found.map(({ item, before }) => [item.taskName, item.startDate, item.finishDate, before.startDate, item.updatedAt]);
+
+    it('the shape: one device in order ends on F\'s dates; the phone, having made F current first, showed L1\'s and then G\'s', () => {
+      expect(copies(setActive(ipadDeleted(), F, LATER), 'Framing')).toEqual([F_DATES]);
+      expect(copies(phoneOnF(), 'Framing')).toEqual([L1_DATES]);
+      const after = heard(phoneOnF(), true);
+      expect([copies(after, 'Framing'), framing(after).lookaheadOverlay, Boolean(framing(after).masterDatesOfRow)]).toEqual([[L1_DATES], undefined, true]);
+    });
+
+    it('the tasks first, then the documents (a refresh): nothing until the lookahead\'s file is gone here too, then F\'s dates, once', () => {
+      const seen: ScheduleLookaheadNotesSeen = { current: null };
+      expect(look(phoneOnF(), seen)).toEqual([]);
+      expect(look(heard(phoneOnF(), false), seen)).toEqual([]);
+      const after = heard(phoneOnF(), true);
+      expect(datesOf(look(after, seen))).toEqual([['Framing', '10/15/2026', '10/25/2026', '10/18/2026', LATER]]);
+      expect(look(after, seen)).toEqual([]);
+    });
+
+    it('the documents first, then the tasks (heard live in that order), and both at once: the same', () => {
+      const first: ScheduleLookaheadNotesSeen = { current: null };
+      const phone = phoneOnF();
+      look(phone, first);
+      expect(look({ ...phone, documents: phone.documents.filter(saved => saved.id !== L1.id) }, first)).toEqual([]);
+      expect(datesOf(look(heard(phone, true), first)).map(row => row.slice(0, 3))).toEqual([['Framing', '10/15/2026', '10/25/2026']]);
+      const atOnce: ScheduleLookaheadNotesSeen = { current: null };
+      look(phone, atOnce);
+      expect(datesOf(look(heard(phone, true), atOnce)).map(row => row.slice(0, 3))).toEqual([['Framing', '10/15/2026', '10/25/2026']]);
+    });
+
+    it('the device that deleted the lookahead itself finds its tasks already on the dates of its master: nothing saved', () => {
+      const seen: ScheduleLookaheadNotesSeen = { current: null };
+      look(underG(), seen);
+      expect(look(ipadDeleted(), seen)).toEqual([]);
+      // And a device with the same master in effect that only hears of it.
+      const other: ScheduleLookaheadNotesSeen = { current: null };
+      look(underG(), other);
+      expect(look(heard(underG(), true), other)).toEqual([]);
+    });
+
+    it('left alone: dates he moved by hand on the row heard, a row that keeps no record of its masters\' dates, and the first look after the app opens', () => {
+      const phone = phoneOnF();
+      const withRow = (change: (item: ScheduleItem) => ScheduleItem): State => { const after = heard(phone, true); return { ...after, items: after.items.map(item => (item.taskName === 'Framing' ? change(item) : item)) }; };
+      const seen = (): ScheduleLookaheadNotesSeen => { const memory: ScheduleLookaheadNotesSeen = { current: null }; look(phone, memory); return memory; };
+      expect(look(withRow(item => ({ ...item, startDate: '10/16/2026', finishDate: '10/26/2026' })), seen())).toEqual([]);
+      expect(look(withRow(item => (({ masterDatesOfRow: _none, ...rest }) => rest)(item) as ScheduleItem), seen())).toEqual([]);
+      expect(look(heard(phone, true), { current: null })).toEqual([]);
+    });
+
+    it('a task whose note still names another lookahead is not looked at (its dates are the delete\'s own rules)', () => {
+      const L2 = doc('LOOKAHEAD L2', '2026-09-12T12:00:00.000Z', 'lookahead');
+      const two = approve(underG(), L2, ['Framing,Alpha,Lot,10/20/2026,10/30/2026,'], true);
+      const seen: ScheduleLookaheadNotesSeen = { current: null };
+      const phone = setActive(two, F, BACK);
+      look(phone, seen);
+      const fromIpad = new Map(deleteWithItems(two, L2, GONE).items.map(item => [item.id, item]));
+      expect(look({ items: phone.items.map(item => fromIpad.get(item.id) || item), documents: phone.documents.filter(saved => saved.id !== L2.id) }, seen)).toEqual([]);
+    });
+  });
+});

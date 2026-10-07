@@ -217,9 +217,9 @@ import { mergeDAVEReferenceDocumentRecoveryRecords, mergeLocalUpdateWithCloudCop
 import { deletedDAVERecordIds } from '../../services/DAVESyncTombstones';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { reconcileCurrentScheduleDocuments, scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
-import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from '../../services/ScheduleImportMerge';
+import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from '../../services/ScheduleImportMerge';
 import { scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
-import { scheduleItemsAfterScheduleDeleted } from '../../services/ScheduleLookahead';
+import { scheduleItemsAfterScheduleDeleted, scheduleTasksOnMasterDatesOnceLookaheadGone, type ScheduleLookaheadNotesSeen } from '../../services/ScheduleLookahead';
 import { reconcileScheduleProgressEdit } from '../../services/ScheduleProgressInvariant';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
 import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
@@ -395,12 +395,15 @@ type Device = {
   updateSaves: number;
   /** The update open as the draft. */
   draftRef: { current: Update };
+  /** What App.tsx keeps in a ref between two runs of the S5 item 2 effect, and what that effect last ran on. */
+  lookaheadNotesSeen: ScheduleLookaheadNotesSeen;
+  lookaheadGoneSeen?: [ScheduleItem[], ReferenceDocument[]];
 };
 function newDevice(name: DeviceName): Device {
   mockDevice = name;
   const m = loadMods();
   return { name, m, state: [], ref: { current: [] }, documents: [], saves: 0, generation: new Map(), effectsSeen: null, pendingEffects: [],
-    updates: [], updatesRef: { current: [] }, updateSaves: 0, draftRef: { current: { id: '', status: 'draft' } } };
+    updates: [], updatesRef: { current: [] }, updateSaves: 0, draftRef: { current: { id: '', status: 'draft' } }, lookaheadNotesSeen: { current: null } };
 }
 const on = (device: Device) => { mockDevice = device.name; mockRowVersions.set(device.name, device.m.versions); };
 function setter(device: Device) {
@@ -418,9 +421,31 @@ function updatesSetter(device: Device) {
     device.updatesRef.current = value;
   };
 }
+/**
+ * App.tsx's own effect line of schedule batch S5, item 2 (a lookahead's deletion heard from another device runs the
+ * date recompute Set Active uses), run as React runs it: whenever the tasks or the schedules have changed.
+ */
+const LOOKAHEAD_GONE_EFFECT_LINE = APP.split('\n').find(line => line.includes('useEffect(') && line.includes('scheduleTasksOnMasterDatesOnceLookaheadGone(')) ?? null;
+async function lookaheadGoneEffect(device: Device) {
+  if (!LOOKAHEAD_GONE_EFFECT_LINE || (device.lookaheadGoneSeen?.[0] === device.state && device.lookaheadGoneSeen?.[1] === device.documents)) return;
+  device.lookaheadGoneSeen = [device.state, device.documents];
+  on(device);
+  compiled(`module.exports = null; ${LOOKAHEAD_GONE_EFFECT_LINE}`, {
+    useEffect: (effect: () => void) => effect(), startupHydrationReady: true, scheduleItemsLoaded: true,
+    scheduleItems: device.state, referenceDocuments: device.documents, lookaheadNotesSeenRef: device.lookaheadNotesSeen,
+    scheduleTasksOnMasterDatesOnceLookaheadGone, scheduleItemsCurrentRef: device.ref, setScheduleItems: setter(device),
+    advanceScheduleItemSyncGeneration: (id: string) => { const next = (device.generation.get(id) || 0) + 1; device.generation.set(id, next); return next; },
+    syncScheduleItemRevision: (item: ScheduleItem, _generation: number, changedFields?: readonly (keyof ScheduleItem)[], before?: ScheduleItem) => {
+      device.pendingEffects.push((device.m.sync.runScheduleItemCloudSync as (...args: unknown[]) => Promise<unknown>)(item, changedFields, before));
+    },
+  });
+  await Promise.all(device.pendingEffects.splice(0));
+  device.ref.current = device.state;
+}
 async function render(device: Device) {
   device.ref.current = device.state;
   device.updatesRef.current = device.updates;
+  await lookaheadGoneEffect(device);
   if (device.effectsSeen === device.state) return;
   device.effectsSeen = device.state;
   if (!CARRY_EFFECT_LINE) return;
@@ -444,6 +469,8 @@ function relaunchModules(device: Device) {
   on(device);
   device.m = loadMods();
   device.effectsSeen = null;
+  device.lookaheadNotesSeen = { current: null };
+  device.lookaheadGoneSeen = undefined;
 }
 
 /* Tasks ---------------------------------------------------------------------- */
@@ -4723,5 +4750,88 @@ describe('S5 item 1: activity notes and the priority follow a task a master move
     await settle(phone, ipad);
     expect((await historyEverywhere(phone, ipad)).map(shown => shown[0])).toEqual(Array(3).fill(['n1', 'n2', 'n3']));
     await nothingWaits(phone, ipad);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Schedule batch S5, item 2 (7 Oct 2026; uncovered by S4 item 1, the schedule reviewer's generator seed 5178). The
+ * iPad deletes a lookahead with its items; the phone had made another master current before it heard of that. The
+ * shape of that seed, with this rig's own tasks: F lists Framing 10/15, the lookahead moves it to 10/18, master G
+ * lists it on the lookahead's dates. Under F with the lookahead gone, Framing is on F's 10/15.
+ */
+describe('S5 item 2: a lookahead deleted on the iPad, heard by the phone after it made another master current (seed 5178)', () => {
+  const G2 = scheduleDoc('MASTER G2', '2026-09-11T12:00:00.000Z');
+  const framingDates = (items: readonly ScheduleItem[]) => framingOf(items).map(item => [item.startDate, item.finishDate]);
+  /** Set Active on a device with signal, as App.tsx: the schedule made current in the cloud, and the activation's carry. */
+  async function setActiveOn(device: Device, target: ReferenceDocument) {
+    on(device);
+    const when = new Date().toISOString();
+    const before = device.documents;
+    cloudDocuments = scheduleDocumentsAfterActivation(cloudDocuments.find(document => document.id === target.id)!, cloudDocuments, 'project', when);
+    mockCloud.documents = cloudDocuments;
+    device.documents = reconcileCurrentScheduleDocuments(mergeDAVEReferenceDocumentRecoveryRecords({ local: before, cloud: cloudDocuments, deletedIds: [...deletedDocuments] }));
+    const carried = scheduleProgressCarriedOnActivation({ items: device.ref.current, documentsBefore: before, documentsAfter: device.documents }) as ScheduleItem[];
+    if (carried.length > 0) {
+      const shownBefore = new Map(device.ref.current.map(item => [item.id, item]));
+      const byId = new Map(carried.map(item => [item.id, item]));
+      setter(device)(device.ref.current.map(item => byId.get(item.id) || item));
+      device.ref.current = device.state;
+      await Promise.all(carried.map(item => (device.m.sync.runScheduleItemCloudSync as (...args: unknown[]) => Promise<unknown>)(item, undefined, shownBefore.get(item.id))));
+    }
+    await render(device);
+  }
+  /** F, then the lookahead on both devices, then G2 on the lookahead's dates: G2 in effect everywhere, Framing on 10/18. */
+  async function underG2() {
+    const { phone, ipad } = await start();
+    at(L.importedAt!);
+    await approve(phone, L, [L_ROW], true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    at(G2.importedAt!);
+    await approve(phone, G2, [L_ROW, SURVEY]);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    await refresh(ipad);
+    expect([framingDates(deviceShown(phone)), framingDates(deviceShown(ipad))]).toEqual(Array(2).fill([['10/18/2026', '10/28/2026']]));
+    return { phone, ipad };
+  }
+
+  it('the phone made F current before it heard of the iPad\'s delete: once the delete arrives Framing is on F\'s dates everywhere, as one device in order', async () => {
+    const { phone, ipad } = await underG2();
+    at('2026-09-12T09:00:00.000Z');
+    await deleteWithItems(ipad, L);
+    expect(framingDates(deviceShown(ipad))).toEqual([['10/18/2026', '10/28/2026']]);
+    at('2026-09-12T10:00:00.000Z');
+    await setActiveOn(phone, F);
+    // The phone has not heard the iPad's rows yet: the lookahead's note still holds Framing.
+    expect([framingDates(deviceShown(phone)), Boolean(framingOf(deviceShown(phone))[0].lookaheadOverlay)]).toEqual([[['10/18/2026', '10/28/2026']], true]);
+    at('2026-09-12T11:00:00.000Z');
+    await refresh(phone);
+    expect(framingDates(deviceShown(phone))).toEqual([['10/15/2026', '10/25/2026']]);
+    await settle(phone, ipad);
+    await refresh(phone); await refresh(ipad);
+    expect([framingDates(deviceShown(phone)), framingDates(deviceShown(ipad)), framingDates(webShown())]).toEqual(Array(3).fill([['10/15/2026', '10/25/2026']]));
+    expect([await conflictsOf(phone), await conflictsOf(ipad), await queueOf(phone), await queueOf(ipad)]).toEqual([[], [], [], []]);
+    // Nothing more is written by more syncing.
+    const writes = cloudWrites();
+    await settle(phone, ipad);
+    expect(cloudWrites()).toBe(writes);
+  });
+
+  it('in order on one device (the delete heard first, then Set Active): the same dates, and the heard delete changes nothing by itself', async () => {
+    const { phone, ipad } = await underG2();
+    at('2026-09-12T09:00:00.000Z');
+    await deleteWithItems(ipad, L);
+    at('2026-09-12T10:00:00.000Z');
+    await refresh(phone);
+    const writes = cloudWrites();
+    await settle(phone, ipad);
+    expect([cloudWrites(), framingDates(deviceShown(phone))]).toEqual([writes, [['10/18/2026', '10/28/2026']]]);
+    at('2026-09-12T11:00:00.000Z');
+    await setActiveOn(phone, F);
+    await settle(phone, ipad);
+    await refresh(phone); await refresh(ipad);
+    expect([framingDates(deviceShown(phone)), framingDates(deviceShown(ipad)), framingDates(webShown())]).toEqual(Array(3).fill([['10/15/2026', '10/25/2026']]));
   });
 });

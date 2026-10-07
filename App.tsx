@@ -693,7 +693,7 @@ import { useIdentityAliasCleanup } from './hooks/use-identity-alias-cleanup';
 import { useKeptTalkCapture } from './hooks/use-kept-talk-capture';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from './services/ScheduleImportMerge';
-import { scheduleDependenciesAfterScheduleDeleted, scheduleFileOnlyDeleteRefusal, scheduleImportAddsToMaster, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from './services/ScheduleLookahead';
+import { scheduleDependenciesAfterScheduleDeleted, scheduleFileOnlyDeleteRefusal, scheduleImportAddsToMaster, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote, scheduleTasksOnMasterDatesOnceLookaheadGone, type ScheduleLookaheadNotesSeen } from './services/ScheduleLookahead';
 import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
 import {
   extractTextFromPdf,
@@ -6009,6 +6009,8 @@ useEffect(() => {
     ensureScheduleParentProjects(scheduleItems);
   }, [scheduleItems, scheduleItemsLoaded, projects, projectsLoaded, startupHydrationReady]);
   useEffect(() => { if (startupHydrationReady && scheduleItemsLoaded) void queueScheduleProgressCarriedToCloud(scheduleItems); }, [scheduleItems, scheduleItemsLoaded, startupHydrationReady]); // a percent the sync merge carried goes up as itself (A7 pass 26 M-1)
+  const lookaheadNotesSeenRef = useRef<ScheduleLookaheadNotesSeen['current']>(null); // S5 item 2: a lookahead's deletion heard from another device runs the date recompute Set Active uses
+  useEffect(() => { if (startupHydrationReady && scheduleItemsLoaded) scheduleTasksOnMasterDatesOnceLookaheadGone(scheduleItems as never, referenceDocuments, lookaheadNotesSeenRef).forEach(({ item, before }) => { scheduleItemsCurrentRef.current = scheduleItemsCurrentRef.current.map(row => (row.id === item.id ? item as unknown as ScheduleItem : row)); setScheduleItems(scheduleItemsCurrentRef.current); void syncScheduleItemRevision(item as unknown as ScheduleItem, advanceScheduleItemSyncGeneration(item.id), ['startDate', 'finishDate', 'updatedAt'], before as unknown as ScheduleItem); }); }, [scheduleItems, referenceDocuments, scheduleItemsLoaded, startupHydrationReady]);
   useEffect(() => {
     // A schedule labelled with projects none of its rows belong to (every
     // project the import could use, before 30 Sep) is narrowed to its rows'
