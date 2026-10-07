@@ -4467,11 +4467,20 @@ function queueItemMatchesDAVESyncTombstone(
   ));
 }
 
+/**
+ * Review pass 1, sync, item 5 (older; found by reading; owner answer Q45, 6 Oct 2026). A download is one account's:
+ * the one signed in as it begins (or the account of the sync it is part of). Each list is asked for as that
+ * account, and when another account has signed in by the time the lists have answered, the download is discarded:
+ * what comes back holds no records and marks every list as not read, so nothing of the first account's is merged
+ * into, or saved on, the next account's side of this phone.
+ */
 export async function downloadCloudChanges<TUpdate>(
   knownTombstoneSync?: DAVESyncTombstoneSyncResult,
+  account: CloudOwnerBinding = currentCloudOwner(),
 ): Promise<
   CloudDownloadResult<TUpdate>
 > {
+  const itsAccount = { account };
   const [
     tombstoneSync,
     projectsResult,
@@ -4481,12 +4490,27 @@ export async function downloadCloudChanges<TUpdate>(
     documentsResult,
   ] = await Promise.all([
     knownTombstoneSync ?? synchronizeDAVESyncTombstones(),
-    listProjects(),
-    listProjectUpdates<TUpdate>(),
-    listProjectAreas(),
-    listScheduleItems(),
-    listReferenceDocuments(),
+    asItsAccount(itsAccount, () => listProjects()),
+    asItsAccount(itsAccount, () => listProjectUpdates<TUpdate>()),
+    asItsAccount(itsAccount, () => listProjectAreas()),
+    asItsAccount(itsAccount, () => listScheduleItems()),
+    asItsAccount(itsAccount, () => listReferenceDocuments()),
   ]);
+  if (passAccountChanged(itsAccount)) {
+    return {
+      configured: projectsResult.configured || updatesResult.configured,
+      collectionErrors: allCollectionsFailed(CLOUD_ACCOUNT_CHANGED_MESSAGE),
+      projects: [],
+      projectNames: [],
+      updates: [],
+      projectAreas: [],
+      scheduleItems: [],
+      referenceDocuments: [],
+      tombstones: [],
+      tombstonesAuthoritative: false,
+      tombstoneError: CLOUD_ACCOUNT_CHANGED_MESSAGE,
+    };
+  }
 
   // Audit P1-27: record WHY a collection is empty. A read failure or an
   // unverifiable deletion history yields an explicit error, never a silent [].
@@ -5315,29 +5339,37 @@ export async function synchronizeLocalData(
 
   // Another account's cloud records must not be handed to this one's screen,
   // which merges and saves them on this phone (whole-app audit A1 M3).
-  if (!cloudOwnerUnchanged(owner)) {
-    return {
-      configured: true,
-      connected: true,
-      downloadStatus: 'partial',
-      uploaded: 0,
-      downloaded: 0,
-      queued: 0,
-      conflicts: 0,
-      cloudProjectCount: null,
-      lastSyncAt: null,
-      errors: [...errors, 'The account changed during sync. Nothing more was sent or downloaded.'],
-      missingPhotos,
-      details,
-      recovered: emptyRecovery,
-    };
-  }
+  //
+  // Review pass 1, sync, item 5 (older): this was asked before the download and not after it. A download in flight
+  // across a sign-out and another sign-in handed the first account's rows to the screen that merges and saves
+  // them. It is asked again once the lists have answered, and after each wait that follows, before anything is
+  // saved or handed back: the download is then discarded, the time of the last sync is not saved, and the answer
+  // is the one below, with nothing in it to apply.
+  const accountChangedDuringSync = (): FullSyncResult => ({
+    configured: true,
+    connected: true,
+    downloadStatus: 'partial',
+    uploaded: 0,
+    downloaded: 0,
+    queued: 0,
+    conflicts: 0,
+    cloudProjectCount: null,
+    lastSyncAt: null,
+    errors: [...errors, 'The account changed during sync. Nothing more was sent or downloaded.'],
+    missingPhotos,
+    // What was downloaded was discarded: it is not counted.
+    details: { ...details, cloudProjectsDownloaded: 0, cloudUpdatesDownloaded: 0, cloudAreasDownloaded: 0, cloudSchedulesDownloaded: 0, cloudDocumentsDownloaded: 0 },
+    recovered: emptyRecovery,
+  });
+  if (!cloudOwnerUnchanged(owner)) return accountChangedDuringSync();
 
   progress('Downloading cloud changes');
-  const download = await downloadCloudChanges<ProjectUpdate>(tombstoneSync);
+  const download = await downloadCloudChanges<ProjectUpdate>(tombstoneSync, owner);
+  if (!cloudOwnerUnchanged(owner)) return accountChangedDuringSync();
   const recoveredUpdates = await Promise.all(
     download.updates.map(row => hydrateProjectUpdatePhotoPreviews(row.updateData)),
   );
+  if (!cloudOwnerUnchanged(owner)) return accountChangedDuringSync();
   details.cloudProjectsDownloaded = download.projects.length;
   details.cloudUpdatesDownloaded = download.updates.length;
   details.cloudAreasDownloaded = download.projectAreas.length;
@@ -5363,6 +5395,7 @@ export async function synchronizeLocalData(
   const downloadComplete = collectionFailureMessages.length === 0;
 
   const cloudCount = await countCloudProjects();
+  if (!cloudOwnerUnchanged(owner)) return accountChangedDuringSync();
   const lastSyncAt = downloadComplete ? new Date().toISOString() : null;
   if (lastSyncAt !== null) {
     await setStoredJson(SYNC_LAST_RUN_STORAGE_KEY, lastSyncAt);
@@ -5371,6 +5404,8 @@ export async function synchronizeLocalData(
     getOfflineQueue(),
     getSyncConflicts(),
   ]);
+  // The queue and the cards just read are by now the next account's: not counted for this one.
+  if (!cloudOwnerUnchanged(owner)) return accountChangedDuringSync();
   const scheduleItemEditsWaiting = pendingScheduleItemEditsOf(queue, conflicts, owner);
   const uploaded =
     details.queuedUploads +
