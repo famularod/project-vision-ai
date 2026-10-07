@@ -38,8 +38,14 @@ jobs:
 
       # GitHub has no .env file. The release gate's cloud-configuration check
       # and its web export need a Supabase address and key to be present, so
-      # this job writes stand-ins that are plainly not real: the address has
-      # hyphens, which no Supabase project address has, and the key is words.
+      # this job writes stand-ins that say what they are: the address is a
+      # made-up name and the key is words, not a token. (An ordinary project
+      # address is twenty letters and digits. That is how these read to a
+      # person; it is not a guarantee that nobody could ever hold this name.)
+      # What makes this safe does not rest on the name. This job is given no
+      # secret, no real key and no project data, so it has nothing to send
+      # anywhere, and scripts/native-release-generation-contract-test.js
+      # holds it to exactly these steps and commands.
       # They are read from .env the way the Mac's real values are: by the
       # gate's preflight and by its web export. The test suite does not read
       # .env. The web export made here cannot sign in; it is written to dist/
