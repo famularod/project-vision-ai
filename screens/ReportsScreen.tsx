@@ -319,6 +319,8 @@ export function ReportsScreen({
   const [schedulePulledAt, setSchedulePulledAt] = useState<string | null>(null);
   // Everyday item 1 (2 Oct 2026): the approval this device saved, to record as sent another way.
   const [approvalSavedHereKey, setApprovalSavedHereKey] = useState<string | null>(null);
+  // The approval waiting to be sent for which that has been read from this device's storage, saved here or not.
+  const [approvalSavedHereCheckedKey, setApprovalSavedHereCheckedKey] = useState<string | null>(null);
   const [markSentRecording, setMarkSentRecording] = useState(false);
   const [markSentMessage, setMarkSentMessage] = useState('');
   const liveAuthority = usePIELiveAuthority();
@@ -1117,7 +1119,9 @@ export function ReportsScreen({
     void reportApprovalSavedHere(previousReportSnapshotRef.current)
       .catch(() => false)
       .then(here => {
-        if (!cancelled && here) setApprovalSavedHereKey(approvalAwaitingSendKey);
+        if (cancelled) return;
+        if (here) setApprovalSavedHereKey(approvalAwaitingSendKey);
+        setApprovalSavedHereCheckedKey(approvalAwaitingSendKey);
       });
     return () => {
       cancelled = true;
@@ -1126,6 +1130,13 @@ export function ReportsScreen({
   const approvalToMarkSent = approvalAwaitingSend && approvalSavedHereKey === approvalAwaitingSendKey
     ? approvalAwaitingSend
     : null;
+  // R5 (an R4 screen test that failed once under load; a race in the app, not in the test). Approving over an
+  // approved report that was never recorded as sent warns first (review N1 L5, above). Whether this device saved
+  // the approval that is waiting is read from its storage only after the reporting period has loaded, and Approve
+  // Report was already enabled while that read was on its way: a tap in that moment approved with no warning, and
+  // the earlier approval could no longer be marked sent. Until the answer is known Approve waits, as it waits for
+  // the period: the button is disabled and the line under it reads "Checking the reporting period."
+  const approvalSavedHereUnknown = approvalAwaitingSendKey !== null && approvalSavedHereCheckedKey !== approvalAwaitingSendKey;
 
   /**
    * The owner sent the approved report another way and says when (everyday
@@ -1226,7 +1237,7 @@ export function ReportsScreen({
             reportApproved={reportApproved}
             reportApprovalAllowed={reportApprovalAllowed}
             approvalMessage={reportApprovalMessage}
-            approvalChecking={approvalChecking}
+            approvalChecking={approvalChecking || approvalSavedHereUnknown}
             periodNotice={shownPeriodNotice}
             periodNote={sharedPeriodNote}
             communicationPending={communicationPending}
