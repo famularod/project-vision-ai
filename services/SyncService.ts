@@ -146,6 +146,7 @@ import {
 } from './DAVEProjectUpdateCloudReceipt';
 import {
   buildOperationalProjectIdentityAuthority,
+  operationalProjectIdentityFailureKind,
   resolveOperationalProjectIdentity,
   resolveOperationalReferenceDocumentScope,
   type OperationalProjectIdentityAuthority,
@@ -275,6 +276,12 @@ export type SyncUploadResult = {
    * once that change uploads (whole-app audit A3 pass 7 L1).
    */
   projectStillUploading?: boolean;
+  /**
+   * A task save only (sync batch Y4, item 3): the task's project has a
+   * deletion record, so neither this phone's waiting create or reopen of it
+   * nor the task can arrive. Both were taken off the queue.
+   */
+  projectDeletedInCloud?: boolean;
 };
 
 export type SyncItemOutcome =
@@ -2025,18 +2032,82 @@ export async function runScheduleItemCloudSync(
           ? [`Task “${item.taskName || 'Unnamed Task'}” could not sync.`]
           : [];
 
+  const projectOnItsWay = Boolean(remainingItem && projectOpeningStillQueued(remainingQueue, item.projectName));
+  // Sync batch Y4, item 3: "on its way" is said only of a project that can still arrive.
+  const neverArrives = projectOnItsWay && operationalProjectIdentityFailureKind(remainingItem?.lastError ?? '') === 'not_open'
+    ? await retireProjectOpeningThatCanNeverArrive(remainingQueue, item.projectName, queueItemId)
+    : null;
   return {
     configured: aggregateResult.configured,
     uploaded: itemSucceeded ? 1 : 0,
     uploadedByEntity: itemSucceeded ? { schedule_item: 1 } : {},
     itemOutcomes: itemOutcome ? { [queueItemId]: itemOutcome } : {},
-    queued: remainingItem ? 1 : 0,
+    queued: remainingItem && neverArrives !== 'deleted' ? 1 : 0,
     conflicts: currentConflict ? 1 : 0,
     errors: itemErrors,
-    ...(remainingItem && projectOpeningStillQueued(remainingQueue, item.projectName)
-      ? { projectStillUploading: true }
-      : {}),
+    ...(projectOnItsWay && !neverArrives ? { projectStillUploading: true } : {}),
+    ...(neverArrives === 'deleted' ? { projectDeletedInCloud: true } : {}),
   };
+}
+
+/** This account's waiting create or reopen of the named project (see projectOpeningStillQueued). */
+function projectOpeningsQueued(queue: readonly SyncQueueItem[], key: string): SyncQueueItem[] {
+  const owner = currentCloudOwner();
+  return queue.filter(candidate => {
+    if (!key || candidate.entity !== 'project' || heldForAnotherOwner(candidate.ownerId, owner)) return false;
+    const payload = (candidate.payload || {}) as Partial<ProjectCreatePayload & ProjectUpdatePayload>;
+    if (candidate.operation === 'create') return normalizedProjectArchiveName(payload.name) === key;
+    return candidate.operation === 'update' && payload.archived === false &&
+      normalizedProjectArchiveName(payload.previousName) === key;
+  });
+}
+
+/**
+ * Sync batch Y4, item 3. A new task goes up in a pass of tasks only, so this phone's own create (or reopen) of its
+ * project is still waiting when the task's save answers, and the save said "on its way to the cloud. The task uploads
+ * right after it." Not so when another device, meanwhile, made a project of that name and closed it, or deleted it:
+ * the next full pass drops the create (the cloud has the name: no second copy is made of a project that is closed in
+ * the cloud, sync batch Y1 item 1; or the name has a deletion record), and the task was then tried again at every
+ * pass, for good.
+ *
+ * The questions that pass will ask are asked now, only when the task was refused as "project not open" while such a
+ * change waits: the deletion history (as the pass reads it) and, for a create, the cloud's list of closed projects.
+ *   - a deletion record of the name: the waiting create or reopen is taken off the queue, as the next pass would, and
+ *     so is this task's own record, which could never arrive. The save says the project has been deleted.
+ *   - closed in the cloud (a create only; a reopen of a closed project is what he asked for): the create is taken off
+ *     the queue, as the next pass would. The task waits, and the save says it uploads once the project is open.
+ * When either cannot be read just then nothing is decided, and the save says what it said.
+ */
+async function retireProjectOpeningThatCanNeverArrive(
+  queue: readonly SyncQueueItem[],
+  projectName: string | null | undefined,
+  taskQueueItemId: string,
+): Promise<'deleted' | 'closed' | null> {
+  const key = normalizedProjectArchiveName(projectName);
+  const openings = projectOpeningsQueued(queue, key);
+  if (openings.length === 0) return null;
+  let verdict: 'deleted' | 'closed' | null = null;
+  try {
+    // The two things the pass itself reads before it sends a project change (queuedProjectChangeWasDeleted, and
+    // the deletion history).
+    const deletedHere = (await loadLegacyDeletedProjectNames()).has(key);
+    const history = deletedHere ? null : await loadDAVEOperationalTombstones();
+    if (deletedHere || openings.some(opening => queueItemMatchesDAVESyncTombstone(opening, history?.tombstones ?? []))) verdict = 'deleted';
+  } catch {
+    // Not known just now.
+  }
+  if (!verdict && openings.some(opening => opening.operation === 'create')) {
+    const closed = await listArchivedProjects().catch(() => null);
+    if (closed?.ok && !closed.stubbed && (closed.data || []).some(project => normalizedProjectArchiveName(project.name) === key)) verdict = 'closed';
+  }
+  if (!verdict) return null;
+  const retired = new Set(openings.filter(opening => verdict === 'deleted' || opening.operation === 'create').map(opening => opening.id));
+  if (verdict === 'deleted') retired.add(taskQueueItemId);
+  await mutateOfflineQueue(current => {
+    const nextQueue = current.filter(candidate => !retired.has(candidate.id));
+    return { nextQueue, result: undefined, persist: nextQueue.length !== current.length };
+  });
+  return verdict;
 }
 
 /**
