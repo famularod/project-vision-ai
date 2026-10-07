@@ -189,6 +189,8 @@ describe('S6 item 1: a master that moves a task', () => {
     expect(one(approve(onG, H, [FRAMING_H, ROOF]), 'Framing').priority).toBe('High');
   });
 
+  // (A row with no mark, as an edit made before this build leaves it. With the mark an edit leaves from this build
+  // on, a priority set back is still his: "Review pass 1, P1-1, P1-2 and P1-9" below.)
   it('he set it and set it back to what the import gave: untouched again, it takes the new row\'s', () => {
     const back = set(set(onF, framingF, 'Low'), framingF, 'Medium', '2026-06-04T09:00:00.000Z');
     expect(one(approve(back, G, [FRAMING_G, ROOF]), 'Framing').priority).toBe('High');
@@ -385,35 +387,43 @@ describe('S6 item 1, second part: a priority he sets from this build on, on a ta
     return patch(state, id, withProjectControlsEditMerged(current, { priority }), at);
   };
 
+  // (Review pass 1, P1-1 / P1-2 / P1-9, the coordinator's decision: the same edit now also leaves the mark that the
+  // priority is his, and when. The expectations of this test and the next say so; the word is written as before.)
+  const AT = '2026-10-01T09:00:00.000Z';
+  const mark = (priority: ScheduleItem['priority']) => ({ prioritySetByHand: { priority, at: AT } });
   it('the edit writes what the row held before he first changed it, once; from then on what he sets reads as his', () => {
-    expect(scheduleEditWithPriorityNoted(old('High'), { priority: 'Medium' })).toEqual({ priority: 'Medium', priorityAsImported: 'High' });
-    expect(scheduleEditWithPriorityNoted(old('Medium'), { priority: 'High' })).toEqual({ priority: 'High', priorityAsImported: 'Medium' });
+    expect(scheduleEditWithPriorityNoted(old('High'), { priority: 'Medium' }, AT)).toEqual({ priority: 'Medium', priorityAsImported: 'High', ...mark('Medium') });
+    expect(scheduleEditWithPriorityNoted(old('Medium'), { priority: 'High' }, AT)).toEqual({ priority: 'High', priorityAsImported: 'Medium', ...mark('High') });
     // Under a Low (his already: no import gives one), the other of the two an import gives.
-    expect(scheduleEditWithPriorityNoted(old('Low'), { priority: 'Medium' })).toEqual({ priority: 'Medium', priorityAsImported: 'High' });
-    expect(scheduleEditWithPriorityNoted(old('Low'), { priority: 'High' })).toEqual({ priority: 'High', priorityAsImported: 'Medium' });
+    expect(scheduleEditWithPriorityNoted(old('Low'), { priority: 'Medium' }, AT)).toEqual({ priority: 'Medium', priorityAsImported: 'High', ...mark('Medium') });
+    expect(scheduleEditWithPriorityNoted(old('Low'), { priority: 'High' }, AT)).toEqual({ priority: 'High', priorityAsImported: 'Medium', ...mark('High') });
     expect((['Medium', 'High'] as const).map(priority => schedulePriorityIsHis({ ...old('Low'), ...scheduleEditWithPriorityNoted(old('Low'), { priority }) }))).toEqual([true, true]);
     // Nothing for an edit that leaves the priority, or names none; and the phone's edit goes through it.
     const same = { priority: 'High' as const, notes: 'x' };
     const other = { owner: 'Mike' };
     expect([scheduleEditWithPriorityNoted(old('High'), same), scheduleEditWithPriorityNoted(old('High'), other)]).toEqual([same, other]);
     expect(scheduleEditWithPriorityNoted(old('High'), same)).toBe(same);
-    expect(withProjectControlsEditMerged(old('High'), { priority: 'Low' })).toEqual({ priority: 'Low', priorityAsImported: 'High' });
+    expect(withProjectControlsEditMerged(old('High'), { priority: 'Low' })).toEqual({ priority: 'Low', priorityAsImported: 'High', prioritySetByHand: { priority: 'Low', at: expect.any(String) } });
   });
 
   it('a row that keeps its import\'s word, or says it took its priority, is left as it is: the word is written once', () => {
     const made = one(onF, 'Framing');
     const edit = { priority: 'High' as const };
-    expect(scheduleEditWithPriorityNoted(made, edit)).toBe(edit);
+    // (Only the mark is added: no word is written on such a row.)
+    expect(scheduleEditWithPriorityNoted(made, edit, AT)).toEqual({ ...edit, ...mark('High') });
     const took = { ...old('Low'), textFromTask: { taskId: 'earlier', priority: 'Low' as const } } as ScheduleItem;
-    expect(scheduleEditWithPriorityNoted(took, edit)).toBe(edit);
+    expect(scheduleEditWithPriorityNoted(took, edit, AT)).toEqual({ ...edit, ...mark('High') });
     // Nor an edit that brings the word itself (a whole row saved over this one, as Set Active saves the row it shows).
     const whole = { priority: 'Low' as const, priorityAsImported: 'High' as const };
     expect(scheduleEditWithPriorityNoted(old('Medium'), whole)).toBe(whole);
-    // Changed twice: the word stays what the row held before the first change; set back to it, untouched again.
+    // Changed twice: the word stays what the row held before the first change. Set back to it, the priority is still
+    // one he set (it was: "untouched again", which is how a priority he had replaced came back: review P1-2 and P1-9).
     const once = { ...old('High'), ...scheduleEditWithPriorityNoted(old('High'), { priority: 'Medium' }) } as ScheduleItem;
     const twice = { ...once, ...scheduleEditWithPriorityNoted(once, { priority: 'Low' }) } as ScheduleItem;
     const back = { ...twice, ...scheduleEditWithPriorityNoted(twice, { priority: 'High' }) } as ScheduleItem;
-    expect([once, twice, back].map(row => [row.priority, row.priorityAsImported, schedulePriorityIsHis(row)])).toEqual([['Medium', 'High', true], ['Low', 'High', true], ['High', 'High', false]]);
+    expect([once, twice, back].map(row => [row.priority, row.priorityAsImported, schedulePriorityIsHis(row)])).toEqual([['Medium', 'High', true], ['Low', 'High', true], ['High', 'High', true]]);
+    // The same three values on a row with no mark (set on a build before this one): the comparison decides, as before.
+    expect([once, twice, back].map(row => schedulePriorityIsHis({ ...row, prioritySetByHand: undefined }))).toEqual([true, true, false]);
   });
 
   it('he lowers a High to Medium on a task saved before this build; the next master lists it within the week: it stays Medium', () => {
@@ -433,5 +443,169 @@ describe('S6 item 1, second part: a priority he sets from this build on, on a ta
     const cloud = { ...old('High'), priorityAsImported: 'Medium', updatedAt: '2026-10-01T08:00:00.000Z' } as ScheduleItem;
     const weighed = scheduleItemEditAgainstCloud(mine, ['priority', 'priorityAsImported', 'updatedAt'], scheduleItemEditBase(old('Medium'), ['priority', 'priorityAsImported']), cloud);
     expect(weighed.asked).toEqual(['priority']);
+  });
+});
+
+/**
+ * Review pass 1 of Build 231's schedule round, P1-1, P1-2 and P1-9 (7 Oct 2026; one cause). S6 told "he set it" by
+ * comparing a row's priority with what its own import gave it, which cannot work where the two coincide:
+ *  - P1-2 (caused): back on an older master he sets the priority that row's own file gave; switching forward
+ *    brought back the Low he had replaced, and it then followed every later master;
+ *  - P1-9 (caused): on a task saved before this build where he had set Low, Medium and later High left the High not
+ *    known as his;
+ *  - P1-1 (a hole): a priority he sets that equals what the newer row's file gave was recorded nowhere as his.
+ * The coordinator's decision: from this build on EVERY priority edit he makes, whatever its value, leaves a mark on
+ * the row that the priority is his, and when (prioritySetByHand). The mark goes wherever the priority goes. The
+ * comparison with the import's priority stays only as the fallback for a row that has no mark.
+ */
+describe('Review pass 1, P1-1, P1-2 and P1-9: every priority edit he makes leaves a mark that it is his', () => {
+  const START = Date.parse('2026-06-01T12:00:00.000Z');
+  afterEach(() => { jest.setSystemTime(START); });
+  /** His edit of one task as the phone saves it (App.tsx hands every task edit to this helper first), made at `at`. */
+  const hisEdit = (current: ScheduleItem, priority: ScheduleItem['priority'], at: string) => {
+    jest.setSystemTime(Date.parse(at));
+    const change = withProjectControlsEditMerged(current, { priority });
+    jest.setSystemTime(START);
+    return change;
+  };
+  const sets = (state: State, id: string, priority: ScheduleItem['priority'], at: string): State =>
+    patch(state, id, hisEdit(state.items.find(item => item.id === id)!, priority, at), at);
+  const row = (state: State, id: string) => state.items.find(item => item.id === id)!;
+  /** That edit as it waits to go up: the row with it, the fields it changed and the copy it started from. */
+  const waiting = (current: ScheduleItem, priority: ScheduleItem['priority'], at: string) => {
+    const change = hisEdit(current, priority, at);
+    const fields = [...Object.keys(change), 'updatedAt'];
+    return { id: current.id, itemData: { ...current, ...change, updatedAt: at } as ScheduleItem, changedFields: fields, base: scheduleItemEditBase(current, fields) };
+  };
+  // G's file lists Framing within the week: G's row is High by its own import. H's lists it a month out: Medium.
+  const onG = approve(onF, G, [FRAMING_G, ROOF]);
+  const framingG = one(onG, 'Framing').id;
+  const FRAMING_SOON = 'Framing,Alpha,Lot,10/06/2026,10/16/2026,,';
+
+  it('the edit says the priority is his and when, whatever its value; an edit that leaves the priority says nothing', () => {
+    const framing = one(onF, 'Framing');
+    expect(hisEdit(framing, 'High', '2026-06-03T09:05:00.000Z')).toEqual({ priority: 'High', prioritySetByHand: { priority: 'High', at: '2026-06-03T09:05:00.000Z' } });
+    const high = { ...framing, ...hisEdit(framing, 'High', '2026-06-03T09:05:00.000Z') } as ScheduleItem;
+    // Set back to what its import gave: an edit of his like any other, and known as his.
+    const back = { ...high, ...hisEdit(high, 'Medium', '2026-06-04T09:00:00.000Z') } as ScheduleItem;
+    expect([back.priority, back.priorityAsImported, back.prioritySetByHand, schedulePriorityIsHis(back), schedulePriorityIsItsImports(back)])
+      .toEqual(['Medium', 'Medium', { priority: 'Medium', at: '2026-06-04T09:00:00.000Z' }, true, false]);
+    const other = { owner: 'Mike' };
+    expect([withProjectControlsEditMerged(back, other), withProjectControlsEditMerged(back, { priority: 'Medium' })]).toEqual([other, { priority: 'Medium' }]);
+    // A mark the row's priority no longer agrees with (a device on an older build changed it since) says nothing:
+    // the comparison with the import's decides, as on a row with no mark.
+    expect([schedulePriorityIsHis({ ...high, priority: 'Medium' }), schedulePriorityIsHis({ ...back, priority: 'Low' })]).toEqual([false, true]);
+  });
+
+  it('P1-9: a task saved before this build on which he had set Low: he sets Medium, later High; the High is known as his and follows the task', () => {
+    const before = patch(allSavedBefore(onF), framingF, { priority: 'Low' }, '2026-05-20T09:00:00.000Z');
+    const medium = sets(before, framingF, 'Medium', '2026-06-03T09:00:00.000Z');
+    expect(schedulePriorityIsHis(row(medium, framingF))).toBe(true);
+    const high = sets(medium, framingF, 'High', '2026-06-04T09:00:00.000Z');
+    // (It was: not his. The word written at his first edit said "its import gave High".)
+    expect(schedulePriorityIsHis(row(high, framingF))).toBe(true);
+    // G moves it into the week (its file says High too); H moves it a month out (its file says Medium): his High.
+    expect(one(approve(approve(high, G, [FRAMING_G, ROOF]), H, [FRAMING_H, ROOF]), 'Framing').priority).toBe('High');
+  });
+
+  it('P1-2: Low set under the newer master; back on the older master he sets Medium, which is what that row\'s own file gave; forward again his Medium shows, and it follows the next master', () => {
+    const low = sets(onG, framingG, 'Low', '2026-10-11T13:00:00.000Z');
+    const onFAgain = setActive(low, F, '2026-10-11T14:00:00.000Z');
+    expect([one(onFAgain, 'Framing').id, one(onFAgain, 'Framing').priority]).toEqual([framingF, 'Low']);
+    const medium = sets(onFAgain, framingF, 'Medium', '2026-10-11T15:00:00.000Z');
+    const onGAgain = setActive(medium, G, '2026-10-11T16:00:00.000Z');
+    // (It was: Low again, the priority he had replaced, and Low on every later master's row.)
+    expect([one(onGAgain, 'Framing').id, one(onGAgain, 'Framing').priority]).toEqual([framingG, 'Medium']);
+    expect(rows(H, [FRAMING_SOON]).map(item => item.priority)).toEqual(['High']);
+    expect(one(approve(onGAgain, H, [FRAMING_SOON, ROOF]), 'Framing').priority).toBe('Medium');
+  });
+
+  it('P1-1 (c): a High he sets under the oldest master shows under the newest, whose own file also said High, and then under the master between', () => {
+    const M = schedule('MASTER M', '2026-10-11T12:00:00.000Z');
+    const N = schedule('MASTER N', '2026-10-12T12:00:00.000Z');
+    const onM = approve(onF, M, [FRAMING_H, ROOF]);
+    const framingM = one(onM, 'Framing').id;
+    const onN = approve(onM, N, [FRAMING_SOON, ROOF]);
+    const framingN = one(onN, 'Framing').id;
+    expect([row(onN, framingF).priority, row(onN, framingM).priority, row(onN, framingN).priority]).toEqual(['Medium', 'Medium', 'High']);
+    const low = sets(onN, framingN, 'Low', '2026-10-12T13:00:00.000Z');
+    const onFAgain = setActive(low, F, '2026-10-12T14:00:00.000Z');
+    expect([one(onFAgain, 'Framing').id, one(onFAgain, 'Framing').priority]).toEqual([framingF, 'Low']);
+    const high = sets(onFAgain, framingF, 'High', '2026-10-12T15:00:00.000Z');
+    const onNAgain = setActive(high, N, '2026-10-12T16:00:00.000Z');
+    expect([one(onNAgain, 'Framing').id, one(onNAgain, 'Framing').priority, schedulePriorityIsHis(one(onNAgain, 'Framing'))]).toEqual([framingN, 'High', true]);
+    const onMAgain = setActive(onNAgain, M, '2026-10-12T17:00:00.000Z');
+    // (It was: Medium, M's own. N's row held his High as "what its own import gave".)
+    expect([one(onMAgain, 'Framing').id, one(onMAgain, 'Framing').priority]).toEqual([framingM, 'High']);
+  });
+
+  it('P1-1 (a): a High he sets on a row a newer master has replaced, where that master\'s own file also gave High: the task\'s row is told the High is his, and it stays when the next master moves the task far out', () => {
+    const edit = waiting(row(onG, framingF), 'High', '2026-10-11T14:00:00.000Z');
+    const newRow = row(onG, framingG);
+    expect([newRow.priority, schedulePriorityIsHis(newRow)]).toEqual(['High', false]);
+    const sentOn = scheduleItemTextEditOnRow(edit, edit.changedFields, newRow)!;
+    // (It was: nothing sent on. The two rows read the same, so his High was recorded nowhere on the task's row.)
+    expect([sentOn.id, sentOn.changedFields, sentOn.itemData.priority, sentOn.itemData.prioritySetByHand])
+      .toEqual([framingG, ['prioritySetByHand', 'updatedAt'], 'High', { priority: 'High', at: '2026-10-11T14:00:00.000Z' }]);
+    expect(scheduleItemEditAgainstCloud(sentOn.itemData, sentOn.changedFields, sentOn.base, newRow)).toMatchObject({ asked: [], keptFromCloud: [], held: [] });
+    const told = { ...onG, items: onG.items.map(item => (item.id === framingG ? sentOn.itemData : item)) };
+    expect(schedulePriorityIsHis(row(told, framingG))).toBe(true);
+    expect(one(approve(told, H, [FRAMING_H, ROOF]), 'Framing').priority).toBe('High');
+    // Told once: a row that already knows is not written again.
+    expect(scheduleItemTextEditOnRow(edit, edit.changedFields, sentOn.itemData)).toBeNull();
+  });
+
+  it('P1-1 (b): Low set on the task\'s new row, then Medium set later on the old row by a device that had not heard, Medium being what the new row\'s own file gave: he is asked, once', () => {
+    const onH = approve(onG, H, [FRAMING_H, ROOF]);
+    const framingH = one(onH, 'Framing').id;
+    expect([row(onH, framingG).priority, row(onH, framingH).priority]).toEqual(['High', 'Medium']);
+    const lowThere = row(sets(onH, framingH, 'Low', '2026-10-12T13:00:00.000Z'), framingH);
+    const edit = waiting(row(onH, framingG), 'Medium', '2026-10-12T15:00:00.000Z');
+    const sentOn = scheduleItemTextEditOnRow(edit, edit.changedFields, lowThere)!;
+    const weighed = scheduleItemEditAgainstCloud(sentOn.itemData, sentOn.changedFields, sentOn.base, lowThere);
+    // (It was: kept from the cloud with no card. His later Medium read as "back to the copy", the row's own import's.)
+    expect([weighed.asked, weighed.keptFromCloud, weighed.held]).toEqual([['priority'], [], ['prioritySetByHand']]);
+    // Set on the old row alone, the task's row still holding its own import's Medium: only the mark is left to send.
+    const alone = scheduleItemTextEditOnRow(edit, edit.changedFields, row(onH, framingH))!;
+    expect([alone.changedFields, scheduleItemEditAgainstCloud(alone.itemData, alone.changedFields, alone.base, row(onH, framingH)).asked]).toEqual([['prioritySetByHand', 'updatedAt'], []]);
+  });
+
+  it('he sets it and sets it back to what the import gave: it is his all the same, and stays when a master moves the task into the coming week', () => {
+    const back = sets(sets(onF, framingF, 'Low', '2026-06-03T09:05:00.000Z'), framingF, 'Medium', '2026-06-04T09:00:00.000Z');
+    const moved = one(approve(back, G, [FRAMING_G, ROOF]), 'Framing');
+    expect([moved.priority, moved.priorityAsImported, moved.prioritySetByHand]).toEqual(['Medium', 'High', { priority: 'Medium', at: '2026-06-04T09:00:00.000Z' }]);
+  });
+
+  it('set on both rows of the task: his latest edit of the priority shows at Set Active, also when the other row was stamped later for something else', () => {
+    const low = sets(onG, framingF, 'Low', '2026-10-11T13:00:00.000Z');
+    const medium = sets(low, framingG, 'Medium', '2026-10-11T14:00:00.000Z');
+    const stamped = patch(medium, framingF, { percentComplete: 10 }, '2026-10-11T15:00:00.000Z');
+    const onFAgain = setActive(stamped, F, '2026-10-12T08:00:00.000Z');
+    // (It was: Low. The older row had been changed later, for its percent.)
+    expect([one(onFAgain, 'Framing').id, one(onFAgain, 'Framing').priority, one(onFAgain, 'Framing').prioritySetByHand]).toEqual([framingF, 'Medium', { priority: 'Medium', at: '2026-10-11T14:00:00.000Z' }]);
+    // And the other way: the older edit on the newer row does not come over the later one on the older row.
+    const other = sets(sets(onG, framingG, 'Medium', '2026-10-11T13:00:00.000Z'), framingF, 'Low', '2026-10-11T14:00:00.000Z');
+    const stampedOther = patch(other, framingG, { percentComplete: 10 }, '2026-10-11T15:00:00.000Z');
+    expect(one(setActive(stampedOther, F, '2026-10-12T08:00:00.000Z'), 'Framing').priority).toBe('Low');
+  });
+
+  it('the sync\'s own merge: a priority it carries to the task\'s row goes with its mark; one that equals the row\'s own is carried as the mark alone, once', () => {
+    const merge = (cloudOld: ScheduleItem) => recoverDAVEScheduleRecords({ local: onG.items, cloud: [cloudOld, row(onG, framingG)], allowCloudOnly: true });
+    const low = merge(waiting(row(onG, framingF), 'Low', '2026-10-11T14:00:00.000Z').itemData);
+    const framingLow = low.find(item => item.id === framingG)!;
+    expect([framingLow.priority, framingLow.prioritySetByHand]).toEqual(['Low', { priority: 'Low', at: '2026-10-11T14:00:00.000Z' }]);
+    expect(scheduleItemsTakingCarriedText(low).map(({ item, fields }) => [item.id, fields])).toEqual([[framingG, ['priority', 'prioritySetByHand']]]);
+    expect(scheduleItemCarriedFieldsToSend(['priority', 'prioritySetByHand'], framingLow, row(onG, framingG))).toEqual(['priority', 'prioritySetByHand']);
+    // The cloud's row has one of his own by now: neither is sent over it.
+    expect(scheduleItemCarriedFieldsToSend(['priority', 'prioritySetByHand'], framingLow, row(sets(onG, framingG, 'Medium', '2026-10-11T15:00:00.000Z'), framingG))).toEqual([]);
+    const high = merge(waiting(row(onG, framingF), 'High', '2026-10-11T14:00:00.000Z').itemData);
+    const framingHigh = high.find(item => item.id === framingG)!;
+    expect([framingHigh.priority, framingHigh.prioritySetByHand, schedulePriorityIsHis(framingHigh)]).toEqual(['High', { priority: 'High', at: '2026-10-11T14:00:00.000Z' }, true]);
+    expect(scheduleItemsTakingCarriedText(high).map(({ item, fields }) => [item.id, fields])).toEqual([[framingG, ['prioritySetByHand']]]);
+    expect(scheduleItemCarriedFieldsToSend(['prioritySetByHand'], framingHigh, row(onG, framingG))).toEqual(['prioritySetByHand']);
+    expect(scheduleItemCarriedFieldsToSend(['prioritySetByHand'], framingHigh, framingHigh)).toEqual([]);
+    // Merged again once the rows are saved so (fresh copies of them): nothing more is carried.
+    const saved = JSON.parse(JSON.stringify(high)) as ScheduleItem[];
+    expect(scheduleItemsTakingCarriedText(recoverDAVEScheduleRecords({ local: saved, cloud: JSON.parse(JSON.stringify(saved)) as ScheduleItem[], allowCloudOnly: true }))).toEqual([]);
   });
 });

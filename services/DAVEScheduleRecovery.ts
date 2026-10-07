@@ -1,6 +1,9 @@
 import type { ScheduleItem, ScheduleLookaheadOverlay } from '../types';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
-import { scheduleItemActivityWithOtherRows, schedulePriorityAsRead, schedulePriorityIsHis, scheduleTaskEarlierIds, scheduleTaskEarlierIdsOfBoth, scheduleTaskProjectKey } from './ScheduleTaskRevisions';
+import {
+  scheduleItemActivityWithOtherRows, schedulePriorityAsRead, schedulePriorityHeSet, schedulePriorityIsHis, schedulePriorityMarkOfBoth, scheduleTaskEarlierIds,
+  scheduleTaskEarlierIdsOfBoth, scheduleTaskProjectKey,
+} from './ScheduleTaskRevisions';
 import { laterScheduleImportSourceRow, scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import {
   SCHEDULE_CARRIED_PROGRESS_FIELDS,
@@ -543,7 +546,8 @@ type TypedTextField = typeof TYPED_TEXT_FIELDS[number];
  */
 const rowsTakingCarriedText = new WeakMap<ScheduleItem, readonly CarriedField[]>();
 /** His text, and since schedule batch S5 (item 1) the task's priority and its activity notes. */
-type CarriedField = TypedTextField | 'priority' | 'activity';
+// (And the mark that the priority is his, with it or alone: review pass 1 of the schedule round, P1-1.)
+type CarriedField = TypedTextField | 'priority' | 'prioritySetByHand' | 'activity';
 
 export function scheduleItemsTakingCarriedText(
   items: readonly ScheduleItem[],
@@ -678,7 +682,16 @@ function typedTextCarriedToRevisedTasks(
       (tookPriority ? priorityAsRead(record.priority) === priorityAsRead(took!.priority) : !schedulePriorityIsHis(record) && schedulePriorityIsHis(priorityLender)) &&
       priorityAsRead(priorityLender.priority) !== priorityAsRead(record.priority) &&
       timestamp(priorityLender.updatedAt) > timestamp(own.updatedAt) ? priorityAsRead(priorityLender.priority) : null;
-    const fields: CarriedField[] = [...new Set([...carried, ...filledFromEarlier]), ...(priorityFrom ? ['priority' as const] : []), ...(notes ? ['activity' as const] : [])];
+    // Review pass 1, P1-1 (the coordinator's decision): the mark that the priority is his goes with it, when the row
+    // it comes from has one. And where he set, on that row, the very priority this row holds as its own import's (a
+    // High on a task its newer file also marks High), the mark alone comes over, by the same rule: this row then
+    // knows the priority is his, and the next master that moves the task keeps it.
+    const lenderMark = newest && priorityLender ? schedulePriorityHeSet(priorityLender) : null;
+    const markFrom = !lenderMark ? null : priorityFrom ? lenderMark
+      : !tookPriority && !schedulePriorityIsHis(record) && priorityAsRead(priorityLender!.priority) === priorityAsRead(record.priority) &&
+        timestamp(priorityLender!.updatedAt) > timestamp(own.updatedAt) ? lenderMark : null;
+    const fields: CarriedField[] = [...new Set([...carried, ...filledFromEarlier]), ...(priorityFrom ? ['priority' as const] : []), ...(markFrom ? ['prioritySetByHand' as const] : []),
+      ...(notes ? ['activity' as const] : [])];
     if (fields.length === 0) return record;
     const fromEarlier = Object.fromEntries(filledFromEarlier.map(field => [field, lent.get(field)![field] ?? '']));
     // What it has from the very row it replaces is again a copy of what that row has: the record follows it, so a clear
@@ -687,6 +700,7 @@ function typedTextCarriedToRevisedTasks(
     const filled = {
       ...record, ...fromEarlier, ...fromReplaced, ...Object.fromEntries(carried.map(field => [field, earlier![field]])),
       ...(notes ? { activity: notes } : {}),
+      ...(markFrom ? { prioritySetByHand: markFrom } : {}),
       ...(took && Object.keys(fromReplaced).length > 0 ? { textFromTask: { ...took, ...fromReplaced } } : {}),
     } as ScheduleItem;
     const percentBefore = rowsTakingCarriedProgress.get(record);
@@ -1062,6 +1076,9 @@ function mergeScheduleRevisions(
     // Each master's dates kept with the row, from the copy that knows more of them (Build 231, S4 item 1).
     ...(masterDates => (masterDates ? { masterDatesOfRow: masterDates } : {}))([base, base === local ? cloud : local]
       .map(copy => copy.masterDatesOfRow).filter(Boolean).sort((a, b) => (b!.before?.length ?? 0) - (a!.before?.length ?? 0))[0]),
+    // The mark that the priority is one he set (review pass 1, P1-1): where the two copies hold the same priority, the
+    // later mark of the two. (It can change while the priority does not: he set what the row held from its file.)
+    ...(mark => (mark ? { prioritySetByHand: mark } : {}))(schedulePriorityAsRead(local.priority) === schedulePriorityAsRead(cloud.priority) ? schedulePriorityMarkOfBoth(local, cloud) : null),
   };
 }
 

@@ -877,7 +877,49 @@ export function schedulePriorityAsRead(value: unknown): SchedulePriority {
   return value === 'Low' || value === 'High' ? value : 'Medium';
 }
 
-type PriorityRecord = Pick<ScheduleItem, 'priority' | 'priorityAsImported' | 'textFromTask'>;
+type PriorityRecord = Pick<ScheduleItem, 'priority' | 'priorityAsImported' | 'textFromTask' | 'prioritySetByHand'>;
+type PriorityMark = NonNullable<ScheduleItem['prioritySetByHand']>;
+
+/**
+ * Review pass 1 of Build 231's schedule round, P1-1, P1-2 and P1-9 (7 Oct
+ * 2026; the coordinator's decision). The comparison above cannot work where
+ * his priority and the file's coincide: back on an older master he set the
+ * priority that row's file gave, and switching forward brought back the Low
+ * he had replaced (P1-2); on a task saved before this build, Medium and then
+ * High left the High not known as his (P1-9); a High set on a row whose newer
+ * row the file also marks High was recorded nowhere (P1-1). Every edit of his
+ * that changes the priority now leaves a mark on the row: the priority he
+ * set, and when (prioritySetByHand, scheduleEditWithPriorityNoted). The mark
+ * goes wherever the priority goes.
+ *
+ * The mark a row holds, while the row still holds the priority it names;
+ * else null (a device on an older build changed the priority since: the mark
+ * says nothing, and the comparison decides as on a row with no mark).
+ */
+export function schedulePriorityHeSet(row: PriorityRecord | null | undefined): PriorityMark | null {
+  const mark = row?.prioritySetByHand;
+  if (!mark || typeof mark.at !== 'string' || !Number.isFinite(Date.parse(mark.at))) return null;
+  if (mark.priority !== 'Low' && mark.priority !== 'Medium' && mark.priority !== 'High') return null;
+  return mark.priority === schedulePriorityAsRead(row!.priority) ? mark : null;
+}
+
+/** Of two rows of a task, or two copies of a row, that hold the same priority: the later of their marks; null when neither has one. */
+export function schedulePriorityMarkOfBoth(one: PriorityRecord | null | undefined, other: PriorityRecord | null | undefined): PriorityMark | null {
+  const [first, second] = [schedulePriorityHeSet(one), schedulePriorityHeSet(other)];
+  if (!first || !second) return first ?? second;
+  return Date.parse(second.at) > Date.parse(first.at) ? second : first;
+}
+
+/**
+ * Whether the priority he set on `other` is his later word than the one he
+ * set on `row` (two rows of one task, to different values): by the marks,
+ * where both rows say when; `otherwise` where one does not (the row changed
+ * later, as before the marks).
+ */
+export function schedulePriorityHeSetLater(other: PriorityRecord | null | undefined, row: PriorityRecord | null | undefined, otherwise: boolean): boolean {
+  const [theirs, own] = [schedulePriorityHeSet(other), schedulePriorityHeSet(row)];
+  return theirs && own && Date.parse(theirs.at) !== Date.parse(own.at) ? Date.parse(theirs.at) > Date.parse(own.at) : otherwise;
+}
 
 /** What the row's own import gave it; for a row saved before that was kept, what it holds (Medium under a Low, which no import gives). */
 export function schedulePriorityItsImportGave(row: PriorityRecord): SchedulePriority {
@@ -890,6 +932,8 @@ export function schedulePriorityItsImportGave(row: PriorityRecord): SchedulePrio
 /** Whether the row's priority is one David set (above): only that follows the task. */
 export function schedulePriorityIsHis(row: PriorityRecord | null | undefined): boolean {
   if (!row) return false;
+  // The mark his edit left says so outright (review pass 1, P1-1 / P1-2 / P1-9); the rest is for a row with no mark.
+  if (schedulePriorityHeSet(row)) return true;
   if (row.textFromTask && Object.prototype.hasOwnProperty.call(row.textFromTask, 'priority')) return true;
   return schedulePriorityAsRead(row.priority) !== schedulePriorityItsImportGave(row);
 }

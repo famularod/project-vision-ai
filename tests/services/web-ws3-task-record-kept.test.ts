@@ -152,6 +152,28 @@ describe('the percent Talk wrote that its Undo took back (progressUndone), revie
   });
 });
 
+describe('the mark that a priority is one he set (prioritySetByHand), review pass 1 of the schedule round, P1-1 / P1-2 / P1-9', () => {
+  const MARK = { priority: 'Low' as const, at: '2026-09-14T13:00:00.000Z' };
+  /** G's row is Medium by its own import; he set Low on the phone, which left the mark. */
+  const lowered: ScheduleItem = { ...G_ROW, priority: 'Low', priorityAsImported: 'Medium', prioritySetByHand: MARK, updatedAt: '2026-09-14T13:00:00.000Z' };
+
+  it('a note typed on the web keeps it', () => {
+    const edited = webEdit(lowered, { notes: 'Web note' });
+    expect([edited.priority, edited.notes, edited.prioritySetByHand]).toEqual(['Low', 'Web note', MARK]);
+  });
+
+  it('a priority changed on the web leaves the mark, with the time of the edit, also when it is the priority the row\'s own import gave', () => {
+    const edited = webEdit(lowered, { priority: 'Medium' });
+    expect([edited.priority, edited.priorityAsImported, edited.prioritySetByHand]).toEqual(['Medium', 'Medium', { priority: 'Medium', at: WEB_EDIT_AT }]);
+    const raised = webEdit({ ...G_ROW, priorityAsImported: 'Medium' }, { priority: 'High' });
+    expect([raised.priority, raised.prioritySetByHand]).toEqual(['High', { priority: 'High', at: WEB_EDIT_AT }]);
+  });
+
+  it('guard: a web edit that leaves the priority alone leaves no mark on a task he never set it on', () => {
+    expect(webEdit({ ...G_ROW, priorityAsImported: 'Medium' }, { notes: 'Web note' })).not.toHaveProperty('prioritySetByHand');
+  });
+});
+
 describe('the whole task record through a web edit (review pass 1, web L9)', () => {
   /**
    * Every field a task can hold, each with a value the phone or iPad could have saved. The type makes this list
@@ -198,6 +220,7 @@ describe('the whole task record through a web edit (review pass 1, web L9)', () 
     progressUndone: { percentComplete: 50, confirmedAt: '2026-09-15T07:00:00.000Z' },
     priority: 'High',
     priorityAsImported: 'Medium', // what the row's own import gave it (schedule batch S6, item 1): he set High himself
+    prioritySetByHand: { priority: 'High', at: '2026-09-13T09:00:00.000Z' }, // the mark his edit of the priority left (review pass 1, P1-1 / P1-2 / P1-9)
     status: 'In Progress',
     notes: 'Walls up on the east side.',
     nextAction: 'Order trusses.',

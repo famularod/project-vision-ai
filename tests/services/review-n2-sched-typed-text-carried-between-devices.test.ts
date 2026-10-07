@@ -5123,6 +5123,162 @@ describe('S6 item 1: only a priority he set follows a task a master moved, betwe
 });
 
 /* ------------------------------------------------------------------------------------------------------------- */
+/** Set Active on a device with signal, as App.tsx: the schedule made current in the cloud, and the activation's carry. */
+async function setActiveOn(device: Device, target: ReferenceDocument) {
+  on(device);
+  const when = new Date().toISOString();
+  const before = device.documents;
+  cloudDocuments = scheduleDocumentsAfterActivation(cloudDocuments.find(document => document.id === target.id)!, cloudDocuments, 'project', when);
+  mockCloud.documents = cloudDocuments;
+  device.documents = reconcileCurrentScheduleDocuments(mergeDAVEReferenceDocumentRecoveryRecords({ local: before, cloud: cloudDocuments, deletedIds: [...deletedDocuments] }));
+  const carried = scheduleProgressCarriedOnActivation({ items: device.ref.current, documentsBefore: before, documentsAfter: device.documents }) as ScheduleItem[];
+  if (carried.length > 0) {
+    const shownBefore = new Map(device.ref.current.map(item => [item.id, item]));
+    const byId = new Map(carried.map(item => [item.id, item]));
+    setter(device)(device.ref.current.map(item => byId.get(item.id) || item));
+    device.ref.current = device.state;
+    await Promise.all(carried.map(item => (device.m.sync.runScheduleItemCloudSync as (...args: unknown[]) => Promise<unknown>)(item, undefined, shownBefore.get(item.id))));
+  }
+  await render(device);
+}
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Review pass 1 of Build 231's schedule round, P1-1 and P1-2 (7 Oct 2026; with P1-9, one cause). S6 told "he set it"
+ * by comparing a row's priority with what its own import gave it, which cannot work where the two coincide. The
+ * coordinator's decision: every priority edit he makes, whatever its value, leaves a mark on the row that the
+ * priority is his, and when (prioritySetByHand), carried wherever the priority goes. Here between two devices and
+ * the web; the rule on the records alone is in sched-s6-priority-he-set-follows. Master N is imported six days before
+ * Framing's new finish, so its row is High by its own import; master P, two days later, lists Framing a month out:
+ * Medium by its own import.
+ */
+describe('Review pass 1, P1-1 and P1-2: a priority he sets that is also what a row\'s own file gave is still his, between two devices and the web', () => {
+  const N = scheduleDoc('MASTER N', '2026-10-24T12:00:00.000Z');
+  const P = scheduleDoc('MASTER P', '2026-10-26T12:00:00.000Z');
+  const P_ROW = 'Framing,Alpha,Lot,11/20/2026,11/30/2026,';
+  const priorities = async (phone: Device, ipad: Device) => {
+    await refresh(phone); await refresh(ipad);
+    return [theRow(phone).priority, theRow(ipad).priority, framingOf(webShown())[0].priority];
+  };
+  const nothingWaits = async (phone: Device, ipad: Device) =>
+    expect([await conflictsOf(phone), await conflictsOf(ipad), await queueOf(phone), await queueOf(ipad)]).toEqual([[], [], [], []]);
+  const approveOn = async (device: Device, master: ReferenceDocument, row: string) => { at(master.importedAt!); await approve(device, master, [row, SURVEY]); shareDocuments(device); await backgroundUpload(device); };
+  const activate = async (device: Device, master: ReferenceDocument, phone: Device, ipad: Device) => { await setActiveOn(device, master); await backgroundUpload(device); await settle(phone, ipad); };
+
+  it('P1-1 (a): High set on the iPad, which had not heard of the master that moved the task into the week (that master\'s file says High too): still his High when the next master moves the task out', async () => {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    at('2026-09-08T08:00:00.000Z');
+    setOnline(ipad, false);
+    await approveOn(phone, N, G_ROW);
+    const newId = theRow(phone).id;
+    expect([theRow(phone).priority, theRow(ipad).id, theRow(ipad).priority]).toEqual(['High', oldId, 'Medium']);
+    at('2026-10-24T13:00:00.000Z');
+    await edit(ipad, oldId, { priority: 'High' });
+    at('2026-10-24T14:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    await refresh(ipad);
+    await settle(phone, ipad);
+    expect(await priorities(phone, ipad)).toEqual(['High', 'High', 'High']);
+    // The task's row has been told the High is his, and when.
+    expect(cloudRow(newId)!.prioritySetByHand).toEqual({ priority: 'High', at: '2026-10-24T13:00:00.000Z' });
+    await nothingWaits(phone, ipad);
+    await approveOn(phone, P, P_ROW);
+    await settle(phone, ipad);
+    // (It was: Medium, P's own. One device doing the same in order: High.)
+    expect([theRow(phone).id === newId, await priorities(phone, ipad)]).toEqual([false, ['High', 'High', 'High']]);
+    await nothingWaits(phone, ipad);
+    const writes = cloudWrites();
+    await settle(phone, ipad); await fullSync(phone); await fullSync(ipad);
+    expect([cloudWrites(), await priorities(phone, ipad)]).toEqual([writes, ['High', 'High', 'High']]);
+  });
+
+  it('P1-1 (b): Low set on the task\'s new row on the web, then Medium set later on the iPad, which had not heard (on the old row; Medium is what the new row\'s file gave): Review Conflicts asks once, and Keep Phone puts his Medium everywhere', async () => {
+    // Master F lists Framing within the week of its import: F's row is High by its own import. G moves it a month out: Medium.
+    at('2026-09-07T12:00:00.000Z');
+    const { phone, ipad } = await startBoth(F, ['Framing,Alpha,Lot,09/08/2026,09/12/2026,', SURVEY]);
+    const oldId = theRow(phone).id;
+    at('2026-09-08T08:00:00.000Z');
+    setOnline(ipad, false);
+    await approveOn(phone, G, G_ROW);
+    const newId = theRow(phone).id;
+    expect([cloudRow(oldId)!.priority, cloudRow(newId)!.priority]).toEqual(['High', 'Medium']);
+    at('2026-09-11T09:00:00.000Z');
+    webWrite(webEdited(cloudRow(newId)!, { priority: 'Low' }));
+    at('2026-09-11T11:00:00.000Z');
+    await edit(ipad, oldId, { priority: 'Medium' });
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    await refresh(ipad);
+    await settle(phone, ipad);
+    // (It was: no card, and the older Low in all three places.)
+    const asked = [...await conflictsOf(phone), ...await conflictsOf(ipad)].map(conflict => (conflict.localPayload as { askedFields?: string[] }).askedFields);
+    expect([asked, cloudRow(newId)!.priority]).toEqual([[['priority']], 'Low']);
+    await chooseInSettings(ipad, (await conflictsOf(ipad))[0].id, 'keep_local');
+    await backgroundUpload(ipad);
+    await settle(phone, ipad);
+    expect(await priorities(phone, ipad)).toEqual(['Medium', 'Medium', 'Medium']);
+    await nothingWaits(phone, ipad);
+  });
+
+  it('P1-2: Low set under the newer master; Set Active on the older; he sets Medium there, which is what that row\'s own file gave; Set Active on the newer again: his Medium, and it follows the next master', async () => {
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    await approveOn(phone, N, G_ROW);
+    await settle(phone, ipad);
+    const newId = theRow(phone).id;
+    at('2026-10-24T13:00:00.000Z');
+    await edit(phone, newId, { priority: 'Low' });
+    await backgroundUpload(phone);
+    at('2026-10-24T14:00:00.000Z');
+    await activate(phone, F, phone, ipad);
+    expect([theRow(phone).id, theRow(ipad).id, await priorities(phone, ipad)]).toEqual([oldId, oldId, ['Low', 'Low', 'Low']]);
+    at('2026-10-24T15:00:00.000Z');
+    await edit(phone, oldId, { priority: 'Medium' });
+    await backgroundUpload(phone);
+    at('2026-10-24T16:00:00.000Z');
+    await activate(phone, N, phone, ipad);
+    // (It was: Low again, the priority he had replaced, on the phone, the iPad and the web.)
+    expect([theRow(phone).id, theRow(ipad).id, await priorities(phone, ipad)]).toEqual([newId, newId, ['Medium', 'Medium', 'Medium']]);
+    await nothingWaits(phone, ipad);
+    await approveOn(phone, P, P_ROW);
+    await settle(phone, ipad);
+    expect(await priorities(phone, ipad)).toEqual(['Medium', 'Medium', 'Medium']);
+    await nothingWaits(phone, ipad);
+  });
+
+  it('P1-1 (c): a High he sets under the oldest master shows under the newest, whose own file also said High, and under the master between (the mark alone travels where the two rows read the same)', async () => {
+    const M = scheduleDoc('MASTER M', '2026-10-22T12:00:00.000Z');
+    const { phone, ipad } = await start();
+    const oldId = theRow(phone).id;
+    await approveOn(phone, M, P_ROW);
+    const middleId = theRow(phone).id;
+    await approveOn(phone, N, G_ROW);
+    await settle(phone, ipad);
+    const newId = theRow(phone).id;
+    expect([cloudRow(oldId)!.priority, cloudRow(middleId)!.priority, cloudRow(newId)!.priority]).toEqual(['Medium', 'Medium', 'High']);
+    at('2026-10-24T13:00:00.000Z');
+    await edit(phone, newId, { priority: 'Low' });
+    await backgroundUpload(phone);
+    at('2026-10-24T14:00:00.000Z');
+    await activate(phone, F, phone, ipad);
+    at('2026-10-24T15:00:00.000Z');
+    await edit(phone, oldId, { priority: 'High' });
+    await backgroundUpload(phone);
+    at('2026-10-24T16:00:00.000Z');
+    await activate(phone, N, phone, ipad);
+    expect([theRow(phone).id, await priorities(phone, ipad), cloudRow(newId)!.prioritySetByHand]).toEqual([newId, ['High', 'High', 'High'], { priority: 'High', at: '2026-10-24T15:00:00.000Z' }]);
+    at('2026-10-24T17:00:00.000Z');
+    await activate(ipad, M, phone, ipad);
+    // (It was: Medium, M's own, on the phone, the iPad and the web.)
+    expect([theRow(phone).id, theRow(ipad).id, await priorities(phone, ipad)]).toEqual([middleId, middleId, ['High', 'High', 'High']]);
+    await nothingWaits(phone, ipad);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
 /**
  * Schedule batch S5, item 2 (7 Oct 2026; uncovered by S4 item 1, the schedule reviewer's generator seed 5178). The
  * iPad deletes a lookahead with its items; the phone had made another master current before it heard of that. The
@@ -5132,24 +5288,6 @@ describe('S6 item 1: only a priority he set follows a task a master moved, betwe
 describe('S5 item 2: a lookahead deleted on the iPad, heard by the phone after it made another master current (seed 5178)', () => {
   const G2 = scheduleDoc('MASTER G2', '2026-09-11T12:00:00.000Z');
   const framingDates = (items: readonly ScheduleItem[]) => framingOf(items).map(item => [item.startDate, item.finishDate]);
-  /** Set Active on a device with signal, as App.tsx: the schedule made current in the cloud, and the activation's carry. */
-  async function setActiveOn(device: Device, target: ReferenceDocument) {
-    on(device);
-    const when = new Date().toISOString();
-    const before = device.documents;
-    cloudDocuments = scheduleDocumentsAfterActivation(cloudDocuments.find(document => document.id === target.id)!, cloudDocuments, 'project', when);
-    mockCloud.documents = cloudDocuments;
-    device.documents = reconcileCurrentScheduleDocuments(mergeDAVEReferenceDocumentRecoveryRecords({ local: before, cloud: cloudDocuments, deletedIds: [...deletedDocuments] }));
-    const carried = scheduleProgressCarriedOnActivation({ items: device.ref.current, documentsBefore: before, documentsAfter: device.documents }) as ScheduleItem[];
-    if (carried.length > 0) {
-      const shownBefore = new Map(device.ref.current.map(item => [item.id, item]));
-      const byId = new Map(carried.map(item => [item.id, item]));
-      setter(device)(device.ref.current.map(item => byId.get(item.id) || item));
-      device.ref.current = device.state;
-      await Promise.all(carried.map(item => (device.m.sync.runScheduleItemCloudSync as (...args: unknown[]) => Promise<unknown>)(item, undefined, shownBefore.get(item.id))));
-    }
-    await render(device);
-  }
   /** F, then the lookahead on both devices, then G2 on the lookahead's dates: G2 in effect everywhere, Framing on 10/18. */
   async function underG2() {
     const { phone, ipad } = await start();

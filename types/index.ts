@@ -981,6 +981,23 @@ export type ScheduleItem = {
    * (scheduleEditWithPriorityNoted), so what he sets from then on is known.
    */
   priorityAsImported?: SchedulePriority | null;
+  /**
+   * The priority David set on this task by hand, and when (review pass 1 of
+   * Build 231's schedule round, P1-1, P1-2 and P1-9; the coordinator's
+   * decision, 7 Oct 2026). Comparing a priority with priorityAsImported
+   * cannot tell his from the file's where the two coincide: a High he set on
+   * a task whose newer row the file also marks High, or a priority set back
+   * to what the file gave. Every edit of his that changes the priority, on
+   * the phone, the iPad or the web, leaves this mark, whatever the value;
+   * it goes wherever the priority goes (to the row a newer master moves the
+   * task to, at Set Active and Make Current, with an edit sent on from a
+   * replaced row, through Review Conflicts). The priority is his while the
+   * row still holds the priority the mark names; of two rows of a task that
+   * both hold one of his, the later mark is his latest word. Kept in the
+   * task's JSON record. Missing on a row he has not edited since this build,
+   * where the comparison with priorityAsImported decides as before.
+   */
+  prioritySetByHand?: { priority: SchedulePriority; at: string } | null;
   status: ScheduleStatus;
   notes: string;
   /** Smallest accountable step expected next. */

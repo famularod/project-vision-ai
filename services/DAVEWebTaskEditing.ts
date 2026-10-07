@@ -506,6 +506,8 @@ export function buildDAVEWebScheduleItem({
     // On a row saved before rows kept it, a priority changed here writes it, as the phone's edit does.
     ...(current?.priorityAsImported ? { priorityAsImported: current.priorityAsImported }
       : current ? (noted => (noted ? { priorityAsImported: noted } : {}))(scheduleEditWithPriorityNoted(current as never, { priority: draft.priority }).priorityAsImported) : {}),
+    // And the mark that a priority is one he set, and when (review pass 1, P1-1 / P1-2 / P1-9): kept, and left by a priority changed here.
+    ...(mark => (mark ? { prioritySetByHand: mark } : {}))(current ? scheduleEditWithPriorityNoted(current as never, { priority: draft.priority }, now).prioritySetByHand ?? current.prioritySetByHand : null),
     // The rows of uploaded schedules waiting to restate it at Make Current (A5 pass 18 L3).
     ...(current?.scheduleRowsAwaitingCurrent?.length ? { scheduleRowsAwaitingCurrent: current.scheduleRowsAwaitingCurrent } : {}),
     sourceDocumentId: current?.sourceDocumentId ?? null,

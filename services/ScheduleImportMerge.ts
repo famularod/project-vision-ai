@@ -12,6 +12,7 @@ import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { sameScheduleCalendarDay, scheduleCalendarDay, scheduleCalendarDayKey } from './ScheduleCalendarDay';
 import {
   schedulePriorityAsRead,
+  schedulePriorityHeSet,
   schedulePriorityIsHis,
   scheduleTaskEarlierIds,
   scheduleTaskLinksFollowingShownTasks,
@@ -315,7 +316,9 @@ function withTextTakenNoted(row: ScheduleItem, filled: ScheduleItem, task: Sched
   // wherever rows meet. A task whose priority he never set gets the row's own, as before S5: the file's Critical
   // column, or High when the finish is within a week of the import.
   const his = schedulePriorityIsHis(task) ? { priority: scheduleItemFieldAsRead('priority', task.priority) as ScheduleItem['priority'] } : {};
-  return { ...filled, ...his, textFromTask: { taskId: task.id, ...Object.fromEntries(unset.map(field => [field, task[field] ?? ''])), ...his } };
+  // (With the mark his edit of it left, when the task's row has one: the priority he set, and when. Review pass 1, P1-1 / P1-2.)
+  const mark = schedulePriorityHeSet(task);
+  return { ...filled, ...his, ...(mark ? { prioritySetByHand: mark } : {}), textFromTask: { taskId: task.id, ...Object.fromEntries(unset.map(field => [field, task[field] ?? ''])), ...his } };
 }
 
 type TypedText = Partial<Pick<ScheduleItem, typeof TYPED_TEXT_FIELDS[number]>>;
