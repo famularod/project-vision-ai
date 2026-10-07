@@ -448,7 +448,9 @@ export function sharedDocumentRestoreWaitingText(waiting: SharedDocumentRestoreW
 export function sharedDocumentArchiveNoticeText(notice: SharedDocumentArchiveNotice): string {
   const name = notice.name?.trim() || 'A document';
   if (notice.why === 'deleted_from_all_devices') {
-    return `${name}: your Archive on this device was not sent, because the document has since been deleted from all your devices. Its card on this device stays under Archived.`;
+    // Said of what the device knows: its deletion history holds the document, or the cloud says it has no such row.
+    // Nothing is said of this device's own card: what becomes of it later is not this line's to promise.
+    return `${name}: your Archive on this device was not sent, because the document has been deleted.`;
   }
   if (notice.why === 'restored_on_another_device') {
     return `${name}: your Archive on this device was not sent, because it was restored on another device before this device could send it. It is in Documents again; archive it again if you still want it hidden.`;
@@ -489,6 +491,12 @@ type SyncInput = Readonly<{
   running?: RunningTime;
   /** The shared documents this device's deletion history says were deleted from all devices. */
   deletedDocumentIds?: () => Iterable<string> | Promise<Iterable<string>>;
+  /**
+   * Whether this document's own record is still waiting on this device to go up to the cloud (a document made and
+   * archived with no signal). Only then does "the cloud has no such row" mean "not there yet"; otherwise it means
+   * the document has been deleted (second review, P2-L4). Not given: nothing is taken to be waiting.
+   */
+  recordWaitingToUpload?: (documentId: string) => boolean | Promise<boolean>;
 }>;
 
 export function syncSharedDocumentArchiveWithCloud(input: SyncInput): Promise<SharedDocumentArchiveCloudAnswer> {
@@ -509,7 +517,7 @@ export function syncSharedDocumentArchiveWithCloud(input: SyncInput): Promise<Sh
   return work;
 }
 
-async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, running = appRunningMs, deletedDocumentIds }: SyncInput): Promise<SharedDocumentArchiveCloudAnswer> {
+async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, running = appRunningMs, deletedDocumentIds, recordWaitingToUpload }: SyncInput): Promise<SharedDocumentArchiveCloudAnswer> {
   await load();
   if (!ownerId || !(await signedInAs(client, ownerId))) return 'unknown';
   // The deletion history, read once in a pass and only when something turns on it.
@@ -675,6 +683,20 @@ async function syncOnce({ client, ownerId, timeoutMs = REQUEST_TIMEOUT_MS, runni
     // change). It is a refusal like any other: nothing the cloud just said is forgotten, the mark stays installed,
     // and the tap is tried again (review of D1, L6). Only the question's own "no such column" says not installed.
     const apiNotCaughtUp = Boolean(written.error && markColumnMissing(written.error));
+    // An Archive the cloud answered and changed no row for: is the document still there (second review, P2-L4)? Its
+    // own row is asked for. No such row, and nothing of it waiting on this device to go up: it has been deleted.
+    // The Archive is let go, with a line saying so, where it used to be tried for ever while the phone said "keeps
+    // trying". (A document made and archived with no signal has no row YET: that one keeps waiting, as before.)
+    if (mark.archived && !reached && !written.error) {
+      const row = await rowNow(id);
+      if (!(await signedInAs(client, ownerId))) return 'unknown';
+      const stillToUpload = row === 'gone' && await Promise.resolve().then(() => recordWaitingToUpload?.(id) ?? false).catch(() => true);
+      if (row === 'gone' && !stillToUpload) {
+        letGo('deleted_from_all_devices');
+        retryNotBefore.delete(retryKey(ownerId, id));
+        continue;
+      }
+    }
     if (!reached && stillWaiting()) {
       // Its wait, counted from now in running time; where there is no such count, none is kept.
       const now = running();

@@ -670,6 +670,145 @@ describe('P2-L2: a refused tap is tried again after its wait, whatever is done t
   });
 });
 
+describe('P2-L4: an Archive waiting for a document that is gone from the cloud', () => {
+  const MINUTE = 60_000;
+  async function archivedWithNoSignal(id = PERMIT) {
+    const phone = await start('phone');
+    await sync(phone, cloud, 'phone');
+    cloud.state.offline.phone = true;
+    await phone.requestSharedDocumentArchive(id, true, T('18:00:00.000'), 'Grading permit');
+    await sync(phone, cloud, 'phone');
+    return phone;
+  }
+
+  it('the reviewer\'s case: no deletion history on this phone: it is not tried for ever; it is let go at the first answer, and the phone says the document was deleted', async () => {
+    const phone = await archivedWithNoSignal();
+    cloud.remove(PERMIT); // deleted with its project on another device: no deletion record for the document itself
+    cloud.state.offline.phone = false;
+    let appHasRun = 60 * MINUTE;
+    const running = () => appHasRun;
+    await sync(phone, cloud, 'phone', 'owner-a', { running });
+    const afterOnePass = phone.sharedDocumentArchiveView();
+    expect({ stillWaiting: [...afterOnePass.waitingIds], saidRefused: [...afterOnePass.refusedIds] }).toEqual({ stillWaiting: [], saidRefused: [] });
+    expect(afterOnePass.notices).toEqual([{ documentId: PERMIT, tap: 'archive', why: 'deleted_from_all_devices', name: 'Grading permit' }]);
+    expect(phone.sharedDocumentArchiveNoticeText(afterOnePass.notices[0])).toBe('Grading permit: your Archive on this device was not sent, because the document has been deleted.');
+    expect(afterOnePass.restoredElsewhere).toEqual([]); // no card is put back for a deleted document
+    expect(phone.sharedDocumentArchiveNextTryInMs(running)).toBeNull();
+    for (let pass = 0; pass < 40; pass += 1) { // more than eight hours of the app being open
+      appHasRun += 15 * MINUTE;
+      await sync(phone, cloud, 'phone', 'owner-a', { running });
+    }
+    expect(cloud.writes).toHaveLength(1); // the one try that changed nothing; never again
+    expect(cloud.reads.filter(read => read.id === PERMIT)).toHaveLength(1); // and the one question about that row
+    await phone.sharedDocumentArchiveSettled();
+    expect(savedRecord('phone').waiting).toEqual([]);
+  });
+
+  it('a document made and archived with no signal, whose own record is still waiting on this phone to go up, is NOT taken for deleted: it waits, says the cloud has not accepted it yet, and lands once the record is there', async () => {
+    const waitingToUpload = new Set(['doc-new']);
+    const recordWaitingToUpload = (documentId: string) => waitingToUpload.has(documentId);
+    const phone = await archivedWithNoSignal('doc-new');
+    cloud.state.offline.phone = false;
+    let appHasRun = 1_000;
+    const running = () => appHasRun;
+    for (let pass = 0; pass < 3; pass += 1) {
+      await sync(phone, cloud, 'phone', 'owner-a', { running, recordWaitingToUpload });
+      appHasRun += 20 * MINUTE;
+    }
+    expect(cloud.writes).toHaveLength(3);
+    expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual(['doc-new']);
+    expect([...phone.sharedDocumentArchiveView().refusedIds]).toEqual(['doc-new']);
+    expect(phone.sharedDocumentArchiveView().notices).toEqual([]);
+    // The record goes up.
+    cloud.add('doc-new');
+    waitingToUpload.clear();
+    await sync(phone, cloud, 'phone', 'owner-a', { running, recordWaitingToUpload });
+    expect(archivedInCloud(cloud, 'doc-new')).toBe(true);
+    expect(phone.sharedDocumentArchiveView().waitingIds.size).toBe(0);
+  });
+
+  it('when it cannot be told whether the record is still waiting to go up, nothing is decided: the Archive keeps waiting', async () => {
+    const phone = await archivedWithNoSignal('doc-new');
+    cloud.state.offline.phone = false;
+    await sync(phone, cloud, 'phone', 'owner-a', { recordWaitingToUpload: async () => { throw new Error('the upload list could not be read'); } });
+    expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual(['doc-new']);
+    expect(phone.sharedDocumentArchiveView().notices).toEqual([]);
+  });
+
+  it('when the cloud does not answer the question about that row, nothing is decided: the Archive keeps waiting and is tried again', async () => {
+    const phone = await archivedWithNoSignal();
+    cloud.remove(PERMIT);
+    cloud.state.offline.phone = false;
+    const real = cloud.clientFor('phone');
+    let requests = 0;
+    const signalLostAfterTheWrite = { auth: real.auth, from: () => {
+      requests += 1;
+      if (requests <= 2) return real.from(); // the question "which are archived?", and the write
+      const chain: Record<string, unknown> = {};
+      for (const method of ['select', 'eq', 'not', 'is', 'update']) chain[method] = () => chain;
+      chain.then = (resolve: (value: unknown) => unknown) => Promise.resolve({ data: null, status: 0, error: { code: '', message: 'TypeError: Network request failed' } }).then(resolve);
+      return chain;
+    } };
+    await phone.syncSharedDocumentArchiveWithCloud({ client: signalLostAfterTheWrite as never, ownerId: 'owner-a', timeoutMs: 150 });
+    expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual([PERMIT]);
+    expect(phone.sharedDocumentArchiveView().notices).toEqual([]);
+    await sync(phone, cloud, 'phone', 'owner-a', { running: () => performance.now() + MINUTE });
+    expect(phone.sharedDocumentArchiveView().notices.map(notice => notice.why)).toEqual(['deleted_from_all_devices']);
+  });
+
+  it('another account signed in between the write and the question about the row: nothing of the first account\'s is decided by an answer that was not its own', async () => {
+    const phone = await archivedWithNoSignal();
+    cloud.remove(PERMIT);
+    cloud.state.offline.phone = false;
+    const real = cloud.clientFor('phone');
+    const accountChangesAfterTheWrite = { auth: real.auth, from: () => {
+      const chain = real.from() as Record<string, unknown>;
+      const update = chain.update as (values: unknown) => unknown;
+      const then = chain.then as (resolve: (value: unknown) => unknown) => Promise<unknown>;
+      chain.update = (values: unknown) => {
+        update(values);
+        chain.then = (resolve: (value: unknown) => unknown) => then(answer => { cloud.state.signedIn.phone = 'owner-b'; return resolve(answer); });
+        return chain;
+      };
+      return chain;
+    } };
+    await expect(phone.syncSharedDocumentArchiveWithCloud({ client: accountChangesAfterTheWrite as never, ownerId: 'owner-a', timeoutMs: 150 })).resolves.toBe('unknown');
+    await phone.sharedDocumentArchiveSettled();
+    expect(savedRecord('phone').waiting).toHaveLength(1); // owner-a's Archive still waits, for owner-a
+    expect(savedRecord('phone').notices).toEqual([]);
+  });
+
+  it('the row is there and the write changed nothing all the same: that is a refusal, not a deletion: it keeps waiting', async () => {
+    const phone = await archivedWithNoSignal();
+    cloud.state.offline.phone = false;
+    const real = cloud.clientFor('phone');
+    const writeChangesNothing = { auth: real.auth, from: () => {
+      const chain = real.from() as Record<string, unknown>;
+      chain.update = () => { chain.then = (resolve: (value: unknown) => unknown) => Promise.resolve({ data: [], error: null, status: 200 }).then(resolve); return chain; };
+      return chain;
+    } };
+    await phone.syncSharedDocumentArchiveWithCloud({ client: writeChangesNothing as never, ownerId: 'owner-a', timeoutMs: 150 });
+    expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual([PERMIT]);
+    expect([...phone.sharedDocumentArchiveView().refusedIds]).toEqual([PERMIT]);
+    expect(phone.sharedDocumentArchiveView().notices).toEqual([]);
+  });
+
+  it('a RESTORE waiting for a document that is gone from the cloud has nothing left to do: nothing is sent, nothing waits, nothing is said', async () => {
+    cloud.row(PERMIT)!.archived_at = T('09:00:00.000');
+    const ipad = await start('ipad');
+    await sync(ipad, cloud, 'ipad');
+    cloud.state.offline.ipad = true;
+    await ipad.requestSharedDocumentArchive(PERMIT, false, undefined, 'Grading permit');
+    cloud.remove(PERMIT);
+    cloud.state.offline.ipad = false;
+    await sync(ipad, cloud, 'ipad');
+    expect(cloud.writes).toEqual([]);
+    expect(ipad.sharedDocumentArchiveView().waitingRestores).toEqual([]);
+    expect(ipad.sharedDocumentArchiveNextTryInMs()).toBeNull();
+    expect(ipad.sharedDocumentArchiveView().notices).toEqual([]);
+  });
+});
+
 /**
  * The reviewer's tables, in small. He ran 300 sequences in each cell; here 25
  * in each, because a long random run in one process crashes the test runner

@@ -211,17 +211,22 @@ describe('after the paste', () => {
     expect(listed(phone)).toEqual([]);
   });
 
+  // CHANGED (second review, P2-L4): the device is now told that this document's own record is still waiting to go
+  // up (the app reads that from its upload list). Without that, "the cloud has no such row" means the document was
+  // deleted, and the Archive is let go with a line instead of being tried for ever.
   it('a document whose record has not reached the cloud yet: the mark waits, and lands once the record is there', async () => {
     const phone = await device();
     await sync(phone, cloud);
     await phone.requestSharedDocumentArchive('doc-new', true, ARCHIVED_AT);
-    await sync(phone, cloud);
+    const stillToUpload = { recordWaitingToUpload: (documentId: string) => documentId === 'doc-new' };
+    await phone.syncSharedDocumentArchiveWithCloud({ client: cloud.client, ownerId: 'owner-a', timeoutMs: 200, ...stillToUpload });
     expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual(['doc-new']);
+    expect(phone.sharedDocumentArchiveView().notices).toEqual([]);
     cloud.add('doc-new');
     cloud.paste();
     // It is tried again half a minute after the cloud had no such row (review of D1, L3: kept, with a growing wait).
     // CHANGED (second review, P2-L2): the half minute is counted in time the app has been running, not read off the clock.
-    await phone.syncSharedDocumentArchiveWithCloud({ client: cloud.client, ownerId: 'owner-a', timeoutMs: 200, running: () => performance.now() + 31_000 });
+    await phone.syncSharedDocumentArchiveWithCloud({ client: cloud.client, ownerId: 'owner-a', timeoutMs: 200, running: () => performance.now() + 31_000, ...stillToUpload });
     expect(cloud.row('doc-new')?.archived_at).toBe(ARCHIVED_AT);
     expect(phone.sharedDocumentArchiveView().waitingIds.size).toBe(0);
   });

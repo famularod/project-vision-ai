@@ -33,6 +33,13 @@ jest.mock('../../services/SupabaseService', () => ({
   setReferenceDocumentsListedListener: jest.fn((listener: Listener) => { mockCloudService.listener = listener; }),
 }));
 
+// The app's own upload list, as the hook asks it by default (second review, P2-L4): which shared documents' records
+// are still waiting on this device to go up. Stood in for here, so that this file does not load the whole sync engine.
+const mockUploadList = { waiting: new Set<string>(), asked: [] as string[] };
+jest.mock('../../services/SharedDocumentUploadWaiting', () => ({
+  sharedDocumentRecordWaitingToUpload: jest.fn(async (documentId: string) => { mockUploadList.asked.push(documentId); return mockUploadList.waiting.has(documentId); }),
+}));
+
 const PERMIT = 'doc-permit';
 const AT = '2026-10-06T18:00:00.000Z';
 let cloud: SharedDocumentCloud;
@@ -53,6 +60,8 @@ afterAll(() => {
 });
 beforeEach(() => {
   mockStorage.clear();
+  mockUploadList.waiting.clear();
+  mockUploadList.asked.length = 0;
   restoreCards.mockClear();
   accounts += 1;
   owner = `owner-${accounts}`;
@@ -341,6 +350,48 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     expect(sharedDocumentArchiveView().notices).toEqual([
       { documentId: 'doc-contract', tap: 'archive', why: 'deleted_from_all_devices', name: 'Site contract.pdf' },
     ]);
+    device.unmount();
+  });
+
+  it('second review, P2-L4: the hook asks the app\'s own upload list whether a document\'s record is still waiting to go up: while it is, an Archive the cloud has no row for waits; once it is not, the Archive is let go and the phone says the document was deleted', async () => {
+    jest.useFakeTimers();
+    mockUploadList.waiting.add('doc-new'); // made on this phone; its record has not gone up yet
+    const device = start();
+    await device.quiet();
+    device.result.current.question('New permit.pdf', 'Permit Card');
+    act(() => { device.result.current.archive('doc-new'); });
+    await device.quiet();
+    expect(mockUploadList.asked).toEqual(['doc-new']);
+    expect([...device.result.current.waitingIds]).toEqual(['doc-new']);
+    expect([...device.result.current.refusedIds]).toEqual(['doc-new']);
+    expect(sharedDocumentArchiveView().notices).toEqual([]);
+
+    // Its record is no longer waiting, and the cloud still has no such row: the document was deleted meanwhile.
+    mockUploadList.waiting.clear();
+    await act(async () => { jest.advanceTimersByTime(31_000); });
+    await device.quiet();
+    expect(device.result.current.waitingIds.size).toBe(0);
+    expect(sharedDocumentArchiveView().notices).toEqual([
+      { documentId: 'doc-new', tap: 'archive', why: 'deleted_from_all_devices', name: 'New permit.pdf' },
+    ]);
+    const asked = cloud.requests.length;
+    await act(async () => { jest.advanceTimersByTime(20 * 60_000); });
+    await device.quiet();
+    expect(cloud.requests.length).toBe(asked); // nothing is tried again
+    device.unmount();
+  });
+
+  it('second review, P2-L4: another answer can be given to the hook in place of the upload list (as a test of the app shell would)', async () => {
+    const recordWaitingToUpload = jest.fn(async () => true);
+    const wrapper = ({ children }: { children: ReactNode }) => createElement(NativeWorkspaceOwnerContext.Provider, { value: owner }, children);
+    const device = renderHook(() => useSharedDocumentArchive({ cardsLoaded: true, restoreCards, recordWaitingToUpload }), { wrapper });
+    const quiet = async () => { for (let pass = 0; pass < 4; pass += 1) await act(async () => { await sharedDocumentArchiveSettled(); await Promise.resolve(); }); };
+    await quiet();
+    act(() => { device.result.current.archive('doc-new'); });
+    await quiet();
+    expect(recordWaitingToUpload).toHaveBeenCalledWith('doc-new');
+    expect(mockUploadList.asked).toEqual([]);
+    expect([...device.result.current.waitingIds]).toEqual(['doc-new']);
     device.unmount();
   });
 

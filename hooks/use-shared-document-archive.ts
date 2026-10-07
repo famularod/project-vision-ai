@@ -20,6 +20,7 @@ import {
   syncSharedDocumentArchiveWithCloud,
 } from '../services/SharedDocumentArchive';
 import { unsentUpdateWithoutArchivedDocuments } from '../services/SharedDocumentArchiveView';
+import { sharedDocumentRecordWaitingToUpload } from '../services/SharedDocumentUploadWaiting';
 import {
   getCurrentSessionUser,
   getSupabaseClient,
@@ -66,14 +67,22 @@ async function deletedSharedDocumentIds(): Promise<string[]> {
  * card for one of them (brought back by a backup, or on a second device) is
  * put away like the rest (review of D1, L13).
  */
-export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly<{
+export function useSharedDocumentArchive({ cardsLoaded, restoreCards, recordWaitingToUpload = sharedDocumentRecordWaitingToUpload }: Readonly<{
   cardsLoaded: boolean;
   restoreCards: (documentIds: readonly string[]) => void;
+  /**
+   * Whether a shared document's own record is still waiting on this device to go up to the cloud: only then does
+   * "the cloud has no such document" mean "not there yet" and not "deleted" (second review, P2-L4). The app's own
+   * upload list is asked unless another answer is given here.
+   */
+  recordWaitingToUpload?: (documentId: string) => boolean | Promise<boolean>;
 }>) {
   const ownerId = useNativeWorkspaceOwner();
   const view = useSyncExternalStore(subscribeSharedDocumentArchive, sharedDocumentArchiveView, sharedDocumentArchiveView);
   const restoreCardsRef = useRef(restoreCards);
   restoreCardsRef.current = restoreCards;
+  const recordWaitingToUploadRef = useRef(recordWaitingToUpload);
+  recordWaitingToUploadRef.current = recordWaitingToUpload;
   const syncRef = useRef<() => Promise<void>>(async () => undefined);
   const cardsLoadedRef = useRef(cardsLoaded);
   cardsLoadedRef.current = cardsLoaded;
@@ -93,13 +102,14 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
     if (!ownerId) return undefined;
     let active = true;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    const recordWaitingToUpload = (documentId: string) => recordWaitingToUploadRef.current(documentId);
     const sync = async () => {
       const client = getSupabaseClient();
       if (!active || !client) return;
       try {
         const user = await getCurrentSessionUser();
         if (!active || !user.ok || user.data?.id !== ownerId) return;
-        await syncSharedDocumentArchiveWithCloud({ client, ownerId, deletedDocumentIds: deletedSharedDocumentIds });
+        await syncSharedDocumentArchiveWithCloud({ client, ownerId, deletedDocumentIds: deletedSharedDocumentIds, recordWaitingToUpload });
       } catch {
         // Nothing is shown: the device keeps what it last knew and tries again.
       }
@@ -119,7 +129,7 @@ export function useSharedDocumentArchive({ cardsLoaded, restoreCards }: Readonly
     // opens and each time it comes back to the front, which is when the owner's database change is picked up.
     const listener = (client: Parameters<typeof syncSharedDocumentArchiveWithCloud>[0]['client'], listedFor: string) =>
       (listedFor === ownerId && sharedDocumentArchiveView().installed !== false
-        ? syncSharedDocumentArchiveWithCloud({ client, ownerId, deletedDocumentIds: deletedSharedDocumentIds }) : Promise.resolve());
+        ? syncSharedDocumentArchiveWithCloud({ client, ownerId, deletedDocumentIds: deletedSharedDocumentIds, recordWaitingToUpload }) : Promise.resolve());
     setReferenceDocumentsListedListener?.(listener as Parameters<typeof setReferenceDocumentsListedListener>[0]);
     void openSharedDocumentArchive(ownerId).then(() => sync());
     const subscription = AppState.addEventListener('change', state => { if (state === 'active') void sync(); });

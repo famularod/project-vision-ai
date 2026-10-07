@@ -550,6 +550,11 @@ describe('L4: a document deleted from the cloud while it was archived', () => {
     expect(phoneNextDay.sharedDocumentArchiveView().restoredElsewhere).toEqual([PERMIT]);
   });
 
+  // CHANGED (second review, P2-L4). This case waited for the phone's deletion history to learn of the deletion, and
+  // until then the Archive was tried again and again ("the cloud has no such row, and the Archive waits"). A phone
+  // whose history never learns of it tried for ever. Now the cloud's own answer is enough: no such row, and nothing
+  // of the document waiting on this phone to go up. The line's last sentence about the card is gone too: what
+  // becomes of the card later is not the line's to promise.
   it('an Archive still waiting for a document that has been deleted from all devices is let go, with a line, and not tried for ever', async () => {
     const phone = await start('phone');
     await sync(phone, cloud, 'phone');
@@ -557,20 +562,31 @@ describe('L4: a document deleted from the cloud while it was archived', () => {
     await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T18:00:00.000Z', 'Grading permit.pdf');
     cloud.remove(PERMIT); // deleted from all devices on the iPad
     cloud.state.offline.phone = false;
-    // The phone has not heard of the deletion yet: the cloud has no such row, and the Archive waits.
+    // The phone has not heard of the deletion (its history does not hold it). The cloud says there is no such row.
     await sync(phone, cloud, 'phone');
-    expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual([PERMIT]);
-    expect(phone.sharedDocumentArchiveView().notices).toEqual([]);
-    // Its deletion history has it now.
-    await sync(phone, cloud, 'phone', 'owner-a', { deletedDocumentIds: () => new Set([PERMIT]) });
     expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual([]);
     expect(phone.sharedDocumentArchiveNextTryInMs()).toBeNull();
     expect(phone.sharedDocumentArchiveView().notices).toEqual([
       { documentId: PERMIT, tap: 'archive', why: 'deleted_from_all_devices', name: 'Grading permit.pdf' },
     ]);
     expect(phone.sharedDocumentArchiveNoticeText(phone.sharedDocumentArchiveView().notices[0]))
-      .toBe('Grading permit.pdf: your Archive on this device was not sent, because the document has since been deleted from all your devices. Its card on this device stays under Archived.');
-    expect(cloud.writes).toHaveLength(1); // the one try before it knew
+      .toBe('Grading permit.pdf: your Archive on this device was not sent, because the document has been deleted.');
+    expect(cloud.writes).toHaveLength(1); // the one try, which changed nothing
+    expect(cloud.reads.filter(read => read.id === PERMIT)).toHaveLength(1); // and the one question about that row
+  });
+
+  it('the same when the phone\'s deletion history already holds it: let go before anything is sent or asked', async () => {
+    const phone = await start('phone');
+    await sync(phone, cloud, 'phone');
+    cloud.state.offline.phone = true;
+    await phone.requestSharedDocumentArchive(PERMIT, true, '2026-10-06T18:00:00.000Z', 'Grading permit.pdf');
+    cloud.remove(PERMIT);
+    cloud.state.offline.phone = false;
+    await sync(phone, cloud, 'phone', 'owner-a', { deletedDocumentIds: () => new Set([PERMIT]) });
+    expect([...phone.sharedDocumentArchiveView().waitingIds]).toEqual([]);
+    expect(phone.sharedDocumentArchiveView().notices.map(notice => notice.why)).toEqual(['deleted_from_all_devices']);
+    expect(cloud.writes).toEqual([]);
+    expect(cloud.reads.filter(read => read.id === PERMIT)).toEqual([]);
   });
 });
 
