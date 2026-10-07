@@ -5912,6 +5912,55 @@ export function withPhoneAnalysisResults(copy: unknown, phoneCopies: readonly un
   return next;
 }
 
+const cloudPhotoResultsKeptListeners = new Set<(updateId: string, cloudCopy: unknown) => void>();
+
+/**
+ * Sync batch Y4, item 4 (sync batch Y1 item 6a, left open there). When an
+ * upload pass leaves one of this phone's photo results out because the
+ * cloud's copy holds one that stands over it (the iPad ran the photo again
+ * and he confirmed it), the cloud is right at once but the card went on
+ * showing the phone's result until the next refresh: a pass had no way to
+ * hand a copy to a card. The pass now tells whoever listens, with the update's
+ * id and the cloud's copy as that upload left it. Called with nothing else:
+ * a result that went up is not told. The unsubscribe function.
+ */
+export function subscribeToCloudPhotoResultsKept(listener: (updateId: string, cloudCopy: unknown) => void): () => void {
+  cloudPhotoResultsKeptListeners.add(listener);
+  return () => {
+    cloudPhotoResultsKeptListeners.delete(listener);
+  };
+}
+
+function tellCloudPhotoResultsKept(updateId: string, cloudCopy: unknown): void {
+  cloudPhotoResultsKeptListeners.forEach(listener => {
+    try {
+      listener(updateId, cloudCopy);
+    } catch {
+      // A screen's listener never fails an upload.
+    }
+  });
+}
+
+/**
+ * The cards with that one update's card holding the cloud's photo results
+ * that stand over its own (sync batch Y4, item 4), by the rule every patch
+ * follows (withPhoneAnalysisResults: the same that Keep Phone takes the
+ * cloud's by). Only results: the cloud's note, documents and the rest are
+ * the refresh's to bring, under its own rules for which copy a card keeps.
+ * The same list when nothing changes, or when the update has no card here
+ * (it was deleted meanwhile): nothing is drawn or saved again.
+ */
+export function fieldUpdateCardsWithCloudPhotoResults<TCard extends { id: string }>(
+  cards: TCard[],
+  updateId: string,
+  cloudCopy: unknown,
+): TCard[] {
+  const index = cards.findIndex(card => card.id === updateId);
+  if (index < 0 || !isRecord(cloudCopy)) return cards;
+  const next = withPhoneAnalysisResults(cards[index], [cloudCopy]) as TCard;
+  return next === cards[index] ? cards : cards.map((card, at) => (at === index ? next : card));
+}
+
 /** A newer edit Keep Phone carries, with the cloud's results that stand over its own (A4 pass 26 L2). */
 function withCloudAnalysisResultsInQueuedCopy(item: SyncQueueItem, cloudCopies: readonly unknown[]): SyncQueueItem {
   const payload = item.payload as Partial<ProjectUpdateRecordPayload>;
@@ -8121,6 +8170,8 @@ async function uploadProjectUpdateQueueItem(
     // phone's copy in the cloud (A7 pass 22 L-1): recorded, a refresh kept
     // the card's older result, shown as Sent.
     if (patchesToApply.length === (documentPatches || []).length) recordProjectUpdateUpload(payload.id);
+    // The card takes the cloud's result at once, not at the next refresh (sync batch Y4, item 4).
+    else tellCloudPhotoResultsKept(payload.id, cloudCopy.updateData);
     return 'uploaded';
   }
   if (!patchedCloudCopy && uniquePhotoAssetIds(pendingPhotoAssetIds).length > 0) {
@@ -8282,6 +8333,8 @@ async function uploadProjectUpdateQueueItem(
     if (!documentPatches && !payload.keepCloudChoice) await clearConflictsForLocalRecord('project_update', payload.id);
     if (cloudCopy && patchedCloudCopy) {
       noteProjectUpdatePatchesLanded(payload.id, cloudCopy.updatedAt, { updatedAt: record.updatedAt, updateData: patchedCloudCopy }, documentPatches || [], cloudCopy.updateData);
+      // One of them was left out for the cloud's own: the card takes that one at once (sync batch Y4, item 4).
+      if (patchesToApply.length < (documentPatches || []).length) tellCloudPhotoResultsKept(payload.id, patchedCloudCopy);
     }
     else projectUpdatePatchesLanded.delete(payload.id);
     // The copy a choice of his put in the cloud is his own write, to the edits he saved before it (review N2 L7).

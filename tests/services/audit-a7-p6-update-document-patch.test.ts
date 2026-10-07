@@ -112,6 +112,8 @@ import {
   stageProjectUpdateForSync,
   synchronizeLocalData,
   uploadPendingChanges,
+  fieldUpdateCardsWithCloudPhotoResults,
+  subscribeToCloudPhotoResultsKept,
   withAnalysisResultsLastInCloud,
   withPhoneAnalysisResults,
 } from '../../services/SyncService';
@@ -6452,35 +6454,147 @@ describe('which result stands: finished over failed, then the later, then the la
     expect((inCloud().photos as Array<{ photoIntelligence?: unknown }>)[1].photoIntelligence).toEqual(resultB);
   });
 
-  // Sync batch Y1 (item 6), recorded and not changed: an upload pass has no way to hand a copy to a card. When it
-  // leaves one of the phone's results out for the iPad's own, the card goes on showing the phone's until the next
-  // refresh (or the live update its own write causes). What holds: the cloud is right at once, and the refresh
-  // puts the iPad's result on the card without undoing the other. A guard.
-  it('one of two results left out for the iPad\'s own: the cloud is right at once, and the next refresh puts the iPad\'s on the card and keeps the other (sync batch Y1, item 6)', async () => {
-    const photoB = { id: 'photo-y1-b', uri: 'file:///phone/Documents/project-photos/y1-b.jpg', caption: '', createdAt: SENT_AT,
-      photoIntelligence: { status: 'analyzing', updatedAt: SENT_AT } };
+  // Sync batch Y1 (item 6) recorded this and did not change it: an upload pass had no way to hand a copy to a card.
+  // When it left one of the phone's results out for the iPad's own, the card went on showing the phone's until the
+  // next refresh (or the live update its own write causes). Sync batch Y4 (item 4): the pass now says so, and the
+  // card takes the cloud's result at once. The subscription is App.tsx's own line, compiled from its source.
+  const APP_LINE = app.split('\n').find(line => line.includes('subscribeToCloudPhotoResultsKept(')) ?? '';
+  /** App.tsx's subscription, on the phone's state. The unsubscribe function, and how often it was told. */
+  function appListensForCloudResultsKept(phone: Device) {
+    const told: Array<{ updateId: string }> = [];
+    const body = APP_LINE.trim().replace(/^useEffect\(\(\) => /, '').replace(/, \[\]\);.*$/, '');
+    const unsubscribe = evaluate<() => void>(transpile(`module.exports = ${body};`), {
+      subscribeToCloudPhotoResultsKept: (listener: (updateId: string, cloudCopy: unknown) => void) =>
+        subscribeToCloudPhotoResultsKept((updateId, cloudCopy) => { told.push({ updateId }); listener(updateId, cloudCopy); }),
+      setSavedUpdates: phone.setSavedUpdates, fieldUpdateCardsWithCloudPhotoResults,
+    });
+    return { unsubscribe, told };
+  }
+  const photoB = { id: 'photo-y1-b', uri: 'file:///phone/Documents/project-photos/y1-b.jpg', caption: '', createdAt: SENT_AT,
+    photoIntelligence: { status: 'analyzing', updatedAt: SENT_AT } };
+  const second = (copy: Update | undefined) => (copy?.photos as Array<{ photoIntelligence?: unknown }>)[1].photoIntelligence;
+
+  it('one of two results left out for the iPad\'s own: the cloud is right at once, and so is the card, with no refresh; the other result stays (sync batch Y4, item 4)', async () => {
     const phone = await sentThroughTheApp([analyzingPhoto, photoB]);
-    const second = (copy: Update | undefined) => (copy?.photos as Array<{ photoIntelligence?: unknown }>)[1].photoIntelligence;
-    lateAnalysisFinishes(phone, failedAnalysis()); // A fails on the phone, offline
+    const { unsubscribe, told } = appListensForCloudResultsKept(phone);
+    const failedA = failedAnalysis();
+    lateAnalysisFinishes(phone, failedA); // A fails on the phone, offline
     await phone.settle();
-    const iPad = await iPadSaves(confirmed(finishedAnalysis())); // the iPad ran A again; it finished and David confirmed it
+    const iPad = await iPadSaves(confirmed(finishedAnalysis()), IPAD_NOTE); // the iPad ran A again; it finished and David confirmed it
     const resultB = finishedAnalysis();
     lateAnalysisFinishes(phone, resultB, photoB.id); // B finishes on the phone
     await phone.settle();
+    const noteOnCard = phone.saved()?.notes;
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(failedA);
 
     await uploadPendingChanges(); // back online: A's result is left out, B's goes up
+    phone.render();
 
     expect(firstPhotoAnalysis(inCloud())).toEqual(iPad);
     expect(second(inCloud())).toEqual(resultB);
     expect(await getOfflineQueue()).toEqual([]);
+    // The card showed the phone's failed result here until the next refresh.
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(iPad);
+    expect(second(phone.saved())).toEqual(resultB);
+    expect(told).toEqual([{ updateId: 'u1' }]);
+    // Only the result: the iPad's note is the refresh's to bring, by its own rules for which copy a card keeps.
+    expect(phone.saved()?.notes).toBe(noteOnCard);
+    expect(inCloud().notes).toBe(IPAD_NOTE);
+    // Its photo is still this phone's own file.
+    expect((phone.saved()?.photos as Array<{ uri: string }>)[0].uri).toBe(analyzingPhoto.uri);
+
     await refresh(phone);
     expect(firstPhotoAnalysis(phone.saved())).toEqual(iPad);
     expect(second(phone.saved())).toEqual(resultB);
-    expect(phone.saved()?.status).toBe('sent');
+    expect(phone.saved()).toMatchObject({ status: 'sent', notes: IPAD_NOTE });
     await uploadPendingChanges();
     await waitingUpdateSync(phone);
     expect(firstPhotoAnalysis(inCloud())).toEqual(iPad);
     expect(second(inCloud())).toEqual(resultB);
+    unsubscribe();
+  });
+
+  it('the only result is left out, so nothing is written: the card still takes the iPad\'s at once (sync batch Y4, item 4)', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    const { unsubscribe, told } = appListensForCloudResultsKept(phone);
+    lateAnalysisFinishes(phone, failedAnalysis());
+    await phone.settle();
+    const iPad = await iPadSaves(confirmed(finishedAnalysis()));
+    const writes = (saveProjectUpdate as jest.Mock).mock.calls.length;
+
+    await uploadPendingChanges();
+    phone.render();
+
+    expect((saveProjectUpdate as jest.Mock).mock.calls.length).toBe(writes);
+    expect(firstPhotoAnalysis(inCloud())).toEqual(iPad);
+    expect(firstPhotoAnalysis(phone.saved())).toEqual(iPad);
+    expect(told).toEqual([{ updateId: 'u1' }]);
+    expect(await getOfflineQueue()).toEqual([]);
+    unsubscribe();
+  });
+
+  it('a result that goes up, nothing left out: the card is not told anything, and is as it was (sync batch Y4, item 4)', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    const { unsubscribe, told } = appListensForCloudResultsKept(phone);
+    const result = finishedAnalysis();
+    lateAnalysisFinishes(phone, result);
+    await phone.settle();
+    const card = phone.saved();
+
+    await uploadPendingChanges();
+    phone.render();
+
+    expect(firstPhotoAnalysis(inCloud())).toEqual(result);
+    expect(told).toEqual([]);
+    expect(phone.saved()).toBe(card);
+    unsubscribe();
+  });
+
+  it('a screen that fails while it is told does not fail the upload, and after it stops listening it is told nothing (sync batch Y4, item 4)', async () => {
+    const phone = await sentThroughTheApp([analyzingPhoto]);
+    const heard: string[] = [];
+    const stopFailing = subscribeToCloudPhotoResultsKept(() => { throw new Error('a screen failed'); });
+    const stopHearing = subscribeToCloudPhotoResultsKept(updateId => { heard.push(updateId); });
+    lateAnalysisFinishes(phone, failedAnalysis());
+    await phone.settle();
+    const iPad = await iPadSaves(confirmed(finishedAnalysis()));
+    stopHearing();
+
+    await expect(uploadPendingChanges()).resolves.toMatchObject({ errors: [] });
+
+    expect(firstPhotoAnalysis(inCloud())).toEqual(iPad);
+    expect(await getOfflineQueue()).toEqual([]);
+    expect(heard).toEqual([]);
+    stopFailing();
+  });
+
+  it('the card takes only a result of the cloud\'s that stands over its own, for a card that is there (sync batch Y4, item 4)', () => {
+    const at = (ms: number) => new Date(Date.UTC(2026, 9, 6, 8, 0, 0, ms)).toISOString();
+    const failed = { status: 'analysis_failed_retry', updatedAt: at(9) };
+    const finished = { status: 'analysis_complete', updatedAt: at(1), userReview: 'confirmed', userReviewedAt: at(2) };
+    const card = { id: 'u1', notes: 'the phone\'s note', photos: [{ id: 'a', uri: 'file:///phone/a.jpg', photoIntelligence: failed }, { id: 'b', uri: 'file:///phone/b.jpg', photoIntelligence: finished }] };
+    const other = { id: 'u2', photos: [{ id: 'a', photoIntelligence: failed }] };
+    const cloud = { id: 'u1', notes: 'the iPad\'s note', photos: [{ id: 'a', uri: '', photoIntelligence: finished }, { id: 'b', uri: '', photoIntelligence: failed }] };
+    const cards = [card, other];
+
+    const next = fieldUpdateCardsWithCloudPhotoResults(cards, 'u1', cloud);
+
+    // Photo a takes the cloud's finished result; photo b keeps its own finished one over the cloud's failed one.
+    expect(next[0]).toMatchObject({ notes: 'the phone\'s note', photos: [{ id: 'a', uri: 'file:///phone/a.jpg', photoIntelligence: finished }, { id: 'b', uri: 'file:///phone/b.jpg', photoIntelligence: finished }] });
+    expect(next[1]).toBe(other);
+    // Nothing of the cloud's stands over the card's: the very same list, so nothing is drawn or saved again.
+    expect(fieldUpdateCardsWithCloudPhotoResults(next, 'u1', cloud)).toBe(next);
+    // An update that is not on this device (deleted here meanwhile) is not brought back.
+    expect(fieldUpdateCardsWithCloudPhotoResults(cards, 'u9', { ...cloud, id: 'u9' })).toBe(cards);
+    expect(fieldUpdateCardsWithCloudPhotoResults(cards, 'u1', null)).toBe(cards);
+  });
+
+  it('App.tsx listens once, in one line (sync batch Y4, item 4)', () => {
+    const lines = app.split('\n').filter(line => line.includes('subscribeToCloudPhotoResultsKept') || line.includes('fieldUpdateCardsWithCloudPhotoResults'));
+    expect(lines.filter(line => line.includes('useEffect(() => subscribeToCloudPhotoResultsKept('))).toHaveLength(1);
+    // Fifteen lines were allowed in App.tsx for this; it is one line and two names on a line that was there.
+    expect(lines.length).toBeLessThanOrEqual(2);
+    expect(app.split('\n').length - 1).toBeLessThanOrEqual(21066);
   });
 
   it('"Send your version?": the phone\'s note goes over the iPad\'s, with the iPad\'s Confirmed result (A4 pass 27 L3)', async () => {

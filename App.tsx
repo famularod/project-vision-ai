@@ -35,7 +35,7 @@ import {
   queueScheduleItemRecord, listScheduleItemsWithEditsWaiting, scheduleItemEditsWaitingAtLastLoad, noteFieldUpdateEditOpened, // each edit's base (owner answer Q28)
   removeOperationalRecordFromSyncQueue, withdrawQueuedChangesOfDeletedProject, cloudProjectsMissedByLists,
   synchronizeLocalData,
-  uploadPendingChanges, withAnalysisResultsLastInCloud, withPhoneAnalysisResults,
+  uploadPendingChanges, withAnalysisResultsLastInCloud, withPhoneAnalysisResults, fieldUpdateCardsWithCloudPhotoResults, subscribeToCloudPhotoResultsKept,
   type FieldUpdateSyncWorkAttempt,
   type MissingSyncPhoto,
   type PhotoStorageUploadFailureCategory,
@@ -5235,6 +5235,8 @@ function AppShell() {
   useEffect(() => {
     logStartupDiagnostic('app_shell_mounted', 'App shell mounted.');
   }, []);
+
+  useEffect(() => subscribeToCloudPhotoResultsKept((updateId, cloudCopy) => setSavedUpdates(current => fieldUpdateCardsWithCloudPhotoResults(current, updateId, cloudCopy))), []); // a photo result an upload left out for the cloud's own is on the card at once (sync batch Y4, item 4)
 
   useEffect(() => {
     void backupRestoreRuntime.recoverBeforeStartupReads().then(() => sayRecoveryRecordsSetAsideOnce(AsyncStorage, FIELD_UPDATE_TRANSACTION_JOURNAL_KEY, Alert.alert)).catch(() => undefined); // an unreadable record set aside is said once (sync batch Y4, item 1)
