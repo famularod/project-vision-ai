@@ -1297,8 +1297,24 @@ export function scheduleLookaheadDeleteNote(
     // has moved, which he does not see in his list (the task shows on the newer row, and stays). Said, in the count's
     // own terms.
     const gone = new Set(removed.map(item => item.id));
-    const earlier = removed.filter(item => items.some(other => !gone.has(other.id) && scheduleTaskEarlierIds(other).includes(item.id))).length;
-    return earlier === 0 ? '' : ` ${earlier} of those items ${earlier === 1 ? 'is the earlier row of a task' : 'are earlier rows of tasks'} a newer schedule has moved; ${earlier === 1 ? 'that task stays' : 'those tasks stay'} in your list.`;
+    const kept = items.filter(item => !gone.has(item.id));
+    const answering = (item: ScheduleItem) => kept.filter(other => scheduleTaskEarlierIds(other).includes(item.id));
+    const earlierRows = removed.filter(item => answering(item).length > 0);
+    const earlier = earlierRows.length;
+    if (earlier === 0) return '';
+    // Review pass 1, P1-5 (wording; caused by S2 item 5): "that task stays in your list" was said of every such row,
+    // shown or not. It does not stay when the master being deleted is the one in effect (the list is empty afterwards),
+    // nor when the current master leaves the task out (it was not in his list before either). Only a task whose newer
+    // row is shown after the delete is said to stay; of the others, that the newer row is kept and is not in his list.
+    const after = documents?.filter(saved => saved.id !== document.id);
+    const shownAfter = after ? new Set(selectAuthoritativeScheduleItems({ scheduleItems: kept, scheduleDocuments: after }).map(item => item.id)) : null;
+    const staying = shownAfter ? earlierRows.filter(item => answering(item).some(other => shownAfter.has(other.id))).length : earlier;
+    const away = earlier - staying;
+    const lead = ` ${earlier} of those items ${earlier === 1 ? 'is the earlier row of a task' : 'are earlier rows of tasks'} a newer schedule has moved; `;
+    const notInList = (count: number) => `will not be in your list afterwards: ${count === 1 ? 'its newer row is' : 'their newer rows are'} kept, under a schedule that is not active.`;
+    if (away === 0) return `${lead}${earlier === 1 ? 'that task stays' : 'those tasks stay'} in your list.`;
+    if (staying === 0) return `${lead}${earlier === 1 ? 'that task' : 'those tasks'} ${notInList(earlier)}`;
+    return `${lead}${staying} of those tasks ${staying === 1 ? 'stays' : 'stay'} in your list, and ${away} ${notInList(away)}`;
   }
   const removedIds = new Set(removed.map(item => item.id));
   const kept = items.filter(item => !removedIds.has(item.id));

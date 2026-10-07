@@ -250,3 +250,55 @@ describe('S2 item 5: the delete question says when the items removed include ear
     expect(scheduleLookaheadDeleteNote(TASKS, NEWER, [TASKS[2]], ALL)).not.toContain('earlier row');
   });
 });
+
+/*
+ * Review pass 1 of Build 231's schedule round, P1-5 (7 Oct 2026; Low, wording; caused by "S2 item 5"). The sentence
+ * above said "that task stays in your list" for every earlier row removed, shown or not. Two states where it does
+ * not: (a) the master being deleted is the one in effect (an older master made current again), so the list is empty
+ * afterwards; (b) the current master leaves the task out, so it was not in his list before either. The sentence is
+ * now true in each state: only a task whose newer row is shown after the delete "stays in your list".
+ */
+describe('Review pass 1, P1-5 (caused by S2 item 5): the delete question says a task "stays in your list" only when it does', () => {
+  const row = (id: string, name: string, document: ReferenceDocument, revisedFromTaskIds?: string[]) => ({ ...task(name, document), id, ...(revisedFromTaskIds ? { revisedFromTaskIds } : {}) }) as ScheduleItem;
+  const question = (document: ReferenceDocument, documents: ReferenceDocument[], items: ScheduleItem[]) => {
+    const app = phone(documents, { scheduleItems: items, scheduleItemsCurrentRef: { current: items } });
+    app.deleteScheduleDocument(document.id);
+    return [app.alerts[0].message, app.alerts[0].buttons.map(button => button.text)];
+  };
+  const NOT_SHOWN_ONE = 'that task will not be in your list afterwards: its newer row is kept, under a schedule that is not active.';
+  const NOT_SHOWN_TWO = 'those tasks will not be in your list afterwards: their newer rows are kept, under a schedule that is not active.';
+
+  it('(a) the master in effect is the older one (Set Active back) and a newer one moved its tasks: nothing stays in his list after the delete, and the question does not say it does', () => {
+    const F = schedule('MASTER F', '2026-09-01T12:00:00.000Z');
+    const G = { ...schedule('MASTER G', '2026-09-14T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+    const saved = [row('F-1', 'Framing', F), row('F-2', 'Paint', F), row('F-3', 'Roofing', F), row('G-1', 'Framing', G, ['F-1']), row('G-2', 'Paint', G, ['F-2'])];
+    // (It was: "...2 of those items are earlier rows of tasks a newer schedule has moved; those tasks stay in your list.")
+    expect(question(F, [F, G], saved)).toEqual([
+      `MASTER F will be removed, with the 3 schedule items only this PDF contains. 2 of those items are earlier rows of tasks a newer schedule has moved; ${NOT_SHOWN_TWO}`,
+      ['Cancel', 'Delete PDF + Items'],
+    ]);
+    const one = saved.filter(item => item.id !== 'G-2');
+    expect(question(F, [F, G], one)[0]).toBe(`MASTER F will be removed, with the 3 schedule items only this PDF contains. 1 of those items is the earlier row of a task a newer schedule has moved; ${NOT_SHOWN_ONE}`);
+  });
+
+  it('(b) the current master leaves one of those tasks out: the one it lists stays, the other is said not to be in his list', () => {
+    const F = { ...schedule('MASTER F', '2026-09-01T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+    const G = { ...schedule('MASTER G', '2026-09-14T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+    const H = schedule('MASTER H', '2026-09-21T12:00:00.000Z');
+    // G moved Framing and Paint; H moved Paint again and leaves Framing out.
+    const saved = [row('F-1', 'Framing', F), row('F-2', 'Paint', F), row('G-1', 'Framing', G, ['F-1']), row('G-2', 'Paint', G, ['F-2']), row('H-1', 'Paint', H, ['F-2', 'G-2'])];
+    expect(question(F, [F, G, H], saved)[0]).toBe('MASTER F will be removed. You can also remove the 2 schedule items only this PDF contains so outdated dates do not confuse Upcoming. ' +
+      '2 of those items are earlier rows of tasks a newer schedule has moved; 1 of those tasks stays in your list, and 1 will not be in your list afterwards: its newer row is kept, under a schedule that is not active.');
+    // Only the task H leaves out: nothing is said to stay.
+    const framingOnly = saved.filter(item => item.taskName === 'Framing');
+    expect(question(F, [F, G, H], [...framingOnly, row('H-9', 'Siding', H)])[0]).toContain(`1 of those items is the earlier row of a task a newer schedule has moved; ${NOT_SHOWN_ONE}`);
+  });
+
+  it('guard: without the schedules to work the list out from, the sentence is the one it was', () => {
+    const F = { ...schedule('MASTER F', '2026-09-01T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+    const G = schedule('MASTER G', '2026-09-14T12:00:00.000Z');
+    const saved = [row('F-1', 'Framing', F), row('G-1', 'Framing', G, ['F-1'])];
+    expect(scheduleLookaheadDeleteNote(saved, F, [saved[0]])).toBe(' 1 of those items is the earlier row of a task a newer schedule has moved; that task stays in your list.');
+    expect(scheduleLookaheadDeleteNote(saved, F, [saved[0]], [F, G])).toBe(' 1 of those items is the earlier row of a task a newer schedule has moved; that task stays in your list.');
+  });
+});
