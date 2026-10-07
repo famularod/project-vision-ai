@@ -1,3 +1,5 @@
+import { scheduleCalendarDay } from './ScheduleCalendarDay';
+
 /**
  * What the schedule accepts for a task's duration, a link's lag and a date
  * (independent review R08, Build 229: the desktop editor took a duration of
@@ -67,4 +69,61 @@ export function scheduleDurationIsSupported(days: unknown): boolean {
 export function scheduleDayIsSupported(day: string | Date): boolean {
   const year = typeof day === 'string' ? Number(day.slice(0, 4)) : day.getUTCFullYear();
   return Number.isFinite(year) && year >= SCHEDULE_FIRST_YEAR && year <= SCHEDULE_LAST_YEAR;
+}
+
+/**
+ * A month/day/year date whose year has one or three digits: "05/01/202".
+ * That is how the schedule import writes back a year below 1000 (it read
+ * "5/1/0202" as 1 May 202). No date reader takes it as a day, but it is one,
+ * in a year the schedule does not take.
+ */
+const SHORT_YEAR_DATE = /^(\d{1,2})\/(\d{1,2})\/(\d|\d{3})$/;
+
+/**
+ * Whether a schedule date, however it is written ("5/1/0202", "0202-05-01",
+ * "May 1, 0202", "05/01/202"), names a real day outside the years the
+ * schedule takes. Text that names no day at all (blank, "TBD") is not such
+ * a date.
+ */
+export function scheduleDateIsOutsideSupportedYears(value: unknown): boolean {
+  const day = scheduleCalendarDay(value);
+  if (day !== null) return !scheduleDayIsSupported(day);
+  const short = typeof value === 'string' ? value.trim().match(SHORT_YEAR_DATE) : null;
+  return Boolean(short && Number(short[1]) >= 1 && Number(short[1]) <= 12 && Number(short[2]) >= 1 && Number(short[2]) <= 31);
+}
+
+export type ScheduleDateToCheck = Readonly<{
+  which: 'start' | 'finish' | 'both';
+  /** The date exactly as it is written. */
+  value: string;
+  /** What the review says about it. */
+  text: string;
+}>;
+
+/**
+ * The dates of a task that a person should look at before it is taken into
+ * the schedule: a real day outside 2000 through 2100, which is nearly always
+ * a mistyped year (review pass 1, L3: the import took "5/1/0202" without a
+ * word). The date is only pointed out. It is never changed for him, and the
+ * task is not refused.
+ */
+export function scheduleDatesToCheck(
+  item: Readonly<{ startDate?: string | null; finishDate?: string | null }>,
+): ScheduleDateToCheck[] {
+  const start = (item.startDate || '').trim();
+  const finish = (item.finishDate || '').trim();
+  const startOutside = scheduleDateIsOutsideSupportedYears(start);
+  const finishOutside = scheduleDateIsOutsideSupportedYears(finish);
+  const say = (which: ScheduleDateToCheck['which'], value: string): ScheduleDateToCheck => ({
+    which,
+    value,
+    text: `Check this date: the ${which === 'both' ? 'date' : `${which} date`} ${value} is outside ${SCHEDULE_FIRST_YEAR} to ${SCHEDULE_LAST_YEAR}.`,
+  });
+  if (startOutside && finishOutside && (scheduleCalendarDay(start) ?? start) === (scheduleCalendarDay(finish) ?? finish)) {
+    return [say('both', start)];
+  }
+  return [
+    ...(startOutside ? [say('start', start)] : []),
+    ...(finishOutside ? [say('finish', finish)] : []),
+  ];
 }

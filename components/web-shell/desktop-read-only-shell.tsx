@@ -80,6 +80,7 @@ import {
   formatScheduleCalendarDay,
   scheduleCalendarDay,
 } from '../../services/ScheduleCalendarDay';
+import { scheduleDatesToCheck } from '../../services/ScheduleInputLimits';
 import {
   formatVitruviusDesktopGreeting,
   readVitruviusDesktopDisplayName,
@@ -4758,6 +4759,10 @@ function DocumentManagementWorkspace({
                           <Text style={styles.dataTitle}>{item.taskName}</Text>
                           <Text style={styles.dataMeta}>{item.projectName}{item.locationName ? ` · ${item.locationName}` : ''}</Text>
                           <Text style={styles.dataDetail}>{item.status} · {item.percentComplete}% · Finish {formatCalendarDate(item.finishDate)}</Text>
+                          {/* A date outside 2000 to 2100 is pointed out before the upload, not changed (review pass 1, L3). */}
+                          {scheduleDatesToCheck(item).map(check => (
+                            <Text key={check.which} style={styles.errorText}>{check.text}</Text>
+                          ))}
                           {uploadProjects.length > 1 ? (
                             <View style={[styles.optionRow, styles.taskProjectChoices]}>
                               {uploadProjects.map(project => {
