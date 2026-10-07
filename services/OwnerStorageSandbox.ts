@@ -229,13 +229,22 @@ export function createOwnerStorageSandbox({
 }
 
 /**
- * Review pass 1, sync G5 (owner answer Q45, 6 Oct 2026). Whether this phone's account boundary has any record of an
- * account other than `ownerId`, or of account data that was set aside while nobody was signed in. Reads only.
+ * Review pass 1, sync G5 (owner answer Q45, 6 Oct 2026). Whether this phone's account boundary has a record that
+ * names an account other than `ownerId`. Reads only.
  *
  * Asked once per account by the deletion history, about the records an earlier build left on the phone: those
  * carry nothing that says whose they are, and that build could save one account's records into another's list
  * when the account changed in the middle of a sync. With one account only on the phone nothing can have been
- * mixed. A boundary record that cannot be read counts as "yes".
+ * mixed. The boundary's own record of accounts counts as "yes" when it cannot be read.
+ *
+ * Second review, sync N2 (caused by the G5 fix; the coordinator's decision). "Yes" needs a trace that NAMES
+ * another account: the boundary's record of accounts, another account's stored data, or a set-aside record that
+ * says it was most likely another account's. This also answered "yes" for ANY record of data set aside while
+ * nobody was signed in. One account signing out and in again, with something of its own still finishing, leaves
+ * such a record, so a phone that had only ever had one account was taken for a phone that had had two: a
+ * deletion it made with no signal on the last build, not yet uploaded, was then marked "account not known",
+ * never uploaded and in no answer, and what it deleted came back. A set-aside record that names this account,
+ * names nobody or cannot be read is not another account: such a phone is treated as the last build treated it.
  */
 export async function anotherAccountHasUsedThisPhone(
   storage: Pick<OwnerScopedStorage, 'getItem'> & Readonly<{ getAllKeys?: () => Promise<readonly string[]> }>,
@@ -247,11 +256,25 @@ export async function anotherAccountHasUsedThisPhone(
       .some(known => known !== null && known !== ownerId)) return true;
     if (typeof storage.getAllKeys !== 'function') return false;
     const own = `${OWNER_STORAGE_NAMESPACE_PREFIX}${encodeURIComponent(ownerId)}/`;
-    return (await storage.getAllKeys()).some(key =>
-      key.startsWith(OWNER_STORAGE_QUARANTINE_PREFIX) ||
-      (key.startsWith(OWNER_STORAGE_NAMESPACE_PREFIX) && !key.startsWith(own)));
+    const keys = await storage.getAllKeys();
+    if (keys.some(key => key.startsWith(OWNER_STORAGE_NAMESPACE_PREFIX) && !key.startsWith(own))) return true;
+    for (const key of keys) {
+      if (key.startsWith(OWNER_STORAGE_QUARANTINE_PREFIX) &&
+        setAsideRecordNamesAnotherAccount(await storage.getItem(key), ownerId)) return true;
+    }
+    return false;
   } catch {
     return true;
+  }
+}
+
+/** Whether a set-aside record says it was most likely the data of an account other than `ownerId` (see above). */
+function setAsideRecordNamesAnotherAccount(raw: string | null, ownerId: string): boolean {
+  try {
+    const suspected: unknown = (JSON.parse(raw ?? 'null') as { suspectedOwnerId?: unknown } | null)?.suspectedOwnerId;
+    return typeof suspected === 'string' && suspected.trim().length > 0 && suspected.trim() !== ownerId;
+  } catch {
+    return false;
   }
 }
 

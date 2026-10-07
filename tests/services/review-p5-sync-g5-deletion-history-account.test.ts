@@ -538,13 +538,18 @@ describe('G5: records an earlier build left on the phone', () => {
     expect(marks()).toHaveLength(2);
   });
 
-  it('the boundary\'s own question: an account set aside while signed out, or a boundary record that cannot be read, counts as another account', async () => {
+  // Second review, sync N2 (the coordinator's decision): this test held "any data set aside while signed out counts
+  // as another account". Only a set-aside record that NAMES another account does; one account signing out and in
+  // again leaves one that names itself (tests/services/review-p5-sync-2-n2-real-sign-in.test.ts).
+  it('the boundary\'s own question: a set-aside record that names another account, or the boundary\'s record of accounts when it cannot be read, counts as another account; a set-aside record that names nobody does not', async () => {
     await expect(anotherAccountHasUsedThisPhone(boundaryStorage, 'account-a')).resolves.toBe(false); // nothing recorded at all
     mockStorage.set(OWNER_STORAGE_SANDBOX_METADATA_KEY, '{broken');
     await expect(anotherAccountHasUsedThisPhone(boundaryStorage, 'account-a')).resolves.toBe(true);
     mockStorage.set(OWNER_STORAGE_SANDBOX_METADATA_KEY, JSON.stringify({ version: 1, activeOwnerId: 'account-a', legacyAssignedOwnerId: null, lastOwnerId: 'account-a', updatedAt: '2026-10-06T00:00:00.000Z' }));
     await expect(anotherAccountHasUsedThisPhone(boundaryStorage, 'account-a')).resolves.toBe(false);
     mockStorage.set('@vitruvius/owner-storage-sandbox/quarantine/set-aside-1', '{}');
+    await expect(anotherAccountHasUsedThisPhone(boundaryStorage, 'account-a')).resolves.toBe(false);
+    mockStorage.set('@vitruvius/owner-storage-sandbox/quarantine/set-aside-1', JSON.stringify({ version: 1, id: 'set-aside-1', suspectedOwnerId: 'account-b', snapshot: {} }));
     await expect(anotherAccountHasUsedThisPhone(boundaryStorage, 'account-a')).resolves.toBe(true);
     mockStorage.delete('@vitruvius/owner-storage-sandbox/quarantine/set-aside-1');
     mockStorage.set(OWNER_STORAGE_SANDBOX_METADATA_KEY, JSON.stringify({ version: 1, activeOwnerId: 'account-a', legacyAssignedOwnerId: 'account-b', lastOwnerId: 'account-a', updatedAt: '2026-10-06T00:00:00.000Z' }));
