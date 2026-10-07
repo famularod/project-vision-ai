@@ -173,13 +173,28 @@ export function createFieldUpdateLocalPersistence<TUpdate, TTombstone>({
   });
   const lockKeys = [keys.journal, keys.updates, keys.tombstones, keys.draft];
 
+  /**
+   * Sync batch Y4, item 1. A waiting save whose record cannot be read at all stopped the app at every start. It is
+   * set aside (kept under another name), the app starts on the lists as they are, and he is told once
+   * (services/RecoveryRecordNotices.ts). Nothing of his goes with it: a save removes the draft last, and only the
+   * draft it read, so at whatever step the save stopped the update is in the saved list or still open as the draft;
+   * and a result that was not written leaves the update waiting to be sent, which the app sends again. Only at a
+   * start (or Retry Recovery), and only a record that cannot be read: one that can be is finished or stops as before,
+   * and a save made while one waits is blocked as before.
+   */
   const recoverBeforeStartupReads = () => runExclusiveLocalStorageMutation(
     lockKeys,
     async () => {
       try {
         await transaction.recover();
       } catch (cause) {
-        throw new FieldUpdatePersistenceBlockedError('recovery', cause);
+        let setAside = null;
+        try {
+          setAside = await transaction.setAsideIfUnreadable();
+        } catch {
+          // The device could not keep the copy: nothing was removed, and this start is blocked as before.
+        }
+        if (!setAside) throw new FieldUpdatePersistenceBlockedError('recovery', cause);
       }
     },
   );

@@ -848,6 +848,104 @@ describe('independent review pass 4: a held restore finishes at the next start t
   });
 });
 
+describe('sync batch Y4, item 1: a held restore whose record cannot be read is set aside, and its files are settled by what any saved value names', () => {
+  /** How the record is damaged where it lies. The last is whole, but not this build's to read. */
+  const DAMAGE: Array<[string, (raw: string) => string]> = [
+    ['cut off after a few characters', raw => raw.slice(0, 60)],
+    ['cut off at four fifths', raw => raw.slice(0, Math.floor(raw.length * 0.8))],
+    ['of a version this build does not know', raw => raw.replace('{"version":1,', '{"version":2,')],
+  ];
+  const asideCopies = (device: Device) => [...device.values.keys()].filter(key => key.startsWith(`${BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY}.unreadable.`));
+
+  it.each(DAMAGE)('at every write the restore can stop at, its record then %s: the app starts, every attachment a record names opens its bytes, and a file stays exactly when a saved value names it', async (_name, damage) => {
+    const total = await cleanRestoreMutationCount();
+    let held = 0;
+    let closedPartWay = 0;
+    const kept = new Set<number>();
+    for (let at = 3; at < total; at += 1) {
+      const device = newDevice();
+      const session = startApp(device);
+      device.mutations = 0;
+      device.fault = { at, mode: 'writes_fail_until_restart', tripped: false };
+      await session.restore();
+      const raw = device.values.get(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY);
+      if (session.locked.length === 0 || raw === undefined) continue;
+      held += 1;
+      expect(session.alerts).toEqual(['Restore recovery required']);
+      const damaged = damage(raw);
+      expect(damaged).not.toBe(raw);
+      device.values.set(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY, damaged);
+      const placed = restoredFilesOn(device);
+      expect(placed).toHaveLength(6);
+
+      // The first start is closed at one of the three steps of the setting aside: it is refused as it always was,
+      // and not one file has been removed, because the record still waits.
+      const step = at % 3;
+      device.fault = null;
+      const closed = startApp(device);
+      device.mutations = 0;
+      device.fault = { at: step, mode: 'writes_fail_until_restart', tripped: false };
+      await expect(closed.runtime.recoverBeforeStartupReads()).rejects.toThrow();
+      closedPartWay += 1;
+      expect({ at, step, record: device.values.get(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY) === damaged, files: restoredFilesOn(device).length })
+        .toEqual({ at, step, record: true, files: 6 });
+
+      // It threw at every start. Three starts: the first sets the record aside, the next two find nothing to do.
+      for (let start = 1; start <= 3; start += 1) await restart(device);
+
+      expect({ at, record: device.values.has(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY), copies: asideCopies(device).map(key => device.values.get(key) === damaged) })
+        .toEqual({ at, record: false, copies: [true] });
+      expect({ at, ledger: device.values.get(RESTORED_MEDIA_LEDGER_KEY) ?? null }).toEqual({ at, ledger: null });
+      // Every attachment a saved record names opens its own bytes: the restore's where the list is the restore's,
+      // the device's own where the list is the one from before it.
+      storedAttachments(device).forEach(attachment => {
+        const bytes = device.files.get(attachment.uri);
+        const expected = attachment.id === 'old-p' ? bytesOf(77) : EXPECTED_BYTES[attachment.id];
+        expect({ at, id: attachment.id, found: bytes instanceof Uint8Array ? Array.from(bytes) : null }).toEqual({ at, id: attachment.id, found: Array.from(expected) });
+      });
+      // R01, to the letter: a placed file is on the device exactly when some saved value names it. The record that
+      // was set aside is a saved value too, so a file only it names stays (left behind, never lost).
+      const saved = [...device.values.values()].join('\n');
+      placed.forEach(uri => {
+        expect({ at, file: fileNameOf(uri), onDevice: device.files.has(uri) }).toEqual({ at, file: fileNameOf(uri), onDevice: saved.includes(fileNameOf(uri)) });
+      });
+      kept.add(restoredFilesOn(device).length);
+      expect({ at, cache: [...device.files.keys()].filter(uri => uri.startsWith(CACHE_DIR)) }).toEqual({ at, cache: [] });
+    }
+    expect(held).toBeGreaterThan(10);
+    expect(closedPartWay).toBe(held);
+    // A record cut off at its start names nothing, so only what the written lists name is left; one that is whole names all six.
+    if (_name === 'cut off after a few characters') expect(Math.min(...kept)).toBeLessThan(6);
+    if (_name === 'of a version this build does not know') expect([...kept]).toEqual([6]);
+  });
+
+  it('with the record set aside, a second restore of the same backup goes through: its six attachments open, and what is left over is only what a list of the first attempt named', async () => {
+    const device = newDevice();
+    const session = startApp(device);
+    device.mutations = 0;
+    device.fault = { at: 4, mode: 'writes_fail_until_restart', tripped: false };
+    await session.restore();
+    expect(session.alerts).toEqual(['Restore recovery required']);
+    device.values.set(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY, (device.values.get(BACKUP_RESTORE_TRANSACTION_JOURNAL_KEY) as string).slice(0, 60));
+    const again = await restart(device);
+    // The first attempt had written the updates list: its two photos are named by a saved record, and stay.
+    const namedByTheFirstAttempt = restoredFilesOn(device).sort();
+    expect(namedByTheFirstAttempt.map(fileNameOf)).toEqual(['rid000001-IMG-0001.jpg', 'rid000002-IMG-0002.jpg']);
+
+    await again.restore();
+
+    expect(again.alerts).toEqual(['Device backup restored']);
+    expect(isRestored(device)).toBe(true);
+    const attachments = storedAttachments(device);
+    expect(attachments.map(attachment => attachment.id).sort()).toEqual(['o1', 'o2', 'p1', 'p2', 'p9', 'r1']);
+    attachments.forEach(attachment => expect(device.files.get(attachment.uri)).toEqual(EXPECTED_BYTES[attachment.id]));
+    // As after any restore over records that had files: the files of the records it replaced are not removed
+    // (the device's own photo from before stays the same way). Left behind, never lost.
+    expect(restoredFilesOn(device).sort()).toEqual([...attachments.map(attachment => attachment.uri), ...namedByTheFirstAttempt].sort());
+    expect(device.values.get(RESTORED_MEDIA_LEDGER_KEY) ?? null).toBeNull();
+  });
+});
+
 describe('independent review R01: the restored-file ledger', () => {
   const memory = () => {
     const values = new Map<string, string>();

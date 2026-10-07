@@ -389,6 +389,7 @@ import {
   createBackupRestoreRuntime,
   preflightAppBackup,
 } from './services/BackupRestoreRuntime';
+import { sayRecoveryRecordsSetAsideOnce } from './services/RecoveryRecordNotices';
 import {
   buildCombinedReportAuthorityScope,
   buildDailyReportAuthorityScope,
@@ -5236,6 +5237,7 @@ function AppShell() {
   }, []);
 
   useEffect(() => {
+    void backupRestoreRuntime.recoverBeforeStartupReads().then(() => sayRecoveryRecordsSetAsideOnce(AsyncStorage, FIELD_UPDATE_TRANSACTION_JOURNAL_KEY, Alert.alert)).catch(() => undefined); // an unreadable record set aside is said once (sync batch Y4, item 1)
     void backupRestoreRuntime.recoverBeforeStartupReads()
       .then(() => projectDeletionRuntime.recoverPendingIntentStores())
       .then(() => startupHydration.loaded(PROJECT_DELETION_CLOUD_INTENTS_STORAGE_KEY, 'pending project deletion cleanup'))
