@@ -116,6 +116,7 @@ import {
   withPhoneAnalysisResults,
 } from '../../services/SyncService';
 import { reconcileProjectUpdateDeletionJournal } from '../../services/updateService';
+import { recordRemovedFieldUpdateDocument } from '../../services/FieldUpdateRemovedDocuments';
 import { reconcileFieldUpdateSyncResult } from '../../services/FieldUpdateSyncGeneration';
 import { persistedStatusForSyncResult } from '../../services/FieldUpdateLifecycle';
 import { classifySyncFailureText } from '../../services/SyncFailureCategory';
@@ -1875,6 +1876,128 @@ describe('a document change waiting for an update archived in the cloud still re
     expect(documentIds(inCloud())).toEqual(['survey']);
     expect(inCloud()).toMatchObject({ isArchived: true, archivedAt, notes: IPAD_NOTE });
     expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  /**
+   * Sync batch Y3, item 3 (6 Oct 2026). Open item: "A document removal saved
+   * inside a whole-copy edit is lost if that update is then archived in the
+   * cloud." With an edit of the update already waiting as a whole copy, a
+   * document taken off goes INTO that copy: no change of its own waits. The
+   * replay drops the copy of an update the cloud reads archived, and the
+   * removal went with it: the archived copy, and the iPad, kept the document.
+   */
+  async function phoneEditsThenTakesPermitOff() {
+    const sent = savedUpdate([uploaded('permit'), uploaded('survey')]);
+    putInCloud(sent);
+    // No signal: his note edit waits as a whole copy of the update.
+    const edited = { ...sent, notes: EDIT, status: 'queued' };
+    await queueProjectUpdateRecord(edited, false);
+    const phone = device([uploaded('permit'), uploaded('survey')], [edited]);
+    await phone.deleteFromThisDevice('permit');
+    const waiting = (await queuedFor())!.payload as { updateData: Update; documentPatches?: unknown };
+    expect(waiting.documentPatches).toBeUndefined(); // the removal is inside the copy
+    expect(documentIds(waiting.updateData)).toEqual(['survey']);
+    expect(waiting.updateData.notes).toBe(EDIT);
+    return { phone, sent };
+  }
+
+  it('(Y3 item 3) a note edit waits and a document is taken off inside it; the iPad archives the update; a refresh, then a relaunch: the removal goes onto the archived copy', async () => {
+    const { phone } = await phoneEditsThenTakesPermitOff();
+    iPadEditsNotes();
+    const archivedAt = new Date().toISOString();
+    putInCloud({ ...inCloud(), isArchived: true, archivedAt }, archivedAt); // the iPad archives it
+    const records = { current: [] as unknown[] };
+    expect(await refreshWithRecords(phone, records)).toEqual([expect.objectContaining({ updateId: 'u1', action: 'hide_cloud_update' })]);
+
+    resetFieldUpdateSyncMemoryForTests();
+    await reconcileProjectUpdateDeletionJournal(records.current as never);
+    // Only the removal waits now: his note edit of an update archived in the cloud is dropped, as before.
+    expect((await queuedFor())!.payload).toMatchObject({ archiveOnly: true, documentPatches: [{ documentId: 'permit', remove: true }] });
+    expect(((await queuedFor())!.payload as { updateData?: unknown }).updateData).toBeUndefined();
+    await uploadPendingChanges();
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(inCloud()).toMatchObject({ isArchived: true, archivedAt, notes: IPAD_NOTE });
+    expect(await getOfflineQueue()).toEqual([]);
+
+    // The next launch has nothing more to send for it.
+    (saveProjectUpdate as jest.Mock).mockClear();
+    (archiveProjectUpdate as jest.Mock).mockClear();
+    resetFieldUpdateSyncMemoryForTests();
+    await reconcileProjectUpdateDeletionJournal(records.current as never);
+    expect(await getOfflineQueue()).toEqual([]);
+    await uploadPendingChanges();
+    expect(saveProjectUpdate).not.toHaveBeenCalled();
+    expect(archiveProjectUpdate).not.toHaveBeenCalled();
+  });
+
+  it('(Y3 item 3) archived on this phone with the edit and the removal still waiting in one copy: the removal goes up with the archive', async () => {
+    const { phone } = await phoneEditsThenTakesPermitOff();
+    const archivedAt = new Date().toISOString();
+    (archiveProjectUpdate as jest.Mock).mockImplementationOnce(async (params: { id: string; archivedAt: string }) => archiveTheRow(params));
+    await reconcileProjectUpdateDeletionJournal([A.buildUpdateTombstone(phone.saved()!, 'archive_sent_update', archivedAt)] as never);
+    expect((await queuedFor())!.payload).toMatchObject({ archiveOnly: true, archivedAt, documentPatches: [{ documentId: 'permit', remove: true }] });
+    await uploadPendingChanges();
+    await uploadPendingChanges();
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(inCloud()).toMatchObject({ isArchived: true, archivedAt });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it('(Y3 item 3) only a document he took off is carried: one the iPad added, which his waiting copy has never listed, stays on the archived copy', async () => {
+    const { phone } = await phoneEditsThenTakesPermitOff();
+    const archivedAt = new Date().toISOString();
+    // A document of that name was once taken off ANOTHER update on this phone: that is no word about this one.
+    await recordRemovedFieldUpdateDocument('u2', 'ipad-drawing');
+    // The iPad adds a drawing, then archives the update.
+    putInCloud({ ...inCloud(), documents: [...inCloud().documents!, uploaded('ipad-drawing')], isArchived: true, archivedAt }, archivedAt);
+    const records = { current: [] as unknown[] };
+    await refreshWithRecords(phone, records);
+    resetFieldUpdateSyncMemoryForTests();
+    await reconcileProjectUpdateDeletionJournal(records.current as never);
+    expect((await queuedFor())!.payload).toMatchObject({ documentPatches: [{ documentId: 'permit', remove: true }] });
+    await uploadPendingChanges();
+    expect(documentIds(inCloud())).toEqual(['survey', 'ipad-drawing']);
+    expect(inCloud()).toMatchObject({ isArchived: true, archivedAt });
+  });
+
+  it('(Y3 item 3) a document he took off and then put back, which his waiting copy lists again, is not taken off the archived copy', async () => {
+    const sent = savedUpdate([uploaded('permit'), uploaded('survey')]);
+    const archivedAt = new Date().toISOString();
+    putInCloud({ ...sent, isArchived: true, archivedAt }, archivedAt);
+    await recordRemovedFieldUpdateDocument('u1', 'permit'); // taken off once...
+    await queueProjectUpdateRecord({ ...sent, notes: EDIT, status: 'queued' }, false); // ...and on the update again in the copy that waits
+    (saveProjectUpdate as jest.Mock).mockClear();
+    await reconcileProjectUpdateDeletionJournal([A.buildUpdateTombstone({ ...sent, isArchived: true, archivedAt }, 'hide_cloud_update', archivedAt)]);
+    expect(await getOfflineQueue()).toEqual([]);
+    await uploadPendingChanges();
+    expect(documentIds(inCloud())).toEqual(['permit', 'survey']);
+    expect(saveProjectUpdate).not.toHaveBeenCalled();
+  });
+
+  it('(Y3 item 3) a document he took off long ago, already off the cloud copy, is asked for once more with the archive and changes nothing: no copy is written', async () => {
+    const sent = savedUpdate([uploaded('survey')]);
+    const archivedAt = new Date().toISOString();
+    putInCloud({ ...sent, isArchived: true, archivedAt }, archivedAt);
+    // An older removal of his, long since in the cloud, is still on the device's list of documents taken off.
+    await recordRemovedFieldUpdateDocument('u1', 'permit');
+    await queueProjectUpdateRecord({ ...sent, notes: EDIT, status: 'queued' }, false);
+    (saveProjectUpdate as jest.Mock).mockClear();
+    (archiveProjectUpdate as jest.Mock).mockClear();
+    const record = [A.buildUpdateTombstone({ ...sent, isArchived: true, archivedAt }, 'hide_cloud_update', archivedAt)];
+    await reconcileProjectUpdateDeletionJournal(record);
+    await uploadPendingChanges();
+    expect(saveProjectUpdate).not.toHaveBeenCalled();
+    expect((archiveProjectUpdate as jest.Mock).mock.calls.map(([params]) => params)).toEqual([expect.objectContaining({ id: 'u1', archivedAt })]);
+    expect(documentIds(inCloud())).toEqual(['survey']);
+    expect(inCloud()).toMatchObject({ isArchived: true, archivedAt, notes: sent.notes });
+    expect(await getOfflineQueue()).toEqual([]);
+    // Once: his waiting copy is gone with it, so the next launch asks for nothing.
+    (archiveProjectUpdate as jest.Mock).mockClear();
+    resetFieldUpdateSyncMemoryForTests();
+    await reconcileProjectUpdateDeletionJournal(record);
+    await uploadPendingChanges();
+    expect(archiveProjectUpdate).not.toHaveBeenCalled();
+    expect(saveProjectUpdate).not.toHaveBeenCalled();
   });
 
   it('an update archived in the cloud with only its own record waiting: the record is still dropped, and the cloud copy is not written', async () => {

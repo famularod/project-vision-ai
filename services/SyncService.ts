@@ -3309,6 +3309,28 @@ function withoutChoiceOverConflict(item: SyncQueueItem): SyncQueueItem {
   return { ...item, payload: rest };
 }
 
+/**
+ * The documents this device took off an update (its own durable list of
+ * them) that a waiting whole copy of the update no longer lists, as removals
+ * to carry; null when there is none. One that is long since off the cloud's
+ * copy changes nothing there when it is applied again.
+ */
+function documentsTakenOffInsideCopy(
+  updateId: string,
+  payload: Partial<ProjectUpdateRecordPayload>,
+  takenOff: ReadonlySet<string>,
+): FieldUpdateDocumentPatch[] | null {
+  if (payload.archiveOnly || !isRecord(payload.updateData)) return null;
+  const documents = (payload.updateData as { documents?: unknown }).documents;
+  const listed = new Set((Array.isArray(documents) ? documents : []).map(document => isRecord(document) ? document.id : undefined));
+  const patches = [...takenOff]
+    .filter(key => key.startsWith(removedFieldUpdateDocumentKey(updateId, '')))
+    .map(key => key.slice(removedFieldUpdateDocumentKey(updateId, '').length))
+    .filter(documentId => documentId && !listed.has(documentId))
+    .map(documentId => ({ documentId, remove: true as const }));
+  return patches.length > 0 ? patches : null;
+}
+
 export type ProjectUpdateTombstoneReplay = {
   updateId: string;
   /**
@@ -3339,6 +3361,8 @@ export async function replayProjectUpdateTombstonesInQueue(
     : await confirmedProjectUpdateDeletionIds().catch(() => new Set<string>());
   const ownerId = currentCloudOwner().ownerId;
   const queuedAt = new Date().toISOString();
+  const takenOff = byId.size === 0 ? new Set<string>()
+    : await loadRemovedFieldUpdateDocuments().catch(() => new Set<string>());
   const outcome = await mutateOfflineQueue(queue => {
     const updateItems = queue.filter(item => item.entity === 'project_update');
     const payloadId = (item: SyncQueueItem) => (item.payload as Partial<ProjectUpdateRecordPayload>).id;
@@ -3367,7 +3391,12 @@ export async function replayProjectUpdateTombstonesInQueue(
         (replay.archive.archivedAt === null || payload.archivedAt === replay.archive.archivedAt) &&
         (!replay.archive.documentChangesOnly || Boolean(queuedFieldUpdateDocumentPatches(item)));
       if (sameArchive) archiveKept.add(replay.updateId);
-      const patches = replay.archive !== false && !sameArchive ? queuedFieldUpdateDocumentPatches(item) : null;
+      // Or taken off inside a whole copy that waited (sync batch Y3, item 3):
+      // with an edit of the update already waiting, the removal goes into
+      // that copy and no change of its own waits, so it was dropped with the
+      // copy and the archived cloud copy kept the document.
+      const patches = replay.archive !== false && !sameArchive
+        ? queuedFieldUpdateDocumentPatches(item) ?? documentsTakenOffInsideCopy(replay.updateId, payload, takenOff) : null;
       if (patches) waitingDocumentChanges.set(replay.updateId, patches);
       return sameArchive;
     });
