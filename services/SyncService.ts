@@ -6252,10 +6252,21 @@ async function uploadExactQueueItem(
  * cloud cannot be read. Read by its id (A7 pass 15 L-2): the full list pages
  * by offset, newest first, so a row edited while it was read could be missed,
  * and the conflict was closed as "deleted on another device".
+ *
+ * Review pass 1, sync G3 (older; owner answer Q45, 6 Oct 2026). "The cloud has none" is true of one account only.
+ * This read was made as whoever was signed in when it left, and an answer that came back empty under the next
+ * account read as "deleted on another device", which closes a card. It is made for one account: the caller's own
+ * (a choice in Review Conflicts, an upload pass), or else the one signed in as it starts. The cloud is asked as
+ * that account, and when that account is no longer the one signed in, before the read or when its answer arrives,
+ * the cloud "cannot be read": never "has none".
  */
-async function currentCloudScheduleItem(itemId: string): Promise<ScheduleItem | null> {
-  const cloud = await getScheduleItem(itemId).catch(() => null);
-  if (!cloud?.ok || cloud.stubbed) {
+async function currentCloudScheduleItem(
+  itemId: string,
+  itsAccount: Pick<QueueUploadContext, 'account'> = {},
+): Promise<ScheduleItem | null> {
+  const asked = { account: itsAccount.account ?? currentCloudOwner() };
+  const cloud = await asItsAccount(asked, () => getScheduleItem(itemId)).catch(() => null);
+  if (!cloud?.ok || cloud.stubbed || passAccountChanged(asked)) {
     throw new Error('sync_conflict_cloud_copy_unreadable');
   }
   return cloud.data ?? null;
@@ -6680,8 +6691,13 @@ let taskConflictChoicesUnderWay = 0;
  * task the cloud no longer has is not written back, and its conflict is closed, as when Keep Phone itself finds it
  * gone. Null when the cloud's row cannot be read now: the copy waits for the next pass, as it did.
  */
-async function returnRefusedKeptTaskCopyToItsCard(item: SyncQueueItem, payload: ScheduleItemRecordPayload): Promise<string | null> {
-  const row = await currentCloudScheduleItem(payload.id).catch(() => undefined);
+async function returnRefusedKeptTaskCopyToItsCard(
+  item: SyncQueueItem,
+  payload: ScheduleItemRecordPayload,
+  /** The pass this is part of: the row is read as its account, and "gone" is never said on another account's answer (review pass 1, sync G3). */
+  itsAccount: Pick<QueueUploadContext, 'account'> = {},
+): Promise<string | null> {
+  const row = await currentCloudScheduleItem(payload.id, itsAccount).catch(() => undefined);
   if (row === undefined) return null;
   const taskName = payload.itemData?.taskName || 'Unnamed Task';
   if (row === null) {
@@ -6743,10 +6759,12 @@ async function chooseScheduleItemSyncConflictCopy(
    * A7 pass 15, as for field updates, A4 pass 17 L1); without it, the copy
    * saved with the conflict.
    */
-  { cloudCopyShown, refusedBefore = 0, weighedBesideCard }: {
+  { cloudCopyShown, refusedBefore = 0, weighedBesideCard, choiceAccount }: {
     cloudCopyShown?: unknown;
     /** Keep Phone's own count of the times its copy was refused in this choice (independent review pass 3); not for callers. */
     refusedBefore?: number;
+    /** The choice's own (review pass 1, sync G3); not for callers: the account the choice was begun under, kept through each further step of it. */
+    choiceAccount?: CloudOwnerBinding;
     /**
      * The choice's own (independent review pass 4); not for callers: the fields of this phone's edits of the task that
      * waited beside a card of fields and went through the ordinary upload before this choice went on.
@@ -6754,6 +6772,13 @@ async function chooseScheduleItemSyncConflictCopy(
     weighedBesideCard?: readonly string[];
   } = {},
 ): Promise<ScheduleItem> {
+  // Review pass 1, sync G3 (older; owner answer Q45, 6 Oct 2026): the account this choice is made for, taken before
+  // anything is waited on. Every read of the cloud's row below, and Keep Cloud's own write that takes a landed
+  // edit back out of it, is made as this account or not at all. They were made as whoever was signed in by then:
+  // 15 of the 16 places that write to the cloud went through the account check, and Keep Cloud's undo was the
+  // sixteenth. With another account signed in, that write (made only over the row version this account read)
+  // changed nothing, the next read came back empty, and the card closed as "deleted on another device".
+  const itsAccount = { account: choiceAccount ?? currentCloudOwner() };
   // This phone's waiting edits of the task, before anything else: an upload
   // already under way takes one off the queue once it has landed it.
   const queueAtChoice = await getOfflineQueue();
@@ -6774,7 +6799,7 @@ async function chooseScheduleItemSyncConflictCopy(
     if (!now) throw new Error('sync_conflict_closed');
     const value = (copy: unknown, field: string) => JSON.stringify(isRecord(copy) ? copy[field] ?? null : null);
     if (!askedFields.every(field => value(shown, field) === value(now.remotePayload, field))) throw new Error('sync_conflict_cloud_copy_changed');
-    return resolveScheduleItemSyncConflict(now.id, resolution, { cloudCopyShown: now.remotePayload, refusedBefore, weighedBesideCard });
+    return resolveScheduleItemSyncConflict(now.id, resolution, { cloudCopyShown: now.remotePayload, refusedBefore, weighedBesideCard, choiceAccount: itsAccount.account });
   }
   const waitingEdits = queueAtChoice.filter(item => item.id === scheduleItemQueueItemId(conflict.localId));
 
@@ -6831,14 +6856,14 @@ async function chooseScheduleItemSyncConflictCopy(
       // left edits on the card: one of them may be in the row, and only the choice's own write takes it back.
       if (wholeTaskDifference && error instanceof Error && error.message === 'sync_conflict_closed' &&
         choicesStoppedAfterOtherChangeSent.has(error) && !localPayload.withdrawnEdits?.length) {
-        const rowNow = await currentCloudScheduleItem(conflict.localId).catch(() => null);
+        const rowNow = await currentCloudScheduleItem(conflict.localId, itsAccount).catch(() => null);
         if (rowNow) return rowNow;
       }
       throw error;
     }
     if (!beside) return null;
     try {
-      return await resolveScheduleItemSyncConflict(beside.cardId, resolution, { cloudCopyShown, refusedBefore, weighedBesideCard: beside.fields });
+      return await resolveScheduleItemSyncConflict(beside.cardId, resolution, { cloudCopyShown, refusedBefore, weighedBesideCard: beside.fields, choiceAccount: itsAccount.account });
     } catch (error) {
       if (beside.sent && error instanceof Error) choicesStoppedAfterOtherChangeSent.add(error);
       throw error;
@@ -6855,7 +6880,7 @@ async function chooseScheduleItemSyncConflictCopy(
     // task since and the progress David entered on the web. A cloud that
     // cannot be read changes nothing; a task the cloud no longer has is not
     // written back, and its conflict is closed.
-    const cloudItem = await currentCloudScheduleItem(conflict.localId);
+    const cloudItem = await currentCloudScheduleItem(conflict.localId, itsAccount);
     if (!cloudItem) {
       await clearScheduleItemSyncConflicts(conflict.localId);
       throw new Error('sync_conflict_record_deleted');
@@ -6907,7 +6932,7 @@ async function chooseScheduleItemSyncConflictCopy(
       .filter(text => !leftOnCardThatMayHaveLanded.some(edit => JSON.stringify(edit) === text)));
     // Read again now: an edit from another device that landed meanwhile is
     // the cloud's too.
-    const reread = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
+    const reread = await currentCloudScheduleItem(conflict.localId, itsAccount).catch(() => undefined);
     if (reread === null) {
       await clearScheduleItemSyncConflicts(conflict.localId);
       throw new Error('sync_conflict_record_deleted');
@@ -6948,14 +6973,14 @@ async function chooseScheduleItemSyncConflictCopy(
         // another device made in the instant after that row was read was replaced, with no card (and a task deleted
         // in that instant was written back). Refused, nothing was written: the row is read again and the undo worked
         // out on it, as a queued edit is weighed again; a row that keeps changing leaves the choice to be made again.
-        const restore = await upsertScheduleItem(restored, ...cloudRowWriteConditionFor(cloudNow)).catch(() => null);
+        const restore = await asItsAccount(itsAccount, () => upsertScheduleItem(restored, ...cloudRowWriteConditionFor(cloudNow))).catch(() => null);
         if (restore?.ok && !restore.stubbed) {
           await clearResolvedConflict(conflict.id);
           return restored;
         }
         if (restore?.code !== CLOUD_ROW_CHANGED_SINCE_READ) throw new Error('sync_conflict_save_unconfirmed');
         if (refused >= QUEUED_RECORD_WEIGH_AGAIN_LIMIT) throw new Error('sync_conflict_cloud_copy_changed');
-        const rowNow = await currentCloudScheduleItem(conflict.localId);
+        const rowNow = await currentCloudScheduleItem(conflict.localId, itsAccount);
         if (!rowNow) break; // deleted on another device in that instant: closed below, and not written back
         cloudNow = rowNow;
       }
@@ -6987,7 +7012,7 @@ async function chooseScheduleItemSyncConflictCopy(
   // it and nothing is sent: David reviews it again. A cloud that cannot be
   // read changes nothing; a task the cloud no longer has is not written
   // back, and its conflict is closed.
-  const cloudNow = await currentCloudScheduleItem(conflict.localId);
+  const cloudNow = await currentCloudScheduleItem(conflict.localId, itsAccount);
   if (!cloudNow) {
     await clearScheduleItemSyncConflicts(conflict.localId);
     throw new Error('sync_conflict_record_deleted');
@@ -7108,7 +7133,7 @@ async function chooseScheduleItemSyncConflictCopy(
     // moment is not written back, and its conflict is closed. A row written again that still says what the screen
     // showed has the choice made on it again, here, twice at most. Any other failure is reported as before.
     if (keptTaskCopiesRefused.delete(localItem.id)) {
-      const rowAfter = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
+      const rowAfter = await currentCloudScheduleItem(conflict.localId, itsAccount).catch(() => undefined);
       if (rowAfter === null) {
         await clearScheduleItemSyncConflicts(conflict.localId);
         throw new Error('sync_conflict_record_deleted');
@@ -7117,7 +7142,7 @@ async function chooseScheduleItemSyncConflictCopy(
         throw new Error('sync_conflict_cloud_copy_changed');
       }
       if (rowAfter && refusedBefore < QUEUED_RECORD_WEIGH_AGAIN_LIMIT) {
-        return resolveScheduleItemSyncConflict(conflictId, resolution, { cloudCopyShown, refusedBefore: refusedBefore + 1, weighedBesideCard });
+        return resolveScheduleItemSyncConflict(conflictId, resolution, { cloudCopyShown, refusedBefore: refusedBefore + 1, weighedBesideCard, choiceAccount: itsAccount.account });
       }
       throw new Error(result.errors[0] || 'sync_conflict_save_failed');
     }
@@ -7125,7 +7150,7 @@ async function chooseScheduleItemSyncConflictCopy(
     // but a write whose answer was lost HAS landed. The row is read once. It holds what he chose to keep: the choice
     // is made, and ends as when the answer had arrived. It cannot be read: Settings says the change may or may not
     // have been saved. Only when it is read and does not hold his copy is neither copy changed.
-    const rowAfter = await currentCloudScheduleItem(conflict.localId).catch(() => undefined);
+    const rowAfter = await currentCloudScheduleItem(conflict.localId, itsAccount).catch(() => undefined);
     if (rowAfter === undefined) throw new Error('sync_conflict_save_unconfirmed');
     const keptValues = cardFields ? [...cardFields].filter(field => !TASK_FIELDS_ASIDE_IN_CONFLICT_CHECK.has(field)) : null;
     const landed = Boolean(rowAfter) && (keptValues
@@ -7910,7 +7935,7 @@ async function uploadQueueItem(
       // Review pass 5 (P5-1): with no choice under way to look at it, it does not wait here refused at every pass. It
       // goes back to its card, once, and he is told once (returnRefusedKeptTaskCopyToItsCard).
       if (payload.forceLocal) {
-        const told = taskConflictChoicesUnderWay === 0 ? await returnRefusedKeptTaskCopyToItsCard(item, payload) : null;
+        const told = taskConflictChoicesUnderWay === 0 ? await returnRefusedKeptTaskCopyToItsCard(item, payload, context) : null;
         if (told) {
           (context.keptCopiesReturnedToCard ??= new Map<string, string>()).set(item.id, told);
           return 'conflict';
