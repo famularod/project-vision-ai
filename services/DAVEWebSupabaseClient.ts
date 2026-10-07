@@ -1899,13 +1899,19 @@ function applyDAVEWebRealtimeRows(
   const property = collection ? webRowsProperty(collection) : null;
   const id = readRawString(candidate, 'id');
   if (!collection || !property || !id) return null;
+  // A shared document's live row may come without its record: merged into the row this tab holds, or, where
+  // that row cannot complete it, not applied, so that the list is read again (review of D1, L7).
+  const documentRow = entity === 'reference_document' && payload.eventType !== 'DELETE'
+    ? withHeldDocumentRecord(candidate, rows.referenceDocuments, id)
+    : candidate;
+  if (!documentRow) return null;
   // An archived project row is kept with its flag, so the portfolio still
   // knows the name to keep out.
   const nextCollection = mergeRealtimeRows(
     rows[property],
     entity === 'reference_document' && payload.eventType !== 'DELETE'
-      ? withHeldHostedIndexStatus(candidate, rows.referenceDocuments, id)
-      : candidate,
+      ? withHeldHostedIndexStatus(documentRow, rows.referenceDocuments, id)
+      : documentRow,
     payload.eventType,
     value => readRawString(value, 'id'),
   );
@@ -1913,6 +1919,34 @@ function applyDAVEWebRealtimeRows(
     rows: Object.freeze({ ...rows, [property]: nextCollection }),
     collections: Object.freeze([collection]),
   });
+}
+
+/**
+ * A live row of a shared document that carries no record (review of D1, L7).
+ * A write that leaves a large record untouched, as Archive and Restore do
+ * (they write the archived mark alone, owner answer Q44), is sent by the
+ * cloud's live changes without that record. Put in place of the row this tab
+ * holds, it left the document with a name and a category and nothing else:
+ * no project, no file, until the page was reloaded.
+ *
+ * So it is merged into the held row instead: the held record is kept, and
+ * the live row's own columns (the mark among them) are taken. That is right
+ * only while the held row is the same version of the record, which a write
+ * that did not touch the record leaves unchanged: the same "last changed"
+ * stamp. Where the tab holds no such row, or the stamps differ, nothing is
+ * applied (null), and the list is read from the cloud again, as the phone
+ * does with such a row.
+ */
+function withHeldDocumentRecord(
+  candidate: Readonly<Record<string, unknown>>,
+  heldRows: readonly unknown[],
+  id: string,
+): Readonly<Record<string, unknown>> | null {
+  if (isRecord(candidate.document_data)) return candidate;
+  const held = heldRows.find(row => readRawString(row, 'id') === id);
+  if (!isRecord(held) || !isRecord(held.document_data)) return null;
+  if (readRawString(held, 'updated_at') !== readRawString(candidate, 'updated_at')) return null;
+  return { ...held, ...candidate, document_data: held.document_data };
 }
 
 /**
