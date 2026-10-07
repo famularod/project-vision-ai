@@ -297,7 +297,7 @@ function keepRealtimeOnThisTabsSignIn(client: SupabaseClient): void {
 export function createDAVEWebSupabaseGateway(
   client: SupabaseClient | null,
   /** The guard the client's requests go through, when it has one (batch W1). */
-  signInGuard: (Pick<DAVEWebSignInRefreshGuard, 'gaveWay'> & Partial<Pick<DAVEWebSignInRefreshGuard, 'signInOver' | 'vouchedFor' | 'signingOut'>>) | null = null,
+  signInGuard: (Pick<DAVEWebSignInRefreshGuard, 'gaveWay'> & Partial<Pick<DAVEWebSignInRefreshGuard, 'signInOver' | 'vouchedFor' | 'signingOut' | 'signOutConfirmed'>>) | null = null,
 ) {
   if (client) keepRealtimeOnThisTabsSignIn(client);
   let artifactPathOwnerId: string | null = null;
@@ -349,6 +349,8 @@ export function createDAVEWebSupabaseGateway(
 
   /** How often this tab's sign-in has changed, or may have: every time what is kept of the owner check is cleared. */
   let signInChanges = 0;
+  /** The Sign Out of This Computer last made in this tab signed it out without the cloud confirming it. */
+  let signedOutUnconfirmed = false;
 
   function invalidateAuthorization() {
     authorizationCache = null;
@@ -691,11 +693,18 @@ export function createDAVEWebSupabaseGateway(
      *
      * All Devices is unchanged: only the server can sign the other devices
      * out, so without it nothing is signed out and he is told (Q21).
+     *
+     * Second review of the web area, F5 (7 Oct 2026): nothing said so when
+     * the cloud did not confirm the sign-out. It is noted here, for the
+     * sign-in page to say (`signedOutWithoutCloudConfirmation`).
      */
     async signOut(scope: DAVEWebSignOutScope = 'local'): Promise<void> {
+      signedOutUnconfirmed = false;
       if (!client) return;
       const ending = browserTabStoredSignIn();
       const askAuth = () => client.auth.signOut({ scope });
+      /** All Devices is refused below when the cloud did not do it; with nothing to sign out there is nothing to confirm. */
+      let confirmedByCloud = true;
       if (scope === 'global') {
         // The sign-out's own refresh is not held back by a "too many requests" wait.
         const { error } = await (signInGuard?.signingOut ? signInGuard.signingOut('everywhere', askAuth) : askAuth());
@@ -703,9 +712,13 @@ export function createDAVEWebSupabaseGateway(
         if (error) throw new Error('The desktop session could not be closed.');
       } else {
         try {
-          await (signInGuard?.signingOut ? signInGuard.signingOut('here', askAuth) : askAuth());
+          const { error } = await (signInGuard?.signingOut ? signInGuard.signingOut('here', askAuth) : askAuth());
+          // What the server itself answered, as the guard heard it; without a guard, auth-js's word that it went through.
+          confirmedByCloud = !ending ||
+            (signInGuard?.signingOut && signInGuard.signOutConfirmed ? signInGuard.signOutConfirmed() : !error);
         } catch {
           // Whatever auth-js left in this tab is looked at below.
+          confirmedByCloud = !ending;
         }
         // What auth-js could not take out is taken out here. A sign-in made here meanwhile (another session,
         // or any at all when the tab held none as this sign-out began) is not this sign-out's to remove, as
@@ -725,6 +738,21 @@ export function createDAVEWebSupabaseGateway(
       if (ending) forgetDAVEWebReportPeriods(ending.userId);
       // And so does the note the Duplicate Tab guard keeps for it (review pass 1, web L2).
       if (ending) await signInGuard?.signInOver?.(ending.sessionId);
+      signedOutUnconfirmed = !confirmedByCloud;
+    },
+
+    /**
+     * Whether the Sign Out of This Computer last made in this tab signed
+     * it out while the cloud did NOT confirm it: no connection, the server
+     * "unavailable" or saying "too many requests", an error of its own, or
+     * no answer in five seconds (second review, web F5). That sign-in may
+     * then still be good on the server, and the sign-in page says so. False
+     * when the cloud took the sign-out, said that sign-in is not there, or
+     * had already ended it; when there was nothing to sign out; and for
+     * Sign Out of All Devices, which is refused when the cloud cannot do it.
+     */
+    signedOutWithoutCloudConfirmation(): boolean {
+      return signedOutUnconfirmed;
     },
 
     /**
@@ -774,6 +802,16 @@ export function createDAVEWebSupabaseGateway(
      * that: a second ending, started while his sign-in here was out, had
      * shown the sign-in page as it settled, though it had kept his new
      * sign-in and the workspace was open on it.
+     *
+     * Second review of the web area, F5 (7 Oct 2026): this was not given
+     * the limits of a sign-out made in the tab (review pass 1, web L3).
+     * With a server that took the request and never answered, auth-js
+     * never answered either, nothing below ran, and the tab showed the
+     * sign-in page while it KEPT its sign-in: a reload showed his projects.
+     * It now runs as Sign Out of This Computer does: the server is asked
+     * once, for five seconds at most, and then the sign-in leaves this tab.
+     * (With no connection and a run-out hourly token that is one request at
+     * once, where it was eight over half a minute.)
      */
     async signOutThisTabToo(userId: string): Promise<DAVEWebTabSignOutOutcome> {
       if (!client) return 'ended';
@@ -781,7 +819,8 @@ export function createDAVEWebSupabaseGateway(
       if (!ending) return 'ended';
       if (!userId || ending.userId !== userId) return 'kept';
       try {
-        await client.auth.signOut({ scope: 'local' });
+        const askAuth = () => client.auth.signOut({ scope: 'local' });
+        await (signInGuard?.signingOut ? signInGuard.signingOut('here', askAuth) : askAuth());
       } catch {
         // Whatever auth-js left in storage is looked at below.
       }

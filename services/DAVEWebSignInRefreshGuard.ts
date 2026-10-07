@@ -103,6 +103,16 @@
  *   takes the sign-in out of this tab whatever the server could be told.
  * All Devices still needs the server (owner answer Q21): it is not cut
  * short, and is refused, as before, when the server cannot do it.
+ *
+ * Second review of the web area, F5 (7 Oct 2026):
+ * - nothing told him when the server could NOT be told. The guard hears
+ *   what the server itself answered during a sign-out, and says afterwards
+ *   whether that sign-in is over there too (`signOutConfirmed`), so the
+ *   page can say so when it is not;
+ * - a sign-out HEARD from another tab of the account was not run inside
+ *   `signingOut`. With a server that took the request and never answered
+ *   it waited for ever, and that tab kept its sign-in behind the sign-in
+ *   page. It now has the same limits as a sign-out made in the tab.
  */
 
 /** The browser profile's storage, shared by its tabs (localStorage). */
@@ -185,6 +195,13 @@ export type DAVEWebSignInRefreshGuard = Readonly<{
    * seconds. Resolves or rejects as `work` does.
    */
   signingOut: <T>(where: 'here' | 'everywhere', work: () => Promise<T>) => Promise<T>;
+  /**
+   * After a sign-out run inside `signingOut`: whether the sign-in server's own answers mean that sign-in is
+   * over there too. It took the sign-out, or said that sign-in is not there, or refused its token. False
+   * when it could not be told or did not say: no connection, "unavailable", "too many requests", another
+   * error, or no answer in time (the request stays sent, so the server may still end it later).
+   */
+  signOutConfirmed: () => boolean;
 }>;
 
 function pathOf(input: RequestInfo | URL): URL | null {
@@ -272,6 +289,8 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
   let stopWatching: (() => void) | null = null;
   /** The sign-out under way in this tab: whether it is of this computer only, until when the server is waited for, and whether its one refresh has gone out. */
   let leaving: { here: boolean; until: number; refreshSent: boolean } | null = null;
+  /** Whether the server's own answers during the last sign-out in this tab mean that sign-in is over there too. */
+  let signOutConfirmed = false;
   /** Until when the sign-in server asked this tab not to refresh. */
   let refreshWaitsUntil = 0;
   /** The tab's key as it was last made ready for use. */
@@ -304,6 +323,7 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
   async function signingOut<T>(where: 'here' | 'everywhere', work: () => Promise<T>): Promise<T> {
     const mine = { here: where === 'here', until: Date.now() + DAVE_WEB_SIGN_OUT_HERE_LIMIT_MS, refreshSent: false };
     leaving = mine;
+    signOutConfirmed = false;
     try {
       return await work();
     } finally {
@@ -594,6 +614,8 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
         : await options.fetch(input, init);
       // auth-js takes the sign-in out of this tab on these answers (the others it reports as a failure).
       if (response.ok || response.status === 401 || response.status === 403 || response.status === 404) {
+        // The server took the sign-out, or says that sign-in is not there (second review, web F5).
+        if (leaving) signOutConfirmed = true;
         gaveWay = false;
         stopWatching?.();
         await signInOver(sessionId);
@@ -660,6 +682,7 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
     if (grant === 'refresh_token' && !response.ok && ![502, 503, 504].includes(response.status)) {
       // The server refused this tab's token (auth-js takes every answer but these for a refusal): the sign-in
       // has ended, for every tab holding it. Its note goes, and this tab's key with it.
+      if (signOut) signOutConfirmed = true;
       gaveWay = false;
       stopWatching?.();
       try {
@@ -702,5 +725,5 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
     // Nothing noted, nothing removed: every token is sent as before.
   }
 
-  return Object.freeze({ fetch: guardedFetch, gaveWay: () => gaveWay, signInOver, vouchedFor, signingOut });
+  return Object.freeze({ fetch: guardedFetch, gaveWay: () => gaveWay, signInOver, vouchedFor, signingOut, signOutConfirmed: () => signOutConfirmed });
 }

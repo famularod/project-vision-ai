@@ -7039,11 +7039,16 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
       // Once signed out, the sign-in page replaces this workspace.
       await auth.signOutOfDesktop(scope);
     } catch (error) {
-      // On the web, This Computer needs the cloud too, so it is not offered as
-      // the way out here (unlike the phone, which can sign out with no signal).
+      // Only All Devices needs the cloud (owner answer Q21): without it nothing is signed out, and he is told.
+      // This Computer does not (review pass 1, web L3; second review, F5): it signs this browser out whatever
+      // the cloud answers, like the phone with no signal, and the sign-in page says so when the cloud did not
+      // confirm it. It comes here only if this browser itself would not finish, so its message does not speak
+      // of the internet connection.
       setProblem(error instanceof DAVEWebSignOutNeedsConnectionError
         ? `${error.message} Try again when this computer is back online.`
-        : 'Sign out did not finish. Check the internet connection and try again.');
+        : scope === 'global'
+          ? 'Sign out did not finish. Check the internet connection and try again.'
+          : 'Sign out did not finish. Try again.');
       setPending(null);
     }
   };

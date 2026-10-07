@@ -148,15 +148,37 @@ test('All Devices with no connection says so, signs nothing out, and both choice
   expect(mockAuth.signOutOfDesktop).toHaveBeenLastCalledWith('local');
 });
 
-test('a sign-out that did not finish says so instead of nothing', async () => {
+// Changed 7 Oct 2026 (second review of the web area, F5 c). This test pressed Sign Out of This Computer and
+// expected "Check the internet connection". Since review pass 1, L3, This Computer signs this browser out with
+// no connection at all, so that sentence could no longer appear for it; it is All Devices that still needs
+// the cloud (owner answer Q21).
+test('Sign Out of All Devices that did not finish says so instead of nothing', async () => {
   mockAuth.signOutOfDesktop.mockImplementationOnce(async () => {
     throw new Error('The desktop session could not be closed.');
   });
   const screen = openSignOutChoice();
-  await act(async () => { fireEvent.press(screen.getByText('Sign Out of This Computer')); });
+  await act(async () => { fireEvent.press(screen.getByText('Sign Out of All Devices')); });
   await waitFor(() => expect(screen.getByText(
     'Sign out did not finish. Check the internet connection and try again.',
   )).toBeTruthy());
+});
+
+test('Sign Out of This Computer does not need the cloud: if this browser itself would not finish it, the message does not blame the internet connection', async () => {
+  mockAuth.signOutOfDesktop.mockImplementationOnce(async () => {
+    throw new Error('This browser would not remove the sign-in.');
+  });
+  const screen = openSignOutChoice();
+  await act(async () => { fireEvent.press(screen.getByText('Sign Out of This Computer')); });
+  await waitFor(() => expect(screen.getByText('Sign out did not finish. Try again.')).toBeTruthy());
+  expect(screen.queryByText(/internet connection/)).toBeNull();
+  // Both choices stay, to try again.
+  expect(screen.getByText('Sign Out of This Computer')).toBeTruthy();
+  expect(screen.getByText('Sign Out of All Devices')).toBeTruthy();
+});
+
+test('the note in the code about This Computer says what happens now (second review, web F5 c)', () => {
+  const source = require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'components', 'web-shell', 'desktop-read-only-shell.tsx'), 'utf8') as string;
+  expect(source).not.toContain('This Computer needs the cloud too');
 });
 
 test('the sign-in page says the same about the other tabs (A12 pass 6 L2)', () => {

@@ -249,9 +249,9 @@ describe('the same account signing out of this computer in another tab (A12 pass
     fireEvent.press(screen.getByText('Sign out'));
     await act(async () => { fireEvent.press(screen.getByText('Sign Out of This Computer')); });
 
-    await waitFor(() => expect(screen.getByText(
-      'Sign out did not finish. Check the internet connection and try again.',
-    )).toBeTruthy());
+    // Second review, web F5 (c): This Computer no longer fails for want of a connection, so its message no
+    // longer speaks of one.
+    await waitFor(() => expect(screen.getByText('Sign out did not finish. Try again.')).toBeTruthy());
     expect(heard).toEqual([]);
   });
 });
