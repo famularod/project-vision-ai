@@ -1953,6 +1953,26 @@ describe('review pass 1, sync G3 (owner answer Q45 (6 Oct)): Keep Cloud and Keep
     expect(cloudTask()).toMatchObject({ notes: '' }); // nothing was sent
   });
 
+  it('a kept copy handed back by an upload pass: the account changes as its write is refused, and the next account\'s empty answer does not close its card as "deleted on another device"', async () => {
+    const { conflict, shown } = await cardAboutTheOwner();
+    await keepPhoneCutOffBeforeItsWrite(conflict.id, shown); // (this sets the stand-in's write back to its own)
+    ipadSets({ owner: 'Carl', updatedAt: '2026-09-30T13:00:00.000Z' });
+    mockUpsertScheduleItem.mockImplementationOnce(async (item, options) => {
+      const answer = await mockCloud.upsert(item, options); // refused: the row changed since Keep Phone checked it
+      accountChangesToB();
+      return answer;
+    });
+
+    const pass = await uploadPendingChanges();
+
+    // Before: the row was then read as B, came back empty, and the pass said "Your Keep Phone choice ... was not
+    // applied because the task was deleted on another device. Its conflict is closed." and closed account A's card.
+    expect(pass.errors.join(' ')).not.toContain('deleted on another device');
+    expect((await getSyncConflicts()).map(item => item.id)).toEqual([conflict.id]);
+    expect(cloudTask()).toMatchObject({ owner: 'Carl' });
+    expect((await getOfflineQueue()).map(item => item.entity)).toEqual(['schedule_item']); // the kept copy still waits, for account A
+  });
+
   it('one account only: a token refresh during Keep Cloud (the same account told again) changes nothing', async () => {
     const { conflict, shown, choose } = await keepCloudWithAnEditOfThisPhonesLanded();
     mockGetScheduleItem.mockImplementationOnce(async (id: string) => {

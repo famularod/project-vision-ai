@@ -149,6 +149,20 @@ describe('G2: a waiting document, and the account changes while its file is bein
 
     expect(named('uploadPhoto')).toEqual([{ name: 'uploadPhoto', as: 'owner-a' }]);
   });
+
+  it('before the app knows who is signed in, a document queued under account A has its file sent only as account A', async () => {
+    const sync = startApp();
+    await sync.queueReferenceDocumentRecord(document as never, false);
+    // The app is closed and opened again; no sign-in event has arrived yet.
+    jest.resetModules();
+    const again = require('../../services/SyncService') as Sync;
+    expect((require('../../services/CloudOwnerBinding') as Binding).currentCloudOwner().ownerId).toBeUndefined();
+    mockCalls.length = 0;
+
+    await again.uploadPendingChanges();
+
+    expect(named('uploadPhoto')).toEqual([{ name: 'uploadPhoto', as: 'owner-a' }]);
+  });
 });
 
 describe('G2: Sync Now, a document only on this phone', () => {
