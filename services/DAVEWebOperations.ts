@@ -789,6 +789,54 @@ export function planDAVEWebLinksRemovedWithTasks({
   }));
 }
 
+/**
+ * Review pass 1, web L6 (6 Oct 2026; caused by WS1 item 8): the tasks that
+ * still list a deleted task as a predecessor after its delete, by why each
+ * link could not be taken. He was told "N other tasks still list it as a
+ * predecessor, because they were being changed on another device at that
+ * moment." whatever had happened (a dropped connection and an ended sign-in
+ * included), and N counted every saved row, the hidden ones he cannot open
+ * too. These count tasks the schedule shows.
+ */
+export type DAVEWebLinksLeftAfterDelete = Readonly<{
+  /** Another device changed the task at that moment (the cloud refused the save as out of date, twice). */
+  changedElsewhere: number;
+  /** The save failed and it was no other device: the cloud did not take it, or could not be reached. */
+  notSaved: number;
+  /** The cloud no longer accepted this browser's sign-in. */
+  signedOut: number;
+  /**
+   * The save of the links was cut short and the cloud could not be read again to finish: the count is of the tasks
+   * that were to lose the link, and some of them may have lost it.
+   */
+  unsure?: boolean;
+}>;
+
+/** What he is told after Delete Task: the delete, then each link left with its true reason and what to do. */
+export function daveWebTaskDeletedNotice(left: DAVEWebLinksLeftAfterDelete | null): string {
+  const deleted = 'Task deleted and protected from returning on another device.';
+  const total = left ? left.changedElsewhere + left.notSaved + left.signedOut : 0;
+  if (!left || total === 0) return deleted;
+  const those = total === 1 ? 'that task' : 'those tasks';
+  if (left.unsure) {
+    // One task shown here means the links cut short were its own and those of rows the schedule does not show.
+    const may = total === 1 ? '1 other task may still list it as a predecessor' : `Up to ${total} other tasks may still list it as a predecessor`;
+    const still = total === 1 ? 'if it is still listed' : 'where it is still listed';
+    return left.signedOut > 0
+      ? `${deleted} ${may}, because this browser's sign-in was no longer accepted before every link was removed. Sign in again, then open ${those} in Schedule and untick the deleted task ${still}.`
+      : `${deleted} ${may}: removing ${total === 1 ? 'the' : 'those'} links was interrupted, and the schedule could not then be read from the cloud to finish (the connection may have dropped). Open ${those} in Schedule and untick the deleted task ${still}.`;
+  }
+  const kinds: Array<readonly [number, (count: number) => string]> = [
+    [left.changedElsewhere, count => `${count === 1 ? 'it was' : 'they were'} being changed on another device at that moment`],
+    [left.notSaved, count => `the change to ${count === 1 ? 'it' : 'them'} could not be saved just then (the connection may have dropped)`],
+    [left.signedOut, count => `this browser's sign-in was no longer accepted when ${count === 1 ? 'its link was' : 'their links were'} to be removed`],
+  ];
+  const clauses = kinds.filter(([count]) => count > 0).map(([count, why], index) => index === 0
+    ? `${count} other task${count === 1 ? ' still lists' : 's still list'} it as a predecessor, because ${why(count)}`
+    : `${count} more still list${count === 1 ? 's' : ''} it, because ${why(count)}`);
+  return `${deleted} ${clauses.join('; ')}. ${left.signedOut > 0 ? 'Sign in again, then open' : 'Open'} ${those} in Schedule and untick the deleted task.`;
+}
+
 function canonicalSha256(value: string): string | null {
   const normalized = value.trim().toLowerCase();
   return /^[a-f0-9]{64}$/.test(normalized) ? normalized : null;

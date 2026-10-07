@@ -34,6 +34,7 @@ import {
 } from '../../types';
 import type { CloudProject, CloudProjectUpdate } from '../../services/SupabaseService';
 import {
+  DAVEWebAuthorizationError,
   DAVEWebDocumentMutationError,
   DAVEWebSignOutNeedsConnectionError,
   DAVEWebTaskMutationError,
@@ -107,7 +108,9 @@ import {
   daveWebReportSourceNotCounted,
   DAVE_WEB_DELETE_WITH_CHANGES_LABEL,
   daveWebTaskDeleteRowIds,
+  daveWebTaskDeletedNotice,
   planDAVEWebLinksRemovedWithTasks,
+  type DAVEWebLinksLeftAfterDelete,
   daveWebScheduleDocumentDeleteNote,
   daveWebScheduleImportPairingQuestions,
   daveWebScheduleUploadRoleRefusal,
@@ -1409,12 +1412,8 @@ function TaskEditingWorkspace({
       const stillLinked = await removeLinksToDeletedRows(deletedIds);
       if (selectedTaskId === deleteCandidate.id) setSelectedTaskId(null);
       setDeleteCandidate(null);
-      setNotice({
-        tone: 'good',
-        text: stillLinked === 0
-          ? 'Task deleted and protected from returning on another device.'
-          : `Task deleted and protected from returning on another device. ${stillLinked} other task${stillLinked === 1 ? ' still lists' : 's still list'} it as a predecessor, because ${stillLinked === 1 ? 'it was' : 'they were'} being changed on another device at that moment. Open ${stillLinked === 1 ? 'that task' : 'those tasks'} in Schedule and untick the deleted task.`,
-      });
+      // Each link left, with its own reason and a count of the tasks he can open (review pass 1, web L6).
+      setNotice({ tone: 'good', text: daveWebTaskDeletedNotice(stillLinked) });
     } catch (error) {
       if (error instanceof DAVEWebTaskMutationError) {
         await auth.refreshSnapshot().catch(() => undefined);
@@ -1427,26 +1426,66 @@ function TaskEditingWorkspace({
 
   /**
    * WS1 item 8: after a task's delete, the links other tasks had to its rows are removed. Each task is saved only
-   * while nobody else changed it; when one was changed elsewhere just then, the cloud is read once more and the rest
-   * tried again. Returns how many tasks still list a deleted row (0 almost always).
+   * while nobody else changed it; when a save fails, the cloud is read once more and the links are taken again from
+   * its newer copy.
+   *
+   * Review pass 1, web L6 (6 Oct 2026): what is left is reported with why. The second try used to save the tasks as
+   * one batch again, which stops at the first task that cannot be saved, and whatever went wrong he was told every
+   * one of them "was being changed on another device". Now the second try saves each task on its own, so one task
+   * another device is changing does not keep the others' links, and each failure is known for what it is: changed
+   * elsewhere, deleted elsewhere meanwhile (it then lists nothing, and is not counted), a sign-in no longer accepted,
+   * or a save that did not go through. A failure that is not another device's doing ends the try: the cloud is not
+   * taking saves, and the tasks not reached still list the deleted task. Only tasks the schedule shows are counted.
+   * Null when no task shown still lists it (almost always).
    */
-  const removeLinksToDeletedRows = async (deletedIds: readonly string[]): Promise<number> => {
-    let remaining = 0;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      let latest: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems' | 'knownScheduleItems'> | null = auth.snapshot;
-      if (attempt > 0) latest = await loadDAVEWebReadOnlySnapshot().catch(() => null);
-      if (!latest) return remaining;
-      const removals = planDAVEWebLinksRemovedWithTasks({ snapshot: latest, deletedIds });
-      remaining = removals.length;
-      if (remaining === 0) return 0;
+  const removeLinksToDeletedRows = async (deletedIds: readonly string[]): Promise<DAVEWebLinksLeftAfterDelete | null> => {
+    const held = auth.snapshot;
+    if (!held) return null;
+    const failureOf = (error: unknown): 'changedElsewhere' | 'gone' | 'signedOut' | 'notSaved' =>
+      error instanceof DAVEWebTaskMutationError
+        ? error.code === 'conflict' ? 'changedElsewhere' : error.code === 'deleted' || error.code === 'not_found' ? 'gone' : 'notSaved'
+        : error instanceof DAVEWebAuthorizationError ? 'signedOut' : 'notSaved';
+    const shownIn = (snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'>) => {
+      const shown = new Set(snapshot.scheduleItems.map(item => item.id));
+      return (rows: readonly DAVEWebScheduleItem[]) => rows.filter(row => shown.has(row.id)).length;
+    };
+    const planned = planDAVEWebLinksRemovedWithTasks({ snapshot: held, deletedIds });
+    if (planned.length === 0) return null;
+    let firstFailure: ReturnType<typeof failureOf>;
+    try {
+      await auth.updateTasks(planned);
+      return null;
+    } catch (error) {
+      firstFailure = failureOf(error);
+    }
+    const latest = await loadDAVEWebReadOnlySnapshot().catch(() => null);
+    const left = { changedElsewhere: 0, notSaved: 0, signedOut: 0 };
+    if (!latest) {
+      const count = shownIn(held)(planned);
+      if (count === 0) return null;
+      // One task was to lose the link: its save failed, for the reason it gave (deleted elsewhere: it lists nothing now).
+      if (planned.length === 1) return firstFailure === 'gone' ? null : { ...left, [firstFailure]: count };
+      // Several: the batch stopped at a task it could not save, and which one is not known, so some links may have
+      // been taken. What kept it from finishing is the read that failed, not another device.
+      return { ...left, [firstFailure === 'signedOut' ? 'signedOut' : 'notSaved']: count, unsure: true };
+    }
+    const countShown = shownIn(latest);
+    const again = planDAVEWebLinksRemovedWithTasks({ snapshot: latest, deletedIds });
+    for (let index = 0; index < again.length; index += 1) {
       try {
-        await auth.updateTasks(removals);
-        return 0;
-      } catch {
-        // Another device changed one of those tasks: read the cloud and try once more.
+        await auth.updateTasks([again[index]]);
+      } catch (error) {
+        const failure = failureOf(error);
+        if (failure === 'gone') continue;
+        if (failure === 'changedElsewhere') {
+          left.changedElsewhere += countShown([again[index]]);
+          continue;
+        }
+        left[failure] += countShown(again.slice(index));
+        break;
       }
     }
-    return remaining;
+    return left.changedElsewhere + left.notSaved + left.signedOut > 0 ? left : null;
   };
 
   const addPhotoToTask = async (task: DAVEWebScheduleItem, file: File | null) => {

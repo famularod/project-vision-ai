@@ -3,6 +3,7 @@ import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import { DesktopReadOnlyShell } from '../../components/web-shell/desktop-read-only-shell';
 import { DesktopSchedulePage } from '../../components/web-shell/desktop-schedule-page';
 import { loadDAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
+import { DAVEWebTaskMutationError } from '../../services/DAVEWebSupabaseClient';
 import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 
 // Open item, web batch WS1 item 8 (6 Oct 2026), on the Tasks page: Delete
@@ -177,7 +178,9 @@ describe('Delete Task on the web\'s Tasks page (WS1 item 8)', () => {
   });
 
   it('when a link still could not be taken, he is told how many tasks still list it and what to do', async () => {
-    mockAuth.updateTasks.mockRejectedValue(new Error('changed elsewhere'));
+    // The cloud's own refusal of a task another device changed (review pass 1, web L6: this sentence had been given
+    // for any error at all, a plain one included; the other kinds are in web-ws3-task-delete-links-left-page).
+    mockAuth.updateTasks.mockRejectedValue(new DAVEWebTaskMutationError('conflict', 'This task changed on another device.'));
     jest.mocked(loadDAVEWebReadOnlySnapshot).mockResolvedValue(snapshotOf([
       task('roofing', 'Roofing', [], '2026-10-06T18:00:05.000Z'),
       task('siding', 'Siding', ['framing', 'roofing'], '2026-10-06T18:00:03.000Z'),
