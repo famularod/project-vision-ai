@@ -23,6 +23,7 @@ import {
   type DAVEWebTaskDraft,
 } from '../../services/DAVEWebTaskEditing';
 import { DAVEWebTaskMutationError } from '../../services/DAVEWebSupabaseClient';
+import { daveWebLinkCircleRefusal } from '../../services/DAVEWebTaskLinkCircle';
 import {
   buildVitruviusGanttModel,
   parseVitruviusScheduleDate,
@@ -106,6 +107,8 @@ export function DesktopSchedulePage({
   // A link to a row a master hid reads as the row shown for its task (owner answer Q29).
   const knownTasks = auth.snapshot?.knownScheduleItems;
   const linkTarget = useMemo(() => scheduleTaskLinkTargets(tasks, knownTasks ?? []), [tasks, knownTasks]);
+  /** The row shown for a link's predecessor id: a link the editor re-points there is not a new link (WS1 item 7). */
+  const shownLinkId = (predecessorId: string) => linkTarget(predecessorId)?.id ?? predecessorId;
   const [editor, setEditor] = useState<ScheduleEditorState | null>(null);
   const [editingTask, setEditingTask] = useState<DAVEWebScheduleItem | null>(null);
   const [workspaceView, setWorkspaceView] = useState<ScheduleWorkspaceView>('builder');
@@ -148,6 +151,12 @@ export function DesktopSchedulePage({
           (editingTask.dependencies || []).some(dependency => dependency.predecessorItemId === task.id)),
       )
     : [];
+  // The predecessors the editor opened with, as the rows shown: one of them that also comes after the item is part of
+  // a circle saved from two places, and is listed so that he can always untick it (WS1 item 7).
+  const editorOpenedPredecessorIds = useMemo(
+    () => (editingTask ? scheduleEditorStateFor(editingTask, linkTarget).predecessorItemIds : []),
+    [editingTask, linkTarget],
+  );
   const editorScenario = useMemo(() => {
     if (!editor || !editingTask || editor.kind === 'phase') return null;
     return buildVitruviusScheduleChangeScenario({
@@ -375,6 +384,13 @@ export function DesktopSchedulePage({
         actor: auth.userEmail || 'Project manager',
         projects: auth.snapshot, // a task saved earlier under another project's name is repaired here (WS1 item 6)
       });
+      // A predecessor added here that already comes after this item in the cloud (linked the other way on another
+      // device or in another tab) would close a circle: refused, with what he typed kept (WS1 item 7).
+      const circle = editingTask ? await daveWebLinkCircleRefusal({ item, opened: editingTask, shownIdOf: shownLinkId }) : null;
+      if (circle) {
+        setNotice({ tone: 'danger', text: circle });
+        return;
+      }
       if (editingTask) await auth.updateTask(item);
       else await auth.createTask(item);
       closeEditor();
@@ -477,6 +493,12 @@ export function DesktopSchedulePage({
         actor,
         projects: auth.snapshot,
       });
+      // As in Save: a link this adds must not close a circle with what the cloud holds now (WS1 item 7).
+      const circle = await daveWebLinkCircleRefusal({ item, opened: latest, shownIdOf: shownLinkId });
+      if (circle) {
+        setNotice({ tone: 'danger', text: circle });
+        return;
+      }
       await auth.updateTask(item);
       closeEditor();
       setNotice({
@@ -719,6 +741,7 @@ export function DesktopSchedulePage({
           projects={projectNames}
           projectTasks={editorProjectTasks}
           linksElsewhere={editorLinksElsewhere}
+          openedPredecessorIds={editorOpenedPredecessorIds}
           scenario={editorScenario}
           pending={pending}
           awaitingConflictChoice={Boolean(conflict)}
@@ -1517,6 +1540,7 @@ function ScheduleEditor({
   projects,
   projectTasks,
   linksElsewhere = [],
+  openedPredecessorIds = [],
   scenario,
   pending,
   awaitingConflictChoice = false,
@@ -1530,6 +1554,8 @@ function ScheduleEditor({
   projectTasks: readonly DAVEWebScheduleItem[];
   /** The task's parent and predecessors in another building under the same root (A5 pass 13 L1). */
   linksElsewhere?: readonly DAVEWebScheduleItem[];
+  /** The predecessors the item had when the editor opened, as the rows shown (WS1 item 7). */
+  openedPredecessorIds?: readonly string[];
   scenario: VitruviusScheduleChangeScenario | null;
   pending: boolean;
   /** Another device's newer version is waiting for Load Latest or Apply My Changes. */
@@ -1544,14 +1570,31 @@ function ScheduleEditor({
     ...scheduleParentOptions(editingTask?.id || null, projectTasks),
     ...linksElsewhere.filter(item => item.id === editingTask?.parentItemId?.trim()),
   ];
+  const eligiblePredecessors = schedulePredecessorOptions(editingTask?.id || null, projectTasks);
+  // Open item, web batch WS1 item 7 (6 Oct 2026): a task that already comes after this item is not offered as a
+  // predecessor, so that one editor cannot make a circle. But two links made in opposite directions from two places
+  // are both saved, and then each task is the other's predecessor AND comes after it: neither editor listed the
+  // other, so he could not untick the link, and Save stayed "Correct Schedule Issues". A predecessor the item
+  // already has is always listed, so it can always be removed; and so is one he has ticked in this form that the
+  // schedule, refreshed under the open editor, now shows coming after the item (the other link was just made
+  // elsewhere): it had dropped out of the list while still ticked.
+  const circlePredecessors = editingTask
+    ? projectTasks.filter(item =>
+        item.id !== editingTask.id &&
+        (openedPredecessorIds.includes(item.id) || state.predecessorItemIds.includes(item.id)) &&
+        !eligiblePredecessors.some(option => option.id === item.id))
+    : [];
   const predecessorOptions = [
-    ...schedulePredecessorOptions(editingTask?.id || null, projectTasks),
+    ...eligiblePredecessors,
     ...linksElsewhere.filter(item =>
       (editingTask?.dependencies || []).some(dependency => dependency.predecessorItemId === item.id),
     ),
+    ...circlePredecessors,
   ];
+  const inCircle = (item: ScheduleItem) => circlePredecessors.some(link => link.id === item.id);
   const buildingLabel = (item: ScheduleItem) =>
-    linksElsewhere.some(link => link.id === item.id) ? ` (${taskProjectName(item)})` : '';
+    inCircle(item) ? ' (circular link)'
+      : linksElsewhere.some(link => link.id === item.id) ? ` (${taskProjectName(item)})` : '';
   const areaOptions = uniqueText(projectTasks.map(item => item.locationName));
   const canCaptureBaseline = Boolean(
     state.startDate.trim() &&
@@ -1662,6 +1705,11 @@ function ScheduleEditor({
         <View style={styles.relationshipSection}>
           <Text style={styles.fieldLabel}>Finish-to-start predecessors</Text>
           <Text style={styles.helpText}>Select work that must finish before this item can start.</Text>
+          {circlePredecessors.length > 0 ? (
+            <Text style={styles.scenarioIssue} accessibilityRole="alert">
+              {`${circlePredecessors.map(item => `“${item.taskName}”`).join(' and ')} ${circlePredecessors.length === 1 ? 'is' : 'are'} set to finish before this item and also to start after it. That is a circle, and the schedule cannot place it. Untick ${circlePredecessors.length === 1 ? 'it' : 'one'} below, then save.`}
+            </Text>
+          ) : null}
           <View style={styles.choiceWrap}>
             {predecessorOptions.length === 0 ? (
               <Text style={styles.helpText}>No eligible predecessor tasks yet.</Text>
@@ -1678,6 +1726,7 @@ function ScheduleEditor({
                       : [...state.predecessorItemIds, item.id],
                   )}
                   accessibilityRole="checkbox"
+                  {...(inCircle(item) ? { accessibilityLabel: `${item.taskName}, circular link` } : {})}
                   accessibilityState={{ checked: selected }}
                 >
                   <Ionicons
