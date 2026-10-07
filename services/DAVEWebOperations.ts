@@ -371,12 +371,43 @@ export type DAVEWebScheduleImportPlan = Readonly<{
  * current): the row is noted on the task and restates it at Make Current
  * (scheduleProgressCarriedToShownTasks with the schedules before and after).
  */
+/**
+ * Every saved task the web's upload pairs against, as the phone's approval is
+ * given them (open item, web batch WS1 item 1; 6 Oct 2026): the tasks the web
+ * shows, as saved, and after them the saved rows it does not show, with the
+ * test of which are shown. The upload was given only the tasks shown, so a
+ * task one master left out and a later master lists again had nothing to
+ * come back to: it came in as a new task at 0%, unasked, and what David had
+ * set stayed on the hidden row (the phone asks since S2 item 1).
+ *
+ * A snapshot read before the web kept every saved task (no
+ * knownScheduleItems) pairs as before, on the tasks shown alone.
+ */
+function daveWebSavedTasksForImport(
+  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'> & Partial<Pick<DAVEWebReadOnlySnapshot, 'knownScheduleItems'>>,
+): Readonly<{
+  saved: readonly Readonly<{ item: ScheduleItem; cloudUpdatedAt: string | null }>[];
+  isShown: (item: ScheduleItem) => boolean;
+}> {
+  // Paired on the saved tasks, as the phone's approval pairs them: a task a replaced lookahead moved is shown on the
+  // master's dates, saved on the lookahead's (owner answer Q25, gen26 follow-up).
+  const shown = snapshot.scheduleItems.map(item => ({
+    item: scheduleItemForCloud(scheduleItemAsSaved(item)),
+    cloudUpdatedAt: item.cloudUpdatedAt ?? null,
+  }));
+  const shownIds = new Set(shown.map(entry => entry.item.id));
+  const hidden = ((snapshot.knownScheduleItems ?? []) as readonly DAVEWebScheduleItem[])
+    .filter(item => !shownIds.has(item.id))
+    .map(item => ({ item: scheduleItemForCloud(item), cloudUpdatedAt: item.cloudUpdatedAt ?? null }));
+  return { saved: [...shown, ...hidden], isShown: item => shownIds.has(item.id) };
+}
+
 export function planDAVEWebScheduleImport({
   snapshot,
   importedScheduleItems,
   pairingChoices,
 }: {
-  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'>;
+  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'> & Partial<Pick<DAVEWebReadOnlySnapshot, 'knownScheduleItems'>>;
   importedScheduleItems: readonly ScheduleItem[];
   /** David's answers at the upload review (owner answer Q30): a row's id to the saved task's, or null for a new task. */
   pairingChoices?: Readonly<Record<string, string | null>> | null;
@@ -384,19 +415,16 @@ export function planDAVEWebScheduleImport({
   if (importedScheduleItems.length === 0) {
     return Object.freeze({ additions: Object.freeze([]), revisions: Object.freeze([]) });
   }
-  // Paired on the saved tasks, as the phone's approval pairs them: a task a replaced lookahead moved is shown on the
-  // master's dates, saved on the lookahead's (owner answer Q25, gen26 follow-up).
-  const saved = snapshot.scheduleItems.map(item => ({
-    item: scheduleItemForCloud(scheduleItemAsSaved(item)),
-    cloudUpdatedAt: item.cloudUpdatedAt ?? null,
-  }));
+  // Every saved task, with which of them the web shows, as the phone's approval is given them (WS1 item 1): a row may
+  // be a task no longer shown only by its Unique ID or by his answer at the review (scheduleTasksNoLongerShown).
+  const { saved, isShown } = daveWebSavedTasksForImport(snapshot);
   const merged = mergeApprovedScheduleImportItems({
     existing: saved.map(({ item }) => item),
     imported: importedScheduleItems,
-    completionMatch: findExactScheduleTaskForCompletionClaim,
+    // A completion claim is for a task he sees, as before: never merged into a row that is not shown.
+    completionMatch: (importedItem, items) => findExactScheduleTaskForCompletionClaim(importedItem, items.filter(isShown)),
     mergeCompletion: mergeReportedCompletionClaim,
-    // Every task offered is one the web shows.
-    isCurrent: () => true,
+    isCurrent: isShown,
     // Uploaded, not current: a task entered by hand is restated at Make Current (whole-app audit A5 pass 18 L3).
     current: false,
     pairingChoices,
@@ -425,14 +453,17 @@ export function daveWebScheduleImportPairingQuestions({
   snapshot,
   importedScheduleItems,
 }: {
-  snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'> | null | undefined;
+  snapshot: (Pick<DAVEWebReadOnlySnapshot, 'scheduleItems'> & Partial<Pick<DAVEWebReadOnlySnapshot, 'knownScheduleItems'>>) | null | undefined;
   importedScheduleItems: readonly ScheduleItem[];
 }): ScheduleImportPairingQuestion[] {
   if (!snapshot || importedScheduleItems.length === 0) return [];
+  // WS1 item 1: with the saved rows the web does not show, so a task that was on an earlier schedule and is listed
+  // again is asked about ("the same task, or new work?") by the phone's own function, in the phone's own words.
+  const { saved, isShown } = daveWebSavedTasksForImport(snapshot);
   return scheduleImportPairingQuestions({
-    existing: snapshot.scheduleItems.map(item => scheduleItemForCloud(scheduleItemAsSaved(item))),
+    existing: saved.map(({ item }) => item),
     imported: importedScheduleItems,
-    isCurrent: () => true,
+    isCurrent: isShown,
   });
 }
 
