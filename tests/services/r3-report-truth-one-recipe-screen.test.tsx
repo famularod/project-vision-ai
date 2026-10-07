@@ -175,7 +175,9 @@ describe('R3 item 1: the phone\'s Reports screen builds the report\'s facts by t
     expect(phone.input.knownScheduleDocuments).toBe(props.knownScheduleDocuments);
     const phoneTruth = phone.truths[0] as DAVEProjectTruth;
     expect(phoneTruth.projectId).toBe('report:alpha');
-    expect(updatesOf(phoneTruth)).toEqual([['u-old-row', 'MASTER 2-1'], ['u-shown', 'MASTER 1-2']]);
+    // R4, first commit: the update on the hidden row is held for the fingerprint's new version (R4 item 4a); until
+    // then the screen's facts are scoped as Build 230 scoped them.
+    expect(updatesOf(phoneTruth)).toEqual([['u-shown', 'MASTER 1-2']]);
 
     // The web, from the same saved rows.
     mockBuilt.length = 0;

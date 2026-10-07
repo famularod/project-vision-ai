@@ -19,9 +19,9 @@ export type DAVEReportProjectTruthsInput = {
   /**
    * Every saved task, hidden ones included. With them: a field update on a
    * task a new master moved stays with the task (never by a name its old
-   * schedule had twice), an update on a hidden row belongs to that row's
-   * project, and the report knows which detail tasks left with a replaced
-   * lookahead. Without them the report reads as it did before they existed.
+   * schedule had twice), and the report knows which detail tasks left with a
+   * replaced lookahead. Without them the report reads as it did before they
+   * existed.
    */
   knownScheduleItems?: readonly ScheduleItem[];
   /** Every saved schedule, as the shown list was worked out from them; `referenceDocuments` when absent. */
@@ -34,11 +34,10 @@ export type DAVEReportProjectTruthsInput = {
 /**
  * The Project Truth a report is written from, one per project: the one
  * recipe for the phone's Reports screen and the web's Reports page (open
- * item, 6 Oct 2026). Each had its own copy, and the copies took the saved
- * tasks differently: the phone's read whose update it is without them, so an
- * update the app had already counted for the project by its task's hidden
- * row could be left out of the report's facts again; the web's did the same.
- * Both now hand the saved tasks to the one scope and the one truth.
+ * item, 6 Oct 2026). Each had its own copy. It gives each exactly what its
+ * own copy gave (Build 230's result, to the byte): the saved tasks go to the
+ * truth, and the step that decides whose update it is reads without them,
+ * as both copies did.
  */
 export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput): DAVEProjectTruth[] {
   const known = input.knownScheduleItems;
@@ -49,8 +48,11 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
       projectRecords: input.projectRecords,
       updates: input.updates,
       scheduleItems: input.scheduleItems,
-      // Whose task a hidden row is (A10 pass 2 F1), as the app's own scope reads it.
-      ...(known ? { knownScheduleItems: known } : {}),
+      // NOT handed the saved tasks (R4, first commit): Build 230 did not hand them to this step, and handing them
+      // here changes which updates are a project's where an update sits on a hidden row under an older name. That
+      // moves the report's fingerprint for the same saved data, so an approval or a sent report made by Build 230
+      // would no longer be known after the update. It waits for the fingerprint's new version, which still works
+      // out the earlier fingerprint for reports made under it.
       projectAreas: input.projectAreas,
       referenceDocuments: input.referenceDocuments,
     });
