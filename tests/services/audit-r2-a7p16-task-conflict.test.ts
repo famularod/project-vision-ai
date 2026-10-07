@@ -665,6 +665,68 @@ describe('sync batch Y4, item 2: after two Keep Clouds that could not finish, a 
     await expect(getSyncConflicts()).resolves.toEqual([]);
   });
 
+  it('control: an edit Keep Cloud takes off the queue just as its upload lands (the card closes during that Keep Cloud) gets no mark: the third still undoes it', async () => {
+    const { conflict, shown } = await firstKeepCloudCouldNotFinish();
+    await queueScheduleItemRecord({ ...phoneTask, percentComplete: 30, status: 'In Progress', updatedAt: '2026-09-30T11:00:00.000Z' }, false, ['percentComplete', 'status', 'updatedAt']);
+    let land!: () => void;
+    const landing = new Promise<void>(resolve => { land = resolve; });
+    let sending!: () => void;
+    const sent = new Promise<void>(resolve => { sending = resolve; });
+    mockUpsertScheduleItem.mockImplementationOnce(async (item: ScheduleItem) => {
+      sending();
+      await landing;
+      return mockCloud.upsert(item);
+    });
+    const inFlight = uploadPendingChanges();
+    await sent;
+    // Its upload is under way when he taps. It lands just AFTER Keep Cloud has taken it off the queue (the first
+    // write of the queue without it), so it is among the edits this Keep Cloud took off, and the card closes.
+    const storage = (jest.requireMock('@react-native-async-storage/async-storage') as { default: { setItem: jest.Mock } }).default;
+    let landedAfterItWasTakenOff = false;
+    storage.setItem.mockImplementation(async (key: string, value: string) => {
+      mockStorage.set(key, value);
+      if (key === 'projectVisionAI.syncQueue.v1' && !landedAfterItWasTakenOff && !value.includes(phoneTask.id)) {
+        landedAfterItWasTakenOff = true;
+        land();
+      }
+    });
+    try {
+      mockGetScheduleItem.mockImplementationOnce(mockCloud.get).mockImplementationOnce(async () => mockUnreadable());
+      await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
+        .rejects.toThrow('sync_conflict_cloud_copy_unreadable');
+    } finally {
+      storage.setItem.mockImplementation(async (key: string, value: string) => { mockStorage.set(key, value); });
+    }
+    await inFlight;
+    expect(landedAfterItWasTakenOff).toBe(true);
+    expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ percentComplete: 30, status: 'In Progress', notes: NEWER });
+    expect(await editsOnCard()).toEqual(['notes', 'percentComplete+status']);
+    expect((await getSyncConflicts())[0].localPayload).not.toHaveProperty('withdrawnEditsNeverSent');
+
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
+      .resolves.toMatchObject({ percentComplete: 0, status: 'Not Started', notes: '' });
+    expect(mockCloudRows.get(phoneTask.id)).toMatchObject({ percentComplete: 0, status: 'Not Started', notes: '' });
+    await expect(getSyncConflicts()).resolves.toEqual([]);
+  });
+
+  it('control: an edit taken off the queue whose text an unmarked edit on the card shares gets no mark: kept as one, it may have landed', async () => {
+    const { conflict, shown } = await firstKeepCloudCouldNotFinish();
+    // The very edit that landed is on the queue again, word for word: it cannot be told from the one on the card.
+    const [open] = await getSyncConflicts();
+    const [onCard] = (open.localPayload as { withdrawnEdits: unknown[] }).withdrawnEdits;
+    mockStorage.set('projectVisionAI.syncQueue.v1', JSON.stringify([onCard]));
+    mockGetScheduleItem.mockImplementationOnce(mockCloud.get).mockImplementationOnce(async () => mockUnreadable());
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown }))
+      .rejects.toThrow('sync_conflict_cloud_copy_unreadable');
+
+    const payload = (await getSyncConflicts())[0].localPayload as { withdrawnEdits: unknown[] };
+    expect(payload.withdrawnEdits).toEqual([onCard]);
+    expect(payload).not.toHaveProperty('withdrawnEditsNeverSent');
+    // So the next Keep Cloud still takes the note back.
+    await expect(resolveScheduleItemSyncConflict(conflict.id, 'keep_cloud', { cloudCopyShown: shown })).resolves.toEqual(shown);
+    expect(mockCloudRows.get(phoneTask.id)).toEqual(shown);
+  });
+
   it('control: Keep Phone after those two carries both edits, the 30% too: nothing of his is dropped by the mark', async () => {
     const { conflict, shown } = await firstKeepCloudCouldNotFinish();
     await queueScheduleItemRecord(phone30(), false, PROGRESS_FIELDS);
