@@ -150,6 +150,72 @@ for (const script of [
   );
 }
 
+// Review pass 1, L11: five check scripts were run by nothing automatic. No
+// release-gate layer reached them through package.json, and one was not
+// named in package.json at all, so all five stayed red, unseen, from the
+// first commit this repository keeps until they were repaired by hand.
+// Each must be reached from a gate layer the way every other check script
+// is: a package script that names it, inside a group a layer runs.
+const packageScripts = JSON.parse(
+  fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'),
+).scripts;
+const gateLayerScripts = [...releaseGateSource.matchAll(/layer\('[^']+',\s*'([^']+)',\s*\d+\)/g)]
+  .map(match => match[1]);
+assert(gateLayerScripts.length >= 19, 'The release gate\'s layers could not be read from its source.');
+
+/** The check-script files a package script runs, through any "npm run" chain. */
+function scriptFilesRunBy(name, seen = new Set(), files = new Set()) {
+  if (seen.has(name)) return files;
+  seen.add(name);
+  const body = packageScripts[name];
+  assert(typeof body === 'string', `package.json has no script named ${name}.`);
+  for (const match of body.matchAll(/npm run ([\w:.-]+)/g)) scriptFilesRunBy(match[1], seen, files);
+  for (const match of body.matchAll(/node scripts\/([\w.-]+\.js)/g)) files.add(match[1]);
+  return files;
+}
+
+const layersThatRun = new Map();
+for (const layerScript of gateLayerScripts) {
+  for (const file of scriptFilesRunBy(layerScript)) {
+    layersThatRun.set(file, [...(layersThatRun.get(file) || []), layerScript]);
+  }
+}
+for (const file of [
+  'dave-assertion-authority-static-test.js',
+  'dave-communications-test.js',
+  'dave-field-test-readiness-test.js',
+  'dave-intelligence-test.js',
+  'project-area-persistence-test.js',
+]) {
+  assert(
+    fs.existsSync(path.join(__dirname, file)),
+    `scripts/${file} is missing.`,
+  );
+  assert(
+    layersThatRun.has(file),
+    `No release-gate layer runs scripts/${file}. Name it in a package script that a gate layer runs.`,
+  );
+  // None of them needs the suite's half hour, and that layer has the least room.
+  assert(
+    !layersThatRun.get(file).includes('test:behavior'),
+    `scripts/${file} must not be added to the behaviour layer, which is the one layer close to its time limit.`,
+  );
+}
+// The group they are in must not start the whole "check" again (it needs the network for one of its steps).
+for (const group of ['test:authority-contracts', 'test:workspace-contracts']) {
+  assert(
+    !new Set(reachedPackageScripts(group)).has('check'),
+    `${group} must not run "npm run check" again.`,
+  );
+}
+
+function reachedPackageScripts(name, seen = new Set()) {
+  if (seen.has(name)) return [...seen];
+  seen.add(name);
+  for (const match of (packageScripts[name] || '').matchAll(/npm run ([\w:.-]+)/g)) reachedPackageScripts(match[1], seen);
+  return [...seen];
+}
+
 console.log('ECOS Assurance release gate timeout and manifest contracts PASS.');
 
 // The gate's strict jest step has its own contract (Build 231 E1: on GitHub

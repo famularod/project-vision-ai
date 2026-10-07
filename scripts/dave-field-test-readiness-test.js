@@ -29,6 +29,13 @@ const checks = [
   // the oldest commit this repository keeps (eaed575). The four checks below
   // follow it there and test what it does, not only that a text exists.
   ['Ask DAVE uses Project Truth builder', talkAsksItsServiceForProjectIntelligence()],
+  // Review pass 1, L11: the check above reads the NAMES App.tsx hands the
+  // Talk service, so "updates: []", the unfiltered schedule or every saved
+  // update (archived included) passed it. The three below read the VALUES,
+  // and run the app's own two steps that make the lists.
+  ['Ask DAVE is handed the app\'s own record lists', talkIsHandedTheAppsOwnLists()],
+  ['the field updates Ask DAVE is handed leave out archived and deleted-task ones', talkUpdatesAreTheActiveOnes()],
+  ['the schedule Ask DAVE is handed is the one in use', talkScheduleIsTheOneInUse()],
   ['Ask DAVE service returns what the Project Truth builder made', talkServiceReturnsProjectTruthIntelligence()],
   ['Ask DAVE answers only from that intelligence', talkAnswersComeFromThatIntelligence()],
   ['Ask DAVE has no way around Project Truth', talkHasNoOtherIntelligenceBuilder()],
@@ -139,6 +146,159 @@ function talkAsksItsServiceForProjectIntelligence() {
   return importSourceOf(appTree, 'buildECOSTalkProjectIntelligence') === './services/ECOSTalkProjectIntelligence' &&
     ['projectId', 'projectName', 'taskId', 'updates', 'scheduleItems', 'projectDocuments', 'referenceDocuments', 'captureMemories']
       .every(name => handedOver.includes(name));
+}
+
+/** The one step in App.tsx that asks the Talk service, and the object it hands over; or null. */
+function talkHandOver() {
+  const declarations = functionsNamed(appTree, 'projectIntelligenceForTalk');
+  if (declarations.length !== 1) return null;
+  const calls = callsTo(declarations[0].body, 'buildECOSTalkProjectIntelligence');
+  if (calls.length !== 1 || calls[0].arguments.length !== 1 || !ts.isObjectLiteralExpression(calls[0].arguments[0])) return null;
+  const values = new Map();
+  for (const property of calls[0].arguments[0].properties) {
+    if (ts.isShorthandPropertyAssignment(property)) values.set(property.name.text, property.name);
+    else if (ts.isPropertyAssignment(property) && ts.isIdentifier(property.name)) values.set(property.name.text, property.initializer);
+    else return null;
+  }
+  return { declaration: declarations[0], values };
+}
+
+/** The function a node sits in. */
+function enclosingFunction(node) {
+  let enclosing = node.parent;
+  while (enclosing && !ts.isFunctionLike(enclosing)) enclosing = enclosing.parent;
+  return enclosing || null;
+}
+
+/** The declarations of `name` made directly in `scope` (not inside a function nested in it). */
+function declaredIn(scope, name) {
+  return findNodes(scope, node =>
+    ts.isVariableDeclaration(node) && enclosingFunction(node) === scope &&
+    (ts.isIdentifier(node.name)
+      ? node.name.text === name
+      : ts.isArrayBindingPattern(node.name) && node.name.elements.some(element =>
+        ts.isBindingElement(element) && ts.isIdentifier(element.name) && element.name.text === name)));
+}
+
+/**
+ * What App.tsx hands the Talk service, value by value: the app's own lists
+ * and nothing else. Not an empty list, not another list, not one made on the
+ * spot.
+ *   updates            the app's active field updates (activeSavedUpdates)
+ *   scheduleItems      the schedule in use (authoritativeScheduleItems)
+ *   projectDocuments   the app's project documents
+ *   captureMemories    the app's confirmed memories
+ *   referenceDocuments the documents the caller gives, by default the app's
+ *   projectId          worked out from the project asked about
+ *   projectName/taskId the project and task asked about
+ * Each of those names is declared once in the app's main function, so there
+ * is no second list of the same name it could be.
+ */
+function talkIsHandedTheAppsOwnLists() {
+  const handOver = talkHandOver();
+  if (!handOver) return false;
+  const { declaration, values } = handOver;
+  const app = enclosingFunction(declaration);
+  if (!app) return false;
+  const isName = (node, name) => Boolean(node) && ts.isIdentifier(node) && node.text === name;
+  const parameter = name => declaration.parameters.find(item => ts.isIdentifier(item.name) && item.name.text === name);
+  const referenceParameter = declaration.parameters.find(item =>
+    ts.isIdentifier(item.name) && isName(values.get('referenceDocuments'), item.name.text));
+  const projectId = values.get('projectId');
+  return isName(values.get('updates'), 'activeSavedUpdates') &&
+    isName(values.get('scheduleItems'), 'authoritativeScheduleItems') &&
+    isName(values.get('projectDocuments'), 'projectDocuments') &&
+    isName(values.get('captureMemories'), 'captureMemories') &&
+    isName(values.get('projectName'), 'projectName') && Boolean(parameter('projectName')) &&
+    isName(values.get('taskId'), 'taskId') && Boolean(parameter('taskId')) &&
+    Boolean(referenceParameter) && isName(referenceParameter.initializer, 'referenceDocuments') &&
+    Boolean(projectId) && ts.isCallExpression(projectId) && isName(projectId.expression, 'authorityProjectId') &&
+    projectId.arguments.length === 1 && isName(projectId.arguments[0], 'projectName') &&
+    ['activeSavedUpdates', 'authoritativeScheduleItems', 'projectDocuments', 'captureMemories', 'referenceDocuments']
+      .every(name => declaredIn(app, name).length === 1);
+}
+
+/**
+ * The step in the app's main function that makes `name`, as a function that
+ * can be run here: `const name = useMemo(() => ..., [...])`. `given` are the
+ * things that step reads from the app. Null when it is not made that way.
+ */
+function appStepThatMakes(name, given) {
+  const handOver = talkHandOver();
+  const app = handOver && enclosingFunction(handOver.declaration);
+  if (!app) return null;
+  const declarations = declaredIn(app, name);
+  if (declarations.length !== 1) return null;
+  const made = declarations[0].initializer;
+  if (
+    !made || !ts.isCallExpression(made) || !ts.isIdentifier(made.expression) || made.expression.text !== 'useMemo' ||
+    made.arguments.length !== 2 || !ts.isArrowFunction(made.arguments[0]) || made.arguments[0].parameters.length !== 0
+  ) {
+    return null;
+  }
+  const compiled = ts.transpileModule(`module.exports = (${made.arguments[0].getText(appTree)});`, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.React },
+  });
+  const module = { exports: null };
+  vm.runInNewContext(compiled.outputText, { module, ...given }, { filename: `App.tsx (${name})` });
+  return typeof module.exports === 'function' ? module.exports : null;
+}
+
+/**
+ * Runs the app's own step that makes the field updates it hands on, with
+ * stand-in records: an archived update is left out, and so is one kept only
+ * as history for a deleted task.
+ */
+function talkUpdatesAreTheActiveOnes() {
+  try {
+    const step = appStepThatMakes('activeSavedUpdates', {
+      savedUpdateTaskEvidence: {
+        active: [
+          { id: 'kept' },
+          { id: 'archived', isArchived: true },
+          { id: 'kept-too', isArchived: false },
+        ],
+        historical: [{ id: 'history-of-a-deleted-task' }],
+      },
+    });
+    return Boolean(step) && step().map(update => update.id).join(',') === 'kept,kept-too';
+  } catch (error) {
+    console.error(`  (the app's step that makes its active field updates could not be run: ${error.message})`);
+    return false;
+  }
+}
+
+/**
+ * Runs the app's own step that makes the schedule it hands on, with a
+ * stand-in for the selector of the schedule in use: the selector is asked
+ * once, with all the app's tasks and its documents, and what it answers is
+ * what the step gives. So the schedule handed to Talk is the selector's, not
+ * every saved task.
+ */
+function talkScheduleIsTheOneInUse() {
+  try {
+    const scheduleItems = [{ id: 'task-in-use' }, { id: 'task-of-a-replaced-schedule' }];
+    const referenceDocuments = [{ id: 'current-schedule' }, { id: 'replaced-schedule' }];
+    const inUse = [{ id: 'task-in-use' }];
+    const asked = [];
+    const step = appStepThatMakes('authoritativeScheduleItems', {
+      scheduleItems,
+      referenceDocuments,
+      selectAuthoritativeScheduleItems: input => {
+        asked.push(input);
+        return inUse;
+      },
+    });
+    return Boolean(step) &&
+      step() === inUse &&
+      asked.length === 1 &&
+      asked[0].scheduleItems === scheduleItems &&
+      asked[0].scheduleDocuments === referenceDocuments &&
+      importSourceOf(appTree, 'selectAuthoritativeScheduleItems') === './services/PIEScheduleReconciliation';
+  } catch (error) {
+    console.error(`  (the app's step that selects the schedule in use could not be run: ${error.message})`);
+    return false;
+  }
 }
 
 /**
