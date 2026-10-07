@@ -25,6 +25,7 @@ import {
 } from '../../services/ReportWordMedia.native';
 import { resolveWebReportWordMedia } from '../../services/ReportWordMedia.web';
 import {
+  expectFakeDeviceLetGoOfEveryPicture,
   fakeImageBytes,
   fakeImageGetSize,
   fakeMedia,
@@ -98,6 +99,8 @@ beforeEach(() => {
 afterEach(() => {
   restoreBrowser();
   jest.restoreAllMocks();
+  // Review pass 1, L6: the image tool holds a picture until it is released, as the real one does.
+  expectFakeDeviceLetGoOfEveryPicture();
 });
 
 describe('the shared drawing crop rule', () => {

@@ -31,6 +31,7 @@ import {
 } from '../../services/ReportWordMediaLimits';
 import type { ProjectUpdate } from '../../types';
 import {
+  expectFakeDeviceLetGoOfEveryPicture,
   fakeFormatOf,
   fakeImageBytes,
   fakeImageGetSize,
@@ -131,6 +132,8 @@ beforeEach(() => {
 afterEach(() => {
   restoreBrowser();
   jest.restoreAllMocks();
+  // Review pass 1, L6: the image tool holds a picture until it is released, as the real one does.
+  expectFakeDeviceLetGoOfEveryPicture();
 });
 
 describe('F04: the limits, and why', () => {

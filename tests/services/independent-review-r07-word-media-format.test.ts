@@ -32,6 +32,7 @@ import { detectReportImageFormat, resolveWebReportWordMedia } from '../../servic
 import type { ProjectUpdate } from '../../types';
 import {
   FAKE_SIGNATURES,
+  expectFakeDeviceLetGoOfEveryPicture,
   fakeFormatOf,
   fakeImageBytes,
   fakeImageGetSize,
@@ -176,6 +177,8 @@ beforeEach(() => {
 afterEach(() => {
   restoreBrowser();
   jest.restoreAllMocks();
+  // Review pass 1, L6: the image tool holds a picture until it is released, as the real one does.
+  expectFakeDeviceLetGoOfEveryPicture();
 });
 
 describe('the shared Word image format policy', () => {

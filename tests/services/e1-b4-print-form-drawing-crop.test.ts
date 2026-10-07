@@ -16,6 +16,7 @@ import {
   resolveNativeReportWordMedia,
 } from '../../services/ReportWordMedia.native';
 import {
+  expectFakeDeviceLetGoOfEveryPicture,
   fakeFormatOf,
   fakeImageBytes,
   fakeImageGetSize,
@@ -67,7 +68,11 @@ beforeEach(() => {
   fakeMedia.reset();
   jest.spyOn(Image, 'getSize').mockImplementation(fakeImageGetSize as never);
 });
-afterEach(() => jest.restoreAllMocks());
+afterEach(() => {
+  jest.restoreAllMocks();
+  // Review pass 1, L6: the image tool holds a picture until it is released, as the real one does.
+  expectFakeDeviceLetGoOfEveryPicture();
+});
 
 describe('E1 item 4: a drawing picture saved for print (CMYK) or as 16-bit grey', () => {
   it('a CMYK sheet small enough to need no resizing is cropped and goes in as an ordinary colour JPEG (was: a CMYK JPEG)', async () => {

@@ -13,6 +13,7 @@ import {
   planReportDrawingCrop,
   reportDrawingCropBounds,
 } from './ReportDrawingCrop';
+import { readReportImageHeaderSize, type ReportImageHeaderSize } from './ReportImageHeader';
 import {
   convertedReportImageMimeType,
   detectReportImageSignature,
@@ -68,6 +69,14 @@ export async function oneAtATime<T, R>(
  *
  * One picture is opened at a time, and each goes in no larger than
  * services/ReportWordMediaLimits allows (independent review F04).
+ *
+ * "One at a time" has to be made true by this file (review pass 1, L6). The
+ * image tool keeps every picture it opens, and every picture it hands back,
+ * until release() is called on it or the garbage collector gets to it, so
+ * each one is released here as soon as its bytes are saved, on every path.
+ * A picture that needs no work is never given to the tool, and a scan that
+ * is too large is refused before the tool loads it, both from the file's
+ * own header (services/ReportImageHeader) where the header can be read.
  */
 export async function resolveNativeReportWordMedia(args: {
   updates: readonly ProjectUpdate[];
@@ -205,6 +214,63 @@ function localFileFormat(uri: string): ReportImageFormat {
 }
 
 /**
+ * A local picture's size as it is shown upright, read from the header of its
+ * file: a few short reads, with nothing decoded and the file not loaded
+ * (review pass 1, L6 and L7). Null when this app does not read a size from
+ * that kind of header or the file cannot be read; the device is asked then,
+ * as it was before.
+ */
+function localHeaderSize(uri: string, format: ReportImageFormat): ReportImageHeaderSize | null {
+  try {
+    const handle = new File(uri.trim()).open();
+    try {
+      return readReportImageHeaderSize(format, {
+        read(offset, length) {
+          handle.offset = offset;
+          return handle.readBytes(length);
+        },
+      });
+    } finally {
+      handle.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+/** The image tool's work on one picture, and a picture it hands back. Each holds a picture in memory. */
+type ImageToolWork = ReturnType<typeof ImageManipulator.manipulate>;
+type ImageToolPicture = Awaited<ReturnType<ImageToolWork['renderAsync']>>;
+
+/**
+ * Lets go of a picture the image tool is holding, or of the tool's work on
+ * one. The tool keeps each until this is called or the garbage collector
+ * gets to it (review pass 1, L6). Safe to call twice and on nothing.
+ */
+function letGo(held: { release(): void } | null | undefined) {
+  try {
+    held?.release();
+  } catch {
+    // Already let go of.
+  }
+}
+
+/**
+ * The size of the picture the tool has loaded, upright. The tool answers by
+ * handing back the picture itself; only its size is wanted, so it is let go
+ * of at once and the full-size picture can be freed as soon as the smaller
+ * one has been drawn from it.
+ */
+async function loadedSize(context: ImageToolWork) {
+  const upright = await context.renderAsync();
+  try {
+    return { width: upright.width, height: upright.height };
+  } finally {
+    letGo(upright);
+  }
+}
+
+/**
  * Whether a drawing file is a PDF. Its stored type and name are asked only
  * when its bytes are none this app recognises.
  */
@@ -225,8 +291,10 @@ async function localRaster(uri: string | null | undefined) {
   // As it is only when Word takes its type, its file is small enough and it
   // is no larger than a report picture may be (independent review F04: a
   // 12-megapixel photo went in at 4032 x 3024 px and several megabytes).
+  // Its size comes from its own header, so a photo that needs no work is
+  // never opened; the device is asked only when the header cannot be read.
   if (mimeType && file.size <= REPORT_PHOTO_AS_IS_MAX_BYTES) {
-    const dimensions = await imageDimensions(normalizedUri);
+    const dimensions = localHeaderSize(normalizedUri, format) ?? await imageDimensions(normalizedUri);
     if (reportPictureFits(dimensions.width, dimensions.height)) {
       return {
         data: await file.bytes(),
@@ -248,11 +316,13 @@ async function localRaster(uri: string | null | undefined) {
  */
 async function convertedRaster(uri: string, format: ReportImageFormat) {
   let renderedFile: File | null = null;
+  let context: ImageToolWork | null = null;
+  let imageRef: ImageToolPicture | null = null;
   try {
-    const context = ImageManipulator.manipulate(uri);
-    const upright = await context.renderAsync();
+    context = ImageManipulator.manipulate(uri);
+    const upright = await loadedSize(context);
     context.resize(reportPictureFit(upright.width, upright.height));
-    const imageRef = await context.renderAsync();
+    imageRef = await context.renderAsync();
     const rendered = await imageRef.saveAsync({
       compress: 0.88,
       format: SaveFormat.JPEG,
@@ -273,6 +343,8 @@ async function convertedRaster(uri: string, format: ReportImageFormat) {
       ? `${reportImageNotPreparedMessage(format)} ${errorMessage(error, 'Image conversion failed.')}`
       : reportImageNotPreparedMessage(format));
   } finally {
+    letGo(imageRef);
+    letGo(context);
     if (renderedFile?.exists) renderedFile.delete();
   }
 }
@@ -295,25 +367,41 @@ async function renderDrawingImageExcerpt(
   uri: string,
   region: ReferenceDocumentRegion,
 ) {
-  const context = ImageManipulator.manipulate(uri);
-  const upright = await context.renderAsync().catch(() => {
-    throw new Error(reportDrawingNotCroppedMessage(localFileFormat(uri)));
-  });
   // Cropping needs the scan decoded; a very large one is left out with the
   // reason rather than risk iOS closing the app (independent review F04).
-  if (reportDrawingScanTooLarge(upright.width, upright.height)) {
-    throw new Error(reportDrawingScanTooLargeMessage(upright.width, upright.height));
+  // The header answers before the image tool is given the file, because the
+  // tool loads the whole file to tell its size and redraws a picture stored
+  // on its side at full size first (review pass 1, L7). JPEG, PNG, GIF, BMP,
+  // WebP and ordinary TIFF are refused here; a HEIC, an AVIF, a BigTIFF or a
+  // file with a damaged header is refused below, once the tool has loaded it.
+  const headerSize = localHeaderSize(uri, localFileFormat(uri));
+  if (headerSize && reportDrawingScanTooLarge(headerSize.width, headerSize.height)) {
+    throw new Error(reportDrawingScanTooLargeMessage(headerSize.width, headerSize.height));
   }
-  const crop = planReportDrawingCrop(region, upright);
-  context.crop({
-    originX: crop.originX,
-    originY: crop.originY,
-    width: crop.width,
-    height: crop.height,
-  });
-  context.resize({ width: crop.outputWidth, height: crop.outputHeight });
-  const excerpt = await context.renderAsync();
-  return excerpt.saveAsync({ compress: 0.88, format: SaveFormat.JPEG });
+  let context: ImageToolWork | null = null;
+  let excerpt: ImageToolPicture | null = null;
+  try {
+    context = ImageManipulator.manipulate(uri);
+    const upright = await loadedSize(context).catch(() => {
+      throw new Error(reportDrawingNotCroppedMessage(localFileFormat(uri)));
+    });
+    if (reportDrawingScanTooLarge(upright.width, upright.height)) {
+      throw new Error(reportDrawingScanTooLargeMessage(upright.width, upright.height));
+    }
+    const crop = planReportDrawingCrop(region, upright);
+    context.crop({
+      originX: crop.originX,
+      originY: crop.originY,
+      width: crop.width,
+      height: crop.height,
+    });
+    context.resize({ width: crop.outputWidth, height: crop.outputHeight });
+    excerpt = await context.renderAsync();
+    return await excerpt.saveAsync({ compress: 0.88, format: SaveFormat.JPEG });
+  } finally {
+    letGo(excerpt);
+    letGo(context);
+  }
 }
 
 async function localDrawingImageExcerpt(
@@ -380,12 +468,16 @@ async function localPdfExcerpt(reference: ReportDrawingReference) {
 async function boundedExcerpt(rendered: Readonly<{ uri: string; width: number; height: number }>) {
   if (reportPictureFits(rendered.width, rendered.height)) return rendered;
   const larger = new File(rendered.uri);
+  let context: ImageToolWork | null = null;
+  let smaller: ImageToolPicture | null = null;
   try {
-    const context = ImageManipulator.manipulate(rendered.uri);
+    context = ImageManipulator.manipulate(rendered.uri);
     context.resize(reportPictureFit(rendered.width, rendered.height));
-    const smaller = await context.renderAsync();
+    smaller = await context.renderAsync();
     return await smaller.saveAsync({ compress: 0.88, format: SaveFormat.JPEG });
   } finally {
+    letGo(smaller);
+    letGo(context);
     if (larger.exists) larger.delete();
   }
 }
