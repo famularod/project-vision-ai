@@ -5573,6 +5573,84 @@ describe('Keep Cloud treats work that arrives while it runs one way (audit A4 pa
       id: before.id, remotePayload: expect.objectContaining({ notes: IPAD_SECOND_NOTE }) })]);
   });
 
+  // Sync batch Y3 (item 5): Keep Phone's copy was still compared with the cloud's by the two clocks, on the same line.
+  const HOUR = 60 * 60 * 1000;
+  /** What lands in the cloud after Keep Phone has read and checked the cloud's copy, before its own copy is written. */
+  function afterKeepPhoneReadsTheCloud(lands: () => void) {
+    const cloudRead = (jest.requireMock('../../services/SupabaseService') as { getProjectUpdateSyncMetadata: jest.Mock }).getProjectUpdateSyncMetadata;
+    const read = cloudRead.getMockImplementation()!;
+    let reads = 0;
+    cloudRead.mockImplementation(async (...args: unknown[]) => {
+      const answer = await read(...args);
+      reads += 1;
+      if (reads === 1) lands();
+      return answer;
+    });
+    return () => { cloudRead.mockImplementation(read); return reads; };
+  }
+
+  it("the iPad's clock is an hour ahead: Keep Phone goes through at the first tap (sync batch Y3, item 5)", async () => {
+    const { phone } = await offlineEditInConflictWhileAnalysing();
+    // The iPad's save, as its clock stamped it: an hour after this phone's "now". Nothing else about it is different.
+    mockCloud.set('u1', { ...mockCloud.get('u1')!, updatedAt: new Date(Date.now() + HOUR).toISOString() });
+    const [conflict] = await getSyncConflicts();
+    const his = (conflict.localPayload as { updateData: Update }).updateData.notes;
+
+    // It said "Conflict not resolved", at this tap and at every tap for the next hour.
+    await chooseInSettings(phone, conflict, 'keep_local');
+
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(inCloud()).toMatchObject({ notes: his });
+    expect(phone.saved()).toMatchObject({ notes: his, status: 'sent' });
+    expect(await getOfflineQueue()).toEqual([]);
+  });
+
+  it.each([
+    ['an hour BEHIND', -HOUR],
+    ['right', 0],
+    ['an hour ahead', HOUR],
+  ])("the iPad saves again just as Keep Phone sends his copy, its clock %s: his copy is not sent over that save, and he is asked again (sync batch Y3, item 5)", async (_label, offset) => {
+    const { phone } = await offlineEditInConflictWhileAnalysing();
+    const [before] = await getSyncConflicts();
+    const saves = (saveProjectUpdate as jest.Mock).mock.calls.length;
+    const done = afterKeepPhoneReadsTheCloud(() => {
+      putInCloud({ ...inCloud(), notes: IPAD_SECOND_NOTE }, new Date(Date.now() + offset).toISOString());
+    });
+    let alerts: string[] = [];
+    try {
+      // By the clocks a save stamped an hour behind read as older than Keep Phone's copy, which then went up over it.
+      alerts = await chooseInSettingsExpectingFailure(phone, before, 'keep_local');
+    } finally {
+      expect(done()).toBeGreaterThanOrEqual(2);
+    }
+    expect((saveProjectUpdate as jest.Mock).mock.calls.length).toBe(saves);
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    expect(alerts).toEqual(['Cloud copy changed']);
+    // One card, about the copy the cloud holds now, with his copy still on its phone side; nothing of his waits to go up by itself.
+    expect(await getSyncConflicts()).toEqual([expect.objectContaining({
+      localId: 'u1', remotePayload: expect.objectContaining({ notes: IPAD_SECOND_NOTE }) })]);
+    expect((((await getSyncConflicts())[0].localPayload as { updateData: Update }).updateData).notes).toBe(
+      (before.localPayload as { updateData: Update }).updateData.notes);
+    expect((await getSyncConflicts())[0].id).toBe(before.id); // the same card, not a second one
+    // The copy he chose is not left waiting, marked as his choice, to go up by itself later.
+    expect((await getOfflineQueue()).filter(item => (item.payload as { overConflict?: string }).overConflict)).toEqual([]);
+    await uploadPendingChanges();
+    expect(inCloud()).toMatchObject({ notes: IPAD_SECOND_NOTE });
+    // Chosen again, with the new copy shown: Keep Phone goes through.
+    await chooseInSettings(phone, (await getSyncConflicts())[0], 'keep_local');
+    expect(inCloud()).toMatchObject({ notes: (before.localPayload as { updateData: Update }).updateData.notes });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
+  it('as before: a copy he chose that an earlier build queued, with no version on it, is still compared by the clocks (sync batch Y3, item 5)', async () => {
+    const { phone } = await offlineEditInConflictWhileAnalysing();
+    const [conflict] = await getSyncConflicts();
+    // "Send your version?" confirmed: this copy goes over the conflict and carries no version of the cloud's copy.
+    await syncWaitingUpdate(phone, 'u1', { overConflict: true });
+    expect(inCloud()).toMatchObject({ notes: (conflict.localPayload as { updateData: Update }).updateData.notes });
+    expect(await getSyncConflicts()).toEqual([]);
+  });
+
   it('L3: a result Keep Cloud\'s copy took in before the app was killed does not win over a newer one the next, failing, Keep Cloud took in', async () => {
     const { phone } = await offlineEditInConflictWhileAnalysing();
     const older = { ...finishedAnalysis(), currentObservation: 'Older result' };

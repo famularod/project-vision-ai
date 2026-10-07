@@ -708,8 +708,9 @@ type ProjectUpdateRecordPayload<TUpdate = unknown> = {
    */
   keepCloudChoice?: true;
   /**
-   * Keep Cloud's copy only (sync batch Y2, item 5): the stamp of the cloud's copy Keep Cloud read and built it from.
-   * Whether the cloud's copy changed under it is told by that version, not by either device's clock.
+   * Keep Cloud's copy (sync batch Y2, item 5): the stamp of the cloud's copy Keep Cloud read and built it from.
+   * Keep Phone's copy (sync batch Y3, item 5): the stamp of the cloud's copy Keep Phone read and checked against the
+   * one the screen showed. Whether the cloud's copy changed under either is told by that version, not by a clock.
    */
   chosenOverCloudStamp?: string;
   /**
@@ -4162,6 +4163,9 @@ const keepCloudChoicesSending = new Set<string>();
 /** The conflicts whose Keep Cloud copy met a newer cloud copy while it was sent, which the conflict took (A4 pass 22 L1). */
 const keepCloudChoicesMetNewerCloudCopy = new Set<string>();
 const KEEP_CLOUD_CHOICE_CLOUD_COPY_CHANGED = 'The cloud copy changed while Keep Cloud was saving it.';
+/** The conflicts whose Keep Phone copy met a cloud copy that was no longer the version he chose over (sync batch Y3, item 5). */
+const keepPhoneChoicesMetChangedCloudCopy = new Set<string>();
+const KEEP_PHONE_CHOICE_CLOUD_COPY_CHANGED = 'The cloud copy changed while Keep Phone was saving your copy.';
 
 /**
  * Whether the cloud's copy of a field update is newer than a queued copy of it. By the two stamps, as before, except
@@ -4172,7 +4176,11 @@ const KEEP_CLOUD_CHOICE_CLOUD_COPY_CHANGED = 'The cloud copy changed while Keep 
  * read as newer at all. A stamp that cannot be read as a time is compared by the clocks, as before.
  */
 function cloudCopyNewerThanQueuedCopy(payload: ProjectUpdateRecordPayload, cloudStamp: string, queuedAt: string): boolean {
-  const chosenOver = payload.keepCloudChoice ? Date.parse(payload.chosenOverCloudStamp ?? '') : NaN;
+  // Keep Phone's copy too (sync batch Y3, item 5). By the clocks, a cloud copy stamped by a device whose clock is
+  // ahead read as newer than his kept copy at every tap ("Conflict not resolved") until this phone's clock had
+  // passed that stamp. And a save another device made after Keep Phone had read the cloud never read as newer,
+  // whatever its clock said, unless it was stamped after the instant his copy was queued: his copy went up over it.
+  const chosenOver = payload.keepCloudChoice || payload.overConflict ? Date.parse(payload.chosenOverCloudStamp ?? '') : NaN;
   const cloudAt = Date.parse(cloudStamp);
   return Number.isFinite(chosenOver) && Number.isFinite(cloudAt) ? cloudAt !== chosenOver : isRemoteNewer(cloudStamp, queuedAt);
 }
@@ -4195,6 +4203,24 @@ async function keepCloudChoiceMetNewerCloudCopy(
       ? { ...item, remotePayload: cloud.updateData, remoteChangedAt: cloud.updatedAt ?? item.remoteChangedAt }
       : item));
     keepCloudChoicesMetNewerCloudCopy.add(conflictId);
+    return true;
+  });
+}
+
+/** As keepCloudChoiceMetNewerCloudCopy, for Keep Phone's copy: the open conflict takes the cloud's copy as it is now. */
+async function keepPhoneChoiceMetChangedCloudCopy(
+  payload: ProjectUpdateRecordPayload,
+  cloud: { updatedAt?: string | null; updateData?: unknown },
+): Promise<boolean> {
+  const conflictId = payload.overConflict;
+  if (!conflictId || !isRecord(cloud.updateData)) return false;
+  return serializeSyncConflictMutation(async () => {
+    const conflicts = await readSyncConflictsUnsafe();
+    if (!conflicts.some(item => item.id === conflictId)) return false;
+    await writeSyncConflicts(conflicts.map(item => item.id === conflictId
+      ? { ...item, remotePayload: cloud.updateData, remoteChangedAt: cloud.updatedAt ?? item.remoteChangedAt }
+      : item));
+    keepPhoneChoicesMetChangedCloudCopy.add(conflictId);
     return true;
   });
 }
@@ -5695,7 +5721,10 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   // Conflicts shows the same edit (A4 pass 15b F1). Never marked as Keep
   // Cloud's copy (A4 pass 22 L1): an earlier build recorded conflicts whose
   // phone side was that copy, and the kept copy was then held.
-  const { newerEdit: _carried, ...conflictPayload } = withoutKeepCloudMarks(localPayload);
+  const { newerEdit: _carried, chosenOverCloudStamp: _earlier, ...conflictPayload } = withoutKeepCloudMarks(localPayload);
+  // The version of the cloud's copy he is choosing over: the one read, and checked against the screen's, above.
+  const chosenOver = typeof current.data?.updatedAt === 'string' && current.data.updatedAt
+    ? { chosenOverCloudStamp: current.data.updatedAt } : {};
   const now = new Date().toISOString();
   const ownerId = currentCloudOwner().ownerId;
   const { written, newerEdit, before } = await mutateOfflineQueue(queue => {
@@ -5705,14 +5734,22 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       withArchiveKeptInQueuedCopy(newerFound, localUpdateData), cloudResults);
     const kept: SyncQueueItem = {
       id: `project-update-${localPayload.id}`, entity: 'project_update', operation: 'update',
-      payload: { ...conflictPayload, updateData: localUpdateData, overConflict: conflict.id, ...(newer ? { newerEdit: newer } : {}) },
+      payload: { ...conflictPayload, updateData: localUpdateData, overConflict: conflict.id, ...chosenOver, ...(newer ? { newerEdit: newer } : {}) },
       createdAt: now, changedAt: now, retryCount: 0, lastError: null, ...(ownerId ? { ownerId } : {}),
     };
     const nextQueue = existing?.operation === 'delete' ? queue : [...queue.filter(item => item.id !== queueItemId), kept];
     return { nextQueue, result: { written: kept, newerEdit: newer, before: existing ?? null }, persist: nextQueue !== queue };
   });
+  keepPhoneChoicesMetChangedCloudCopy.delete(conflict.id);
   const exact = await uploadExactQueueItem(queueItemId, written);
   if (!exact.landed) {
+    // The cloud's copy was no longer the one he chose over (sync batch Y3, item 5): it is on the card now, nothing
+    // was sent, and what waited for the update is back as it was. He reviews again.
+    if (keepPhoneChoicesMetChangedCloudCopy.delete(conflict.id)) {
+      const earlier = (before?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.overConflict === conflict.id;
+      await putBackPhoneWorkAfterFailedKeepPhone(before && !earlier ? before : newerEdit, written);
+      throw new Error('sync_conflict_cloud_copy_changed');
+    }
     // Sync batch Y1 (item 5): Settings said "Neither copy was changed" whenever the kept copy's write failed. A write
     // whose answer was lost HAS landed. The cloud's copy is read once. It is the kept copy: the upload is run once more,
     // finds it there and ends as when the answer had arrived (the newer edit queued after it). It cannot be read, or
@@ -8013,6 +8050,13 @@ async function uploadProjectUpdateQueueItem(
     // queued for Keep Cloud's put-back, which takes it off by its mark.
     if (payload.keepCloudChoice && await keepCloudChoiceMetNewerCloudCopy(payload, remoteMetadata.data)) {
       return KEEP_CLOUD_CHOICE_CLOUD_COPY_CHANGED;
+    }
+    // Keep Phone's copy, by the version he chose over (sync batch Y3, item 5): the same answer. The conflict he
+    // chose in takes the cloud's copy as it is now, on the same card, and Keep Phone asks him to review again. A
+    // second conflict was saved in its place, with his kept copy as its phone side, and Settings said "Conflict
+    // not resolved. Neither copy was changed."
+    if (!payload.keepCloudChoice && payload.chosenOverCloudStamp && await keepPhoneChoiceMetChangedCloudCopy(payload, remoteMetadata.data)) {
+      return KEEP_PHONE_CHOICE_CLOUD_COPY_CHANGED;
     }
 
     await recordConflict({
