@@ -251,7 +251,7 @@ export function buildDAVEReportBriefing({
    * report's fingerprint. Without them, Completed Work's dates read as
    * before.
    */
-  scheduleItems?: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment'>[];
+  scheduleItems?: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>[];
 }): DAVEReportBriefing {
   const projectNames = unique(
     (selectedProjectNames?.length ? selectedProjectNames : truths.map(truth => truth.projectName))
@@ -508,13 +508,29 @@ type CompletedTaskLastUpdatedAt = (task: DAVEProjectTruth['schedule'][number]) =
  * first 6). The confirmation is when the manager judged the percent
  * (scheduleProgressJudgedAt), read from the saved tasks; with none given,
  * the activity or the update time, whichever is later, as before.
+ *
+ * R5 item 3 (open item, small): a master schedule that states 100% for a
+ * task an import owns, with no percent of his on it, completes the task and
+ * records no confirmation time (the percent stands as the file's). With a
+ * note on the task from weeks before, Completed Work read "Last updated
+ * <the note's date>" for a task completed since. The day that master was
+ * approved counts as the confirmation does: the saved task keeps the highest
+ * percent a master's file has stated on its row that stood, and when
+ * (fileProgressPeak, Build 231). A task a master completed on an earlier
+ * build has no such record and reads as before.
  */
 function completedTaskLastUpdatedAt(
-  scheduleItems: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment'>[] | undefined,
+  scheduleItems: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>[] | undefined,
 ): CompletedTaskLastUpdatedAt {
   if (!scheduleItems) return task => latestDate([task.latestActivityAt, task.updatedAt]);
-  const confirmedAt = new Map(scheduleItems.map(item => [item.id, scheduleProgressJudgedAt(item)]));
+  const confirmedAt = new Map(scheduleItems.map(item => [item.id, latestDate([scheduleProgressJudgedAt(item), completedByMasterAt(item)])]));
   return task => latestDate([task.latestActivityAt, confirmedAt.get(task.taskId)]) || latestDate([task.updatedAt]);
+}
+
+/** When a master schedule's file completed the task on its row, if one did and that percent stood; else null. */
+function completedByMasterAt(item: Pick<ScheduleItem, 'fileProgressPeak'>): string | null {
+  const peak = item.fileProgressPeak;
+  return peak && boundedPercent(peak.percentComplete) >= 100 && typeof peak.statedAt === 'string' ? peak.statedAt : null;
 }
 
 function reportCompletedTaskFact(
