@@ -42,7 +42,30 @@ const {
 } = loadTs('services/DAVECommunicationCenter.ts', moduleCache);
 
 const now = '2026-07-12T12:00:00.000Z';
-const intelligence = buildProjectIntelligence({
+
+// A photo finding may inform a draft only when it is "qualified": the
+// comparison finished against a recorded earlier photo the two can fairly be
+// compared with, the finding came from the pictures themselves, and the user
+// confirmed it (services/PhotoAssessment.ts, photoDisplayResultCanInformProject).
+// This fixture was written before the last three were required and carried
+// none of them, so the app, rightly, kept its finding out of every draft.
+const qualifiedPhotoResult = {
+  status: 'analysis_complete',
+  updatedAt: '2026-07-11T10:01:00.000Z',
+  comparisonConfidence: 'high',
+  priorEvidenceId: 'baseline-evidence',
+  comparability: 'strong',
+  provenance: 'visual_only',
+  userReview: 'confirmed',
+  findings: [{
+    findingType: 'added',
+    description: 'A tan case appears in the foreground near the laptop.',
+    confidence: 0.9,
+  }],
+};
+
+function intelligenceWithPhotoResult(photoIntelligence) {
+  return buildProjectIntelligence({
   projectId: 'project-alpha',
   projectName: 'Alpha',
   now,
@@ -60,17 +83,7 @@ const intelligence = buildProjectIntelligence({
         actionDueDate: '',
         actionStatus: 'Open',
         locationCapturedAt: '2026-07-11T10:00:00.000Z',
-        photoIntelligence: {
-          status: 'analysis_complete',
-          updatedAt: '2026-07-11T10:01:00.000Z',
-          comparisonConfidence: 'high',
-          priorEvidenceId: 'baseline-evidence',
-          findings: [{
-            findingType: 'added',
-            description: 'A tan case appears in the foreground near the laptop.',
-            confidence: 0.9,
-          }],
-        },
+        photoIntelligence,
       },
       {
         id: 'photo-commitment',
@@ -101,7 +114,10 @@ const intelligence = buildProjectIntelligence({
     status: 'In Progress',
     createdAt: '2026-07-11T08:00:00.000Z',
   }],
-});
+  });
+}
+
+const intelligence = intelligenceWithPhotoResult(qualifiedPhotoResult);
 
 const center = buildDAVECommunicationCenter(intelligence);
 assert(Object.isFrozen(center) && Object.isFrozen(center.drafts));
@@ -141,6 +157,56 @@ assert(ownerDraft.recommendations.length === 1);
 assert(ownerDraft.recommendations[0].evidenceIds.length > 0);
 assert(!ownerDraft.facts.some(item => /tan case/i.test(item.text)),
   'Visual observations must not be presented as record facts.');
+const ownerObservation = ownerDraft.observations.find(item => /tan case/i.test(item.text));
+assert(
+  ownerObservation.evidenceIds.includes('evidence:photo:update-current') &&
+    ownerObservation.evidenceIds.includes('evidence:photo:baseline-evidence'),
+  'A photo observation must cite both the current photo and the earlier one it was compared with.',
+);
+assert(
+  ownerObservation.limitations.includes('Visual change is not verified project progress.'),
+  'A photo observation must say that a visible change is not verified progress.',
+);
+for (const draft of center.drafts) {
+  for (const section of ['facts', 'interpretations', 'recommendations']) {
+    assert(!draft[section].some(item => /tan case/i.test(item.text)),
+      `${draft.title}: a photo observation must stay out of ${section}.`);
+  }
+}
+
+// The other half of "qualified": the same finding, with any one of the things
+// that qualify it missing, must not reach any section of any draft.
+const unqualifiedPhotoResults = [
+  ['not yet reviewed by the user', { userReview: undefined }],
+  ['marked incorrect by the user', { userReview: 'incorrect' }],
+  ['marked not useful by the user', { userReview: 'not_useful' }],
+  ['taken from the caption, not the pictures', { provenance: 'caption_only' }],
+  ['inferred, not seen', { provenance: 'inferred' }],
+  ['with no stated source', { provenance: undefined }],
+  ['from two photos that compare weakly', { comparability: 'weak' }],
+  ['from two photos of unknown comparability', { comparability: undefined }],
+  ['with no earlier photo on record', { priorEvidenceId: undefined }],
+  ['from a comparison that failed', { status: 'analysis_failed_retry' }],
+  ['from a comparison still running', { status: 'analyzing' }],
+  ['from a comparison that was unavailable', { status: 'comparison_unavailable' }],
+  ['the model itself marked uncertain', {
+    findings: [{
+      findingType: 'uncertain',
+      description: 'A tan case appears in the foreground near the laptop.',
+      confidence: 0.2,
+    }],
+  }],
+];
+for (const [label, change] of unqualifiedPhotoResults) {
+  const unqualifiedCenter = buildDAVECommunicationCenter(
+    intelligenceWithPhotoResult({ ...qualifiedPhotoResult, ...change }),
+  );
+  assert.strictEqual(unqualifiedCenter.drafts.length, 6);
+  assert(
+    !/tan case/i.test(JSON.stringify(unqualifiedCenter)),
+    `A photo finding ${label} must not appear anywhere in a draft.`,
+  );
+}
 
 const serialized = JSON.stringify(center).toLowerCase();
 for (const unsupported of ['work progressed significantly', 'work is complete', 'percent complete']) {
