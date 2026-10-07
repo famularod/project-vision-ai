@@ -170,6 +170,23 @@ export async function loadDAVEWebReadOnlySnapshot(
   });
 }
 
+/**
+ * The cloud's reference documents with the cloud's OWN current flags, read now (web batch WS2 item 3). The snapshot
+ * marks one current schedule per project (reconcileCurrentScheduleDocuments), so an older schedule the cloud still
+ * marks current looks retired there; what making a schedule current does to another project is worked out from the
+ * cloud's flags, as on the phone (whole-app audit A5 pass 3 F2). Every collection is read (never a part answered
+ * from this tab's copy); deleted documents are left out.
+ */
+export async function loadDAVEWebCloudReferenceDocuments(): Promise<DAVEWebReferenceDocument[]> {
+  const rows = await daveWebSupabaseGateway.loadAuthorizedRows();
+  const tombstones = rows.syncTombstones.map(normalizeTombstone).filter(isPresent);
+  return removeTombstonedRecords(
+    rows.referenceDocuments.map(normalizeDocument).filter(isPresent),
+    tombstones,
+    'reference_document',
+  );
+}
+
 function portfolioProjects(
   allProjects: readonly CloudProject[],
   scheduleItems: readonly ScheduleItem[],

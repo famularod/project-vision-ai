@@ -69,6 +69,7 @@ import {
   enqueueECOSHostedIndex,
   carryECOSHostedIndexStatus,
   loadECOSHostedIndexStatuses,
+  loadECOSScheduleRetirementScope,
   type ScheduleRetirementScope,
 } from './ECOSHostedIndexer';
 import { ECOS_ASK_OWNER_CHECK_LIMIT_MS } from './ECOSAskProgress';
@@ -1475,6 +1476,20 @@ export function createDAVEWebSupabaseGateway(
 
       authorizedPhotoPaths.add(storagePath);
       return updateId;
+    },
+
+    /**
+     * Read-only (web batch WS2 item 3, allowed by the coordinator's decision of 6 Oct 2026): what THIS cloud retires
+     * when a schedule is made current, asked before the owner is asked (the phone asks the same function,
+     * loadECOSScheduleRetirementScope): 'project' once the Q15 migration is applied (a combined schedule stays
+     * current for its other projects), 'schedule' before it, null when the cloud gave no answer. Through this tab's
+     * own client and its owner check, like every other read here; it writes nothing and takes no part in how a tab
+     * gets, keeps, refreshes or drops a sign-in.
+     */
+    async loadAuthorizedScheduleRetirementScope(): Promise<ScheduleRetirementScope | null> {
+      if (!client) return null;
+      await requireAuthorizedOwnerCached();
+      return loadECOSScheduleRetirementScope(client);
     },
 
     async setAuthorizedCurrentSchedule(

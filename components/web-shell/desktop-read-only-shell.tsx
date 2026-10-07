@@ -72,6 +72,7 @@ import {
   scheduleDocumentIsScheduleLike,
 } from '../../services/PIEScheduleReconciliation';
 import { scheduleActivationNotice } from '../../services/SharedDocumentActivation';
+import { daveWebScheduleRetirementCheck } from '../../services/DAVEWebScheduleActivation';
 import {
   formatScheduleCalendarDay,
   scheduleCalendarDay,
@@ -3883,6 +3884,9 @@ function DocumentManagementWorkspace({
   const [preparedFile, setPreparedFile] = useState<File | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
+  /** "Change the current schedule?": what making this schedule current does to another project (WS2 item 3). */
+  const [retirementQuestion, setRetirementQuestion] = useState<Readonly<{ documentId: string; message: string }> | null>(null);
+  const retirementTarget = retirementQuestion ? documents.find(document => document.id === retirementQuestion.documentId) ?? null : null;
   const [reindexProgress, setReindexProgress] = useState<DocumentReindexBatchProgress | null>(null);
   const driveConfiguration = useMemo(() => googleDriveWebConfiguration(), []);
   const reindexPlan = useMemo(
@@ -4207,7 +4211,7 @@ function DocumentManagementWorkspace({
     }
   }
 
-  async function makeCurrent(document: DAVEWebReferenceDocument) {
+  async function makeCurrent(document: DAVEWebReferenceDocument, retirementConfirmed = false) {
     if (uploading) return;
     const isSchedule = scheduleDocumentIsScheduleLike(document);
     if (!documentOffersMakeCurrent(document)) return; // a lookahead is never made current (review N1 web M1)
@@ -4225,7 +4229,21 @@ function DocumentManagementWorkspace({
     }
     setUploading(true);
     setNotice(null);
+    setRetirementQuestion(null);
     try {
+      // WS2 item 3: what this does to ANOTHER project's schedule is asked first, as on the phone, from the cloud's own
+      // current flags and from what this cloud retires. Not readable: nothing is made current.
+      if (isSchedule && !retirementConfirmed) {
+        const check = await daveWebScheduleRetirementCheck(document);
+        if (!check.ok) {
+          setNotice({ tone: 'danger', text: check.message });
+          return;
+        }
+        if (check.effects.length > 0) {
+          setRetirementQuestion({ documentId: document.id, message: check.message });
+          return;
+        }
+      }
       // Before the Q15 migration the cloud retires a combined schedule for
       // every project; after it the schedule stays current for its others,
       // which the activation's response says and the notice names.
@@ -4764,6 +4782,36 @@ function DocumentManagementWorkspace({
       {notice ? (
         <View style={notice.tone === 'good' ? styles.successBanner : styles.errorBanner} accessibilityRole="alert">
           <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{notice.text}</Text>
+        </View>
+      ) : null}
+
+      {retirementQuestion && retirementTarget ? (
+        <View style={styles.deleteConfirm} accessibilityRole="alert">
+          <View style={styles.dataGrow}>
+            <Text style={styles.deleteConfirmTitle}>Change the current schedule?</Text>
+            <Text style={styles.dataDetail}>Making “{retirementTarget.name}” current changes more than its own project.</Text>
+            <Text style={styles.errorText}>{retirementQuestion.message}</Text>
+          </View>
+          <View style={styles.inlineButtons}>
+            <Pressable
+              style={({ pressed }) => [styles.secondaryButton, styles.compactActionButton, pressed && styles.buttonPressed]}
+              onPress={() => setRetirementQuestion(null)}
+              disabled={uploading}
+              accessibilityRole="button"
+              accessibilityLabel="Cancel making this schedule current"
+            >
+              <Text style={styles.secondaryButtonText}>Cancel</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
+              onPress={() => { void makeCurrent(retirementTarget, true); }}
+              disabled={uploading}
+              accessibilityRole="button"
+              accessibilityLabel={`Make ${retirementTarget.name} current anyway`}
+            >
+              <Text style={styles.primaryButtonText}>Make Current Anyway</Text>
+            </Pressable>
+          </View>
         </View>
       ) : null}
 
