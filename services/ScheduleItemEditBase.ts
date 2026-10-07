@@ -6,7 +6,7 @@ import { scheduleTaskEarlierIds } from './ScheduleTaskRevisions';
 import { mergeProjectControlsRevisions, normalizeProjectControls } from './VitruviusProjectControls';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import {
-  SCHEDULE_CARRIED_PROGRESS_FIELDS, scheduleEntryUndone, scheduleManagersOwnPercent, scheduleProgressIsManagers, scheduleProgressJudgedAt,
+  SCHEDULE_CARRIED_PROGRESS_FIELDS, scheduleEntryUndone, scheduleFileTookHisPercentOver, scheduleManagersOwnPercent, scheduleProgressIsManagers, scheduleProgressJudgedAt,
 } from './ScheduleProgressSource';
 
 /**
@@ -68,7 +68,7 @@ export type ScheduleItemEditBase = Readonly<{
  */
 const FIELDS_NEVER_ASKED: ReadonlySet<string> = new Set<string>([
   'id', 'createdAt', 'updatedAt', 'projectId', 'cloudUpdatedAt', 'revisedFromTaskIds', 'alsoImportedInBatchIds',
-  'alsoImportedSourceRow', 'projectControls', 'activity', 'progressUndone', ...SCHEDULE_CARRIED_PROGRESS_FIELDS,
+  'alsoImportedSourceRow', 'projectControls', 'activity', 'progressUndone', 'fileProgressPeak', ...SCHEDULE_CARRIED_PROGRESS_FIELDS,
   // What a schedule's import keeps about the task, under the imports' own rules (with owner answers Q29 and Q30: the
   // file's unique id, the rows David said are not revisions of each other), and the shown copy's lookahead dates,
   // never saved.
@@ -680,6 +680,23 @@ export const SCHEDULE_PROGRESS_FIELDS: readonly string[] = [...SCHEDULE_CARRIED_
  * task sent whole no more, nothing put the 30% back. Anything else goes as
  * before: the edit's percent goes up.
  */
+/**
+ * Build 231, S3 item 1 (owner answer Q32, option b): a percent he entered
+ * offline, on a row where a master's file has since taken it over in the
+ * cloud (scheduleFileTookHisPercentOver), is not sent: the cloud's percent,
+ * the newest master's, stands, as on one device. Only for an edit that
+ * changes the progress and keeps the copy it started from.
+ */
+export function scheduleItemFileTookPercentOverInCloud(
+  local: ScheduleItem,
+  changedFields: readonly string[],
+  base: ScheduleItemEditBase | null | undefined,
+  remote: ScheduleItem,
+): boolean {
+  if (!isEditBase(base) || !changedFields.some(field => SCHEDULE_PROGRESS_FIELDS.includes(field))) return false;
+  return scheduleFileTookHisPercentOver(local, remote);
+}
+
 export function scheduleItemLaterPercentInCloud(
   local: ScheduleItem,
   changedFields: readonly string[],

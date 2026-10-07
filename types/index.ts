@@ -910,6 +910,20 @@ export type ScheduleItem = {
    */
   progressStandsSince?: { at: string; percentComplete: number } | null;
   /**
+   * The highest percent a master schedule's file has stated on this row, and
+   * when it was approved (Build 231, S3 item 1; owner answer Q32, option b,
+   * on a task the masters keep on its dates). A file that states more than
+   * the percent David entered takes the task over, and a newer master's
+   * percent then replaces that file's, below his too; the row itself kept
+   * only the last percent, so a copy of the row still holding his older
+   * percent could not tell "G's 60% over his 40%, then H's 30%" from "H's 30%
+   * straight over his 40%" (which he keeps). Read where two copies of one
+   * row meet (the sync's merge, and an offline percent edit against the
+   * cloud's row). Kept in the task's JSON record; missing on a task saved
+   * before, which is weighed as before.
+   */
+  fileProgressPeak?: { percentComplete: number; statedAt: string } | null;
+  /**
    * The percent Talk wrote on this task that its Undo took back, and when
    * Talk confirmed it (whole-app audit A5 pass 26 L1, 2 Oct 2026): another
    * device may still hold that entry, or a floor made from it, and neither

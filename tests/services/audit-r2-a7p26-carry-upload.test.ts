@@ -197,7 +197,7 @@ import {
 } from '../../services/SyncService';
 import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
 import { buildDAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
-import { scheduleManagersOwnPercent, scheduleManagersPercentUnderFileOfBoth, scheduleProgressLeftStanding, scheduleProgressStandsSince, scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
+import { scheduleFileTookHisPercentOver, scheduleManagersOwnPercent, scheduleManagersPercentUnderFileOfBoth, scheduleProgressLeftStanding, scheduleProgressStandsSince, scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/ScheduleProgressSource';
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
 import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportSnapshot, daveReportSnapshotScopeKey, markReportSnapshotDelivered, reportBaselineSnapshot, reportSnapshotToSave, type DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
@@ -968,7 +968,7 @@ describe('A5 p23 L1 and owner answer Q32 (option b): a newer master that replace
   // stated percent, which the import does not record. The A7 p26 follow-up's rule (below) does not fit: there is no row
   // between, and his 40% was his own word on the row (it differed from what the row showed), so H's 30% stated after it
   // is the "straight over his 40%" case as far as the merge can see. Left as it was (the follow-up re-checked it).
-  it.skip('two devices (Q32 case 1), Framing on its dates: H\'s 30% everywhere (open: the row does not keep G\'s 60%)', async () => {
+  it('two devices (Q32 case 1), Framing on its dates: H\'s 30% everywhere (open: the row does not keep G\'s 60%)', async () => {
     const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
     setOnline(ipad, false);
     at(BEFORE_G);
@@ -2495,6 +2495,68 @@ describe('S3 item 1: when a schedule was made current with a percent left standi
     scheduleItemsAfterCloudDeletion([his], his.id);
     recoverDAVEScheduleRecords({ local: [], cloud: [], allowCloudOnly: true });
     expect(scheduleItemsAfterCloudRowHeard([moved], moved.id)[0].percentComplete).toBe(0);
+  });
+});
+
+/*
+ * Build 231, S3 item 1, second part (owner answer Q32, option b, on a task the masters keep on its dates): the row
+ * keeps the highest percent a master's file has stated on it and when (fileProgressPeak).
+ */
+describe('S3 item 1: the highest percent a master\'s file stated on a row, kept with the row', () => {
+  const davids = (row: ScheduleItem, percent: number, at: string) => ({ ...row, percentComplete: percent, status: 'In Progress', progressSource: 'project_manager', progressConfirmedBy: 'David', progressConfirmedAt: at, updatedAt: at }) as ScheduleItem;
+  const inPlace = (percent: number) => `Framing,Alpha,Lot,10/15/2026,10/25/2026,${percent}`;
+  /** The phone approves these masters in turn, each on Framing's own dates; its row after the last. */
+  async function phoneRowAfter(...masters: Array<[ReferenceDocument, number]>) {
+    const { phone } = await startBoth(F, [F_ROW, SURVEY]);
+    for (const [master, percent] of masters) { at(master.importedAt!); await approve(phone, master, [inPlace(percent), SURVEY]); shareDocuments(phone); }
+    return theRow(phone);
+  }
+
+  it('the approval records it: G\'s 60% then H\'s 30% keeps 60% of G\'s approval; a higher one later replaces it; a task no master restated has none', async () => {
+    expect((await phoneRowAfter([G, 60], [H, 30])).fileProgressPeak).toEqual({ percentComplete: 60, statedAt: G.importedAt });
+    resetRig();
+    expect((await phoneRowAfter([G, 30], [H, 60])).fileProgressPeak).toEqual({ percentComplete: 60, statedAt: H.importedAt });
+    resetRig();
+    const { phone } = await startBoth(F, [F_ROW, SURVEY]);
+    expect(theRow(phone).fileProgressPeak).toBeUndefined();
+  });
+
+  it('two copies of the row: his older 40% against a file\'s 30% whose row says a file had stated 60% since: the 30% stands, his 40% kept under it', async () => {
+    const files = await phoneRowAfter([G, 60], [H, 30]);
+    const his = davids(rowsOf(F, [F_ROW])[0], 40, BEFORE_G);
+    expect(scheduleFileTookHisPercentOver(his, files)).toBe(true);
+    for (const [local, cloud] of [[his, files], [files, his]]) {
+      const [row] = recoverDAVEScheduleRecords({ local: [local], cloud: [cloud], allowCloudOnly: true });
+      expect([row.percentComplete, row.progressSource ?? null, row.managersPercentUnderFile, row.managersPercentUnderFileJudgedAt, row.fileProgressPeak]).toEqual([30, null, 40, BEFORE_G, { percentComplete: 60, statedAt: G.importedAt }]);
+    }
+  });
+
+  it('unchanged: H\'s 30% straight over his 40% leaves his 40%; a percent he entered after the file\'s 60% stands; a row with no record (Build 229 / 230) is weighed as before, his 40% kept', async () => {
+    const straight = await phoneRowAfter([H, 30]);
+    const his = davids(rowsOf(F, [F_ROW])[0], 40, BEFORE_G);
+    const kept = (local: ScheduleItem, cloud: ScheduleItem) => recoverDAVEScheduleRecords({ local: [local], cloud: [cloud], allowCloudOnly: true })[0].percentComplete;
+    expect([scheduleFileTookHisPercentOver(his, straight), kept(his, straight)]).toEqual([false, 40]);
+    resetRig();
+    const files = await phoneRowAfter([G, 60], [H, 30]);
+    const after = davids(rowsOf(F, [F_ROW])[0], 40, AFTER_G);
+    expect([scheduleFileTookHisPercentOver(after, files), kept(after, files)]).toEqual([false, 40]);
+    const { fileProgressPeak: _none, ...saved229 } = files;
+    expect([scheduleFileTookHisPercentOver(his, saved229 as ScheduleItem), kept(his, saved229 as ScheduleItem)]).toEqual([false, 40]);
+  });
+
+  it('his offline 40% is not sent over the cloud\'s row once a file has taken it over there, and a note typed with it still goes up', async () => {
+    const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+    setOnline(ipad, false);
+    at(BEFORE_G);
+    await edit(ipad, theRow(ipad).id, { percentComplete: 40, notes: 'Walls up' });
+    at(G.importedAt!); await approve(phone, G, [inPlace(60), SURVEY]); shareDocuments(phone);
+    at(H.importedAt!); await approve(phone, H, [inPlace(30), SURVEY]); shareDocuments(phone);
+    at('2026-09-22T08:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    expect([cloudRow('MASTER F-1')!.percentComplete, cloudRow('MASTER F-1')!.notes, (await conflictsOf(ipad)).length]).toEqual([30, 'Walls up', 0]);
+    await fullSync(ipad); await refresh(phone);
+    expect([onWeb(), onDevice(ipad), onDevice(phone)].map(place => [place[0][2], place[0][3]])).toEqual(Array(3).fill([30, 'Walls up']));
   });
 });
 

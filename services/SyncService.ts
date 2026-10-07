@@ -73,7 +73,7 @@ import { fieldUpdateCopyIsSettled, fieldUpdateEditAgainstCloud, fieldUpdateEditB
 import {
   isEditBase, scheduleItemFieldsWithOwnProgress, scheduleItemEditAgainstCloud, scheduleItemEditBase, scheduleItemEditBaseAfterLanding, scheduleItemEditBaseOf,
   scheduleItemConflictCopyKeeping, scheduleItemConflictCopyOnRow, scheduleItemConflictFields, scheduleItemEditBasesMerged, scheduleItemLaterPercentGivenBack,
-  scheduleItemLaterPercentInCloud,
+  scheduleItemLaterPercentInCloud, scheduleItemFileTookPercentOverInCloud,
   scheduleItemRowAnsweringTo, scheduleItemStampAfter, scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemConflictCopyOfBoth,
   scheduleItemNewRowMetAgain, scheduleItemRecordAfterTheSyncWrote, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
   scheduleItemChangedSinceMade, scheduleItemWholeCopyBaseSinceMade, scheduleItemWholeCopyFieldByField, SCHEDULE_ITEM_AS_MADE,
@@ -7270,9 +7270,11 @@ async function uploadQueueItem(
     // A later percent of David's own in the cloud stands over the edit's older one (owner answer Q28): the progress is
     // not sent. Otherwise it goes as before.
     const laterPercentInCloud = Boolean(weighed && remote && scheduleItemLaterPercentInCloud(payload.itemData, changedFields!, payload.base, remote));
+    // Nor a percent a master's file has since taken over on the cloud's row (Build 231, S3 item 1; owner answer Q32 b).
+    const fileTookPercentOver = Boolean(weighed && remote && scheduleItemFileTookPercentOverInCloud(payload.itemData, changedFields!, payload.base, remote));
     const sentFields = weighed && changedFields
       ? changedFields.filter(field => !weighed.asked.includes(field) && !weighed.keptFromCloud.includes(field) && !weighed.held.includes(field) &&
-        !(laterPercentInCloud && SCHEDULE_PROGRESS_FIELDS.includes(field)))
+        !((laterPercentInCloud || fileTookPercentOver) && SCHEDULE_PROGRESS_FIELDS.includes(field)))
       : changedFields;
     // That later percent, confirmed again just after this device's older entry when this device's is the later
     // confirmed (review N1 finding 6): the device kept its entry, and its next Full Sync sent it whole over the cloud's.

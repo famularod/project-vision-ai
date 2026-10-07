@@ -6,6 +6,7 @@ import {
   SCHEDULE_CARRIED_PROGRESS_FIELDS,
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleEntryUndone,
+  scheduleFileTookHisPercentOver,
   scheduleManagersOwnPercent,
   scheduleManagersPercentUnderFileOfBoth,
   scheduleProgressCarriedFrom,
@@ -966,7 +967,10 @@ function mergeScheduleRevisions(
 ): ScheduleItem {
   const base = compareScheduleAuthority(local, cloud) >= 0 ? local : cloud;
   const noteSource = compareRecordRevision(local, cloud) >= 0 ? local : cloud;
-  const progressSource = compareProgressAuthority(local, cloud) >= 0 ? local : cloud;
+  // A master's file that took his percent over on the other copy stands with what the newest master then stated
+  // (Build 231, S3 item 1; owner answer Q32, option b), his percent kept under it; else by rank and time, as before.
+  const filesOverHis = scheduleFileTookHisPercentOver(local, cloud) ? cloud : scheduleFileTookHisPercentOver(cloud, local) ? local : null;
+  const progressSource = filesOverHis ?? (compareProgressAuthority(local, cloud) >= 0 ? local : cloud);
 
   const alsoImportedInBatchIds = [...new Set([
     ...(local.alsoImportedInBatchIds || []),
@@ -978,7 +982,7 @@ function mergeScheduleRevisions(
   const revisedFromTaskIds = scheduleTaskEarlierIdsOfBoth(base, base === local ? cloud : local);
   // When the manager judged a percent given back later goes with that percent (A10 pass 5 L1).
   // The row a carried percent came from goes with that percent, last, as the carry adds it (A7 pass 28 L).
-  const { progressJudgment: _baseJudgment, progressCarriedFrom: _baseCarriedFrom, progressStandsSince: _baseStandsSince, ...baseRecord } = base;
+  const { progressJudgment: _baseJudgment, progressCarriedFrom: _baseCarriedFrom, progressStandsSince: _baseStandsSince, fileProgressPeak: _basePeak, ...baseRecord } = base;
   // What a master said under a lookahead, from the copy that has it (A7 pass 24 L-3).
   // With David's own later percent on the other copy's task (A6 pass 22 L1).
   const lookaheadOverlay = lookaheadNoteWithPercentOf(lookaheadNoteOfBoth(base, base === local ? cloud : local), base, base === local ? cloud : local);
@@ -996,6 +1000,9 @@ function mergeScheduleRevisions(
     // David's own percent a file's replaced goes with that file's percent (A5 recorded Low R-c, cab99c0), unless the
     // other copy knows a later entry of his (A6 pass 24 L1).
     ...scheduleManagersPercentUnderFileOfBoth(progressSource, progressSource === local ? cloud : local),
+    ...(filesOverHis && typeof filesOverHis.managersPercentUnderFile !== 'number' ? (his => ({
+      managersPercentUnderFile: boundedPercent(Number(his.percentComplete)), managersPercentUnderFileJudgedAt: scheduleProgressJudgedAt(his),
+    }))(filesOverHis === local ? cloud : local) : {}),
     projectControls: mergeScheduleProjectControls(local, cloud, base),
     // Every import either copy knows the task belongs to (whole-app audit A5 pass 2).
     ...(alsoImportedInBatchIds.length > 0 ? { alsoImportedInBatchIds } : {}),
@@ -1004,7 +1011,16 @@ function mergeScheduleRevisions(
     ...(progressSource.progressCarriedFrom ? { progressCarriedFrom: progressSource.progressCarriedFrom } : {}),
     // When its schedule was made current with this percent left standing, from whichever copy knows the later time (Build 231, S3 item 1).
     ...progressStandsSinceOfBoth(progressSource, progressSource === local ? cloud : local),
+    // The highest percent a master's file stated on the row, from whichever copy knows the higher (the later, of equals).
+    ...fileProgressPeakOfBoth(local, cloud),
   };
+}
+
+function fileProgressPeakOfBoth(local: ScheduleItem, cloud: ScheduleItem): Pick<ScheduleItem, 'fileProgressPeak'> {
+  const peaks = [local.fileProgressPeak, cloud.fileProgressPeak].filter((peak): peak is NonNullable<ScheduleItem['fileProgressPeak']> => Boolean(peak) && typeof peak!.statedAt === 'string');
+  if (peaks.length === 0) return {};
+  return { fileProgressPeak: peaks.reduce((kept, peak) => (Number(peak.percentComplete) > Number(kept.percentComplete) ||
+    (Number(peak.percentComplete) === Number(kept.percentComplete) && timestamp(peak.statedAt) > timestamp(kept.statedAt)) ? peak : kept)) };
 }
 
 /** The later mark of two copies of a row that goes with the percent kept (progressStandsSince); none: the field is left out. */

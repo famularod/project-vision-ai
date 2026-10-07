@@ -184,6 +184,13 @@ export type ScheduleImportMergeResult = Readonly<{
 
 export { SCHEDULE_UPDATE_PROGRESS_CONFIRMER, scheduleProgressIsManagers };
 
+/** The highest percent a master's file has stated on a row, after one more that stands on it (fileProgressPeak). */
+function scheduleFileProgressPeakAfter(saved: ScheduleItem, stands: Partial<ScheduleItem>, approvedAt: string): NonNullable<ScheduleItem['fileProgressPeak']> {
+  const stated = percentOf({ percentComplete: stands.percentComplete } as ScheduleItem);
+  const before = saved.fileProgressPeak;
+  return before && typeof before.statedAt === 'string' && Number(before.percentComplete) > stated ? before : { percentComplete: stated, statedAt: approvedAt };
+}
+
 function percentOf(item: ScheduleItem): number {
   const value = Number(item.percentComplete);
   return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;
@@ -1611,8 +1618,11 @@ export function mergeApprovedScheduleImportItems({
       // A file the task already belongs to, approved again, changes nothing (A5 pass 4 #1).
       if (newBatchId && batches.includes(key(newBatchId))) return;
       const rehome = owned && Boolean(newBatchId);
-      const fileProgress = repeated.percent ? null
+      const stands = repeated.percent ? null
         : scheduleFileProgressAboveManagers(duplicate, fileProgressFor(duplicate, importedItem, approvedAt), approvedAt);
+      // A master's percent that stands on the row it restates: the row keeps the highest one stated on it, and when
+      // (Build 231, S3 item 1; fileProgressPeak). A lookahead restates a task by its own rule, above, and writes none.
+      const fileProgress = stands ? { ...stands, fileProgressPeak: scheduleFileProgressPeakAfter(duplicate, stands, approvedAt) } : stands;
       const noted = scheduleTaskMasterRestated(duplicate, importedItem, approvedAt);
       // On the master's dates, as a lookahead restates a task (A5 pass 17 M1); a date the row leaves blank stays.
       const dates = {

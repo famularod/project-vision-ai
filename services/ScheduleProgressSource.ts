@@ -291,6 +291,21 @@ export function scheduleProgressLeftStanding(hidden: ScheduleItem, shown: Schedu
   return { ...shown, progressStandsSince: { at: now, percentComplete: percentOf(shown) }, updatedAt: now };
 }
 
+/**
+ * Build 231, S3 item 1 (owner answer Q32, option b, on a task the masters
+ * keep on its dates): whether a master's file took the percent David holds
+ * on `his` copy of a row over, as the other copy of that row records it
+ * (fileProgressPeak): a file stated more than his percent after he judged
+ * it. That copy's percent, a file's still, then stands: the newest master's.
+ * False when that copy keeps no such record (a task saved before), when its
+ * percent is David's own, or when he judged his percent after that file.
+ */
+export function scheduleFileTookHisPercentOver(his: ScheduleItem, files: ScheduleItem): boolean {
+  const peak = files.fileProgressPeak;
+  if (!peak || typeof peak.statedAt !== 'string' || !scheduleProgressIsManagers(his) || scheduleProgressIsManagers(files)) return false;
+  return percentOf({ percentComplete: peak.percentComplete }) > percentOf(his) && timeOf(peak.statedAt) > timeOf(scheduleProgressJudgedAt(his));
+}
+
 export function scheduleManagersOwnPercent(item: ScheduleItem): Readonly<{ percent: number; judgedAt: string | null }> | null {
   if (scheduleProgressIsManagers(item)) return { percent: percentOf(item), judgedAt: scheduleProgressJudgedAt(item) };
   const floor = item.managersPercentUnderFile;
