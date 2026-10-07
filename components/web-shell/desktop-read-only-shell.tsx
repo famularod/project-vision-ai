@@ -189,6 +189,7 @@ import {
   type DAVEWebSendOutcome,
 } from '../../services/DAVEWebReportSend';
 import { approvalReplacesUnsentApproval, manualReportMarkTime, manualReportSendTime } from '../../services/ReportManualSend';
+import { reportFileTitleWithDate, reportSubjectWithDate } from '../../services/ReportCommunication';
 import {
   DesktopReportMarkSent,
   DesktopReportSentQuestion,
@@ -6215,7 +6216,7 @@ function ReportWorkspace({
         media: resolvedMedia.media,
         unavailableMedia: resolvedMedia.unavailableMedia,
       });
-      downloadBlob(`${safeDownloadName(title)}.docx`, blob);
+      downloadBlob(`${safeDownloadName(reportFileTitleWithDate(title, generatedAt))}.docx`, blob);
       const embeddedPhotos = resolvedMedia.media.filter(item => item.kind === 'photo').length;
       const embeddedDrawings = resolvedMedia.media.filter(item => item.kind === 'drawing').length;
       const embedded = embeddedPhotos + embeddedDrawings;
@@ -6553,7 +6554,7 @@ function ReportWorkspace({
       }
     }
     const shared = reportAsShared();
-    const subject = encodeURIComponent(reportTitle.trim());
+    const subject = encodeURIComponent(reportSubjectWithDate(reportTitle, reportGeneratedAt));
     const emailBody = prepareDAVEWebReportEmailBody(reportBody);
     const body = encodeURIComponent(emailBody.text);
     window.open(`mailto:?subject=${subject}&body=${body}`, '_blank', 'noopener,noreferrer');

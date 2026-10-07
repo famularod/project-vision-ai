@@ -55,3 +55,42 @@ export function shouldApplyCommunicationOutcome({
     reportApproved &&
     startedReportIdentity === currentReportIdentity;
 }
+
+/**
+ * R5 item 6a (a send extra deferred on 29 Sep 2026). The email subject and
+ * the Word file's name were the report's title alone ("Tower Project Status
+ * Report"): two reports of one project made on different days could not be
+ * told apart in a mailbox or a folder, and a second Word copy saved under
+ * the first one's name. Both now carry the day the report was prepared,
+ * which is the day its Word copy prints ("Prepared October 6, 2026"): the
+ * device's calendar day of the report's own time, or today when it has none.
+ */
+function reportPreparedDay(generatedAt: string | Date | null | undefined, now: Date): Date {
+  const date = generatedAt instanceof Date ? generatedAt : generatedAt ? new Date(generatedAt) : now;
+  return Number.isNaN(date.getTime()) ? now : date;
+}
+
+/** "Tower Project Status Report — Oct 6, 2026". A title that already says that day is left as it is. */
+export function reportSubjectWithDate(
+  title: string | null | undefined,
+  generatedAt: string | Date | null | undefined,
+  now: Date = new Date(),
+): string {
+  const day = reportPreparedDay(generatedAt, now).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const subject = (title ?? '').trim();
+  if (!subject) return day;
+  return subject.includes(day) ? subject : `${subject} — ${day}`;
+}
+
+/** "Tower Project Status Report 2026-10-06", for a file name: the day as numbers, so the files sort by day in a folder. */
+export function reportFileTitleWithDate(
+  title: string | null | undefined,
+  generatedAt: string | Date | null | undefined,
+  now: Date = new Date(),
+): string {
+  const date = reportPreparedDay(generatedAt, now);
+  const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  const name = (title ?? '').trim();
+  if (!name) return day;
+  return name.includes(day) ? name : `${name} ${day}`;
+}

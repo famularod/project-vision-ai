@@ -81,7 +81,8 @@ describe('Report Word download visibility contract', () => {
   it('downloads desktop reports as Word documents instead of Markdown files', () => {
     expect(desktopShell).toContain('buildReportWordBlob({');
     expect(desktopShell).toContain(
-      'downloadBlob(`${safeDownloadName(title)}.docx`, blob);',
+      // R5 item 6a: the file's name carries the day the report was prepared; pin updated deliberately.
+      'downloadBlob(`${safeDownloadName(reportFileTitleWithDate(title, generatedAt))}.docx`, blob);',
     );
     expect(desktopShell.match(/Download Word Report/g)?.length).toBeGreaterThanOrEqual(2);
     expect(desktopShell).not.toMatch(

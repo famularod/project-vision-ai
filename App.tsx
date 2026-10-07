@@ -93,6 +93,8 @@ import {
 import { afterTextInputBlur } from './components/after-text-input-blur';
 import {
   mailComposerOutcome,
+  reportFileTitleWithDate,
+  reportSubjectWithDate,
   smsComposerOutcome,
   type ReportCommunicationOutcome,
 } from './services/ReportCommunication';
@@ -10151,7 +10153,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     // takes no images and no "not attached" note (whole-app audit A6).
     const images = await reportImageFiles(reportBodyCitesImages(report) ? report : { ...report, locationGroups: [] }, REPORT_EMAIL_IMAGE_LIMIT);
     const compose = (attachments: string[], note: string) => MailComposer.composeAsync({
-      subject: report.subject || report.title,
+      subject: reportSubjectWithDate(report.subject || report.title, report.generatedAt),
       body: report.body + note,
       attachments,
     });
@@ -10331,7 +10333,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       drawingReferences: readableDrawingReferences,
     });
     const fileUri =
-      `${directory}${sanitizeFilename(report.title || 'Vitruvius Project Report')}.docx`;
+      `${directory}${sanitizeFilename(reportFileTitleWithDate(report.title || 'Vitruvius Project Report', report.generatedAt))}.docx`;
 
     try {
       const {
