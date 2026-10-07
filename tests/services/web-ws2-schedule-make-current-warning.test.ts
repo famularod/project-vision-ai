@@ -50,7 +50,8 @@ describe('what making a schedule current does to another project, asked before i
     expect(await daveWebScheduleRetirementCheck({ id: 'Alpha rev 2' })).toEqual({
       ok: true,
       effects: [{ projectName: 'Beta', fallbackSchedule: null }],
-      message: 'The schedule now current for Beta will be retired too. Beta is left with no current schedule and shows no schedule tasks until you set one.',
+      // The web's own words since review pass 1, web L5 (the phone's sentence ends "until you set one.").
+      message: 'The schedule now current for Beta will be retired too. Beta is left with no current schedule and shows no schedule tasks until a schedule is made current for it.',
     });
   });
 

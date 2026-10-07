@@ -76,7 +76,7 @@ function scheduleDocument(
 
 const combined = scheduleDocument('Combined', { isCurrent: true, projectName: null, projectNames: ['Alpha', 'Beta'], importedAt: '2026-09-01T12:00:00.000Z' });
 const alpha2 = scheduleDocument('Alpha rev 2', { importedAt: '2026-10-01T12:00:00.000Z' });
-const ASKED = 'The schedule now current for Beta will be retired too. Beta is left with no current schedule and shows no schedule tasks until you set one.';
+const ASKED = 'The schedule now current for Beta will be retired too. Beta is left with no current schedule and shows no schedule tasks until a schedule is made current for it.';
 
 const mockAuth = {
   phase: 'ready',
@@ -143,6 +143,24 @@ describe('Make Current Schedule on the web asks before it retires another projec
     expect(screen.getByText('Making “Alpha rev 2” current changes more than its own project.')).toBeTruthy();
     expect(screen.getByText(ASKED)).toBeTruthy();
     expect(jest.mocked(daveWebScheduleRetirementCheck).mock.calls[0][0].id).toBe('Alpha rev 2');
+    expect(mockAuth.setCurrentSchedule).not.toHaveBeenCalled();
+  });
+
+  it('when the only change is to one of its OWN projects, the card says that, and not "more than its own project" (review pass 1, web L5)', async () => {
+    // "Alpha rev 2" also covers a project that shows nothing, and Alpha shows a newer schedule: what the cloud's check answers then.
+    const OWN = 'Alpha now shows “Alpha rev 3”, which is newer. Making “Alpha rev 2” current will show “Alpha rev 2” for Alpha instead.';
+    jest.mocked(daveWebScheduleRetirementCheck).mockResolvedValue({
+      ok: true,
+      effects: [{ projectName: 'Alpha', fallbackSchedule: { id: 'Alpha rev 2', name: 'Alpha rev 2' }, newerScheduleReplaced: { id: 'Alpha rev 3', name: 'Alpha rev 3' } }],
+      message: OWN,
+    });
+    const screen = render(<DesktopReadOnlyShell page="documents" />);
+    await pressMakeCurrent(screen);
+
+    expect(screen.getByText('Change the current schedule?')).toBeTruthy();
+    expect(screen.getByText('Making “Alpha rev 2” current replaces a newer schedule for Alpha.')).toBeTruthy();
+    expect(screen.getByText(OWN)).toBeTruthy();
+    expect(screen.queryAllByText(/more than its own project/).length).toBe(0);
     expect(mockAuth.setCurrentSchedule).not.toHaveBeenCalled();
   });
 

@@ -1,9 +1,9 @@
 import type { ReferenceDocument } from '../types';
 import { loadDAVEWebCloudReferenceDocuments } from './DAVEWebReadOnlyRepository';
+import { daveWebScheduleRetirementMessage } from './DAVEWebScheduleActivationText';
 import { daveWebSupabaseGateway } from './DAVEWebSupabaseClient';
 import {
   scheduleActivationEffects,
-  scheduleRetirementMessage,
   type ScheduleRetirementEffect,
   type ScheduleRetirementScope,
 } from './SharedDocumentActivation';
@@ -17,10 +17,11 @@ import {
  * asks first ("Change the current schedule?"); the web did not.
  *
  * What the web now asks is worked out as the phone works it out, by the
- * phone's own functions (scheduleActivationEffects,
- * scheduleRetirementMessage): from the cloud's own current flags, read at
- * that moment, and from what THIS cloud does when a schedule is made
- * current, which the cloud is asked first. When either cannot be read the
+ * phone's own function (scheduleActivationEffects): from the cloud's own
+ * current flags, read at that moment, and from what THIS cloud does when a
+ * schedule is made current, which the cloud is asked first. The sentences
+ * are the web's own (review pass 1, web L5: DAVEWebScheduleActivationText);
+ * the phone's name the phone's button. When either cannot be read the
  * schedule is not made current and he is told, as on the phone: a warning
  * that might be false is worse than none.
  */
@@ -53,5 +54,5 @@ export async function daveWebScheduleRetirementCheck(
   const cloudTarget = cloud.find(document => document.id === target.id);
   if (!cloudTarget) return { ok: false, message: DAVE_WEB_SCHEDULE_CHANGED_TEXT };
   const effects = scheduleActivationEffects(cloudTarget, cloud, scope);
-  return { ok: true, effects, message: effects.length > 0 ? scheduleRetirementMessage(effects) : '' };
+  return { ok: true, effects, message: daveWebScheduleRetirementMessage(cloudTarget.name, effects) };
 }

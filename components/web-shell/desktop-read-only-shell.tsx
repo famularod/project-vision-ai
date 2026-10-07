@@ -74,6 +74,7 @@ import {
 } from '../../services/PIEScheduleReconciliation';
 import { scheduleActivationNotice } from '../../services/SharedDocumentActivation';
 import { daveWebScheduleRetirementCheck } from '../../services/DAVEWebScheduleActivation';
+import { daveWebScheduleRetirementLead } from '../../services/DAVEWebScheduleActivationText';
 import {
   formatScheduleCalendarDay,
   scheduleCalendarDay,
@@ -3889,7 +3890,7 @@ function DocumentManagementWorkspace({
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [notice, setNotice] = useState<{ tone: 'good' | 'danger'; text: string } | null>(null);
   /** "Change the current schedule?": what making this schedule current does to another project (WS2 item 3). */
-  const [retirementQuestion, setRetirementQuestion] = useState<Readonly<{ documentId: string; message: string }> | null>(null);
+  const [retirementQuestion, setRetirementQuestion] = useState<Readonly<{ documentId: string; lead: string; message: string }> | null>(null);
   const retirementTarget = retirementQuestion ? documents.find(document => document.id === retirementQuestion.documentId) ?? null : null;
   const [reindexProgress, setReindexProgress] = useState<DocumentReindexBatchProgress | null>(null);
   const driveConfiguration = useMemo(() => googleDriveWebConfiguration(), []);
@@ -4244,7 +4245,9 @@ function DocumentManagementWorkspace({
           return;
         }
         if (check.effects.length > 0) {
-          setRetirementQuestion({ documentId: document.id, message: check.message });
+          // The card's first line says which kind of change this is (review pass 1, web L5): another project's
+          // schedule, a newer schedule of one of its own projects, or both. It had always said "more than its own project".
+          setRetirementQuestion({ documentId: document.id, lead: daveWebScheduleRetirementLead(document.name, check.effects), message: check.message });
           return;
         }
       }
@@ -4793,7 +4796,7 @@ function DocumentManagementWorkspace({
         <View style={styles.deleteConfirm} accessibilityRole="alert">
           <View style={styles.dataGrow}>
             <Text style={styles.deleteConfirmTitle}>Change the current schedule?</Text>
-            <Text style={styles.dataDetail}>Making “{retirementTarget.name}” current changes more than its own project.</Text>
+            <Text style={styles.dataDetail}>{retirementQuestion.lead}</Text>
             <Text style={styles.errorText}>{retirementQuestion.message}</Text>
           </View>
           <View style={styles.inlineButtons}>
