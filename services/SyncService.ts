@@ -87,7 +87,13 @@ import {
   referenceDocumentEditOutlivingActivation,
   referenceDocumentSharedDetailsFingerprint,
 } from './DAVECloudRecovery';
-import { cloudPhotoPreviewIsFresh } from './ProjectPhotoTransport';
+import {
+  cloudPhotoPreviewIsFresh,
+  forgetPhotoNotInCloud,
+  photoKnownNotInCloud,
+  rememberPhotoNotInCloud,
+  signableCloudPhotoPath,
+} from './ProjectPhotoTransport';
 import {
   confirmProjectUpdateCloudDeletion,
   confirmedProjectUpdateDeletionIds,
@@ -8944,6 +8950,7 @@ export async function uploadLocalPhotoWithDiagnostics(
 
   const cloudCopy = await createPhotoSignedUrl(path, 60, PROJECT_PHOTOS_BUCKET);
   if (cloudCopy.ok && !cloudCopy.stubbed && cloudCopy.data) {
+    forgetPhotoNotInCloud(path);
     return {
       result: 'skipped',
       message: null,
@@ -9147,6 +9154,7 @@ export async function uploadLocalPhotoWithDiagnostics(
     });
 
     if (result.ok && !result.stubbed) {
+      forgetPhotoNotInCloud(path); // it is there now: its image may sign it again (sync batch Y3, item 1)
       return {
         result: 'uploaded',
         message: null,
@@ -9304,6 +9312,7 @@ export async function locateCloudPhotoCopy(
 ): Promise<{ path: string; lookup: PhotoSignedUrlLookup }> {
   const path = projectUpdatePhotoStoragePath(update, photo);
   const lookup = await createPhotoSignedUrl(path, ttlSeconds, PROJECT_PHOTOS_BUCKET);
+  if (lookup.ok && lookup.data && !lookup.stubbed) forgetPhotoNotInCloud(path);
   if ((lookup.ok && lookup.data && !lookup.stubbed) || !cloudPhotoLookupConfirmedMissing(lookup, true)) {
     return { path, lookup };
   }
@@ -9372,7 +9381,12 @@ export async function hydrateProjectUpdatePhotoPreviews<TUpdate extends ProjectU
     if (cloudPhotoPreviewIsFresh(photo)) return photo;
     const cloudStoragePath =
       photo.cloudStoragePath || projectUpdatePhotoStoragePath(update, photo);
-    const preview = sign ? await signProjectPhotoPreview({ ...photo, cloudStoragePath }) : null;
+    // Not a photo with nothing in the cloud: marked so by the sync, or found
+    // so for this account. Every live update, Settings download and launch
+    // looked each one up again (sync batch Y3, item 1).
+    const preview = sign && signableCloudPhotoPath({ ...photo, cloudStoragePath })
+      ? await signProjectPhotoPreview({ ...photo, cloudStoragePath })
+      : null;
     if (!preview) return { ...photo, cloudStoragePath };
     return {
       ...photo,
@@ -9396,7 +9410,7 @@ export async function signProjectPhotoPreview(
   { force = false }: Readonly<{ force?: boolean }> = {},
 ): Promise<Readonly<{ uri: string; usableUntil: number }> | null> {
   const cloudStoragePath = photo.cloudStoragePath;
-  if (!cloudStoragePath?.trim()) return null;
+  if (!cloudStoragePath?.trim() || photoKnownNotInCloud(cloudStoragePath)) return null;
   const transform = projectPhotoPreviewTransform(photo);
   if (force) photoPreviewSignedUrlCache.delete(photoPreviewCacheKey(cloudStoragePath, transform));
   const { result, usableUntil } = await createCachedPhotoPreviewSignedUrl(cloudStoragePath, transform);
@@ -9480,12 +9494,14 @@ async function createCachedPhotoPreviewSignedUrl(
   if (inFlight) return inFlight;
 
   const request = photoPreviewSigningRunner.run(async () => {
+    const askedAs = currentCloudOwner();
     const result = await createPhotoSignedUrl(
       cloudStoragePath,
       600,
       PROJECT_PHOTOS_BUCKET,
       transform,
     );
+    await rememberIfPhotoNotInCloud(cloudStoragePath, result, askedAs);
     const signed = {
       result,
       usableUntil: Date.now() + PROJECT_PHOTO_PREVIEW_USABLE_MS,
@@ -9507,6 +9523,26 @@ async function createCachedPhotoPreviewSignedUrl(
     if (photoPreviewSigningInFlight.get(cacheKey) === request) {
       photoPreviewSigningInFlight.delete(cacheKey);
     }
+  }
+}
+
+/**
+ * "Not found" is remembered for the signed-in account (ProjectPhotoTransport)
+ * only when the cloud confirms this is the owner asking: storage gives the
+ * same answer for every photo to a caller whose sign-in has lapsed, and no
+ * signal, a time-out or a refused request is no answer at all.
+ */
+async function rememberIfPhotoNotInCloud(
+  path: string,
+  lookup: PhotoSignedUrlResult,
+  askedAs: CloudOwnerBinding,
+): Promise<void> {
+  if (!lookup || lookup.ok || !cloudPhotoLookupConfirmedMissing(lookup, true)) return;
+  try {
+    const owner = await verifyDAVEAppOwner();
+    if (owner?.ok && !owner.stubbed && owner.data === true) rememberPhotoNotInCloud(path, askedAs);
+  } catch {
+    // Not remembered: the next look-up asks again.
   }
 }
 

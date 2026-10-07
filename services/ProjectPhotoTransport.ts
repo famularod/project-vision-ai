@@ -1,3 +1,4 @@
+import { cloudOwnerUnchanged, currentCloudOwner, type CloudOwnerBinding } from './CloudOwnerBinding';
 import type { UpdatePhoto } from '../types';
 
 /**
@@ -19,18 +20,61 @@ export function cloudPhotoPreviewIsFresh(
 }
 
 /**
+ * Photos the cloud answered "not found" for, by storage path, for the
+ * signed-in account and for this run of the app only (sync batch Y3, item 1).
+ * A photo with nothing in the cloud that carried no 'unavailable' mark on
+ * this device was looked up again by every refresh, live update and Settings
+ * download, and by its image about 16 times an hour. Kept per account: what
+ * one account cannot see says nothing of another's, and it is all forgotten
+ * when the account changes. One photo's is forgotten when this device uploads
+ * it or any look-up finds it. Not saved on the device: a relaunch looks once
+ * more, which is how a photo another device uploads later is found.
+ */
+const PHOTOS_NOT_IN_CLOUD_KEPT = 2000;
+let photosNotInCloud: { ownerId: string; paths: Set<string> } | null = null;
+
+function photosNotInCloudForSignedInAccount(): Set<string> | null {
+  if (photosNotInCloud && photosNotInCloud.ownerId !== currentCloudOwner().ownerId) photosNotInCloud = null;
+  return photosNotInCloud?.paths ?? null;
+}
+
+/** `askedAs` is the account signed in when the look-up began: an answer that arrives after it changed is not kept. */
+export function rememberPhotoNotInCloud(path: string | null | undefined, askedAs: CloudOwnerBinding): void {
+  const key = path?.trim();
+  if (!key || !askedAs.ownerId || !cloudOwnerUnchanged(askedAs)) return;
+  const known = photosNotInCloudForSignedInAccount() ??
+    (photosNotInCloud = { ownerId: askedAs.ownerId, paths: new Set<string>() }).paths;
+  known.delete(key);
+  known.add(key);
+  for (const oldest of known) {
+    if (known.size <= PHOTOS_NOT_IN_CLOUD_KEPT) break;
+    known.delete(oldest);
+  }
+}
+
+export function forgetPhotoNotInCloud(path: string | null | undefined): void {
+  if (path?.trim()) photosNotInCloudForSignedInAccount()?.delete(path.trim());
+}
+
+export function photoKnownNotInCloud(path: string | null | undefined): boolean {
+  return Boolean(path?.trim() && photosNotInCloudForSignedInAccount()?.has(path.trim()));
+}
+
+/**
  * The storage path this device may sign to show a photo, or '' when there is
  * none. A photo the sync marked 'unavailable' had no file left to upload, so
  * nothing is in the cloud at the path worked out from its update; signing it
  * only fails, and the image tried again about 16 times an hour while shown
- * (whole-app audit A4 pass 8 F4, 30 Sep 2026). A photo that is merely
- * offline is not marked and keeps its path.
+ * (whole-app audit A4 pass 8 F4, 30 Sep 2026). So does a photo this account
+ * was told is not in the cloud (photoKnownNotInCloud). A photo that is merely
+ * offline is neither, and keeps its path.
  */
 export function signableCloudPhotoPath(
   photo: Partial<Pick<UpdatePhoto, 'cloudStoragePath' | 'cloudRecoveryStatus'>> | undefined,
 ): string {
   if (!photo || photo.cloudRecoveryStatus === 'unavailable') return '';
-  return photo.cloudStoragePath?.trim() || '';
+  const path = photo.cloudStoragePath?.trim() || '';
+  return photoKnownNotInCloud(path) ? '' : path;
 }
 
 /**
@@ -48,6 +92,19 @@ export function projectPhotoCanBeShown(
     cloudPreviewUri: photo.cloudPreviewUri,
     cloudPreviewSignedUrlExpiresAt: photo.cloudPreviewSignedUrlExpiresAt,
   }, now));
+}
+
+/**
+ * The photo an update's card shows: its first photo this device can show, or
+ * its first photo when none can (the card then shows its placeholder). The
+ * card took the first photo whatever it was, so one with nothing in the cloud
+ * left the card blank beside later photos that exist (sync batch Y3, item 1).
+ */
+export function firstProjectPhotoToShow<TPhoto extends Partial<UpdatePhoto>>(
+  photos: readonly TPhoto[],
+  localUri: (photo: TPhoto) => string,
+): TPhoto | undefined {
+  return photos.find(photo => projectPhotoCanBeShown(photo, localUri(photo))) ?? photos[0];
 }
 
 /** A copy this device fetched from the cloud: a cached download or a signed URL. */

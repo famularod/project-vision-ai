@@ -414,7 +414,7 @@ import { bindProjectDocumentUploadToAccount, createProjectDocumentUploadRetryRun
 import { useAfterSignInPendingEnds } from './hooks/use-after-sign-in-pending-ends';
 import { legacyOrphanedProjectDocumentBridges, withdrawUnsentProjectDocumentBridge } from './services/ProjectDocumentBridge';
 import { legacyProjectNameKey as authorityProjectId } from './services/OperationalProjectIdentity';
-import { preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './services/ProjectPhotoTransport';
+import { firstProjectPhotoToShow, preserveLocalPhotoTransport, withLatestLocalPhotoTransport } from './services/ProjectPhotoTransport';
 import { cloudCopyShownOnDevice, documentsUploadedAfterCloudCopy, fieldUpdatesToResendForDocument, withDeviceDocumentUploadState, withoutFieldUpdateDocument } from './services/FieldUpdateDocumentUploadState';
 import { closeProjectMessage, queuedWorkForProject } from './services/ProjectCloseGuard';
 import {
@@ -19113,7 +19113,8 @@ function UpdateHistoryCard({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const documents = update.documents || [];
-  const thumbnail = useProjectPhotoDisplayUri(update.photos[0], resolveProjectPhotoUri(update.photos[0] || {}));
+  const thumbnailPhoto = firstProjectPhotoToShow(update.photos, resolveProjectPhotoUri); // not a blank first photo beside ones that exist (sync batch Y3)
+  const thumbnail = useProjectPhotoDisplayUri(thumbnailPhoto, resolveProjectPhotoUri(thumbnailPhoto || {}));
   const conflictReview = useFieldUpdateConflictReview(update.id); // left for Review Conflicts, whatever its status (A7 pass 12 M-1, A4 pass 15 L1)
   const documentChangeWaiting = useFieldUpdateDocumentChangeWaiting(update.id); // VoiceOver reads the card's label, so it says the line too (everyday item 9)
   const statusLine = conflictReview ? null :
