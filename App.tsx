@@ -11547,7 +11547,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         isQueued: async id => (await getOfflineQueue()).some(item => item.entity === 'reference_document' && (item.payload as { id?: string }).id === id),
         withdraw: async id => { await removeOperationalRecordFromSyncQueue('reference_document', id); setReferenceDocuments(prev => prev.filter(item => item.id !== id)); },
       }).catch(() => undefined);
-
+      if (sensitive) return; // an archive removes nothing: the document stays on its draft and its field updates, where Restore finds it (review of D1, M1)
       setDraft(prev => ({
         ...prev,
         documents: (prev.documents || []).filter(

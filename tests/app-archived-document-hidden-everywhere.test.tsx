@@ -418,3 +418,79 @@ describe('an archived compliance document once the cloud keeps the mark (owner a
     tree.unmount();
   });
 });
+
+// ---- Review of D1 (independent review P5, pass 1): the reviewer's real-app cases, brought in as each is fixed ----
+const UPDATES = 'projectPhotoUpdates.v2';
+const DRAFT = 'projectPhotoUpdate.activeDraft.v2';
+
+/** The project's own row: with a saved update on the phone "Lot 9" is on the update's card too, so each is tried. */
+async function openLot9DocumentsPastUpdateCards(tree: ReturnType<typeof render>) {
+  const named = await tree.findAllByText('Lot 9', {}, COLD);
+  for (const candidate of named) {
+    if (tree.queryByLabelText('Open project options')) break;
+    await press(tree, candidate);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
+  }
+  await press(tree, await tree.findByLabelText('Open project options', {}, COLD));
+  const rows = await tree.findAllByText('Documents', {}, COLD);
+  await press(tree, rows[rows.length - 1]);
+  await waitFor(() => expect(tree.getAllByText('Project Documents').length).toBeGreaterThan(0), COLD);
+}
+
+describe('review of D1, M1: an archive removes nothing from any record', () => {
+  it('Archive, then Restore: the field update the document was attached to lists it throughout, and so does the unsent draft', async () => {
+    await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(PROJECTS));
+    await AsyncStorage.setItem(CARDS, JSON.stringify([permitCard]));
+    await AsyncStorage.setItem(SHARED, JSON.stringify([sharedCopy]));
+    await AsyncStorage.setItem(UPDATES, JSON.stringify([{
+      id: 'update-with-permit', projectName: 'Lot 9', date: '2026-10-05T17:00:00.000Z', notes: 'Permit posted at the gate', status: 'sent',
+      photos: [], isArchived: false, archivedAt: null, documents: [permitCard],
+    }]));
+    await AsyncStorage.setItem(DRAFT, JSON.stringify({
+      savedAt: '2026-10-06T09:00:00.000Z',
+      draft: {
+        id: 'draft-with-permit', projectName: 'Lot 9', date: '2026-10-06T09:00:00.000Z', notes: 'Inspector asked to see the permit',
+        status: 'draft', photos: [], isArchived: false, archivedAt: null, documents: [permitCard],
+      },
+    }));
+    const attachedTo = async (updateId: string) => (await stored<{ id: string; documents?: Array<{ id: string }> }>(UPDATES))
+      .find(update => update.id === updateId)?.documents?.map(document => document.id) ?? null;
+    const onTheDraft = async () => (JSON.parse((await AsyncStorage.getItem(DRAFT)) || '{}') as { draft?: { documents?: Array<{ id: string }> } })
+      .draft?.documents?.map(document => document.id) ?? null;
+    const settle = () => act(async () => { await new Promise(resolve => setTimeout(resolve, 1500)); }); // the draft is saved 750 ms after a change
+
+    const tree = await launch();
+    await openLot9DocumentsPastUpdateCards(tree);
+    await reachTheCloud();
+    expect(await attachedTo('update-with-permit')).toEqual(['doc-permit']);
+    expect(await onTheDraft()).toEqual(['doc-permit']);
+
+    await press(tree, tree.getByText('Edit'));
+    await press(tree, await tree.findByText('Delete', {}, COLD));
+    const asked = alerts.find(item => item.title === 'Archive compliance-sensitive document?');
+    expect(asked?.message).toContain('You can bring it back under Archived in this project\'s Documents.');
+    await answerAlert('Archive compliance-sensitive document?', 'Archive Permit Card');
+    await waitFor(() => expect(tree.queryAllByText('Archived (1)').length).toBe(1), COLD);
+    await reachTheCloud();
+    await settle();
+
+    // Archived: hidden from the project's Documents, and still on the update and the draft it was attached to.
+    expect(tree.queryByText('Grading permit.pdf')).toBeNull();
+    expect(await attachedTo('update-with-permit')).toEqual(['doc-permit']);
+    expect(await onTheDraft()).toEqual(['doc-permit']);
+    // Nothing about the update is sent because of the archive.
+    expect((await getOfflineQueue()).filter(item => JSON.stringify(item).includes('update-with-permit'))).toEqual([]);
+
+    // He brings it back: it is where it was, everywhere it was.
+    await press(tree, tree.getByText('Archived (1)'));
+    await press(tree, tree.getByLabelText('Restore Grading permit.pdf'));
+    await waitFor(() => expect(tree.queryByText(/^Archived \(/)).toBeNull(), COLD);
+    await reachTheCloud();
+    await settle();
+    expect(tree.getByText('Grading permit.pdf')).toBeTruthy();
+    expect(await attachedTo('update-with-permit')).toEqual(['doc-permit']);
+    expect(await onTheDraft()).toEqual(['doc-permit']);
+    expect((await getOfflineQueue()).filter(item => JSON.stringify(item).includes('update-with-permit'))).toEqual([]);
+    tree.unmount();
+  });
+});
