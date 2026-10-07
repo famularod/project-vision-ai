@@ -859,6 +859,9 @@ export function compareDAVEReportSnapshots({
   //    Paint, moved by master 2 and at 60% in the last report that listed it, came back after two reports and
   //    read "Paint moved from 0% to 70% complete." and "owner changed from unassigned to Sam" against master 1's
   //    row, which no report had ever shown that way. It reads "added", as it did before this batch.
+  //    Fifth part (found the same way): and only when there was a report before the earlier one. When the earlier
+  //    report is the only one there has been, no report can have listed the task and said it removed: a task
+  //    that left the plan before the first report and comes back after it is new to the reader, "added".
   // A task that comes back on its own row after more than one report (he answered "The same task" for a row on the
   // days it had, or Set Active went back) has nothing saved to tell how it last stood, and still reads "added".
   // Third part (found by the text driver taught this rule, 1 of 1,600 sequences): never a task that is a lookahead's
@@ -873,6 +876,7 @@ export function compareDAVEReportSnapshots({
     if (!noPriorNow.has(task)) return null;
     const before = reportBeforeById.get(task.taskId) ?? linkedBefore?.pairs.get(task);
     if (before) return isLookaheadDetail(before) ? null : before;
+    if (!reportBefore) return null;
     const rows = (earlierRowsOf.get(task.taskId) || []).filter(row => {
       const saved = Date.parse(row.savedAt ?? '');
       const shownSaved = Date.parse(row.taskSavedAt ?? '');

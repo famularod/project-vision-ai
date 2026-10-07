@@ -260,6 +260,25 @@ describe('R5 item 1: a task a report said was removed, that a later master lists
     sameOnTheWeb(state, secondWhileOut.sent, '2026-09-20T17:00:00.000Z', back);
   });
 
+  it('left out before the first report was ever sent, and listed again after it: "added", since no report can have said it was removed (found by the taught text driver)', () => {
+    // Master 1 lists Paint and he sets 60%; master 2 leaves it out; only then does the first report go out.
+    let state = approve({ items: [], documents: [] }, schedule('MASTER 1', '2026-09-05T12:00:00.000Z'), [...OTHERS, PAINT]);
+    state = set(state, 'Paint', { percentComplete: 60, owner: 'Sam' }, '2026-09-06T08:00:00.000Z');
+    state = approve(state, schedule('MASTER 2', '2026-09-07T12:00:00.000Z'), [...OTHERS]);
+    const first = report(state, null, '2026-09-08T15:00:00.000Z');
+    expect(first.lines).toEqual([]);
+    // Master 3 lists it again on other days, and he answers "The same task": a new row, with his 60%.
+    state = approve(state, schedule('MASTER 3', '2026-09-10T12:00:00.000Z'), [...OTHERS, PAINT_MOVED], PLAIN, SAME_TASK);
+    expect(one(state, 'Paint').map(item => [item.revisedFromTaskIds, item.percentComplete])).toEqual([[['MASTER 1-4'], 60]]);
+    state = set(state, 'Paint', { percentComplete: 70 }, '2026-09-10T16:00:00.000Z');
+    const next = report(state, first.sent, '2026-09-10T17:00:00.000Z');
+    // (It read: "Paint is back in the project plan.", "Paint moved from 60% to 70% complete.", "Paint finish changed
+    // from 10/05/2026 to 10/07/2026.", to a reader whose only report never had Paint.)
+    expect(next.paint).toEqual([ADDED]);
+    expect(next.onceApproved.paint).toEqual([ADDED]);
+    sameOnTheWeb(state, first.sent, '2026-09-10T17:00:00.000Z', next);
+  });
+
   it('reads the same once approved as it did as a draft, in every case above', () => {
     const { state: out, first } = paintLeftOut();
     const whileOut = report(out, first.sent, '2026-09-09T15:00:00.000Z');
@@ -540,7 +559,7 @@ describe('R5 item 1: the comparison\'s rules, on saved reports alone', () => {
   });
 
   it('with no report kept that has it: back by the row it left on, only when that row was already saved when the last report was made', () => {
-    const lastReport = saved('2026-09-09T15:00:00.000Z', [other]);
+    const lastReport = saved('2026-09-09T15:00:00.000Z', [other], saved('2026-09-08T15:00:00.000Z', [other]));
     const current = [task('new', { earlierTaskIds: ['old'], percentComplete: 70 })];
     expect(linesOf(current, lastReport, [row('new', 'old', '2026-09-07T12:00:00.000Z')])).toEqual([BACK, 'Paint moved from 60% to 70% complete.']);
     // A row saved after that report: the task came in since, and a second master moved it.
@@ -555,6 +574,8 @@ describe('R5 item 1: the comparison\'s rules, on saved reports alone', () => {
     // row it left on, and an older row of it is not how it last stood. Nor with no time on the row shown.
     expect(linesOf(current, lastReport, [row('new', 'old', '2026-09-07T12:00:00.000Z', { taskSavedAt: '2026-09-08T12:00:00.000Z' })])).toEqual([ADDED]);
     expect(linesOf(current, lastReport, [row('new', 'old', '2026-09-07T12:00:00.000Z', { taskSavedAt: null })])).toEqual([ADDED]);
+    // Nor when the last report is the only one there has been: no report can have listed the task and said it removed.
+    expect(linesOf(current, saved('2026-09-09T15:00:00.000Z', [other]), [row('new', 'old', '2026-09-07T12:00:00.000Z')])).toEqual([ADDED]);
   });
 
   it('a task that began as a lookahead\'s own row and a master\'s task of the last report: apart only where he would be said to have lost what he set', () => {
