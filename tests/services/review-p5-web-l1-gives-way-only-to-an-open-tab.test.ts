@@ -26,6 +26,14 @@ import {
 //   sign-in has not run out, the tab given way to is still there, and the sign-in has not ended. When any of
 //   that stops, the tab that gave way removes them.
 //
+// Second review of the web area, F2 (7 Oct 2026): the second rule made the tab that gave way DELETE the periods
+// although nobody had signed out and the server had ended nothing (the working tab reloaded, out of sight to
+// the end of its hour, or its hour already over). A tab that only gave way now removes nothing: the periods
+// leave only when that sign-in really ended in this browser. Five tests below pinned the old rule (the tab
+// given way to closed, twice; two tabs waiting; the hour running out; the hour already over) and now hold the
+// new one; each says so. The rest is in
+// tests/services/review-p5-web-pass2-f2-a-tab-that-gave-way-removes-nothing.test.ts.
+//
 // Tabs are real supabase-js clients over the stand-in cloud with Supabase's rule for refresh tokens; the
 // browser's Web Locks are the stand-in of tests/fixtures/browser-locks.ts. Nothing reaches the network.
 
@@ -279,13 +287,15 @@ describe('giving way is not the serverâ€™s answer: what happens to the accountâ€
     expect(browser.periodKeys()).toEqual([]);
   });
 
-  it('that tab is closed before it asked the server again: nobody open holds the sign-in, and they leave at once', async () => {
+  // Changed for the second review, F2: this expected them to leave at once ("nobody open holds the sign-in").
+  // Closing a tab ends no sign-in, and a reload looks the same to the tab that gave way.
+  it('that tab is closed before it asked the server again: nobody signed out, and they stay', async () => {
     const { copy } = await firstTabGaveWayToTheOpenCopy();
 
     browser.closeTab(copy);
     await settleTabs();
 
-    expect(browser.periodKeys()).toEqual([]);
+    expect(browser.periodKeys()).toEqual([WEB_SIGN_IN_PERIOD_KEY]);
     // Nothing was sent to the server for it.
     expect(browser.outcomes()).toEqual(['replaced', 'replaced']);
   });
@@ -311,7 +321,8 @@ describe('giving way is not the serverâ€™s answer: what happens to the accountâ€
     expect(browser.periodKeys()).toEqual([WEB_SIGN_IN_PERIOD_KEY]);
   });
 
-  it('a second open tab holds the same newest token: they stay until both have gone', async () => {
+  // Changed for the second review, F2: this expected them to leave once both had been closed.
+  it('a second open tab holds the same newest token: they stay when one is closed, and they leave when the other signs out', async () => {
     const { copy } = await firstTabGaveWayToTheOpenCopy();
     const second = browser.openTab(browser.duplicateOf(copy.storage));
     await second.client.auth.initialize();
@@ -321,12 +332,14 @@ describe('giving way is not the serverâ€™s answer: what happens to the accountâ€
     await settleTabs();
     expect(browser.periodKeys()).toEqual([WEB_SIGN_IN_PERIOD_KEY]);
 
-    browser.closeTab(second);
+    await second.client.auth.signOut({ scope: 'local' });
     await settleTabs();
     expect(browser.periodKeys()).toEqual([]);
   });
 
-  it('two tabs gave way and both wait, and a second open tab holds the same newest token: neither removes anything until both holders have gone', async () => {
+  // Changed for the second review, F2: this ended with the second holder being closed, and expected both
+  // waiting tabs to be told then. A closed tab ends nothing; the second holder now signs out instead.
+  it('two tabs gave way and both wait, and a second open tab holds the same newest token: neither removes anything when one holder is closed, and both are told when the other signs out', async () => {
     const firstStorage = createTabStorage();
     storeTabSignIn(firstStorage, 'owner-1');
     const left = browser.openAppTab(firstStorage);
@@ -353,14 +366,15 @@ describe('giving way is not the serverâ€™s answer: what happens to the accountâ€
     expect(browser.periodKeys()).toEqual([WEB_SIGN_IN_PERIOD_KEY]);
     expect(secondWaiterTold).toBe(false);
 
-    browser.closeTab(second);
+    await second.client.auth.signOut({ scope: 'local' });
     await settleTabs();
     expect(browser.periodKeys()).toEqual([]);
     expect(secondWaiterTold).toBe(true);
     expect(browser.outcomes()).toEqual(['replaced', 'replaced']);
   });
 
-  it('that tab stays open but does not ask the server again (hidden): they leave when its hourly token runs out, an hour after the server last said the sign-in was good', async () => {
+  // Changed for the second review, F2: this expected them to leave when the hour ran out.
+  it('that tab stays open but does not ask the server again (hidden): they stay when its hourly token runs out; an hour passing ends no sign-in', async () => {
     jest.useFakeTimers({ advanceTimers: true });
     try {
       const { copy } = await firstTabGaveWayToTheOpenCopy();
@@ -369,7 +383,7 @@ describe('giving way is not the serverâ€™s answer: what happens to the accountâ€
       expect(browser.periodKeys()).toEqual([WEB_SIGN_IN_PERIOD_KEY]);
 
       await jest.advanceTimersByTimeAsync(90_000);
-      expect(browser.periodKeys()).toEqual([]);
+      expect(browser.periodKeys()).toEqual([WEB_SIGN_IN_PERIOD_KEY]);
       // Nothing was sent for it, and the hidden tab still holds its own sign-in, for the server to judge when it is looked at.
       expect(browser.outcomes()).toEqual(['replaced', 'replaced']);
       expect(tabHoldsSignIn(copy.storage)).toBe(true);
@@ -394,7 +408,8 @@ describe('giving way is not the serverâ€™s answer: what happens to the accountâ€
     }
   });
 
-  it('the tab given way to is open but its newest hourly token had ALREADY run out (hidden for over an hour): the stale tab still does not present its token, so that tab is not signed out; but nothing says the sign-in is still good, and the periods leave at once', async () => {
+  // Changed for the second review, F2: this expected the periods to leave at once.
+  it('the tab given way to is open but its newest hourly token had ALREADY run out (hidden for over an hour): the stale tab still does not present its token, so that tab is not signed out, and the periods stay: nobody signed out', async () => {
     const { left, copy } = await firstTabLeftBehindACopyHeWorksIn();
     minutesLater(61);
 
@@ -404,7 +419,7 @@ describe('giving way is not the serverâ€™s answer: what happens to the accountâ€
     // The stale token was not presented: the server ended nothing and refused nothing. (auth-js tells every tab
     // of this tab's ended sign-in, and the hidden tab, its own hourly token run out, may ask the server then.)
     expect(browser.outcomes().every(outcome => outcome === 'replaced')).toBe(true);
-    expect(browser.periodKeys()).toEqual([]);
+    expect(browser.periodKeys()).toEqual([WEB_SIGN_IN_PERIOD_KEY]);
     // The hidden tab is as it was: its own token is the newest, and the server takes it.
     expect(tabHoldsSignIn(copy.storage)).toBe(true);
     expect(await browser.refreshes(copy)).toBe('refreshed');

@@ -410,18 +410,58 @@ export function createDAVEWebSupabaseGateway(
    * (and the photo and document addresses it had checked) until the page
    * was reloaded. Nothing showed them. They are dropped with the sign-in,
    * as the two sign-outs made here already drop them.
+   *
+   * Second review of the web area, F2 (7 Oct 2026): "when any of that
+   * stops" made the tab that gave way delete the periods although nobody
+   * had signed out: when the working tab was reloaded, when it stayed out
+   * of sight to the end of its hour, and at once when that hour had
+   * already run out. The working tab stayed signed in, and lost this
+   * computer's record of the last report sent and any approval not yet
+   * sent. A tab that only gave way now removes nothing. The periods leave
+   * this browser only when the account's sign-in really ended here: a
+   * sign-out made or heard here, or the server refusing it. The tab whose
+   * sign-in ends removes them, as before. This tab drops what it kept too
+   * once it can tell that the sign-in it gave way for really ended in this
+   * browser (the guard goes by its note): when the tab it gave way to lets
+   * go of its token, and again whenever a sign-out is heard afterwards.
+   * Only that sign-in is looked for, never one an event carried, and
+   * another account's ending changes nothing (owner answer Q26).
    */
   let tabSignInSeen: BrowserTabStoredSignIn | null = client ? browserTabStoredSignIn() : null;
+  /** The account this tab held when it gave way, while it holds no sign-in since: whose periods it still keeps. */
+  let gaveWayAs: string | null = null;
+  /** Looks for the real end of the sign-in this tab gave way for, and drops what it kept for that account then. */
+  function watchSignInGivenWayFor() {
+    const account = gaveWayAs;
+    if (!account || !signInGuard?.gaveWay()) {
+      gaveWayAs = null;
+      return;
+    }
+    const watching = signInGuard.vouchedFor?.(() => {
+      // Once only: a sign-in of that account made in this browser afterwards has periods of its own.
+      if (gaveWayAs === account) gaveWayAs = null;
+      forgetDAVEWebReportPeriods(account);
+    }) ?? false;
+    if (watching) return;
+    // A guard that cannot say when that sign-in ends: nothing is kept on its strength.
+    gaveWayAs = null;
+    forgetDAVEWebReportPeriods(account);
+  }
   /** `mayHaveEnded`: SIGNED_OUT was heard, or the page is only now starting to listen. */
   function lookAtTabSignIn(mayHaveEnded: boolean) {
     const held = tabSignInSeen;
     tabSignInSeen = browserTabStoredSignIn();
-    if (!mayHaveEnded || !held || tabSignInSeen) return;
+    if (!mayHaveEnded || tabSignInSeen) return;
+    if (!held) {
+      // A sign-out heard while this tab holds no sign-in. When it gave way earlier, this may be the end of the
+      // sign-in it gave way for (second review, web F2).
+      watchSignInGivenWayFor();
+      return;
+    }
     forgetSignedInReads();
     if (signInGuard?.gaveWay()) {
-      const account = held.userId;
-      const stay = signInGuard.vouchedFor?.(() => forgetDAVEWebReportPeriods(account)) ?? false;
-      if (!stay) forgetDAVEWebReportPeriods(account);
+      gaveWayAs = held.userId;
+      watchSignInGivenWayFor();
       return;
     }
     forgetDAVEWebReportPeriods(held.userId);
