@@ -6,6 +6,9 @@
  * 1. After he deletes the area his open update was in, the Current Area card
  *    said "Why: This is your current confirmed selection." under "Unassigned
  *    / Unknown Area". Nothing had been selected.
+ * 3. An unfinished update with no GPS said why on the day (location not
+ *    allowed, Precise Location off, no fix), but after the app was closed
+ *    and opened again the resumed update said nothing about it.
  */
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -286,5 +289,118 @@ describe('1. the Current Area card after the update\'s area is deleted', () => {
     expect(tree.queryByText('Why: This is your current confirmed selection.')).toBeNull();
     expect(tree.getByText('Why: No area has been chosen for this update yet.')).toBeTruthy();
     tree.unmount();
+  });
+});
+
+describe('3. an unfinished update resumed after the app was closed says why it has no GPS', () => {
+  const DENIED = 'Location permission denied. Choose Project Area manually.';
+  const FAILED = 'GPS could not be captured. Choose Project Area manually.';
+  const PRECISE_OFF = /^Precise Location is off\. Vitruvius only gets an approximate location/;
+  const UNCERTAIN = 'Location is uncertain. Choose the project area before relying on this recommendation.';
+
+  beforeEach(async () => {
+    await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(['Lot 9', 'Main St']));
+    await AsyncStorage.setItem('projectPhotoUpdate.projectAreas.v1', JSON.stringify([
+      area('area-north', 'North Pad', 'Lot 9', true), area('area-roof', 'Roof Deck', 'Main St'),
+    ]));
+  });
+
+  /** Starts an update for Lot 9 from its page and returns once Add Photos shows. */
+  async function startUpdateForLot9(tree: ReturnType<typeof render>) {
+    const lot9 = await tree.findAllByText('Lot 9', {}, COLD);
+    await press(tree, lot9[lot9.length - 1]);
+    await press(tree, await tree.findByText('New Field Update', {}, COLD));
+    await waitFor(() => expect(tree.getByText('Current Area')).toBeTruthy(), COLD);
+  }
+
+  /** Gives the update content (so the phone keeps it), lets the phone save it, and closes the app. */
+  async function keepAndCloseApp(tree: ReturnType<typeof render>) {
+    await press(tree, tree.getByText('Continue Without Photos'));
+    await waitFor(async () => {
+      expect(await AsyncStorage.getItem('projectPhotoUpdate.activeDraft.v2')).toContain('"continueWithoutPhotosAcknowledged":true');
+    }, COLD);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    tree.unmount();
+  }
+
+  async function reopenAndResume() {
+    const tree = await launch();
+    await press(tree, await tree.findByText('Resume Draft', {}, COLD));
+    await waitFor(() => expect(tree.getByText('Current Area')).toBeTruthy(), COLD);
+    return tree;
+  }
+
+  it('location not allowed: the resumed update still says so', async () => {
+    mockLocation.granted = false;
+    const first = await launch();
+    await startUpdateForLot9(first);
+    await waitFor(() => expect(first.getByText(DENIED)).toBeTruthy(), COLD);
+    await keepAndCloseApp(first);
+
+    const again = await reopenAndResume();
+    expect(again.getByText(DENIED)).toBeTruthy();
+    expect(again.queryByText(UNCERTAIN)).toBeNull();
+    again.unmount();
+  });
+
+  it('Precise Location off: the resumed update still says so', async () => {
+    mockLocation.granted = true;
+    mockLocation.precise = false;
+    const first = await launch();
+    await startUpdateForLot9(first);
+    await waitFor(() => expect(first.getByText(PRECISE_OFF)).toBeTruthy(), COLD);
+    await keepAndCloseApp(first);
+
+    const again = await reopenAndResume();
+    expect(again.getByText(PRECISE_OFF)).toBeTruthy();
+    again.unmount();
+  });
+
+  it('no fix could be taken: the resumed update still says so', async () => {
+    mockLocation.granted = true;
+    mockLocation.failsWith = 'Location request timed out';
+    const first = await launch();
+    await startUpdateForLot9(first);
+    await waitFor(() => expect(first.getByText(FAILED)).toBeTruthy(), COLD);
+    await keepAndCloseApp(first);
+
+    const again = await reopenAndResume();
+    expect(again.getByText(FAILED)).toBeTruthy();
+    again.unmount();
+  });
+
+  it('a fix that landed leaves no reason behind: the resumed update is offered its area as before', async () => {
+    mockLocation.granted = true;
+    const first = await launch();
+    await startUpdateForLot9(first);
+    await waitFor(() => expect(first.getByText('Accept Suggested Area: North Pad')).toBeTruthy(), COLD);
+    await keepAndCloseApp(first);
+
+    // Location is switched off afterwards: the resumed update keeps its own fix and says nothing of today's setting.
+    mockLocation.granted = false;
+    const again = await reopenAndResume();
+    expect(again.getByText('Accept Suggested Area: North Pad')).toBeTruthy();
+    expect(again.queryByText(DENIED)).toBeNull();
+    expect(again.queryByText(FAILED)).toBeNull();
+    again.unmount();
+  });
+
+  it('the reason belongs to its update: a new update started after it does not inherit it', async () => {
+    mockLocation.granted = false;
+    const first = await launch();
+    await startUpdateForLot9(first);
+    await waitFor(() => expect(first.getByText(DENIED)).toBeTruthy(), COLD);
+    await keepAndCloseApp(first);
+
+    // Location is allowed now. He opens the app and starts a new update instead of resuming.
+    mockLocation.granted = true;
+    const again = await launch();
+    const lot9 = await again.findAllByText('Lot 9', {}, COLD);
+    await press(again, lot9[lot9.length - 1]);
+    await press(again, await again.findByText('New Field Update', {}, COLD));
+    await answerAlert('Unfinished update found', 'Start New');
+    await waitFor(() => expect(again.getByText('Accept Suggested Area: North Pad')).toBeTruthy(), COLD);
+    expect(again.queryByText(DENIED)).toBeNull();
+    again.unmount();
   });
 });

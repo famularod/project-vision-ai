@@ -220,6 +220,7 @@ import {
 } from './hooks/use-async-storage-persistence';
 import { useAccountDisplayName } from './hooks/use-account-display-name';
 import { useKeptWalkMemoryDraft } from './hooks/use-kept-walk-memory-draft';
+import { useKeptDraftLocationNotice } from './hooks/use-kept-draft-location-notice';
 import { settleUnsavedDraftsOnAccountChange } from './hooks/unsaved-drafts-on-account-change';
 import {
   isStartupHydrationReady,
@@ -5199,6 +5200,7 @@ function AppShell() {
   const draftRef = useRef(draft);
   draftRef.current = draft;
   const [draftFixTracker] = useState(createDraftFixTracker);
+  useKeptDraftLocationNotice({ ready: startupHydrationReady && draftLoaded, draft, notice: draftLocationNotice, generation: draftFixTracker.generation, setNotice: setDraftLocationNotice }); // a resumed update says why it has no GPS (P1 part B item 3)
   const draftLocationCaptureRef = useRef<ReturnType<typeof captureDraftLocation> | null>(null);
   const [photoAuthRequest, setPhotoAuthRequest] = useState<{
     update: ProjectUpdate;
