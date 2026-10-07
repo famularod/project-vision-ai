@@ -1593,7 +1593,13 @@ export function mergeApprovedScheduleImportItems({
     // M1 (sweep): lookahead L3 added Cleanup on 12/21 and L5 moved it to 12/22; master M6 then listed it on 12/21,
     // read as a repeat, and kept L5's older dates. A task only lookaheads stated has no master's word to repeat:
     // the master's row is the newer file, as for any task it moves.
-    const repeated = paired && !lookaheadsOnly(paired)
+    // Review pass 1 of Build 231's schedule round, P1-13 (Low, rare; caused by S2 item 1, the returning task): nor a
+    // task that was not in his list, which he called the same task. A lookahead moved Survey; a master left Survey out;
+    // that lookahead was deleted with its items on a device whose copy of Survey had never heard of it, so nothing gave
+    // the dates back; the next master listed Survey again on the days the master had it before, and it came back on the
+    // deleted lookahead's dates. The repeat rule is for a task he sees on a lookahead's dates. One that is not shown is
+    // held by no lookahead (it would be shown): the master's row is the newer word, as for any task it moves.
+    const repeated = paired && !lookaheadsOnly(paired) && isCurrent(pairedSaved!)
       ? scheduleRowRepeatsMasterBeforeLookahead(paired, importedItem)
       : { dates: false, percent: false };
     // A task entered by hand, on new dates: restated in place on the master's dates (A5 pass 17 M1).

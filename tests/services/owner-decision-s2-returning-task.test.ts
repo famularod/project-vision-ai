@@ -253,3 +253,56 @@ describe('S2 item 1: which row a task that left is, when masters had moved it', 
     expect(paint(approve(onH, I, again, header, SAME_TASK)).map(row => [row[0], row[1], row[3]])).toEqual([['MASTER I-2', ['MASTER F-2', 'MASTER G-2'], 80]]);
   });
 });
+
+/**
+ * Review pass 1 of Build 231's schedule round, P1-13 (7 Oct 2026; Low, rare; caused by this item's commit, by the
+ * trace of the reviewer's generator seed 5242). A lookahead moved Paint from 11/02 to 11/04. Master G left Paint out.
+ * The lookahead was then deleted with its items on a device whose copy of Paint had never heard of it, so nothing
+ * gave Paint's dates back: its hidden row stayed on the lookahead's 11/04. Master H lists Paint again, on 11/02, and
+ * he says "the same task". Paint came back on the deleted lookahead's 11/04, under a master that lists 11/02 (Build
+ * 230, which never paired a task that had left, showed the master's 11/02 on a new row).
+ *
+ * The approval kept the task on its lookahead's dates because the master "repeats what it said before the lookahead":
+ * a rule for a task he sees on a lookahead's dates. A task that is not in his list is held by no lookahead (it would
+ * be shown). It comes back on the dates the master he is approving lists it on, as any task a master moves.
+ */
+describe('Review pass 1, P1-13 (caused by S2 item 1): a task that left comes back on the dates the master lists it on, not on those of a lookahead that no longer holds it', () => {
+  const L: ReferenceDocument = { ...schedule('LOOKAHEAD L', '2026-09-10T12:00:00.000Z'), scheduleRole: 'lookahead' } as ReferenceDocument;
+  /** A lookahead approved on the phone: its rows restate the tasks in place. */
+  function approveLookahead(state: State, source: ReferenceDocument, lines: string[]): State {
+    const merged = mergeApprovedScheduleImportItems({
+      existing: state.items, imported: rowsOf(source, PLAIN, lines), completionMatch: () => null, mergeCompletion: item => item,
+      isCurrent: scheduleItemsVisibleBeforeImport(state.items, [...state.documents, source], source.importBatchId || ''),
+      approvedAt: source.importedAt as string, overlay: true,
+    });
+    return { items: [...merged.additions, ...merged.next], documents: [...state.documents, source] };
+  }
+  const dates = (state: State) => shown(state).filter(item => item.taskName === 'Paint').map(item => [item.startDate, item.percentComplete, item.notes || '']);
+  /** F lists Paint (his 60% and note); the lookahead moves it to 11/04; G leaves Paint out; the lookahead's file is gone, and nobody gave the dates back. */
+  function leftOutOnALookaheadsDates(): State {
+    const onF = hisPaint(approve({ items: [], documents: [] }, F, [FRAMING, PAINT]));
+    const moved = approveLookahead(onF, L, ['Paint,Alpha,Lot,11/04/2026,11/08/2026,']);
+    expect(dates(moved)).toEqual([['11/04/2026', 60, 'Primer on']]);
+    const onG = approve(moved, G, [FRAMING]);
+    const fileGone: State = { ...onG, documents: onG.documents.filter(document => document.id !== L.id) };
+    expect([dates(fileGone), fileGone.items.find(item => item.id === 'MASTER F-2')!.startDate]).toEqual([[], '11/04/2026']);
+    return fileGone;
+  }
+
+  it('listed again on the days the master had it before the lookahead, "the same task": it shows on the master\'s 11/02, with what he had set', () => {
+    const state = leftOutOnALookaheadsDates();
+    expect(questionsFor(state, H, PLAIN, [FRAMING, PAINT]).map(question => question.returning)).toEqual([true]);
+    // (It was: 11/04, the deleted lookahead's date.)
+    expect(dates(approve(state, H, [FRAMING, PAINT], PLAIN, SAME_TASK))).toEqual([['11/02/2026', 60, 'Primer on']]);
+  });
+
+  it('listed again on other days: on those days, as before', () => {
+    expect(dates(approve(leftOutOnALookaheadsDates(), H, [FRAMING, PAINT_BACK], PLAIN, SAME_TASK))).toEqual([['11/09/2026', 60, 'Primer on']]);
+  });
+
+  it('guard: a task he still sees on a lookahead\'s dates keeps them when the next master repeats what the master said before (owner answer Q22), as before', () => {
+    const onF = hisPaint(approve({ items: [], documents: [] }, F, [FRAMING, PAINT]));
+    const moved = approveLookahead(onF, L, ['Paint,Alpha,Lot,11/04/2026,11/08/2026,']);
+    expect(dates(approve(moved, G, [FRAMING, PAINT]))).toEqual([['11/04/2026', 60, 'Primer on']]);
+  });
+});
