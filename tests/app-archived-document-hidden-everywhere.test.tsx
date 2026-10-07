@@ -314,7 +314,9 @@ describe('an archived compliance document once the cloud keeps the mark (owner a
     await press(tree, tree.getByText('Edit'));
     await press(tree, await tree.findByText('Delete', {}, COLD));
     const asked = alerts.find(item => item.title === 'Archive compliance-sensitive document?');
-    expect(asked?.message).toBe('Grading permit.pdf is categorized as Permit Card. It will be hidden on all your devices and kept in the cloud. You can bring it back under Archived in this project\'s Documents.');
+    // CHANGED (second review, P2-L6; the coordinator's decision): "hidden from Documents on all your devices", not "hidden on
+    // all your devices": it leaves Documents, its counts and reports, and a field update it was sent with still shows it.
+    expect(asked?.message).toBe('Grading permit.pdf is categorized as Permit Card. It will be hidden from Documents on all your devices and kept in the cloud. A field update it was sent with still shows it. You can bring it back under Archived in this project\'s Documents.');
     expect(asked?.buttons.map(button => button.text)).toEqual(['Cancel', 'Archive Permit Card']);
     await answerAlert('Archive compliance-sensitive document?', 'Archive Permit Card');
 
@@ -344,7 +346,7 @@ describe('an archived compliance document once the cloud keeps the mark (owner a
     await press(tree, tree.getByText('Archived (1)'));
     expect(tree.getByText('Grading permit.pdf')).toBeTruthy();
     expect(tree.getByText('Permit Card · Archived')).toBeTruthy();
-    expect(tree.getByText('Hidden on all your devices. Kept in the cloud.')).toBeTruthy();
+    expect(tree.getByText('Hidden from Documents on all your devices. Kept in the cloud.')).toBeTruthy();
     await press(tree, tree.getByLabelText('Restore Grading permit.pdf'));
 
     // Back in the list here at once; the cloud's mark is emptied when it is reached.
@@ -380,7 +382,7 @@ describe('an archived compliance document once the cloud keeps the mark (owner a
     // Archived (1) opens it, and Restore puts it back here at once.
     await press(tree, tree.getByText('Archived (1)'));
     expect(tree.getByText('Grading permit')).toBeTruthy();
-    expect(tree.getByText('Hidden on all your devices. Kept in the cloud.')).toBeTruthy();
+    expect(tree.getByText('Hidden from Documents on all your devices. Kept in the cloud.')).toBeTruthy();
     await press(tree, tree.getByLabelText('Restore Grading permit'));
     await waitFor(() => expect(tree.queryByText(/^Archived \(/)).toBeNull(), COLD);
     expect(tree.getAllByText('Grading permit').length).toBeGreaterThan(0);
@@ -409,12 +411,12 @@ describe('an archived compliance document once the cloud keeps the mark (owner a
     await reachTheCloud(); // tried, with no signal
     expect(cloud.row('doc-permit')?.archived_at).toBeNull();
     await press(tree, tree.getByText('Archived (1)'));
-    expect(tree.getByText('Hidden on this device. Your other devices follow as soon as this one reaches the cloud.')).toBeTruthy();
+    expect(tree.getByText('Hidden from Documents on this device. Waiting to reach the cloud: your other devices follow once it has.')).toBeTruthy();
 
     cloud.state.offline = false;
     await reachTheCloud();
     expect(cloud.row('doc-permit')?.archived_at).toEqual(expect.any(String));
-    await waitFor(() => expect(tree.queryAllByText('Hidden on all your devices. Kept in the cloud.').length).toBe(1), COLD);
+    await waitFor(() => expect(tree.queryAllByText('Hidden from Documents on all your devices. Kept in the cloud.').length).toBe(1), COLD);
     tree.unmount();
   });
 });
@@ -698,7 +700,7 @@ describe('review of D1, L1 and L13: every list and count uses the one rule', () 
     await waitFor(() => expect(tree.queryByText('Grading permit.pdf')).toBeNull(), COLD);
     await waitFor(async () => expect((await card())?.isArchived).toBe(true), COLD);
     await press(tree, tree.getByText('Archived (1)'));
-    expect(tree.getByText('Hidden on all your devices. Kept in the cloud.')).toBeTruthy();
+    expect(tree.getByText('Hidden from Documents on all your devices. Kept in the cloud.')).toBeTruthy();
 
     // Restore: the card comes back and stays back, here and in the cloud.
     await press(tree, tree.getByLabelText('Restore Grading permit.pdf'));

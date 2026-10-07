@@ -432,12 +432,17 @@ export async function dismissSharedDocumentArchiveNotices(documentIds: readonly 
     : record));
 }
 
-/** The line for a Restore made on this device that the cloud has not been told yet (review of D1, L5). */
+/**
+ * The line for a Restore made on this device that the cloud has not been told yet (review of D1, L5). It says where
+ * the document is back (Documents, on this device) and that the cloud has not got it yet. It does not promise the
+ * other devices will show it: if it was archived again on another device meanwhile, this Restore is let go and
+ * another line says so (second review, P2-M1 and P2-L6).
+ */
 export function sharedDocumentRestoreWaitingText(waiting: SharedDocumentRestoreWaiting): string {
   const name = waiting.name?.trim() || 'A document';
   return waiting.refused
-    ? `${name}: restored on this device only, for now: the cloud has not accepted this yet. This device keeps trying.`
-    : `${name}: restored on this device. Your other devices show it again as soon as this one reaches the cloud.`;
+    ? `${name}: back in Documents on this device only, for now: the cloud has not accepted this yet. This device keeps trying.`
+    : `${name}: back in Documents on this device. Waiting to reach the cloud: your other devices show it again once it has.`;
 }
 
 /**
@@ -808,10 +813,16 @@ export function withArchivedProjectDocumentsRestored<T extends Readonly<{
  * What the owner is asked before archiving. Until the database change is in
  * place the document is hidden on this device only, and the question is the
  * one it has always been.
+ *
+ * Once it is in place the question says exactly where the document goes
+ * from (second review, P2-L6; the coordinator's decision): "hidden from
+ * Documents on all your devices", not "hidden on all your devices". It
+ * leaves Documents, its counts and reports; a field update it was sent with
+ * still shows it, and the question says that too.
  */
 export function sharedDocumentArchiveQuestion(name: string, category: string, installed: boolean | null): string {
   return installed === true
-    ? `${name} is categorized as ${category}. It will be hidden on all your devices and kept in the cloud. You can bring it back under Archived in this project's Documents.`
+    ? `${name} is categorized as ${category}. It will be hidden from Documents on all your devices and kept in the cloud. A field update it was sent with still shows it. You can bring it back under Archived in this project's Documents.`
     : `${name} is categorized as ${category}. It will be hidden from active project documents.`;
 }
 

@@ -346,6 +346,7 @@ describe('the phone\'s own card and the question it asks', () => {
     expect(sharedDocumentArchiveQuestion('Grading permit.pdf', 'Permit Card', null)).toBe(asToday);
     expect(sharedDocumentArchiveQuestion('Grading permit.pdf', 'Permit Card', false)).toBe(asToday);
     expect(sharedDocumentArchiveQuestion('Grading permit.pdf', 'Permit Card', true)).toBe(
-      'Grading permit.pdf is categorized as Permit Card. It will be hidden on all your devices and kept in the cloud. You can bring it back under Archived in this project\'s Documents.');
+      // CHANGED (second review, P2-L6; the coordinator's decision): "hidden from Documents on all your devices", and what a field update does.
+      'Grading permit.pdf is categorized as Permit Card. It will be hidden from Documents on all your devices and kept in the cloud. A field update it was sent with still shows it. You can bring it back under Archived in this project\'s Documents.');
   });
 });

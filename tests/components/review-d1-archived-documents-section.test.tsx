@@ -128,7 +128,8 @@ describe('review of D1: the lines above "Archived (n)"', () => {
     await requestSharedDocumentArchive(PERMIT, false, '2026-10-06T09:10:00.000Z', 'Grading permit');
     await reach();
     const tree = render(<ArchivedDocumentsSection documents={[]} onRestore={jest.fn()} />);
-    expect(tree.getByText('Grading permit: restored on this device. Your other devices show it again as soon as this one reaches the cloud.')).toBeTruthy();
+    // CHANGED (second review, P2-L6 and P2-M1): "back in Documents on this device", and no promise that the others will show it.
+    expect(tree.getByText('Grading permit: back in Documents on this device. Waiting to reach the cloud: your other devices show it again once it has.')).toBeTruthy();
     expect(tree.queryByText(/^Archived \(/)).toBeNull();
 
     cloud.state.offline = false;

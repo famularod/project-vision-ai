@@ -146,7 +146,7 @@ describe('the archived mark on a device (owner answer Q44)', () => {
     expect(hidden(device)).toEqual([PERMIT]);
     await device.quiet();
     expect(device.result.current.waitingIds.size).toBe(0);
-    expect(device.result.current.question('Grading permit.pdf', 'Permit Card')).toContain('hidden on all your devices and kept in the cloud');
+    expect(device.result.current.question('Grading permit.pdf', 'Permit Card')).toContain('hidden from Documents on all your devices and kept in the cloud'); // CHANGED (second review, P2-L6): "from Documents"
     device.unmount();
   });
 

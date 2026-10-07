@@ -75,9 +75,13 @@ describe('"Archived (n)" under a project\'s Documents', () => {
     expect(scopes(false)).toEqual(['sent:everywhere', 'waiting:this_device', 'old:this_device', 'local:this_device']);
     // A device that has never had an answer says the same (review of D1, L9).
     expect(scopes(null)).toEqual(['sent:everywhere', 'waiting:this_device', 'old:this_device', 'local:this_device']);
-    expect(mobileArchivedDocumentScopeText('everywhere')).toBe('Hidden on all your devices. Kept in the cloud.');
-    expect(mobileArchivedDocumentScopeText('waiting')).toBe('Hidden on this device. Your other devices follow as soon as this one reaches the cloud.');
-    expect(mobileArchivedDocumentScopeText('this_device')).toBe('Hidden on this device.');
+    // CHANGED (second review, P2-L6; the coordinator's decision): "hidden from Documents", not "hidden": an archived
+    // document leaves Documents, its counts and reports, and a field update it was sent with still shows it.
+    // The waiting line no longer promises the other devices will follow "as soon as this one reaches the cloud": if the
+    // document was restored or deleted elsewhere meanwhile, the tap is let go (P2-M1), and another line says so.
+    expect(mobileArchivedDocumentScopeText('everywhere')).toBe('Hidden from Documents on all your devices. Kept in the cloud.');
+    expect(mobileArchivedDocumentScopeText('waiting')).toBe('Hidden from Documents on this device. Waiting to reach the cloud: your other devices follow once it has.');
+    expect(mobileArchivedDocumentScopeText('this_device')).toBe('Hidden from Documents on this device.');
   });
 
   it('review of D1, L3: an Archive the cloud has refused says so plainly, and only where the mark is installed', () => {
@@ -90,7 +94,7 @@ describe('"Archived (n)" under a project\'s Documents', () => {
     expect(scopes(true)).toEqual(['waiting:waiting', 'refused:refused']);
     expect(scopes(false)).toEqual(['waiting:this_device', 'refused:this_device']);
     expect(mobileArchivedDocumentScopeText('refused'))
-      .toBe('Hidden on this device only, for now: the cloud has not accepted this yet. This device keeps trying.');
+      .toBe('Hidden from Documents on this device only, for now: the cloud has not accepted this yet. This device keeps trying.'); // CHANGED (P2-L6): "from Documents"
   });
 
   it('a project with nothing archived has no such list', () => {

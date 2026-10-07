@@ -151,12 +151,22 @@ export function buildMobileArchivedDocuments<T extends Attachment>(input: {
   return entries;
 }
 
-/** The line under each archived document's name. */
+/**
+ * The line under each archived document's name.
+ *
+ * "Hidden from Documents", not "hidden" (second review, P2-L6; the coordinator's decision): an archived document
+ * leaves Documents, its counts and reports, and a field update it was sent with still shows it. Nothing is said of
+ * a device still on an older build, which keeps listing it: the app cannot know of one, so it adds no words it
+ * could not keep true.
+ */
 export function mobileArchivedDocumentScopeText(scope: MobileArchivedDocument['scope']): string {
-  if (scope === 'everywhere') return 'Hidden on all your devices. Kept in the cloud.';
-  // True with no signal and while the request is on its way (review of D1, L9).
-  if (scope === 'waiting') return 'Hidden on this device. Your other devices follow as soon as this one reaches the cloud.';
-  // Never given up without a word (review of D1, L3).
-  if (scope === 'refused') return 'Hidden on this device only, for now: the cloud has not accepted this yet. This device keeps trying.';
-  return 'Hidden on this device.';
+  // The cloud carries the mark.
+  if (scope === 'everywhere') return 'Hidden from Documents on all your devices. Kept in the cloud.';
+  // Not in the cloud yet: no signal, or on its way (review of D1, L9). It does not promise the others will follow:
+  // if the document was restored or deleted on another device meanwhile, this tap is let go, and a line says so.
+  if (scope === 'waiting') return 'Hidden from Documents on this device. Waiting to reach the cloud: your other devices follow once it has.';
+  // Never given up without a word (review of D1, L3), and tried again after each wait whatever the clock says (P2-L2).
+  if (scope === 'refused') return 'Hidden from Documents on this device only, for now: the cloud has not accepted this yet. This device keeps trying.';
+  // The mark is not installed, the device has never had an answer, or the card was archived without the mark.
+  return 'Hidden from Documents on this device.';
 }

@@ -637,9 +637,11 @@ describe('L5: a Restore made with no signal', () => {
     await sync(ipad, cloud, 'ipad');
     expect(ipad.sharedDocumentArchiveView().waitingRestores).toEqual([{ documentId: PERMIT, name: 'Grading permit', refused: true }]);
     expect(ipad.sharedDocumentRestoreWaitingText({ documentId: PERMIT, name: 'Grading permit', refused: false }))
-      .toBe('Grading permit: restored on this device. Your other devices show it again as soon as this one reaches the cloud.');
+      // CHANGED (second review, P2-L6 and P2-M1): it says where the document is back ("in Documents on this device") and
+      // no longer promises the other devices will show it: a Restore can now be let go if it was archived again elsewhere.
+      .toBe('Grading permit: back in Documents on this device. Waiting to reach the cloud: your other devices show it again once it has.');
     expect(ipad.sharedDocumentRestoreWaitingText({ documentId: PERMIT, name: 'Grading permit', refused: true }))
-      .toBe('Grading permit: restored on this device only, for now: the cloud has not accepted this yet. This device keeps trying.');
+      .toBe('Grading permit: back in Documents on this device only, for now: the cloud has not accepted this yet. This device keeps trying.');
   });
 });
 
