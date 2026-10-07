@@ -28,15 +28,20 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 
 const LOT_9_ID = '607c7eed-5dea-4a5a-8b52-0f165c71c4b5';
 const MAIN_ST_ID = '72e941d8-8114-4082-a976-ae5b2b5daba9';
+/** The schedule the task was imported from, approved for Lot 9. */
+const LOT_9_SCHEDULE = { importBatchId: 'batch-lot9', projectName: 'Lot 9', projectNames: ['Lot 9'] };
 const OPEN: DAVEWebProjectListing = {
   projects: [{ id: LOT_9_ID, name: 'Lot 9' }, { id: MAIN_ST_ID, name: '2375 Main St' }],
   openCloudProjects: [{ id: LOT_9_ID, name: 'Lot 9' }, { id: MAIN_ST_ID, name: '2375 Main St' }],
+  referenceDocuments: [LOT_9_SCHEDULE],
 };
 const NOW = '2026-10-06T18:00:00.000Z';
 
-/** As the old Tasks page save left it: 2375 Main St's name in both places, Lot 9's cloud id. */
+/** A task Lot 9's schedule brought, as the old Tasks page save left it: 2375 Main St's name in both places, Lot 9's cloud id. */
 function mismatched(extra: Partial<DAVEWebScheduleItem> = {}): DAVEWebScheduleItem {
   return {
+    importBatchId: 'batch-lot9',
+    importedFrom: 'Lot 9 schedule.csv',
     id: 'stripe',
     projectId: LOT_9_ID,
     itemType: 'Task',
@@ -112,27 +117,59 @@ describe('a task saved earlier under another project\'s name is repaired by the 
   });
 
   it('never by guessing: an id that names no open project repairs nothing', () => {
-    const closed: DAVEWebProjectListing = { projects: [{ id: MAIN_ST_ID, name: '2375 Main St' }], openCloudProjects: [{ id: MAIN_ST_ID, name: '2375 Main St' }] };
+    const closed: DAVEWebProjectListing = { ...OPEN, projects: [{ id: MAIN_ST_ID, name: '2375 Main St' }], openCloudProjects: [{ id: MAIN_ST_ID, name: '2375 Main St' }] };
     expect(daveWebTaskProjectRepair(mismatched(), closed)).toBeNull();
     expect(project(save(mismatched(), closed))).toEqual(['2375 Main St', '2375 Main St', LOT_9_ID]);
   });
 
   it('never by guessing: a list that gives the id two names repairs nothing', () => {
-    const twoNames: DAVEWebProjectListing = { projects: [], openCloudProjects: [{ id: LOT_9_ID, name: 'Lot 9' }, { id: LOT_9_ID, name: 'Lot Nine' }] };
+    const twoNames: DAVEWebProjectListing = { ...OPEN, projects: [], openCloudProjects: [{ id: LOT_9_ID, name: 'Lot 9' }, { id: LOT_9_ID, name: 'Lot Nine' }] };
     expect(daveWebTaskProjectRepair(mismatched(), twoNames)).toBeNull();
     expect(project(save(mismatched(), twoNames))).toEqual(['2375 Main St', '2375 Main St', LOT_9_ID]);
   });
 
   it('guard: never the other way: the cloud id is never changed to fit the name, whatever the list holds', () => {
-    [OPEN, { projects: OPEN.projects }, null].forEach(listing => {
+    [OPEN, { projects: OPEN.projects, referenceDocuments: OPEN.referenceDocuments }, null].forEach(listing => {
       expect(save(mismatched(), listing).projectId).toBe(LOT_9_ID);
     });
   });
 
   it('the project list without the cloud\'s own rows is used the same way', () => {
-    expect(project(save(mismatched(), { projects: OPEN.projects }))).toEqual(['Lot 9', 'Lot 9', LOT_9_ID]);
+    expect(project(save(mismatched(), { projects: OPEN.projects, referenceDocuments: OPEN.referenceDocuments }))).toEqual(['Lot 9', 'Lot 9', LOT_9_ID]);
     // A closed project in that list names nothing.
-    expect(daveWebTaskProjectRepair(mismatched(), { projects: [{ id: LOT_9_ID, name: 'Lot 9', archived: true }] })).toBeNull();
+    expect(daveWebTaskProjectRepair(mismatched(), { projects: [{ id: LOT_9_ID, name: 'Lot 9', archived: true }], referenceDocuments: OPEN.referenceDocuments })).toBeNull();
+  });
+
+  // WS2 item 6 (the coordinator's decision): the id decides only where an import says the id is right.
+  it('a task made in the Schedule Builder (no import) is never changed: it may carry the right name and a copied wrong id', () => {
+    const builderMade = mismatched({ importBatchId: null, importedFrom: null });
+    expect(daveWebTaskProjectRepair(builderMade, OPEN)).toBeNull();
+    const saved = save(builderMade, OPEN);
+    expect(project(saved)).toEqual(['2375 Main St', '2375 Main St', LOT_9_ID]);
+    expect(daveWebTaskProjectRepairedNotice(builderMade, saved)).toBe('');
+  });
+
+  it('an imported task whose schedule is no longer saved is not changed: nothing says which project the file was for', () => {
+    expect(daveWebTaskProjectRepair(mismatched(), { ...OPEN, referenceDocuments: [] })).toBeNull();
+    expect(daveWebTaskProjectRepair(mismatched(), { ...OPEN, referenceDocuments: undefined })).toBeNull();
+    expect(project(save(mismatched(), { ...OPEN, referenceDocuments: [] }))).toEqual(['2375 Main St', '2375 Main St', LOT_9_ID]);
+  });
+
+  it('an imported task whose schedule was approved for both projects is not changed: either could be meant', () => {
+    const combined = { importBatchId: 'batch-lot9', projectName: null, projectNames: ['Lot 9', '2375 Main St'] };
+    expect(daveWebTaskProjectRepair(mismatched(), { ...OPEN, referenceDocuments: [combined] })).toBeNull();
+  });
+
+  it('an imported task whose schedule was not approved for the project its id names is not changed', () => {
+    const other = { importBatchId: 'batch-lot9', projectName: 'Harbor North', projectNames: ['Harbor North'] };
+    expect(daveWebTaskProjectRepair(mismatched(), { ...OPEN, referenceDocuments: [other] })).toBeNull();
+    // Nor by another import's schedule.
+    expect(daveWebTaskProjectRepair(mismatched(), { ...OPEN, referenceDocuments: [{ ...LOT_9_SCHEDULE, importBatchId: 'batch-other' }] })).toBeNull();
+  });
+
+  it('guard: a task a later schedule also contains is repaired by that schedule too', () => {
+    const rehomed = mismatched({ importBatchId: 'batch-gone', alsoImportedInBatchIds: ['batch-lot9'] });
+    expect(project(save(rehomed, OPEN))).toEqual(['Lot 9', 'Lot 9', LOT_9_ID]);
   });
 
   it('guard: a task whose name is its id\'s project, however it is written, is saved as stored', () => {

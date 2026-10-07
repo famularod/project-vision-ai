@@ -21,6 +21,7 @@ import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendarDay';
 import { scheduleItemAsSaved } from './PIEScheduleReconciliation';
 import { scheduleProgressIsManagers } from './ScheduleProgressSource';
+import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import {
   SCHEDULE_DURATION_RANGE_TEXT,
   scheduleDateRangeText,
@@ -95,6 +96,12 @@ export type DAVEWebProjectListing = Readonly<{
     archived?: boolean | null;
   }>[];
   openCloudProjects?: readonly Readonly<{ id: string; name: string }>[];
+  /** The schedules saved now: which projects each import was approved for (daveWebTaskProjectRepair, WS2 item 6). */
+  referenceDocuments?: readonly Readonly<{
+    importBatchId?: string | null;
+    projectName?: string | null;
+    projectNames?: readonly string[] | null;
+  }>[];
 }>;
 
 export type DAVEWebNewTaskProjectResult =
@@ -162,10 +169,27 @@ function projectIdentityKey(value: string | null | undefined): string {
  * schedule-scope name is repaired with it only when it carried the same
  * wrong name (the old save wrote both); a schedule's own root name stays.
  *
- * Null when there is nothing to repair.
+ * WS2 item 6 (the coordinator's decision, 6 Oct 2026): ONLY A TASK THAT CAME
+ * FROM AN IMPORT, and only where the import itself says the id is right.
+ * Before A12 pass 5 M1 the Schedule Builder copied the cloud id of another
+ * task of the project onto a NEW item; where that other task was one of
+ * these, the new item carries the RIGHT name and the WRONG id, and a repair
+ * by id would move it to a project he did not put it in: worse than a
+ * mismatched label. A Builder item cannot be told from a hand-made task the
+ * old Tasks page renamed (right id, wrong name): neither row says which
+ * screen made it. So a task with no import is never changed. A task an
+ * import brought names its import (importBatchId, written only by an
+ * import: a new item made on the web has none), and its id was its
+ * project's when that file was approved. It is repaired only when a saved
+ * schedule of that import still lists the project its id names, and does
+ * not also list the name it carries now (a combined schedule for both
+ * projects could mean either). An import whose schedule is no longer saved
+ * proves nothing: nothing is changed.
+ *
+ * Null when there is nothing to repair, or nothing that is certain.
  */
 export function daveWebTaskProjectRepair(
-  current: Pick<ScheduleItem, 'projectId' | 'projectName' | 'scheduleProjectName'> | null | undefined,
+  current: Pick<ScheduleItem, 'projectId' | 'projectName' | 'scheduleProjectName' | 'importBatchId' | 'alsoImportedInBatchIds'> | null | undefined,
   listing: DAVEWebProjectListing | null | undefined,
 ): Readonly<{ projectName: string; scheduleProjectName: string }> | null {
   const projectId = current?.projectId?.trim() || '';
@@ -177,6 +201,13 @@ export function daveWebTaskProjectRepair(
   if (names.size !== 1) return null;
   const [projectName] = [...names.values()];
   if (projectIdentityKey(current.projectName) === projectIdentityKey(projectName)) return null;
+  // Only a task an import brought, whose import was approved for the id's project and not for the name it carries.
+  // (A task with no import has no schedule to say so, and is never changed.)
+  const batches = new Set(scheduleItemImportBatchIds(current as ScheduleItem).map(projectIdentityKey));
+  const approvedFor = (name: string | null | undefined) => (listing.referenceDocuments ?? []).some(document =>
+    batches.has(projectIdentityKey(document.importBatchId)) &&
+    [document.projectName, ...(document.projectNames ?? [])].some(listed => Boolean(projectIdentityKey(listed)) && projectIdentityKey(listed) === projectIdentityKey(name)));
+  if (!approvedFor(projectName) || approvedFor(current.projectName)) return null;
   const scope = current.scheduleProjectName || '';
   return {
     projectName,

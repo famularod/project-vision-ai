@@ -48,9 +48,11 @@ const LOT_9_ID = '607c7eed-5dea-4a5a-8b52-0f165c71c4b5';
 const MAIN_ST_ID = '72e941d8-8114-4082-a976-ae5b2b5daba9';
 const TOLD = 'This task was saved under “2375 Main St” by mistake: it belongs to “Lot 9” in the cloud, so it is now listed under “Lot 9” and your iPhone and iPad can sync it again.';
 
-/** As the old Tasks page save left it: 2375 Main St's name in both places, Lot 9's cloud id. */
+/** A task Lot 9's schedule brought, as the old Tasks page save left it: 2375 Main St's name in both places, Lot 9's cloud id. */
 function stripe(extra: Partial<DAVEWebScheduleItem> = {}): DAVEWebScheduleItem {
   return {
+    importBatchId: 'batch-lot9',
+    importedFrom: 'Lot 9 schedule.csv',
     id: 'stripe',
     projectId: LOT_9_ID,
     itemType: 'Task',
@@ -121,7 +123,12 @@ function workspace(task: DAVEWebScheduleItem, open = [{ id: LOT_9_ID, name: 'Lot
     scheduleItems: [task],
     knownScheduleItems: [task],
     projectUpdates: [],
-    referenceDocuments: [],
+    // Lot 9's schedule, the import the task came from; made current since by a newer one (it shows no task of its own).
+    referenceDocuments: [{
+      id: 'lot-9-schedule', name: 'Lot 9 schedule', originalFileName: 'Lot 9 schedule.csv', uri: '', category: 'Schedules', notes: '', isCurrent: false,
+      importedAt: '2026-07-20T12:00:00.000Z', projectId: null, projectName: 'Lot 9', projectNames: ['Lot 9'], importBatchId: 'batch-lot9',
+      cloudUpdatedAt: '2026-07-20T12:00:01.000Z', linkedScheduleItems: [], importedScheduleItemCount: 1,
+    }],
     refreshedAt: '2026-10-06T14:00:02.000Z',
   };
 }
@@ -158,6 +165,16 @@ describe('the Tasks page repairs it at the next save, and says so (WS1 item 6)',
   it('guard: when its id names no open project nothing is changed and nothing more is said', async () => {
     workspace(stripe(), [{ id: MAIN_ST_ID, name: '2375 Main St' }]);
     const screen = await editAndSave(stripe());
+
+    await waitFor(() => expect(mockAuth.updateTask).toHaveBeenCalledTimes(1));
+    expect(project(saved())).toEqual(['2375 Main St', '2375 Main St', LOT_9_ID]);
+    expect(screen.getByText('Task updated and synced to the cloud.')).toBeTruthy();
+  });
+
+  it('a task made in the Schedule Builder (no import) is left exactly as it is, and nothing more is said (WS2 item 6)', async () => {
+    const builderMade = stripe({ importBatchId: null, importedFrom: null });
+    workspace(builderMade);
+    const screen = await editAndSave(builderMade);
 
     await waitFor(() => expect(mockAuth.updateTask).toHaveBeenCalledTimes(1));
     expect(project(saved())).toEqual(['2375 Main St', '2375 Main St', LOT_9_ID]);
