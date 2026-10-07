@@ -1,4 +1,4 @@
-import type { ReferenceDocument, ScheduleDependency, ScheduleItem } from '../types';
+import type { ProjectItemActivity, ReferenceDocument, ScheduleDependency, ScheduleItem } from '../types';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 
 /**
@@ -826,4 +826,32 @@ export function scheduleTaskLinkTargets(
     const link = answering({ scheduleItemId: predecessorId });
     return link && link.basis !== 'stored_task_name' ? link.item : null;
   };
+}
+
+/**
+ * Schedule batch S5, item 1: a row's activity notes with those another row of
+ * the same task holds that it lacks. A note is appended once and never
+ * changed, and carries its own id, so two rows of one task are put together
+ * as two copies of one row are (scheduleItemActivityOfBoth, ScheduleItemEditBase): every note of
+ * both, each once. In the order of their dates, as the task's history reads
+ * (the app shows the last three). Null when the row lacks none, so a row
+ * that already holds them is never rewritten: two devices that each bring
+ * the same notes forward end with each note once.
+ */
+export function scheduleItemActivityWithOtherRows(
+  own: readonly ProjectItemActivity[] | null | undefined,
+  ...others: Array<readonly ProjectItemActivity[] | null | undefined>
+): ProjectItemActivity[] | null {
+  const mine = Array.isArray(own) ? own : [];
+  const known = new Set(mine.map(entry => entry?.id));
+  const lacking: ProjectItemActivity[] = [];
+  others.forEach(list => (Array.isArray(list) ? list : []).forEach(entry => {
+    if (!entry || typeof entry.id !== 'string' || !entry.id || known.has(entry.id)) return;
+    known.add(entry.id);
+    lacking.push(entry);
+  }));
+  if (lacking.length === 0) return null;
+  const when = (entry: ProjectItemActivity) => { const time = Date.parse(entry?.createdAt || ''); return Number.isFinite(time) ? time : 0; };
+  return [...mine, ...lacking].map((entry, index) => ({ entry, index }))
+    .sort((left, right) => when(left.entry) - when(right.entry) || left.index - right.index).map(({ entry }) => entry);
 }

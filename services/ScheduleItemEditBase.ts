@@ -2,7 +2,7 @@ import { PROJECT_ITEM_TYPES, SCHEDULE_PRIORITIES, type ProjectItemActivity, type
 import { projectTimeZoneOrDefault } from './ProjectDateTime';
 import { scheduleCalendarDayKey } from './ScheduleCalendarDay';
 import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
-import { scheduleTaskEarlierIds } from './ScheduleTaskRevisions';
+import { scheduleItemActivityWithOtherRows, scheduleTaskEarlierIds } from './ScheduleTaskRevisions';
 import { mergeProjectControlsRevisions, normalizeProjectControls } from './VitruviusProjectControls';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import {
@@ -816,33 +816,9 @@ function valueTaken(source: unknown, field: string): unknown {
   return field === 'priority' ? scheduleItemFieldAsRead(field, value) : value ?? '';
 }
 
-/**
- * Schedule batch S5, item 1: a row's activity notes with those another row of
- * the same task holds that it lacks. A note is appended once and never
- * changed, and carries its own id, so two rows of one task are put together
- * as two copies of one row are (scheduleItemActivityOfBoth): every note of
- * both, each once. In the order of their dates, as the task's history reads
- * (the app shows the last three). Null when the row lacks none, so a row
- * that already holds them is never rewritten: two devices that each bring
- * the same notes forward end with each note once.
- */
-export function scheduleItemActivityWithOtherRows(
-  own: readonly ProjectItemActivity[] | null | undefined,
-  ...others: Array<readonly ProjectItemActivity[] | null | undefined>
-): ProjectItemActivity[] | null {
-  const mine = Array.isArray(own) ? own : [];
-  const known = new Set(mine.map(entry => entry?.id));
-  const lacking: ProjectItemActivity[] = [];
-  others.forEach(list => (Array.isArray(list) ? list : []).forEach(entry => {
-    if (!entry || typeof entry.id !== 'string' || !entry.id || known.has(entry.id)) return;
-    known.add(entry.id);
-    lacking.push(entry);
-  }));
-  if (lacking.length === 0) return null;
-  const when = (entry: ProjectItemActivity) => { const time = Date.parse(entry?.createdAt || ''); return Number.isFinite(time) ? time : 0; };
-  return [...mine, ...lacking].map((entry, index) => ({ entry, index }))
-    .sort((left, right) => when(left.entry) - when(right.entry) || left.index - right.index).map(({ entry }) => entry);
-}
+// (The notes of two rows of a task put together: scheduleItemActivityWithOtherRows, in ScheduleTaskRevisions, so the
+// sync merge can use it without loading this module.)
+export { scheduleItemActivityWithOtherRows };
 
 /**
  * Schedule batch S5, item 1: of the fields the sync merge carried to a task's
