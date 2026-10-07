@@ -7269,7 +7269,8 @@ async function uploadQueueItem(
     // more, as Full Sync asks it (recordsDeletedInCloudNow): one request for all the queued tasks the cloud has no row
     // for. A task deleted meanwhile is not sent: its queued copy is retired, as one whose deletion the pass knew of at
     // its start, and the next refresh takes the task off this device. When the question cannot be asked the task goes
-    // up as before: this upload runs on weak signal all day, and an approval's new rows must not wait on it.
+    // up as before: this upload runs on weak signal all day, and an approval's new rows must not wait on it. (Accepted
+    // on 7 Oct 2026: a queue that never uploads is worse than a task that is removed again at the next sync.)
     if (newToCloud) {
       context.scheduleItemsDeletedNow ??= recordsDeletedInCloudNow('schedule_item', [...new Set([payload.id, ...(context.queuedScheduleItemIds ?? [])])]
         .filter(id => id === payload.id || (!context.scheduleItemsById?.has(id) && context.scheduleItemsReadById?.get(id) === null)));
