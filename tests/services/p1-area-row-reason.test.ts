@@ -101,12 +101,14 @@ describe('the Current Area card says why only when the reason is true (P1 part B
     expect(view.reason).toBe('GPS places you in South Pad. Accept it to use it for this update.');
   });
 
-  // Left as it is, and recorded for a decision: with a schedule on the
-  // project this line is the schedule's, also when no area is chosen.
-  it('unchanged: with a schedule recommendation the line is still the schedule\'s', () => {
+  // This pinned "left as it is": with a schedule on the project the line
+  // was the schedule's ("The imported schedule identifies this as the most
+  // urgent area.") also when no area is chosen. That was recorded for a
+  // decision; the coordinator's decision is that "Unassigned" is not an area
+  // the schedule identified, so the card says what is true there.
+  it('with a schedule recommendation too, it says no area has been chosen', () => {
     const after = draftAfterAreaDeleted(inNorthPad, 'north');
-    expect(card(after, [], { hasScheduleRecommendation: true }).reason)
-      .toBe('The imported schedule identifies this as the most urgent area.');
+    expect(card(after, [], { hasScheduleRecommendation: true }).reason).toBe(NO_AREA_CHOSEN_REASON);
   });
 
   it('nothing else about the card changes after the deletion', () => {

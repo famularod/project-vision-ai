@@ -297,12 +297,17 @@ export function draftAreaPresentation(input: Readonly<{
     // "Your confirmed selection" only for something he selected: an area, a
     // task's named location, or Unassigned when he picked it (the name is
     // then null). The placeholder name means no choice has been made.
-    reason: locationSource === 'last-active-area' && input.selectedAreaName !== null && !namedAreaOrNull(areaName)
-      ? NO_AREA_CHOSEN_REASON
+    // And the schedule's reason only under an area: "Unassigned" is not an
+    // area the schedule identified, on a project with a schedule or without
+    // one (the schedule's own suggestion is the "Next Area to Visit" card).
+    reason: (locationSource === 'last-active-area' || locationSource === 'schedule') && !namedAreaOrNull(areaName)
+      ? input.selectedAreaName !== null ? NO_AREA_CHOSEN_REASON : CONFIRMED_SELECTION_REASON
       : locationReason(locationSource, pendingSuggestion),
     locationNotice,
   };
 }
+
+const CONFIRMED_SELECTION_REASON = 'This is your current confirmed selection.';
 
 function locationReason(source: DraftAreaLocationSource, pending: AreaSuggestion | null): string {
   switch (source) {
@@ -311,12 +316,12 @@ function locationReason(source: DraftAreaLocationSource, pending: AreaSuggestion
     case 'gps-pending':
       return pending
         ? `GPS places you in ${pending.area.name}. Accept it to use it for this update.`
-        : 'This is your current confirmed selection.';
+        : CONFIRMED_SELECTION_REASON;
     case 'gps-radius':
       return 'This is the nearest saved area within the GPS recommendation range.';
     case 'schedule':
       return 'The imported schedule identifies this as the most urgent area.';
     default:
-      return 'This is your current confirmed selection.';
+      return CONFIRMED_SELECTION_REASON;
   }
 }
