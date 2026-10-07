@@ -157,6 +157,9 @@ import {
   mapWithBoundedConcurrency,
 } from './BoundedConcurrency';
 import {
+  CLOUD_ACCOUNT_CHANGED,
+  CLOUD_ACCOUNT_CHANGED_MESSAGE,
+  callAsCloudOwner,
   cloudOwnerUnchanged,
   currentCloudOwner,
   heldForAnotherOwner,
@@ -3772,6 +3775,7 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
   };
   const uploadedReferenceDocuments = new Map<string, ReferenceDocument>();
   const uploadContext: QueueUploadContext = {
+    account: owner,
     settledQueueItemIds: resolvedIds,
     queuedScheduleItemIds: uploadBatch.flatMap(item => item.entity === 'schedule_item' && item.operation !== 'delete' &&
       typeof (item.payload as Partial<ScheduleItemRecordPayload>).id === 'string' ? [(item.payload as ScheduleItemRecordPayload).id] : []),
@@ -3810,7 +3814,9 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
     queueEntityUsesDAVESyncTombstones(item.entity)
   ));
   let operationalTombstoneGate: DAVESyncTombstoneSyncResult | null = null;
-  if (operationalQueueItems.length > 0) {
+  // Not once the account has changed (the read of what is in the cloud, just above, can take that long): the pass
+  // stops at its first item, and asks the cloud for nothing more as the next account (sync batch Y4).
+  if (operationalQueueItems.length > 0 && cloudOwnerUnchanged(owner)) {
     try {
       // Routine task/area/document saves only need the authoritative deletion
       // inventory before writing. synchronizeDAVESyncTombstones() also
@@ -4012,7 +4018,9 @@ async function runUploadPendingChanges(): Promise<SyncUploadResult> {
 
   let storageCleanupRemaining = 0;
   let storageCleanupCompleted = 0;
-  if (!taskPriorityBatch) {
+  // Not once the account has changed (while the queue was being written back, just above): the housekeeping that ends
+  // a pass asks the cloud too, and the next account's own pass does it for that account (sync batch Y4).
+  if (!taskPriorityBatch && cloudOwnerUnchanged(owner)) {
     try {
       const maintenance = await runDAVECloudMaintenanceIfDue({
         forceStorageCleanup: uploadBatch.some(item =>
@@ -5014,7 +5022,7 @@ export async function synchronizeLocalData(
       continue;
     }
 
-    const result = await createProject({ name: normalizedName });
+    const result = await asItsAccount({ account: owner }, () => createProject({ name: normalizedName }));
 
     if (result.ok && !result.stubbed) {
       details.projectsUploaded += 1;
@@ -5107,7 +5115,7 @@ export async function synchronizeLocalData(
         progress(`GPS area already current: ${weighed.name}`);
         continue;
       }
-      const result = await upsertProjectArea(area, ...cloudRowWriteConditionFor(rowNow));
+      const result = await asItsAccount({ account: owner }, () => upsertProjectArea(area, ...cloudRowWriteConditionFor(rowNow)));
 
       if (result.ok && !result.stubbed) {
         details.areasUploaded += 1;
@@ -5202,7 +5210,7 @@ export async function synchronizeLocalData(
       // moment is never replaced by a copy sent as new.
       // And a task the cloud has a row for is written only if the row is still the one just read (pass 2, item 1).
       const bound = { ...item, projectId: binding.identity.id };
-      const result = await upsertScheduleItem(bound, ...cloudRowWriteConditionFor(rowNow));
+      const result = await asItsAccount({ account: owner }, () => upsertScheduleItem(bound, ...cloudRowWriteConditionFor(rowNow)));
 
       if (result.ok && !result.stubbed) {
         details.schedulesUploaded += 1;
@@ -5263,9 +5271,9 @@ export async function synchronizeLocalData(
         continue;
       }
     }
-    const result = await upsertReferenceDocument(authoritativeDocument, {
+    const result = await asItsAccount({ account: owner }, () => upsertReferenceDocument(authoritativeDocument, {
       existing: Boolean(cloudDocumentsBeforeUpload.data?.some(cloud => cloud.id === document.id)),
-    });
+    }));
 
     if (result.ok && !result.stubbed) {
       details.documentsUploaded += 1;
@@ -7112,7 +7120,46 @@ type ReferenceDocumentUploadSuccess = {
   referenceDocument: ReferenceDocument;
 };
 
+/**
+ * Sync batch Y4, the account boundary of an upload under way (owner answer Q45, 6 Oct 2026: yes).
+ *
+ * One waiting item's upload is several requests: checks, then the write, and sometimes the checks and the write
+ * again when the write is refused. The pass looked at who is signed in before each ITEM only (whole-app audit A1
+ * M3). When that account signed out and another signed in while one of an item's checks was still waiting, the pass
+ * went on when the check was answered: the write left with the new account's sign-in and named the new account as
+ * owner. One account's task was written into another's.
+ *
+ * Every cloud call an item makes now goes through here:
+ *  1. the account the pass began with is looked at again before the call, so before every check, every write and
+ *     every further try inside the item; once it has changed nothing more is asked of the cloud, and the call is
+ *     answered here as a refusal;
+ *  2. a write is made "as" the account the item was queued under (the pass's own account for an item an earlier
+ *     build queued with none): the cloud layer refuses it when it finds another account signed in, so the owner a
+ *     row is written with is never whoever is signed in by now;
+ *  3. below that, a request that names one account is not sent with another's sign-in (SupabaseService).
+ * A refusal is a failed call to every caller: the item is left as it is, for its own account. Nothing is sent
+ * that was refused before. With no account given (a caller that is not the pass) the call is made as it always was.
+ */
+function asItsAccount<T>(context: Pick<QueueUploadContext, 'account'>, call: () => Promise<T>, queuedBy?: unknown): Promise<T> {
+  const account = context.account;
+  if (!account) return call();
+  if (!cloudOwnerUnchanged(account)) return Promise.resolve(CLOUD_ACCOUNT_CHANGED_ANSWER as unknown as T);
+  return callAsCloudOwner(typeof queuedBy === 'string' && queuedBy ? queuedBy : account.ownerId, call);
+}
+
+/** What a cloud call answers when it was not made because the account changed: a failure, in the cloud layer's own shape. */
+const CLOUD_ACCOUNT_CHANGED_ANSWER = Object.freeze({
+  ok: false, configured: true, stubbed: false, data: null, error: CLOUD_ACCOUNT_CHANGED_MESSAGE, status: 409, code: CLOUD_ACCOUNT_CHANGED,
+});
+
+/** Whether the account this pass began with is no longer the one signed in. */
+function passAccountChanged(context: Pick<QueueUploadContext, 'account'>): boolean {
+  return Boolean(context.account && !cloudOwnerUnchanged(context.account));
+}
+
 type QueueUploadContext = {
+  /** The account this pass began with: every cloud call of an item is made as it, or not at all (sync batch Y4). */
+  account?: CloudOwnerBinding;
   /** What David is told, once, of each copy he chose to keep that went back to its card in this pass (review pass 5, P5-1), by queue item. */
   keptCopiesReturnedToCard?: Map<string, string>;
   /** The queue items of rows this device made whose write this pass sent (review P7-3): what he changed on them has gone, whatever came back. */
@@ -7341,7 +7388,7 @@ async function resolveArchivedProjectUpdateIdentity(
   ) {
     return activeFailure;
   }
-  context.archivedProjectsAuthorityPromise ??= listArchivedProjects();
+  context.archivedProjectsAuthorityPromise ??= asItsAccount(context, () => listArchivedProjects());
   const archived = await context.archivedProjectsAuthorityPromise;
   if (!archived.ok || archived.stubbed || !Array.isArray(archived.data)) return activeFailure;
   context.archivedProjectIdentityAuthority ??=
@@ -7357,7 +7404,7 @@ async function loadOperationalProjectIdentityAuthority(
   context: QueueUploadContext,
 ): Promise<OperationalProjectIdentityAuthority | string> {
   if (context.projectIdentityAuthority) return context.projectIdentityAuthority;
-  context.projectsAuthorityPromise ??= listProjects();
+  context.projectsAuthorityPromise ??= asItsAccount(context, () => listProjects());
   const result = await context.projectsAuthorityPromise;
   if (!result.ok || result.stubbed || !Array.isArray(result.data)) {
     return result.error || result.message || 'Cloud projects could not be checked before upload.';
@@ -7422,7 +7469,7 @@ async function cloudScheduleItemMissedByList(
     context.scheduleItemsReadById = new Map();
     const unlisted = [...new Set(context.queuedScheduleItemIds ?? [])].filter(queuedId => !context.scheduleItemsById?.has(queuedId));
     if (unlisted.length > 1) {
-      const read = await cloudRecordsNow<Pick<ScheduleItem, 'id'>>(unlisted.map(queuedId => ({ id: queuedId })), getScheduleItemsByIds);
+      const read = await cloudRecordsNow<Pick<ScheduleItem, 'id'>>(unlisted.map(queuedId => ({ id: queuedId })), wanted => asItsAccount(context, () => getScheduleItemsByIds(wanted)));
       if (typeof read === 'string') context.scheduleItemsReadByIdError = read || 'Task authority could not be checked.';
       else unlisted.forEach(queuedId => context.scheduleItemsReadById!.set(queuedId, (cloudRecordOf(read, queuedId) as ScheduleItem | undefined) ?? null));
     }
@@ -7431,7 +7478,7 @@ async function cloudScheduleItemMissedByList(
   if (context.scheduleItemsReadByIdError && context.queuedScheduleItemIds?.includes(id)) return context.scheduleItemsReadByIdError;
   let row: Awaited<ReturnType<typeof getScheduleItem>> | null = null;
   try {
-    row = await getScheduleItem(id);
+    row = await asItsAccount(context, () => getScheduleItem(id));
   } catch {
     row = null;
   }
@@ -7464,7 +7511,7 @@ async function cloudRowToWeighAgain<T extends { id: string }>(
   const weighedAgain = (context.recordsWeighedAgain ??= new Map<string, number>());
   const times = weighedAgain.get(key) ?? 0;
   if (times >= QUEUED_RECORD_WEIGH_AGAIN_LIMIT) return null;
-  const rows = await cloudRecordsNow<Pick<T, 'id'>>([{ id }], readByIds);
+  const rows = await cloudRecordsNow<Pick<T, 'id'>>([{ id }], wanted => asItsAccount(context, () => readByIds(wanted)));
   const row = typeof rows === 'string' ? undefined : cloudRecordOf(rows, id) as T | undefined;
   if (!row) return null;
   weighedAgain.set(key, times + 1);
@@ -7485,7 +7532,7 @@ async function uploadQueueItem(
 
   if (item.entity === 'project_area') {
     const payload = item.payload as ProjectAreaRecordPayload;
-    context.projectAreasAuthorityPromise ??= listProjectAreas();
+    context.projectAreasAuthorityPromise ??= asItsAccount(context, () => listProjectAreas());
     const cloud = await context.projectAreasAuthorityPromise;
     if (!cloud.ok || cloud.stubbed || !Array.isArray(cloud.data)) {
       return cloud.error || cloud.message || 'GPS area authority could not be checked.';
@@ -7497,7 +7544,7 @@ async function uploadQueueItem(
     // An area the list did not hold is asked for by its id before this device's copy goes up as new (independent
     // review R02): the list pages by offset, and a row another device changed while it was read can be left out.
     if (!remote) {
-      const row = await cloudRecordsNow<Pick<ProjectArea, 'id'>>([{ id: payload.id }], getProjectAreasByIds);
+      const row = await cloudRecordsNow<Pick<ProjectArea, 'id'>>([{ id: payload.id }], wanted => asItsAccount(context, () => getProjectAreasByIds(wanted)));
       if (typeof row === 'string') return row || 'GPS area authority could not be checked.';
       remote = cloudRecordOf(row, payload.id) as ProjectArea | undefined;
       if (remote) context.projectAreasById.set(payload.id, remote);
@@ -7514,7 +7561,7 @@ async function uploadQueueItem(
     // Independent review pass 2 (item 1): written only if the cloud's row is still the one this was weighed against
     // (or there is still none). The list is read once for the whole pass; a point another device captured since
     // then was written over. Refused, the row is read again by its id and the area weighed again.
-    const result = await upsertProjectArea(authoritative, ...cloudRowWriteConditionFor(remote));
+    const result = await asItsAccount(context, () => upsertProjectArea(authoritative, ...cloudRowWriteConditionFor(remote)), item.ownerId);
     if (result.ok && !result.stubbed) {
       context.projectAreasById.set(payload.id, withCloudRowVersion(authoritative, cloudRowVersionOf(result.data)));
       return 'uploaded';
@@ -7531,7 +7578,7 @@ async function uploadQueueItem(
 
   if (item.entity === 'schedule_item') {
     const payload = item.payload as ScheduleItemRecordPayload;
-    context.scheduleItemsAuthorityPromise ??= listScheduleItems();
+    context.scheduleItemsAuthorityPromise ??= asItsAccount(context, () => listScheduleItems());
     const cloud = await context.scheduleItemsAuthorityPromise;
     if (!cloud.ok || cloud.stubbed || !Array.isArray(cloud.data)) {
       return cloud.error || cloud.message || 'Task authority could not be checked.';
@@ -7570,7 +7617,7 @@ async function uploadQueueItem(
     // up as before: this upload runs on weak signal all day, and an approval's new rows must not wait on it. (Accepted
     // on 7 Oct 2026: a queue that never uploads is worse than a task that is removed again at the next sync.)
     if (newToCloud) {
-      context.scheduleItemsDeletedNow ??= recordsDeletedInCloudNow('schedule_item', [...new Set([payload.id, ...(context.queuedScheduleItemIds ?? [])])]
+      context.scheduleItemsDeletedNow ??= passAccountChanged(context) ? Promise.resolve(CLOUD_ACCOUNT_CHANGED_MESSAGE) : recordsDeletedInCloudNow('schedule_item', [...new Set([payload.id, ...(context.queuedScheduleItemIds ?? [])])]
         .filter(id => id === payload.id || (!context.scheduleItemsById?.has(id) && context.scheduleItemsReadById?.get(id) === null)));
       const deletedNow = await context.scheduleItemsDeletedNow;
       if (typeof deletedNow !== 'string' && deletedNow.has(cloudRecordKey(payload.id))) return QUEUED_RECORD_DELETED_IN_CLOUD_MEANWHILE;
@@ -7820,9 +7867,9 @@ async function uploadQueueItem(
     // this pass's read of the list is then not the row it names, and the write is refused, as above. Never as new:
     // Keep Phone saw a row, so none now means it was deleted.
     if (isEditBase(payload.sinceMade)) (context.newRowWritesTried ??= new Set<string>()).add(item.id);
-    const result = await upsertScheduleItem(authoritative, ...(payload.forceLocal && payload.keptOverRowVersion
+    const result = await asItsAccount(context, () => upsertScheduleItem(authoritative, ...(payload.forceLocal && payload.keptOverRowVersion
       ? [{ ifUnchangedSince: payload.keptOverRowVersion }]
-      : newToCloud ? [{ onlyIfAbsent: true }] : cloudRowWriteConditionFor(remote)));
+      : newToCloud ? [{ onlyIfAbsent: true }] : cloudRowWriteConditionFor(remote))), item.ownerId);
     if (result.ok && !result.stubbed) {
       context.scheduleItemsById.set(payload.id, withCloudRowVersion(authoritative, cloudRowVersionOf(result.data)));
       if (asked.length > 0) return askAbout(authoritative);
@@ -7855,7 +7902,7 @@ async function uploadQueueItem(
 
   if (item.entity === 'reference_document') {
     const payload = item.payload as ReferenceDocumentRecordPayload;
-    context.referenceDocumentsAuthorityPromise ??= listReferenceDocuments();
+    context.referenceDocumentsAuthorityPromise ??= asItsAccount(context, () => listReferenceDocuments());
     const cloud = await context.referenceDocumentsAuthorityPromise;
     if (!cloud.ok || cloud.stubbed || !Array.isArray(cloud.data)) {
       return cloud.error || cloud.message || 'Document authority could not be checked.';
@@ -7892,6 +7939,8 @@ async function uploadQueueItem(
     const hasLocalFile = Boolean(authoritative.uri?.trim());
     if (!authoritative.storagePath && hasLocalFile) {
       try {
+        // The file is sent by the document store's own code: not once the account has changed (sync batch Y4).
+        if (passAccountChanged(context)) return CLOUD_ACCOUNT_CHANGED_MESSAGE;
         authoritative = await prepareReferenceDocumentForCloud(authoritative);
       } catch {
         return 'The document file could not be prepared for protected cloud storage.';
@@ -7901,7 +7950,7 @@ async function uploadQueueItem(
       }
     }
     // A record the cloud already has is updated (whole-app audit A8 pass 1 F3).
-    const result = await upsertReferenceDocument(authoritative, { existing: Boolean(remote) });
+    const result = await asItsAccount(context, () => upsertReferenceDocument(authoritative, { existing: Boolean(remote) }), item.ownerId);
     if (result.ok && !result.stubbed) {
       context.referenceDocumentsById.set(payload.id, authoritative);
       referenceDocumentDetailsSent.set(payload.id, referenceDocumentSharedDetailsFingerprint(authoritative));
@@ -7949,28 +7998,29 @@ async function uploadProjectQueueItem(
     return 'Project delete is waiting for the project to reach the cloud.';
   }
   if (item.operation === 'update' && payload.coverPhotoUpload) {
-    const upload = await uploadPhoto({
+    const coverUpload = {
       path: payload.coverPhotoUpload.remotePath,
       uri: payload.coverPhotoUpload.localUri,
       contentType: payload.coverPhotoUpload.mimeType,
       upsert: true,
       cacheControl: '86400',
-    });
+    };
+    const upload = await asItsAccount(context, () => uploadPhoto(coverUpload), item.ownerId);
     if (!upload.ok || upload.stubbed) {
       return upload.error || upload.message || 'Project cover upload is waiting for cloud sync.';
     }
   }
   if (item.operation === 'create') {
-    const existing = await cloudProjectNameExists(payload.name || '');
+    const existing = passAccountChanged(context) ? CLOUD_ACCOUNT_CHANGED_MESSAGE : await cloudProjectNameExists(payload.name || '');
     if (typeof existing === 'string') return existing;
     if (existing) return 'uploaded';
   }
   const result =
     item.operation === 'create'
-      ? await createProject({ name: payload.name || 'Untitled Project' })
+      ? await asItsAccount(context, () => createProject({ name: payload.name || 'Untitled Project' }), item.ownerId)
       : item.operation === 'delete'
-        ? await deleteProject({ name: payload.name || payload.previousName || '' })
-        : await updateProject(payload);
+        ? await asItsAccount(context, () => deleteProject({ name: payload.name || payload.previousName || '' }), item.ownerId)
+        : await asItsAccount(context, () => updateProject(payload), item.ownerId);
 
   if (result.ok && !result.stubbed) {
     // A close finds no cloud row while the project's own create, queued ahead
@@ -8087,9 +8137,9 @@ async function uploadProjectUpdateQueueItem(
     let cloudDeleteSucceededAt = deletePayload.cloudDeleteSucceededAt;
 
     if (!cloudDeleteSucceededAt) {
-      const result = await deleteProjectUpdate({
+      const result = await asItsAccount(context, () => deleteProjectUpdate({
         id: deletePayload.id,
-      });
+      }), item.ownerId);
 
       if (!result.ok || result.stubbed) {
         return result.error
@@ -8125,11 +8175,11 @@ async function uploadProjectUpdateQueueItem(
   const payload = item.payload as ProjectUpdateRecordPayload;
   if (await hasProjectUpdateDeletionIntent(payload.id)) return 'uploaded';
   if (payload.archiveOnly) {
-    const result = await archiveProjectUpdate({
+    const result = await asItsAccount(context, () => archiveProjectUpdate({
       id: payload.id,
       archivedAt: payload.archivedAt || item.changedAt,
       projectId: payload.projectId,
-    });
+    }), item.ownerId);
     if (!result.ok || result.stubbed) return result.error || result.message || 'Field update archive is waiting for cloud sync.';
     if (!queuedFieldUpdateDocumentPatches(item)) return 'uploaded';
     // Then the document changes that waited when it was archived go onto the
@@ -8323,7 +8373,7 @@ async function uploadProjectUpdateQueueItem(
     updatedAt: ownPatchesSinceEdit && isRemoteNewer(ownPatchesSinceEdit.at, item.changedAt)
       ? ownPatchesSinceEdit.at : newerCloudStamp ?? item.changedAt,
   };
-  const result = await saveProjectUpdate({ id: payload.id, ...record });
+  const result = await asItsAccount(context, () => saveProjectUpdate({ id: payload.id, ...record }), item.ownerId);
 
   if (result.ok && !result.stubbed) {
     if (settledCopy) return settledByCloud(); // only its own photo result went up, onto the cloud's copy
@@ -8937,7 +8987,7 @@ function loadProjectUpdateSyncMetadata(
   context.projectUpdateMetadataPromises ??= new Map();
   const existing = context.projectUpdateMetadataPromises.get(updateId);
   if (existing) return existing;
-  const pending = getProjectUpdateSyncMetadata(updateId);
+  const pending = asItsAccount(context, () => getProjectUpdateSyncMetadata(updateId));
   context.projectUpdateMetadataPromises.set(updateId, pending);
   return pending;
 }
@@ -9236,9 +9286,16 @@ export function cloudPhotoLookupConfirmedMissing(
   );
 }
 
+/** One photo's upload, for an account: see uploadLocalPhotoWithDiagnostics. */
+function localPhotoUploadAs(account: CloudOwnerBinding) {
+  return (update: ProjectUpdate, photo: UpdatePhoto) => uploadLocalPhotoWithDiagnostics(update, photo, account);
+}
+
 export async function uploadLocalPhotoWithDiagnostics(
   update: ProjectUpdate,
   photo: UpdatePhoto,
+  /** The account the photo is sent for: its file is sent as that account, or not at all (sync batch Y4, the account boundary). */
+  account?: CloudOwnerBinding,
 ): Promise<LocalPhotoUploadResult> {
   const path = projectUpdatePhotoStoragePath(update, photo);
   const diagnosticBase: PhotoStorageUploadDiagnostic = {
@@ -9454,13 +9511,13 @@ export async function uploadLocalPhotoWithDiagnostics(
       };
     }
 
-    const result = await uploadPhoto({
+    const result = await asItsAccount({ account }, () => uploadPhoto({
       bucket: PROJECT_PHOTOS_BUCKET,
       path,
       uri: localUri!,
       contentType,
       upsert: true,
-    });
+    }));
 
     if (result.ok && !result.stubbed) {
       forgetPhotoNotInCloud(path); // it is there now: its image may sign it again (sync batch Y3, item 1)
@@ -9914,6 +9971,10 @@ async function uploadUpdatePhotosForSync(
     };
   }
 
+  // Each photo's file is sent as the account this staging began with, or not at all (sync batch Y4, the account
+  // boundary): one photo's upload is several requests too. The account is handed over here, so that the call below
+  // reads as it has since audit A1 M3 (scripts/local-sync-consistency-test.js holds its text).
+  const uploadLocalPhotoWithDiagnostics = localPhotoUploadAs(owner);
   const results = await mapWithBoundedConcurrency(
     update.photos,
     PROJECT_PHOTO_NETWORK_CONCURRENCY,

@@ -15,12 +15,13 @@
  *
  *  - its WRITE had left: it lands under A, with A's sign-in. Nothing more
  *    of it is sent after the sign-out. Safe.
- *  - one of its CHECKS was still waiting: when the check is answered, the
- *    pass goes on and sends the write. By then B is signed in, so the write
- *    leaves with B's sign-in and names B as the owner. A's task is sent
- *    into B's account. This is the gap. It is pinned below as it is today
- *    and is NOT changed here: it is an account boundary, and the fix is the
- *    owner's decision (see the notes).
+ *  - one of its CHECKS was still waiting: when the check was answered, the
+ *    pass went on and sent the write. By then B was signed in, so the write
+ *    left with B's sign-in and named B as the owner: A's task was sent into
+ *    B's account. That was the gap. It is closed (sync batch Y4; owner
+ *    answer Q45, 6 Oct 2026: yes): every cloud call of an item is made as
+ *    the account the item was queued under, or not at all, and the cases
+ *    below that were named "today, ..." now say so.
  *
  * Either way, on the phone: A's item stays in A's own waiting list, set
  * aside with A's data (not lost; it goes again when A signs in), and
@@ -239,23 +240,21 @@ describe.each<SignOut>(['This Device', 'All Devices'])('Sign Out of %s, then ano
   });
 
   describe('the task\'s write had not left yet: one of its checks was still waiting', () => {
-    // THE GAP, AS IT IS TODAY. Not a rule to keep: when this is closed, the
-    // write below must not be sent at all, and this case changed to say so.
-    it('today, the write then leaves with B\'s sign-in and names B as the owner: A\'s task is sent into B\'s account', async () => {
+    // THE GAP, CLOSED (sync batch Y4; owner answer Q45, 6 Oct 2026: yes). These cases were named "today, ..." and
+    // held the gap as it was: the write then left with B's sign-in and named B as the owner, so A's task (its name,
+    // its note, A's project) was sent into B's account, and the pass counted it as sent.
+    it('the write is not sent at all: nothing of A\'s task goes out with B\'s sign-in, and nothing names B as its owner', async () => {
       const result = await signOutAndInWhileUploading({ signOut, holdAt: isLastCheckBeforeTheWrite, then: 'answer' });
 
-      expect(taskWrites()).toEqual([{ when: 'after', signIn: 'sign-in-of-b', ownerNamed: 'owner-b', task: 'task-of-a' }]);
-      // It is A's task, whole: its name, its note, and A's project.
-      const sent = JSON.parse(network.calls.find(isTaskWrite)!.body) as { project_id: string; item_data: { taskName: string; notes: string } };
-      expect(sent.item_data).toMatchObject({ taskName: 'Pour slab', notes: 'Rebar inspection first' });
-      expect(sent.project_id).toBe(PROJECT_A);
-      // Every request the pass made after B signed in carried B's sign-in.
-      const after = network.calls.filter(call => call.when === 'after');
-      expect(after.length).toBeGreaterThan(0);
-      expect(after.every(call => call.signIn === 'sign-in-of-b')).toBe(true);
-      // The pass counts it as sent, and says the account changed.
-      expect(result.itemOutcomes).toEqual({ 'schedule-item-task-of-a': 'uploaded' });
-      expect(result.errors).toEqual(['The account changed during sync. Work not yet sent waits for the account that saved it.']);
+      expect(taskWrites()).toEqual([]);
+      // After B signed in the pass asked the cloud for nothing at all: no further check either.
+      expect(network.calls.filter(call => call.when === 'after')).toEqual([]);
+      // Nothing that was sent, before or after, carried B's sign-in.
+      expect(network.calls.filter(call => call.path.startsWith('/rest/v1/') && call.signIn !== 'sign-in-of-a')).toEqual([]);
+      // The pass does not count it as sent, and says the account changed.
+      expect(result.itemOutcomes).toEqual({ 'schedule-item-task-of-a': 'failed' });
+      expect(result.uploaded).toBe(0);
+      expect(result.errors).toContain('The account changed during sync. Work not yet sent waits for the account that saved it.');
     });
 
     it('on the phone: it stays in A\'s waiting list, set aside with A\'s data; B\'s storage holds nothing of A\'s', async () => {
@@ -277,14 +276,15 @@ describe.each<SignOut>(['This Device', 'All Devices'])('Sign Out of %s, then ano
       expect(await waitingListOf(setAsideFor('owner-a', QUEUE))).toEqual(['schedule-item-task-of-a (queued by owner-a)']);
     });
 
-    // THE GAP again, as it is today: a check that fails is tried again, and
-    // by then it is B who is signed in.
-    it('held at one of its checks: today, the check is tried again as B and the write follows as B', async () => {
-      await signOutAndInWhileUploading({ signOut, holdAt: isLastCheckBeforeTheWrite, then: 'fail' });
+    // THE GAP again, CLOSED: a check that fails is tried again by the cloud library itself, a second later, with
+    // whichever sign-in is there by then. It was tried again as B, and the write followed as B.
+    it('held at one of its checks: the check is not tried again as B, and no write follows', async () => {
+      const result = await signOutAndInWhileUploading({ signOut, holdAt: isLastCheckBeforeTheWrite, then: 'fail' });
 
-      expect(taskWrites()).toEqual([{ when: 'after', signIn: 'sign-in-of-b', ownerNamed: 'owner-b', task: 'task-of-a' }]);
-      const after = network.calls.filter(call => call.when === 'after');
-      expect(after.every(call => call.signIn === 'sign-in-of-b')).toBe(true);
+      expect(taskWrites()).toEqual([]);
+      // The further try names A as the owner of what it asks for, and B is signed in: it is not sent.
+      expect(network.calls.filter(call => call.when === 'after')).toEqual([]);
+      expect(result.uploaded).toBe(0);
       // On the phone, as in every case: nothing of A's in B's storage, and A's task still waits for A.
       expect(await openAccountData()).toEqual([]);
       expect(await waitingListOf(setAsideFor('owner-a', QUEUE))).toEqual(['schedule-item-task-of-a (queued by owner-a)']);

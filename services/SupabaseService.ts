@@ -6,7 +6,7 @@ import {
   supabaseSecureAuthStorage,
 } from './SupabaseAuthStorage';
 import { accountDisplayNameForMetadata } from './AccountProfile';
-import { noteSignedInOwner } from './CloudOwnerBinding';
+import { CLOUD_ACCOUNT_CHANGED, CLOUD_ACCOUNT_CHANGED_MESSAGE, callAsCloudOwner, cloudOwnerExpectedForThisCall, currentCloudOwner, noteSignedInOwner } from './CloudOwnerBinding';
 import { ownerWorkspaceAuthDecision } from './OwnerWorkspaceAuthDecision';
 import { AppState } from 'react-native';
 import {
@@ -492,11 +492,82 @@ let lastSignInRefreshEndedAtMs = 0;
  */
 const refreshTokensSignedOutHere = new Set<string>();
 
+/**
+ * Sync batch Y4 (the account boundary; owner answer Q45). The last look before a request leaves: a request that
+ * names one account as its owner (in its filter or in the row it writes) is never sent with another account's
+ * sign-in. This is where a request the library tries again by itself is caught (it tries a failed read again a
+ * second later, with whichever sign-in is there by then), and any request that was built for one account and
+ * leaves late. Answered here, as a refusal, with nothing sent; a refusal is not tried again.
+ *
+ * The sign-in is read from the request itself (the account inside its token). A token that names no account is
+ * judged by the account the app knows to be signed in, and only when the app knows one. A request that names no
+ * owner is not looked at.
+ */
+function refusedForAnotherAccount(url: string, init?: Parameters<typeof fetch>[1]): Response | null {
+  if (!cloudRequestNamesAnotherAccount(url, init?.body, init?.headers, currentCloudOwner().ownerId)) return null;
+  return new Response(JSON.stringify({ message: CLOUD_ACCOUNT_CHANGED_MESSAGE, code: CLOUD_ACCOUNT_CHANGED, details: null, hint: null }), {
+    status: 409,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+/**
+ * Whether a request names one account as its owner while it would leave with another account's sign-in; then the
+ * two accounts. `knownOwnerId`: the account the app knows to be signed in, used only when the request's own token
+ * names none. (Exported for its tests; it sends nothing and reads nothing but what it is given.)
+ */
+export function cloudRequestNamesAnotherAccount(
+  url: string,
+  body: unknown,
+  headers: unknown,
+  knownOwnerId: string | null | undefined,
+): Readonly<{ named: string; signedIn: string }> | null {
+  const named = ownerNamedByRequest(url, body);
+  if (!named) return null;
+  const signedIn = accountOfBearer(headers) ?? knownOwnerId;
+  if (typeof signedIn !== 'string' || !signedIn || signedIn === named) return null;
+  return { named, signedIn };
+}
+
+/** The account a request to the database names as owner: in its filter, or in the row (or first row) it writes. */
+function ownerNamedByRequest(url: string, body: unknown): string | null {
+  if (!url.includes('/rest/v1/')) return null;
+  const filtered = /[?&]owner_id=eq\.([^&]+)/.exec(url)?.[1];
+  if (filtered) {
+    try {
+      return decodeURIComponent(filtered);
+    } catch {
+      return filtered;
+    }
+  }
+  if (typeof body !== 'string') return null;
+  return /"owner_id"\s*:\s*"([^"\\]+)"/.exec(body)?.[1] ?? null;
+}
+
+/** The account inside a request's sign-in token; undefined when the token names none or cannot be read. */
+function accountOfBearer(headers: unknown): string | undefined {
+  let authorization: unknown;
+  try {
+    authorization = headers && typeof (headers as Headers).get === 'function'
+      ? (headers as Headers).get('Authorization')
+      : (headers as Record<string, unknown> | undefined)?.Authorization ?? (headers as Record<string, unknown> | undefined)?.authorization;
+    const part = typeof authorization === 'string' ? authorization.replace(/^Bearer /i, '').split('.')[1] : undefined;
+    if (!part || typeof globalThis.atob !== 'function') return undefined;
+    const text = globalThis.atob(part.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(part.length / 4) * 4, '='));
+    const subject = (JSON.parse(text) as { sub?: unknown }).sub;
+    return typeof subject === 'string' && subject ? subject : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function fetchObservingSignInRefresh(
   input: Parameters<typeof fetch>[0],
   init?: Parameters<typeof fetch>[1],
 ): Promise<Response> {
   const url = typeof input === 'string' ? input : String((input as { url?: unknown })?.url ?? input);
+  const refusal = refusedForAnotherAccount(url, init);
+  if (refusal) return Promise.resolve(refusal);
   const refresh = url.includes('/auth/v1/token?grant_type=refresh_token');
   const signedOutHere = refresh ? refreshTokenSignedOutHere(init?.body) : () => false;
   // Each attempt starts unknown: an earlier failure says nothing about a
@@ -1423,6 +1494,13 @@ export async function uploadPhoto({
   const client = getSupabaseClient();
 
   if (!client) return notConfiguredResult<UploadedPhoto>();
+  // A file sent for one account is not sent once another has signed in (sync batch Y4, the account boundary). Asked
+  // only when the caller named the account, and before the file is read: every other upload is made as it always was.
+  const asOwner = cloudOwnerExpectedForThisCall();
+  if (asOwner) {
+    const owner = await requireAuthenticatedOwnerId(client, asOwner);
+    if (!owner.ok || !owner.data) return errorResult(owner.error || 'Sign in is required.', owner.status, owner.code);
+  }
 
   let verifiedSizeBytes: number;
   try {
@@ -2068,6 +2146,8 @@ export async function archiveProjectUpdate({
   archivedAt: string;
   projectId?: string | null;
 }): Promise<SupabaseServiceResult<null>> {
+  // The account this archive must be made as holds for its write too, which starts after the read has answered.
+  const asOwner = cloudOwnerExpectedForThisCall();
   const metadata = await getProjectUpdateSyncMetadata<Record<string, unknown>>(id);
   if (!metadata.ok || metadata.stubbed) {
     return errorResult(metadata.error || metadata.message || 'Field update archive could not be read.');
@@ -2084,16 +2164,17 @@ export async function archiveProjectUpdate({
     ? updateData.projectName
     : metadata.data.projectName || '';
   if (!projectName.trim()) return errorResult('Field update archive requires a project name.');
-  const result = await saveProjectUpdate({
+  const areaName = typeof updateData.selectedAreaName === 'string'
+    ? updateData.selectedAreaName
+    : metadata.data.areaName || '';
+  const result = await callAsCloudOwner(asOwner, () => saveProjectUpdate({
     id,
     projectId: boundProjectId,
     projectName,
-    areaName: typeof updateData.selectedAreaName === 'string'
-      ? updateData.selectedAreaName
-      : metadata.data.areaName || '',
+    areaName,
     updateData: { ...updateData, isArchived: true, archivedAt },
     updatedAt: archivedAt,
-  });
+  }));
   if (!result.ok || result.stubbed) {
     return errorResult(result.error || result.message || 'Field update archive could not be saved.');
   }
@@ -3796,6 +3877,12 @@ async function waitForAuthHydration(timeoutMs: number) {
 
 async function requireAuthenticatedOwnerId(
   client: SupabaseClient,
+  /**
+   * Sync batch Y4 (the account boundary; owner answer Q45): the account this call must be made as, when its caller
+   * started it with callAsCloudOwner. Read in the instant the call starts. Another account signed in: refused, and
+   * nothing is sent. So the owner a write names is never "whoever is signed in by now".
+   */
+  expectedOwnerId: string | null = cloudOwnerExpectedForThisCall(),
 ): Promise<SupabaseServiceResult<string>> {
   const hydrated = await waitForAuthHydration(AUTH_HYDRATION_WAIT_MS);
   if (!hydrated) {
@@ -3825,6 +3912,9 @@ async function requireAuthenticatedOwnerId(
       401,
       'session_expired',
     );
+  }
+  if (expectedOwnerId && session.user.id !== expectedOwnerId) {
+    return errorResult(CLOUD_ACCOUNT_CHANGED_MESSAGE, 409, CLOUD_ACCOUNT_CHANGED);
   }
 
   return okResult(session.user.id);
