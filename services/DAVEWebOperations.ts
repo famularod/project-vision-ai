@@ -194,6 +194,15 @@ export function createDAVEWebId(prefix: string, now = Date.now()): string {
   return `${prefix}-${random}`;
 }
 
+/**
+ * Web batch WS2 item 7 (6 Oct 2026): a schedule file this browser cannot read tasks from can still be stored as a
+ * full schedule's prior version, but it cannot be added as a lookahead here (a lookahead is its tasks), and the
+ * review said nothing about that: the Lookahead choice simply was not there. Said plainly, after what the review
+ * already says of such a file.
+ */
+export const DAVE_WEB_UNREADABLE_LOOKAHEAD_TEXT =
+  'If it is a lookahead: this file could not be read here. Import it on the phone or iPad.';
+
 export function prepareDAVEWebDocumentUpload({
   fileName,
   mimeType,
@@ -266,7 +275,7 @@ export function prepareDAVEWebDocumentUpload({
     return Object.freeze({
       document,
       scheduleItems: Object.freeze([]),
-      reviewMessage: 'The schedule file can be stored now, but this browser could not extract dated activities. Keep it as a prior version, or use a CSV/text schedule so tasks can be reviewed before making it current.',
+      reviewMessage: `The schedule file can be stored now, but this browser could not extract dated activities. Keep it as a prior version, or use a CSV/text schedule so tasks can be reviewed before making it current. ${DAVE_WEB_UNREADABLE_LOOKAHEAD_TEXT}`,
       extractionStatus: 'needs_manual_review',
     });
   }
@@ -306,7 +315,7 @@ export function prepareDAVEWebDocumentUpload({
     return Object.freeze({
       document,
       scheduleItems: Object.freeze([]),
-      reviewMessage: 'No dated schedule activities were found. Check the column headings or upload a CSV with Task, Project, Location, Start, Finish, Owner, Status, and Percent Complete.',
+      reviewMessage: `No dated schedule activities were found. Check the column headings or upload a CSV with Task, Project, Location, Start, Finish, Owner, Status, and Percent Complete. ${DAVE_WEB_UNREADABLE_LOOKAHEAD_TEXT}`,
       extractionStatus: 'needs_manual_review',
     });
   }
