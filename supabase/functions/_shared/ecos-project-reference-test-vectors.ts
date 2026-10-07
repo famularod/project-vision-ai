@@ -1457,6 +1457,29 @@ export const ECOS_PROJECT_REFERENCE_VECTORS: readonly ECOSProjectReferenceVector
     refused,
     ...(refused ? { refusedSelected: '450' } : {}),
   })),
+  // Review pass 1, L5: the same for the common street words beyond the first
+  // ten ("450 a Way", Circle, Terrace, Trail, Alley, and their short forms).
+  ...([
+    ['What is left at 450 A?', '24117 - 450 a Way'],
+    ['What is left at 450 a', '24117 - 450 a Circle'],
+    ['What is left at 450 A Ter?', '24117 - 450 a Ter'],
+    ['What is left at 450 a trail?', '24117 - 450 a Trail'],
+    ['What is left at 450 A Alley?', '24117 - 450 a Alley'],
+  ] as const).map(([question, name]) => ({
+    name: `review pass 1 L5: "${question}" on "450 Elm St" with ${name}`,
+    projectName: '450 Elm St',
+    question,
+    knownProjectNames: [SELECTED, '450 Elm St', name],
+    refused: `450 (${name})`,
+    refusedSelected: '450',
+  })),
+  {
+    name: 'review pass 1 L5: "Is 450 a priority this week?" on "450 Elm St" with 24117 - 450 a Way',
+    projectName: '450 Elm St',
+    question: 'Is 450 a priority this week?',
+    knownProjectNames: [SELECTED, '450 Elm St', '24117 - 450 a Way'],
+    refused: null,
+  },
   // Audit A9 pass 16 L2: a spaced capital is the letter of another project
   // numbered with it ("400N Tower"), even where it continues the selected
   // project's address ("24117 - 400 N Main St"); on 400N Tower the address
