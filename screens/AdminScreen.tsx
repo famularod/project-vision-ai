@@ -20,6 +20,7 @@ import { KeyboardAvoidingModalCard } from '../components/KeyboardAvoidingModalCa
 import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPending } from '../components/native-workspace-owner';
 import { unsavedFieldNoteExists } from '../hooks/use-field-note-draft';
 import { unsavedWalkMemoryExists } from '../hooks/use-kept-walk-memory-draft';
+import { unusedScheduleVerificationNoteExists } from '../hooks/use-schedule-progress-draft';
 import { keptVoiceRecordingExists } from '../services/KeptVoiceRecording';
 import { clearSignOutAskedHere, noteAskedSignOutAnswered, noteSignOutAskedHere } from '../services/SignOutIntent';
 import { fieldNotesNeedingReview, fieldNotesWaitingToSync } from '../services/FieldNotesWaitingToSync';
@@ -1250,7 +1251,9 @@ export function AdminScreen({
     const notInCloudCount = unsyncedCount + waitingFieldNotes;
     const discarded = (unsavedFieldNote ? 'The field note you have not saved will be discarded. ' : '') +
       (unsavedWalkMemory ? 'The Project Walk memory you have not saved will be discarded. ' : '') +
-      (keptRecording ? 'The recording waiting for signal will be discarded. ' : '');
+      (keptRecording ? 'The recording waiting for signal will be discarded. ' : '') +
+      // Review pass 1, L8: the optional verification note typed on a task and not yet used goes too, and is named.
+      (unusedScheduleVerificationNoteExists() ? 'The verification note you have typed will be discarded. ' : '');
     const message =
       notInCloudCount > 0
         // A11 pass 7 L1: "syncs after you sign in" covers only items not marked Review needed.

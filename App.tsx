@@ -20217,7 +20217,7 @@ function ScheduleItemRow({
   const needsCompletionVerification = scheduleItemNeedsCompletionVerification(
     item as unknown as import('./types').ScheduleItem,
   );
-  const [verificationNote, setVerificationNote] = useScheduleVerificationNoteDraft(item.id, needsCompletionVerification); // kept by task id, like the staged progress (open item W1-7)
+  const [verificationNote, setVerificationNote] = useScheduleVerificationNoteDraft(item.id, needsCompletionVerification ? item.completionVerification : null); // kept for this task's completion report (open item W1-7; review pass 1, L8)
   const completionVerificationLabel = scheduleCompletionVerificationLabel(
     item as unknown as import('./types').ScheduleItem,
   );

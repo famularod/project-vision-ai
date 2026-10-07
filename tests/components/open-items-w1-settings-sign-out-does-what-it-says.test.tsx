@@ -16,7 +16,7 @@
  * Settings and the rule the app applies when it hears a sign-out are real;
  * the cloud and the phone's storage and files are stand-ins. Synthetic data.
  */
-import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react-native';
+import { act, cleanup, fireEvent, render, renderHook, waitFor } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 
 const mockPhone = new Map<string, string>();
@@ -82,6 +82,11 @@ import { NativeWorkspaceOwnerContext } from '../../components/native-workspace-o
 import { forgetSetAsideAccount, settleUnsavedDraftsOnAccountChange } from '../../hooks/unsaved-drafts-on-account-change';
 import { forgetFieldNoteDraft } from '../../hooks/use-field-note-draft';
 import { forgetKeptWalkMemoryDrafts } from '../../hooks/use-kept-walk-memory-draft';
+import {
+  clearScheduleProgressDraftsForTests,
+  unusedScheduleVerificationNoteExists,
+  useScheduleVerificationNoteDraft,
+} from '../../hooks/use-schedule-progress-draft';
 import { createCaptureMemory } from '../../services/DAVECaptureMemory';
 import { keepDraft, readKeptDraft } from '../../services/KeptDraftStore';
 import { keepVoiceRecording, readKeptVoiceRecording } from '../../services/KeptVoiceRecording';
@@ -384,5 +389,72 @@ describe('review pass 1, L7: a Settings Sign Out that threw, or never answered, 
     await act(async () => { theAppHearsTheSignOut(); await flush(); });
 
     await expect(keptFor(DAVID)).resolves.toMatchObject({ note: expect.anything(), memory: expect.anything(), recording: davidsAudio });
+  });
+});
+
+// Review pass 1 of the web area, L8 (6 Oct 2026; caused by open item W1-7). The optional verification note
+// typed on a task is kept in memory until it is used. Settings' Sign Out neither named it nor dropped it: it
+// was back after signing in again. The warning now names it when there is one, and the sign-out discards it
+// with the rest. (That it is kept for its own completion report, and what a sign-out not asked for does with
+// it, is in tests/hooks/open-items-w1-verification-note-kept.test.tsx.)
+describe('review pass 1, L8: the verification note typed on a task is named in the warning and goes with the sign-out', () => {
+  const VERIFICATION_NOTE_LINE = 'The verification note you have typed will be discarded. ';
+  /** A completion report awaiting his answer (synthetic). */
+  const REPORT = {
+    reportedAt: '2026-10-05T15:00:00.000Z',
+    reportedBy: 'Crew lead',
+    evidence: [{ id: 'completion-evidence:email:1', kind: 'email' as const, sourceRecordId: 'record-1', sourceName: 'Crew lead', summary: 'Level 2 framing is complete.', recordedAt: '2026-10-05T15:00:00.000Z' }],
+  };
+  /** He types the note under the task's "Verify completion" and leaves the Tasks tab. */
+  const typesAVerificationNote = (text: string) => {
+    const row = renderHook(() => useScheduleVerificationNoteDraft('task-1', REPORT));
+    act(() => row.result.current[1](text));
+    row.unmount();
+  };
+  const whatTheFieldShows = () => {
+    const row = renderHook(() => useScheduleVerificationNoteDraft('task-1', REPORT));
+    const shown = row.result.current[0];
+    row.unmount();
+    return shown;
+  };
+  afterEach(() => act(() => clearScheduleProgressDraftsForTests()));
+
+  it('with a note typed and not yet used: the warning says it will be discarded, and after the sign-out it is gone, also once he has signed in again', async () => {
+    typesAVerificationNote('Looks done from the lift');
+
+    const warning = await signsOutThroughSettings(renderSettings(DAVID));
+    await act(flush);
+
+    expect(warning).toContain(VERIFICATION_NOTE_LINE);
+    expect(unusedScheduleVerificationNoteExists()).toBe(false);
+    act(() => settleUnsavedDraftsOnAccountChange('SIGNED_IN', null, DAVID));
+    expect(whatTheFieldShows()).toBe('');
+  });
+
+  it('it is named after the three sentences the warning already had, which are unchanged', async () => {
+    await unsavedWorkOf(DAVID);
+    typesAVerificationNote('Looks done from the lift');
+
+    const warning = await signsOutThroughSettings(renderSettings(DAVID));
+    await act(flush);
+
+    expect(warning.startsWith(`${ALL_THREE}${VERIFICATION_NOTE_LINE}`)).toBe(true);
+  });
+
+  it('guard: with no note typed the warning does not speak of one', async () => {
+    const warning = await signsOutThroughSettings(renderSettings(DAVID));
+    await act(flush);
+
+    expect(warning).not.toContain('verification note');
+  });
+
+  it('guard: a Settings Sign Out that did not finish discards nothing: the note is still in its field', async () => {
+    typesAVerificationNote('Looks done from the lift');
+    cloud.signOut.mockImplementation(async () => ({ ok: false, error: 'The sign-in server is not answering.' }));
+
+    await signsOutThroughSettings(renderSettings(DAVID));
+    await act(flush);
+
+    expect(whatTheFieldShows()).toBe('Looks done from the lift');
   });
 });

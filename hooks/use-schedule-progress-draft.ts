@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
 import type { CanonicalScheduleProgress } from '../services/ScheduleProgressInvariant';
+import type { DAVECompletionVerification } from '../types';
 
 /**
  * A task's staged status and percent, kept by task id until Save commits them
@@ -83,25 +84,110 @@ export function useScheduleProgressDraft(
  * Memory only, as the staged progress above. A note typed for a completion
  * report that has since been confirmed or turned down (here or on another
  * device) is dropped: it was for that report.
+ *
+ * Review pass 1 of the web area, L8 (6 Oct 2026). Kept by task id alone, a
+ * note was dropped only if a row of that task was DRAWN while the task was
+ * not awaiting verification. Typed for one report, with that report settled
+ * on another device and the task reported complete again while its row was
+ * off screen, it opened in the field for the NEW report. And Settings' Sign
+ * Out did not drop it: it was back after signing in again.
+ *
+ * - It is now kept for the REPORT it was typed about. A completion report is
+ *   told from the next one of the same task by when it was reported, by
+ *   whom, and how many times the task's completion has been decided before
+ *   (each Confirm Completed and Not Complete adds one decision to the task's
+ *   record). Photos added to a report still awaiting an answer leave it the
+ *   same report. A note for another report never opens, and is dropped as
+ *   soon as a row of its task is drawn.
+ * - Settings' Sign Out, which now names it in its warning, discards it. A
+ *   sign-out not asked for here sets it aside for its account, as the
+ *   unsaved field note is: it is off the screen, no other account is shown
+ *   it or loses it, and it is back when that account signs in again.
  */
-const verificationNotes = new Map<string, string>();
+type CompletionReport = Pick<DAVECompletionVerification, 'reportedAt' | 'reportedBy' | 'evidence'>;
+type VerificationNote = Readonly<{
+  text: string;
+  /** The report it was typed about. */
+  report: string;
+  /** Null: of the account signed in now. Otherwise the account it is set aside for ('': not known which). */
+  setAsideFor: string | null;
+}>;
+
+const verificationNotes = new Map<string, VerificationNote>();
+
+/** What tells one completion report of a task from the next one. */
+function completionReportKey(report: CompletionReport): string {
+  const decided = report.evidence.filter(entry => entry.kind === 'pm_confirmation' || entry.kind === 'pm_note').length;
+  return JSON.stringify([report.reportedAt, report.reportedBy ?? '', decided]);
+}
 
 export function useScheduleVerificationNoteDraft(
   itemId: string,
-  awaitingVerification: boolean,
+  /** The completion report the task is awaiting verification of; null when it awaits none. */
+  awaiting: CompletionReport | null | undefined,
 ): [string, (note: string) => void] {
-  const note = useSyncExternalStore(subscribe, () => verificationNotes.get(itemId) ?? '');
+  const report = awaiting ? completionReportKey(awaiting) : null;
+  const kept = useSyncExternalStore(subscribe, () => verificationNotes.get(itemId));
+  const note = kept && kept.setAsideFor === null && kept.report === report ? kept.text : '';
 
   useEffect(() => {
-    if (!awaitingVerification && verificationNotes.delete(itemId)) notify();
-  }, [itemId, awaitingVerification]);
+    const current = verificationNotes.get(itemId);
+    // Typed about a report that is settled, or that another report has taken the place of.
+    if (current && current.setAsideFor === null && current.report !== report && verificationNotes.delete(itemId)) notify();
+  }, [itemId, report]);
 
   const setNote = useCallback((next: string) => {
-    verificationNotes.set(itemId, next);
+    if (report === null || !next) verificationNotes.delete(itemId);
+    else verificationNotes.set(itemId, { text: next, report, setAsideFor: null });
     notify();
-  }, [itemId]);
+  }, [itemId, report]);
 
   return [note, setNote];
+}
+
+/** Whether a verification note is typed and not yet used, for Settings' Sign Out warning. */
+export function unusedScheduleVerificationNoteExists(): boolean {
+  return [...verificationNotes.values()].some(note => note.setAsideFor === null && note.text.trim().length > 0);
+}
+
+/**
+ * A sign-out not asked for here, or another account taking over: the notes
+ * on screen are set aside for the account they were typed under (not known
+ * when the app had heard none).
+ */
+export function setAsideScheduleVerificationNotes(account: string | null | undefined) {
+  let changed = false;
+  verificationNotes.forEach((note, itemId) => {
+    if (note.setAsideFor !== null) return;
+    verificationNotes.set(itemId, { ...note, setAsideFor: account || '' });
+    changed = true;
+  });
+  if (changed) notify();
+}
+
+/** `account` signed in: what was set aside for it is its again, and what was set aside when no account was known. */
+export function bringBackScheduleVerificationNotes(account: string) {
+  let changed = false;
+  verificationNotes.forEach((note, itemId) => {
+    if (note.setAsideFor !== account && note.setAsideFor !== '') return;
+    verificationNotes.set(itemId, { ...note, setAsideFor: null });
+    changed = true;
+  });
+  if (changed) notify();
+}
+
+/**
+ * Settings' Sign Out, after its warning: the notes on screen go, and what
+ * was set aside for the account signing out. Another account's stay.
+ */
+export function forgetScheduleVerificationNotes(account?: string | null) {
+  let changed = false;
+  verificationNotes.forEach((note, itemId) => {
+    if (note.setAsideFor !== null && !(account && note.setAsideFor === account)) return;
+    verificationNotes.delete(itemId);
+    changed = true;
+  });
+  if (changed) notify();
 }
 
 /** Test seam: forget every staged value. */
