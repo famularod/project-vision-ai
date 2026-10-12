@@ -188,7 +188,7 @@ const historyOf = (saved: SavedReport) => [{
 
 // R2 item 1 (9 Oct 2026): the limit is lifted on the web by this browser's own list of the last 50 reports it
 // sent. The sentence below is what is said when the browser's storage would not keep that list.
-const OLDER_THAN_REMEMBERED = 'This is an older report. This computer remembers the last three reports it sent, and this one is from before them, so it cannot tell whether it was sent from here and has not recorded it as sent again. The next report still counts from the last report recorded as sent.';
+const OLDER_THAN_REMEMBERED = 'This is an older report. This computer remembers the last three reports it sent, and this one is from before them, so it cannot tell whether it was sent from here and has not recorded it as sent. The next report still counts from the last report recorded as sent.';
 /** He approves the report on screen and shares it (copied to be pasted and sent). */
 async function shareIt() {
   fireEvent.press(screen.getByText('Share Approved Report'));
@@ -220,7 +220,7 @@ async function openFromHistory(saved: SavedReport, facts: DAVEWebReadOnlySnapsho
   copied().mockClear();
 }
 
-const OLDER_THAN_THE_LIST = 'This is an older report. This computer remembers the last 50 reports it sent, and this one is not among them, so it cannot tell whether it was sent from here and has not recorded it as sent again. The next report still counts from the last report recorded as sent.';
+const OLDER_THAN_THE_LIST = 'This is an older report. This computer remembers the last 50 reports it sent, and this one is not among them, so it cannot tell whether it was sent from here and has not recorded it as sent. The next report still counts from the last report recorded as sent.';
 const ALREADY_RECORDED = /^Shared again\. This report was already recorded as sent /;
 const LIST_KEY = '@vitruvius/web/owner-1/@vitruvius/report-snapshots/own-send-facts/v1';
 /** Four reports go out from this computer; the first is kept to be opened from Report history later. */
