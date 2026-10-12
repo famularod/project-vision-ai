@@ -7216,3 +7216,605 @@ describe('Review Conflicts says what happened to a field update (sync batch Y1, 
     expect(inCloud()).toMatchObject({ notes: NEWER });
   });
 });
+
+/* Second review, sync N1 (older, newly found; owner answer Q45 (6 Oct)) -------------------------------------------- */
+
+/**
+ * The reviewer's own test of N1 (notes/p5-sync/p5s2-field-update-choice-account.snippet.ts), as he wrote it. Keep
+ * Phone on a FIELD UPDATE's card took no account when it began. It read the cloud's copy, and only afterwards took
+ * "who is signed in" for the copy it queued, which an ordinary upload pass then sent as that account. So with account
+ * A signed out and B signed in while the choice's read waited, A's update was queued, and sent, as B's.
+ */
+describe('review p5-sync pass 2: a field update\'s Keep Phone cut by a change of account', () => {
+  const binding = jest.requireActual('../../services/CloudOwnerBinding') as typeof import('../../services/CloudOwnerBinding');
+  const cloudLayer = jest.requireMock('../../services/SupabaseService') as { getProjectUpdateSyncMetadata: jest.Mock; saveProjectUpdate: jest.Mock };
+
+  it('account A\'s field update is not queued as account B\'s work, and is not sent as B', async () => {
+    binding.noteSignedInOwner('owner-a');
+    const { conflict } = await phoneEditInConflict(() => []);
+    let signedIn: 'owner-a' | 'owner-b' = 'owner-a';
+    let storageOfA: Map<string, string> | null = null;
+    const sentAs: string[] = [];
+    const save = cloudLayer.saveProjectUpdate.getMockImplementation()!;
+    cloudLayer.saveProjectUpdate.mockImplementation(async (params: never) => { sentAs.push(signedIn); return save(params); });
+    const read = cloudLayer.getProjectUpdateSyncMetadata.getMockImplementation()!;
+    cloudLayer.getProjectUpdateSyncMetadata.mockImplementationOnce(async (id: string) => {
+      const answer = await read(id); //           the choice's first read left as account A: its answer is A's copy
+      binding.noteSignedInOwner(null); //         he signs out;
+      storageOfA = new Map(mockStorage); //       the phone's storage is switched away from A,
+      mockStorage.clear(); //                     to B's, which has nothing saved;
+      signedIn = 'owner-b';
+      binding.noteSignedInOwner('owner-b'); //    B signs in.
+      return answer;
+    });
+
+    await resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_local').catch(() => undefined);
+
+    cloudLayer.saveProjectUpdate.mockImplementation(save);
+    binding.noteSignedInOwner('owner-a');
+    expect(storageOfA).not.toBeNull(); // the account did change inside the choice
+    // FAILS on a00b815 and on a542898: the kept copy was sent while B was signed in...
+    expect(sentAs.filter(account => account === 'owner-b')).toEqual([]);
+    // ...and account A's note is in account B's storage on the phone.
+    expect([...mockStorage.entries()].filter(([, value]) => value.includes(PHONE_NOTE)).map(([key]) => key)).toEqual([]);
+  });
+});
+
+/**
+ * This batch's own tests of N1, with the phone's REAL account boundary (services/OwnerStorageSandbox.ts), in the
+ * order the app goes through a change of account: the app is told who is signed in first, and the phone's storage
+ * is switched after. As the tests of N3 for a task's choice (independent-review-p3-keep-cloud-undo.test.ts).
+ *
+ * What must hold when the account changes inside a field update's Keep Phone or Keep Cloud:
+ *   - nothing of the first account's update is saved anywhere but in the first account's own storage, and the second
+ *     account's own lists are not touched;
+ *   - nothing is sent while the first account is not the one signed in, and nothing saved for the first account is
+ *     marked as another account's;
+ *   - the choice does not answer as made, and does not hand a copy to the screen, unless it is made;
+ *   - nothing of the first account's is lost, and its conflict stays open for it: signed in again, it finds its card,
+ *     and what Keep Cloud had taken off its waiting list waits there again.
+ */
+describe('second review, sync N1: a field update\'s Keep Phone and Keep Cloud are made as the account that chose, or not at all', () => {
+  const binding = jest.requireActual('../../services/CloudOwnerBinding') as typeof import('../../services/CloudOwnerBinding');
+  const boundary = jest.requireActual('../../services/OwnerStorageSandbox') as typeof import('../../services/OwnerStorageSandbox');
+  const sync = jest.requireActual('../../services/SyncService') as typeof import('../../services/SyncService');
+  const cloudLayer = jest.requireMock('../../services/SupabaseService') as { getProjectUpdateSyncMetadata: jest.Mock; saveProjectUpdate: jest.Mock; archiveProjectUpdate: jest.Mock; listDAVESyncTombstones: jest.Mock };
+  const AsyncStorage = (jest.requireMock('@react-native-async-storage/async-storage') as { default: Record<'getItem' | 'setItem' | 'removeItem', jest.Mock> }).default;
+  /** The phone's store as the boundary needs it: straight to the stored values, so its own reads and writes are not counted below. */
+  const boundaryStorage = {
+    getItem: async (key: string) => mockStorage.get(key) ?? null,
+    setItem: async (key: string, value: string) => { mockStorage.set(key, value); },
+    removeItem: async (key: string) => { mockStorage.delete(key); },
+    getAllKeys: async () => [...mockStorage.keys()],
+    multiGet: async (wanted: readonly string[]) => wanted.map(key => [key, mockStorage.get(key) ?? null] as const),
+    multiSet: async (entries: readonly (readonly [string, string])[]) => { entries.forEach(([key, value]) => mockStorage.set(key, value)); },
+    multiRemove: async (wanted: readonly string[]) => { wanted.forEach(key => mockStorage.delete(key)); },
+  };
+  const QUEUE = 'projectVisionAI.syncQueue.v1';
+  const CONFLICTS = 'projectVisionAI.syncConflicts.v1';
+  /** The record the waiting list keeps of a save of its own that is under way (services/SyncService.ts). */
+  const SAVE_OF_THE_WAITING_LIST_UNDER_WAY = `${QUEUE}.recovery-transaction.v1`;
+  const NEWER = 'Pour, 45 yards (saved on the phone during the conflict)';
+  const LEFT_BY_AN_OLDER_BUILD = 'Left waiting by an older build.';
+  /** On the second account's own copy of the same update (both accounts restored one backup). */
+  const ITS_OWN = 'As the second account has it.';
+  const original = {
+    read: cloudLayer.getProjectUpdateSyncMetadata.getMockImplementation()!,
+    save: cloudLayer.saveProjectUpdate.getMockImplementation()!,
+    archive: cloudLayer.archiveProjectUpdate.getMockImplementation()!,
+  };
+  let nth = 0;
+  let A = '';
+  let B = '';
+  let signedInAs: string | null = null;
+  let sandbox = boundary.createOwnerStorageSandbox({ storage: boundaryStorage });
+  /** Every save of an update that reached the cloud layer while the first account was not the one signed in. */
+  let sentNotAsA: string[] = [];
+  /** Every copy the choice handed to the screen (beforeClose), with who was signed in then. */
+  let handedToTheScreen: Array<string | null> = [];
+  /**
+   * The reads and writes of the phone's storage and the cloud's answers, counted; the account changes right after one
+   * of them, before the app is handed its result (see the tests of N3 for why, and for what is not counted: the steps
+   * inside one save of the waiting list).
+   */
+  const at = {
+    ops: 0, changeAt: Infinity, changed: false, change: async () => undefined as void, steps: [] as Array<{ nth: number | null; what: string }>,
+    /** For a single case: the account changes right after the first step that is this one (after `changeAfterSkips` of them). */
+    changeAfter: null as string | null,
+    changeAfterSkips: 0,
+    /** While something that is not the choice's own is going on: its steps are not counted. */
+    paused: false,
+  };
+  const afterOp = async (what: string) => {
+    if (at.paused || mockStorage.has(SAVE_OF_THE_WAITING_LIST_UNDER_WAY)) {
+      at.steps.push({ nth: null, what });
+      return;
+    }
+    at.ops += 1;
+    at.steps.push({ nth: at.ops, what });
+    const single = at.changeAfter !== null && what === at.changeAfter && !at.changed && (at.changeAfterSkips -= 1) < 0;
+    if (at.ops === at.changeAt || single) {
+      at.changed = true;
+      await at.change();
+    }
+  };
+  /**
+   * The counted steps that open a save of the waiting list, found in a run with no change of account: from the read
+   * of the list that the save is made from, through the save's own two reads, to where it writes down that a save is
+   * under way (an upload pass reads another of its values in between). No change is placed after them: see the tests
+   * of N3. Here every such save but the choice's own is an upload pass taking a sent copy off the list.
+   */
+  const insideASaveOfTheWaitingList = (steps: ReadonlyArray<{ nth: number | null; what: string }>) => {
+    const inside = new Set<number>();
+    steps.forEach((step, index) => {
+      if (step.what !== `set ${SAVE_OF_THE_WAITING_LIST_UNDER_WAY}` || steps[index - 1]?.nth === null) return; // the first step of a save only
+      let readsOfTheList = 0;
+      for (let back = index - 1; back >= 0 && steps[back].nth !== null; back -= 1) {
+        inside.add(steps[back].nth!);
+        if (steps[back].what === `get ${SAVE_OF_THE_WAITING_LIST_UNDER_WAY}` && steps[back + 1]?.what === `get ${QUEUE}` && (readsOfTheList += 1) === 2) break;
+      }
+    });
+    return inside;
+  };
+  /** The app is told first; the phone's storage is switched after (entry.ts). */
+  const signIn = async (owner: string) => { signedInAs = owner; binding.noteSignedInOwner(owner); await sandbox.activateOwner(owner); };
+  const signOut = async () => { signedInAs = null; binding.noteSignedInOwner(null); await sandbox.activateOwner(null); };
+  /** Lets whatever was begun without being waited for run to its end (nothing here waits on a clock). */
+  const settle = async () => { for (let turn = 0; turn < 25; turn += 1) await new Promise(resolve => setImmediate(resolve)); };
+  const ok = <T,>(data: T) => ({ ok: true, configured: true, stubbed: false, data });
+  /** What the second account's own cloud holds of an update of that name, when it holds one. */
+  let cloudOfB: Record<string, unknown> | null = null;
+  /** No signal for a save of these updates: the first account's save of one is not made, and answers so. */
+  const savesThatDoNotGetThrough = new Set<string>();
+  /**
+   * Something he does on the phone while a choice's first upload is under way (as the other waiting update goes up);
+   * once. Its own reads and saves are the screen's, not the choice's: the account is not changed in the middle of it.
+   */
+  let whileItsFirstUploadRuns: (() => Promise<void>) | null = null;
+  let heDidIt = false;
+
+  async function freshPhone() {
+    nth += 1;
+    A = `owner-n1-a-${nth}`;
+    B = `owner-n1-b-${nth}`;
+    mockStorage.clear();
+    mockCloud.clear();
+    resetFieldUpdateSyncMemoryForTests();
+    sentNotAsA = [];
+    handedToTheScreen = [];
+    cloudOfB = null;
+    savesThatDoNotGetThrough.clear();
+    whileItsFirstUploadRuns = null;
+    heDidIt = false;
+    at.ops = 0;
+    at.steps = [];
+    at.changeAt = Infinity;
+    at.changeAfter = null;
+    at.changeAfterSkips = 0;
+    at.paused = false;
+    at.changed = false;
+    // A request leaves as whoever is signed in, and its answer is that account's; the account can change while it waits.
+    cloudLayer.getProjectUpdateSyncMetadata.mockReset().mockImplementation(async (id: string) => {
+      const answer = signedInAs === A ? await original.read(id)
+        : ok(signedInAs === B && cloudOfB ? { id, projectId: '72e941d8-8114-4082-a976-ae5b2b5daba9', updatedAt: SENT_AT, projectName: 'P', areaName: '', updateData: cloudOfB } : null);
+      await afterOp('the cloud answers a read of the update');
+      return answer;
+    });
+    cloudLayer.saveProjectUpdate.mockReset().mockImplementation(async (params: { id: string }) => {
+      const as = signedInAs;
+      if (as !== A) sentNotAsA.push(`${as ?? 'nobody'}: ${params.id}`);
+      const answer = as === A && !savesThatDoNotGetThrough.has(params.id) ? await original.save(params)
+        : { ok: false, configured: true, stubbed: false, error: as === A ? 'Network request failed' : 'not this account\'s' };
+      if (as === A && params.id === 'u2' && whileItsFirstUploadRuns) {
+        const now = whileItsFirstUploadRuns;
+        whileItsFirstUploadRuns = null;
+        at.paused = true;
+        await now().finally(() => { at.paused = false; });
+        heDidIt = true;
+      }
+      await afterOp('the cloud answers a save of the update');
+      return answer;
+    });
+    cloudLayer.archiveProjectUpdate.mockReset().mockImplementation(async (...args: unknown[]) => {
+      if (signedInAs !== A) sentNotAsA.push(`${signedInAs ?? 'nobody'}: an archive`);
+      return original.archive(...args);
+    });
+    AsyncStorage.getItem.mockImplementation(async (key: string) => { const value = mockStorage.get(key) ?? null; await afterOp(`get ${key}`); return value; });
+    AsyncStorage.setItem.mockImplementation(async (key: string, value: string) => { mockStorage.set(key, value); await afterOp(`set ${key}`); });
+    AsyncStorage.removeItem.mockImplementation(async (key: string) => { mockStorage.delete(key); await afterOp(`remove ${key}`); });
+    sandbox = boundary.createOwnerStorageSandbox({ storage: boundaryStorage });
+    await signIn(A);
+  }
+  afterEach(() => {
+    cloudLayer.getProjectUpdateSyncMetadata.mockReset().mockImplementation(original.read);
+    cloudLayer.saveProjectUpdate.mockReset().mockImplementation(original.save);
+    cloudLayer.archiveProjectUpdate.mockReset().mockImplementation(original.archive);
+    AsyncStorage.getItem.mockImplementation(async (key: string) => mockStorage.get(key) ?? null);
+    AsyncStorage.setItem.mockImplementation(async (key: string, value: string) => { mockStorage.set(key, value); });
+    AsyncStorage.removeItem.mockImplementation(async (key: string) => { mockStorage.delete(key); });
+    binding.noteSignedInOwner('owner-a');
+  });
+
+  /** His notes, and (last) the record that he took the document "permit" off the update, as the phone writes it down. */
+  const OF_A = [PHONE_NOTE, NEWER, LEFT_BY_AN_OLDER_BUILD, '\\npermit'];
+  /** The stored values that hold something of the first account's and are not in the first account's own storage. */
+  const ofAOutsideItsOwnStorage = () => {
+    const own = `@vitruvius/owner-storage-sandbox/owner/${encodeURIComponent(A)}/`;
+    const inFront = signedInAs === A;
+    return [...mockStorage.entries()]
+      .filter(([key, value]) => !key.startsWith(own) && !(inFront && boundary.isOwnerSensitiveCanonicalStorageKey(key)) && OF_A.some(note => value.includes(note)))
+      .map(([key]) => key);
+  };
+  const ofBInTheStorageOfA = () => [...mockStorage.entries()]
+    .filter(([key, value]) => boundary.isOwnerSensitiveCanonicalStorageKey(key) && value.includes(ITS_OWN)).map(([key]) => key);
+  const markedAsAnothers = async () => (await getOfflineQueue())
+    .filter(item => { const owner = (item as { ownerId?: string }).ownerId; return owner !== undefined && owner !== A; })
+    .map(item => `${item.id} marked ${(item as { ownerId?: string }).ownerId}`);
+  /**
+   * Both accounts restored one backup on this phone: the second account's own storage holds a waiting copy of the
+   * same update under the same name (and, when asked, a conflict with the same id), and its cloud holds its own copy,
+   * each saying ITS_OWN in place of the first account's notes. Its lists, as left. (The sweeps give it no conflict: an
+   * upload pass whose save has landed closes that update's conflict in whatever storage is in front without looking
+   * at the account, which is the pass's own and is recorded in the notes.)
+   */
+  async function theSecondAccountHoldsTheSameUpdate({ conflict = false } = {}): Promise<{ conflicts: string; waiting: string }> {
+    const own = (value: string) => OF_A.slice(0, 3).concat(IPAD_NOTE).reduce((text, note) => text.split(note).join(ITS_OWN), value.split(`"${A}"`).join(`"${B}"`));
+    const held = { conflicts: conflict ? own(mockStorage.get(CONFLICTS) ?? '[]') : '[]', waiting: own(mockStorage.get(QUEUE) ?? '[]') };
+    cloudOfB = { ...savedUpdate([]), notes: ITS_OWN };
+    await signOut();
+    await signIn(B);
+    mockStorage.set(CONFLICTS, held.conflicts);
+    mockStorage.set(QUEUE, held.waiting);
+    await signOut();
+    await signIn(A);
+    return held;
+  }
+  /** An update an older build queued, from before waiting changes were marked with their account: any upload pass sends it as its own. */
+  const anOlderBuildLeftAnotherUpdateWaiting = async () => {
+    await queueProjectUpdateRecord({ ...savedUpdate([], 'queued', 'u2'), notes: LEFT_BY_AN_OLDER_BUILD }, false);
+    mockStorage.set(QUEUE, JSON.stringify((JSON.parse(mockStorage.get(QUEUE)!) as Array<{ id: string; ownerId?: string }>)
+      .map(item => (item.id.includes('u2') ? { ...item, ownerId: undefined } : item))));
+  };
+
+  type Started = { conflictId: string; shown: unknown; choose: () => Promise<Update> };
+  type Scenario = {
+    keep: 'keep_local' | 'keep_cloud';
+    /** His notes that must not be lost. */
+    notes: readonly string[];
+    /** The cloud's copy once the choice is made. */
+    made: (cloud: Update | undefined) => boolean;
+    /** The choice's own save does not get through (no signal): with no change of account it ends not made, and puts everything back. */
+    cannotSave?: boolean;
+    /** Something else of his waiting work that must not be lost, by what waits for the update. */
+    alsoWaits?: (waiting: Awaited<ReturnType<typeof queuedFor>>) => boolean;
+    start: (fromHere?: () => void) => Promise<Started>;
+  };
+  const inConflict = async (newerEditWaits: boolean) => {
+    const { conflict } = await phoneEditInConflict(() => []);
+    if (newerEditWaits) await queueProjectUpdateRecord({ ...savedUpdate([]), notes: NEWER, status: 'queued' }, false);
+    await anOlderBuildLeftAnotherUpdateWaiting();
+    return (await getSyncConflicts()).find(item => item.id === conflict.id)!;
+  };
+  const choosing = (conflict: { id: string; remotePayload?: unknown }, keep: Scenario['keep'], fromHere?: () => void): Started => ({
+    conflictId: conflict.id, shown: conflict.remotePayload,
+    choose: () => {
+      fromHere?.();
+      return resolveProjectUpdateSyncConflict<Update>(conflict.id, keep, {
+        cloudCopyShown: conflict.remotePayload,
+        ...(keep === 'keep_cloud' ? { beforeClose: () => { handedToTheScreen.push(signedInAs); } } : {}),
+      });
+    },
+  });
+  const cloudNotes = () => (mockCloud.get('u1')?.updateData as Update | undefined)?.notes;
+  const scenarios: Record<string, Scenario> = {
+    'Keep Phone': {
+      keep: 'keep_local', notes: [PHONE_NOTE], made: cloud => cloud?.notes === PHONE_NOTE,
+      start: async fromHere => choosing(await inConflict(false), 'keep_local', fromHere),
+    },
+    'Keep Cloud': {
+      keep: 'keep_cloud', notes: [PHONE_NOTE], made: cloud => cloud?.notes === IPAD_NOTE,
+      start: async fromHere => choosing(await inConflict(false), 'keep_cloud', fromHere),
+    },
+    'Keep Phone, with a newer edit of his waiting': {
+      keep: 'keep_local', notes: [NEWER], made: cloud => cloud?.notes === PHONE_NOTE || cloud?.notes === NEWER,
+      start: async fromHere => choosing(await inConflict(true), 'keep_local', fromHere),
+    },
+    'Keep Cloud, with a newer edit of his waiting': {
+      keep: 'keep_cloud', notes: [NEWER], made: cloud => cloud?.notes === IPAD_NOTE,
+      start: async fromHere => choosing(await inConflict(true), 'keep_cloud', fromHere),
+    },
+    'Keep Phone whose save does not get through, with a newer edit of his waiting': {
+      keep: 'keep_local', notes: [NEWER], made: cloud => cloud?.notes === PHONE_NOTE || cloud?.notes === NEWER, cannotSave: true,
+      start: async fromHere => { const conflict = await inConflict(true); savesThatDoNotGetThrough.add('u1'); return choosing(conflict, 'keep_local', fromHere); },
+    },
+    'Keep Cloud whose save does not get through, with a newer edit of his waiting and a document he takes off while it works': {
+      keep: 'keep_cloud', notes: [NEWER], made: cloud => cloud?.notes === IPAD_NOTE, cannotSave: true,
+      // The document he took off is still off in what waits: in the copy itself, or as a change waiting with it.
+      alsoWaits: waiting => Boolean(waiting) && (JSON.stringify((waiting!.payload as { documentPatches?: unknown }).documentPatches ?? []).includes('"permit"') ||
+        !documentIds((waiting!.payload as { updateData?: Update }).updateData).includes('permit')),
+      start: async fromHere => {
+        const { phone, conflict, persistDocuments } = await phoneEditInConflict(() => [uploaded('permit'), uploaded('survey')]);
+        await queueProjectUpdateRecord({ ...savedUpdate([uploaded('permit'), uploaded('survey')]), notes: NEWER, status: 'queued' }, false);
+        await anOlderBuildLeftAnotherUpdateWaiting();
+        savesThatDoNotGetThrough.add('u1');
+        // While Keep Cloud's first upload runs (his edit is off the waiting list by then) he takes a document off the
+        // update: that change is queued by itself, Keep Cloud takes it too, and puts it back on top of his edit.
+        whileItsFirstUploadRuns = async () => { await phone.deleteFromThisDevice('permit'); persistDocuments(); };
+        return choosing((await getSyncConflicts()).find(item => item.id === conflict.id)!, 'keep_cloud', fromHere);
+      },
+    },
+  };
+  /**
+   * How the account changes. "Late": the app has been told, and the phone's storage is switched only after the choice
+   * has ended. "That holds the same update": see theSecondAccountHoldsTheSameUpdate.
+   */
+  const changes: Record<string, { toB: boolean; sameUpdate?: boolean; during: () => Promise<void>; after: () => Promise<void> }> = {
+    'another account signs in, the storage already switched': {
+      toB: true, during: async () => { await signOut(); await signIn(B); }, after: async () => undefined,
+    },
+    'another account signs in, the storage switched late': {
+      toB: true,
+      during: async () => { binding.noteSignedInOwner(null); signedInAs = B; binding.noteSignedInOwner(B); },
+      after: async () => { await sandbox.activateOwner(null); await sandbox.activateOwner(B); },
+    },
+    'another account that holds the same update signs in, the storage already switched': {
+      toB: true, sameUpdate: true, during: async () => { await signOut(); await signIn(B); }, after: async () => undefined,
+    },
+    'another account that holds the same update signs in, the storage switched late': {
+      toB: true, sameUpdate: true,
+      during: async () => { binding.noteSignedInOwner(null); signedInAs = B; binding.noteSignedInOwner(B); },
+      after: async () => { await sandbox.activateOwner(null); await sandbox.activateOwner(B); },
+    },
+    'the same account signs out and in again, the storage already switched': {
+      toB: false, during: async () => { await signOut(); await signIn(A); }, after: async () => undefined,
+    },
+    'the same account signs out and in again, the storage switched late': {
+      toB: false,
+      during: async () => { binding.noteSignedInOwner(null); binding.noteSignedInOwner(A); },
+      after: async () => { await sandbox.activateOwner(null); await sandbox.activateOwner(A); },
+    },
+  };
+
+  /** One choice, with the account changing right after the `changeAt`-th read, write or answer of it. What was wrong, in words. */
+  async function oneChoice(scenario: keyof typeof scenarios, change: keyof typeof changes, changeAt: number): Promise<{ ops: number; wrong: string[]; ended: string; steps: typeof at.steps }> {
+    await freshPhone();
+    const { keep, notes, made, cannotSave, alsoWaits, start } = scenarios[scenario];
+    const { toB, sameUpdate, during, after } = changes[change];
+    const started = await start(() => {
+      at.ops = 0;
+      at.steps = [];
+      at.changeAt = changeAt;
+      at.change = during;
+    });
+    const ofB = sameUpdate ? await theSecondAccountHoldsTheSameUpdate() : null;
+    const outcome = await started.choose().then(item => ({ item, error: null as Error | null }), (error: Error) => ({ item: null as Update | null, error }));
+    const ops = at.ops;
+    const steps = at.steps;
+    at.changeAt = Infinity;
+    const wrong: string[] = [];
+    if (!at.changed) {
+      // With no change of account. A choice whose save does not get through puts everything back, as it always has.
+      if (cannotSave) {
+        const kept = `${JSON.stringify(await queuedFor() ?? null)} ${JSON.stringify(await getSyncConflicts())}`;
+        if (outcome.item || notes.some(note => !kept.includes(note)) || (alsoWaits && heDidIt && !alsoWaits(await queuedFor()))) wrong.push('with no change of account, the choice whose save did not get through did not leave everything as it was');
+      }
+      return { ops, wrong, ended: outcome.error ? outcome.error.message : 'made', steps };
+    }
+    await settle();
+    await after();
+    await settle();
+    if (outcome.error?.message === 'sync_conflict_record_deleted') wrong.push('the choice ended "deleted on another device"');
+    if (toB) {
+      const leaked = ofAOutsideItsOwnStorage();
+      if (leaked.length > 0) wrong.push(`the first account's update is saved outside its own storage: ${leaked.join(', ')}`);
+      if (ofB) {
+        if (mockStorage.get(CONFLICTS) !== ofB.conflicts) wrong.push('the second account\'s own conflict of the same update was changed');
+        if (mockStorage.get(QUEUE) !== ofB.waiting) wrong.push('the second account\'s own waiting list was changed');
+      } else {
+        const waits = (await getOfflineQueue()).map(item => item.id);
+        if (waits.length > 0) wrong.push(`in the second account's waiting list: ${waits.join(', ')}`);
+        if ((await getSyncConflicts()).length > 0) wrong.push('in the second account\'s Review Conflicts: a card');
+      }
+      await signOut();
+      await signIn(A);
+      await settle();
+    }
+    if (sentNotAsA.length > 0) wrong.push(`sent while the first account was not signed in: ${sentNotAsA.join(', ')}`);
+    if (handedToTheScreen.some(who => who !== A)) wrong.push('a copy was handed to the screen after the account had changed');
+    const marked = await markedAsAnothers();
+    if (marked.length > 0) wrong.push(`in the first account's waiting list, marked as another's: ${marked.join(', ')}`);
+    const strangers = ofBInTheStorageOfA();
+    if (strangers.length > 0) wrong.push(`something of the second account's is saved in the first account's storage: ${strangers.join(', ')}`);
+    const card = (await getSyncConflicts()).find(item => item.entity === 'project_update' && item.localId === 'u1');
+    const waiting = await queuedFor();
+    const held = `${JSON.stringify(card ?? null)} ${JSON.stringify(waiting ?? null)} ${cloudNotes()}`;
+    const lost = notes.filter(note => !held.includes(note));
+    // The choice was carried out for the first account though it did not answer so (the change came after its last save).
+    const carriedOut = !card && made(mockCloud.get('u1')?.updateData as Update | undefined);
+    if (outcome.item) {
+      if (!made(mockCloud.get('u1')?.updateData as Update | undefined)) wrong.push(`the choice answered as made, and the cloud's note is "${cloudNotes()}"`);
+      if (card) wrong.push('the choice answered as made, and the conflict is still open');
+    } else if (!carriedOut && !card) wrong.push('the conflict is gone though the choice was not made');
+    if (lost.length > 0 && !(keep === 'keep_cloud' && (outcome.item || carriedOut))) wrong.push(`lost: ${lost.join(' / ')}`);
+    if (alsoWaits && heDidIt && !outcome.item && !carriedOut && !alsoWaits(waiting)) wrong.push('lost: the document he took off the update is on it again in what waits');
+    if (!toB && card) {
+      // One account only: he opens Review Conflicts again (with signal now), chooses again, and the choice is made.
+      savesThatDoNotGetThrough.clear();
+      const shownAgain = (await sync.refreshFieldUpdateConflictCloudCopies()).find(item => item.entity === 'project_update' && item.localId === 'u1');
+      const again = shownAgain
+        ? await resolveProjectUpdateSyncConflict<Update>(shownAgain.id, keep, { cloudCopyShown: shownAgain.remotePayload }).then(() => null, (error: Error) => error)
+        : null;
+      const cloudShown = shownAgain?.remotePayload as Update | undefined;
+      const madeNow = made(mockCloud.get('u1')?.updateData as Update | undefined) || (keep === 'keep_cloud' && cloudNotes() === cloudShown?.notes);
+      if (again) wrong.push(`chosen again by the same account, the choice ended ${again.message}`);
+      else if (!madeNow) wrong.push(`chosen again by the same account, the cloud's note is "${cloudNotes()}"`);
+      else if ((await getSyncConflicts()).length > 0) wrong.push('chosen again by the same account, the conflict is still open');
+    }
+    return { ops, wrong, ended: outcome.error ? outcome.error.message : 'made', steps };
+  }
+
+  describe.each(Object.keys(scenarios))('%s', scenario => {
+    it.each(Object.keys(changes))('the account changes after any read or write of the phone\'s storage, or while any answer of the cloud is awaited (%s)', async change => {
+      const whole = await oneChoice(scenario, change, Infinity);
+      // With no change of account the choice is made (or, when its save cannot get through, is not, and says so).
+      if (scenarios[scenario].cannotSave) expect(whole.ended).not.toBe('made');
+      else expect(whole.ended).toBe('made');
+      expect(whole.wrong).toEqual([]);
+      expect(whole.ops).toBeGreaterThan(5);
+      const notPlaced = insideASaveOfTheWaitingList(whole.steps);
+      const wrong: string[] = [];
+      let placed = 0;
+      for (let changeAt = 1; changeAt <= whole.ops; changeAt += 1) {
+        if (notPlaced.has(changeAt)) continue;
+        placed += 1;
+        const run = await oneChoice(scenario, change, changeAt).catch((error: Error) => ({ ops: 0, wrong: [`the test itself was stopped: ${error.message}`], ended: 'not known' }));
+        run.wrong.forEach(what => wrong.push(`change after ${changeAt} of ${whole.ops} (the choice ended: ${run.ended}): ${what}`));
+      }
+      if (process.env.Y6_PLACES) (jest.requireActual('fs') as typeof import('fs')).appendFileSync(process.env.Y6_PLACES, `${scenario} | ${change} | steps ${whole.ops} | a change placed after ${placed} | inside a save of the waiting list ${notPlaced.size}\n`);
+      expect(wrong).toEqual([]);
+      expect(placed).toBeGreaterThan(5);
+    }, 60_000);
+  });
+
+  it('the reviewer\'s moment, with the real boundary: Keep Phone is cut while its first read of the cloud waits; nothing is queued or sent as the second account, and the first account finds its conflict open and its waiting copy as it was, and makes the choice at its next tap', async () => {
+    await freshPhone();
+    const { conflictId, shown, choose } = await scenarios['Keep Phone, with a newer edit of his waiting'].start();
+    const waitingBefore = JSON.stringify(await queuedFor());
+    const read = cloudLayer.getProjectUpdateSyncMetadata.getMockImplementation()!;
+    cloudLayer.getProjectUpdateSyncMetadata.mockImplementationOnce(async (id: string) => {
+      const answer = await original.read(id); // it left as the first account: its answer is that account's copy
+      await signOut();
+      await signIn(B);
+      return answer;
+    });
+
+    const error = await choose().then(() => null, (reason: Error) => reason);
+
+    expect(error?.message).toBe('sync_conflict_cloud_copy_unreadable');
+    expect(sentNotAsA).toEqual([]);
+    expect(ofAOutsideItsOwnStorage()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]); // the second account's waiting list
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(cloudNotes()).toBe(IPAD_NOTE); // the first account's copy in the cloud is as it was
+
+    await signOut();
+    await signIn(A);
+    await settle();
+    expect((await getSyncConflicts()).map(item => item.id)).toEqual([conflictId]);
+    expect(JSON.stringify(await queuedFor())).toBe(waitingBefore);
+    cloudLayer.getProjectUpdateSyncMetadata.mockImplementation(read);
+    await resolveProjectUpdateSyncConflict<Update>(conflictId, 'keep_local', { cloudCopyShown: shown });
+    expect(cloudNotes()).toBe(PHONE_NOTE);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(((await queuedFor())!.payload as { updateData: Update }).updateData.notes).toBe(NEWER); // and his newer edit goes up after it
+    expect(await markedAsAnothers()).toEqual([]);
+  });
+
+  it('Keep Cloud is cut while its own copy is on its way up: the first account finds its conflict open, the work Keep Cloud had taken off its waiting list waiting again, and Keep Cloud\'s copy gone from the list', async () => {
+    await freshPhone();
+    const { conflictId, choose } = await scenarios['Keep Cloud, with a newer edit of his waiting'].start();
+    // The choice reads the cloud's copy twice itself; the third read of it is made by the upload of Keep Cloud's own
+    // copy, which is by then in the first account's waiting list with the work it took off that list held in memory.
+    const read = cloudLayer.getProjectUpdateSyncMetadata.getMockImplementation()!;
+    let readsOfIt = 0;
+    cloudLayer.getProjectUpdateSyncMetadata.mockImplementation(async (id: string) => {
+      if (id !== 'u1' || (readsOfIt += 1) !== 3) return read(id);
+      at.changed = true;
+      const answer = await original.read(id); // it left as the first account
+      await signOut();
+      await signIn(B);
+      return answer;
+    });
+
+    const outcome = await choose().then(item => ({ item, error: null as Error | null }), (error: Error) => ({ item: null, error }));
+
+    expect(at.changed).toBe(true);
+    expect(outcome.item).toBeNull(); // not answered as made: nothing was handed to the screen and the conflict was not closed
+    expect(handedToTheScreen).toEqual([]);
+    expect(sentNotAsA).toEqual([]);
+    expect(ofAOutsideItsOwnStorage()).toEqual([]);
+    expect(await getOfflineQueue()).toEqual([]);
+    expect(await getSyncConflicts()).toEqual([]);
+
+    await signOut();
+    await signIn(A);
+    await settle();
+    expect((await getSyncConflicts()).map(item => item.id)).toEqual([conflictId]);
+    const waiting = await queuedFor();
+    expect((waiting!.payload as { updateData: Update }).updateData.notes).toBe(NEWER); // his edit waits again
+    expect((waiting!.payload as { keepCloudChoice?: boolean }).keepCloudChoice).toBeUndefined();
+    expect(await markedAsAnothers()).toEqual([]);
+    // He chooses again, and the choice is made.
+    const [card] = await sync.refreshFieldUpdateConflictCloudCopies();
+    await resolveProjectUpdateSyncConflict<Update>(card.id, 'keep_cloud', { cloudCopyShown: card.remotePayload });
+    expect(cloudNotes()).toBe(IPAD_NOTE);
+    expect(await getSyncConflicts()).toEqual([]);
+    expect(await queuedFor()).toBeUndefined();
+  });
+
+  it.each(['keep_local', 'keep_cloud'] as const)('%s: the first account\'s update was deleted on another device, and the account changes as the choice goes to close its conflict: the second account\'s own conflict of the same update (both restored one backup) is not closed', async keep => {
+    await freshPhone();
+    const conflict = await inConflict(false);
+    const ofB = await theSecondAccountHoldsTheSameUpdate({ conflict: true });
+    expect(ofB.conflicts).toContain(ITS_OWN);
+    cloudLayer.listDAVESyncTombstones.mockImplementationOnce(async () => {
+      at.change = async () => { await signOut(); await signIn(B); };
+      at.changeAfter = `get ${CONFLICTS}`; // right after the choice has read the first account's conflicts, to close this one
+      return ok([{ entityType: 'project_update', recordId: 'u1', deletedAt: new Date().toISOString() }]);
+    });
+
+    const error = await resolveProjectUpdateSyncConflict<Update>(conflict.id, keep, { cloudCopyShown: conflict.remotePayload }).then(() => null, (reason: Error) => reason);
+    at.changeAfter = null;
+
+    expect(at.changed).toBe(true);
+    expect(error).not.toBeNull();
+    expect(mockStorage.get(CONFLICTS)).toBe(ofB.conflicts); // the second account's conflict is as it left it
+    expect(mockStorage.get(QUEUE)).toBe(ofB.waiting);
+    expect(sentNotAsA).toEqual([]);
+  });
+
+  it('Keep Phone finds the cloud\'s copy changed since the screen showed it, and the account changes as it goes to save that copy on the card: the first account\'s conflict is not saved into the second account\'s storage', async () => {
+    await freshPhone();
+    const conflict = await inConflict(false);
+    putInCloud({ ...inCloud(), notes: 'Pour moved again (typed on the iPad since the screen was shown)' }, new Date(Date.now() + 1000).toISOString());
+    cloudLayer.getProjectUpdateSyncMetadata.mockImplementationOnce(async (id: string) => {
+      const answer = await original.read(id);
+      at.change = async () => { await signOut(); await signIn(B); };
+      // The choice reads the conflicts twice beside its reads of the waiting list; the third read is the save's own.
+      at.changeAfter = `get ${CONFLICTS}`;
+      at.changeAfterSkips = 2;
+      return answer;
+    });
+
+    const error = await resolveProjectUpdateSyncConflict<Update>(conflict.id, 'keep_local', { cloudCopyShown: conflict.remotePayload }).then(() => null, (reason: Error) => reason);
+    at.changeAfter = null;
+
+    expect(at.changed).toBe(true);
+    expect(error).not.toBeNull();
+    expect(ofAOutsideItsOwnStorage()).toEqual([]);
+    expect(await getSyncConflicts()).toEqual([]); // the second account's Review Conflicts
+    expect(sentNotAsA).toEqual([]);
+  });
+
+  it('one account only, nothing changes: each choice is made at the first tap (or, when its save cannot get through, puts everything back), with the phone\'s real boundary in place, and every read of the cloud\'s copy is told which account it is made as', async () => {
+    for (const scenario of Object.keys(scenarios)) {
+      await freshPhone();
+      const madeAs: Array<string | null> = [];
+      const read = cloudLayer.getProjectUpdateSyncMetadata.getMockImplementation()!;
+      cloudLayer.getProjectUpdateSyncMetadata.mockImplementation(async (id: string) => { madeAs.push(binding.cloudOwnerExpectedForThisCall()); return read(id); });
+      const started = await scenarios[scenario].start();
+      madeAs.length = 0;
+      const made = await started.choose().then(() => true, () => false);
+      expect(made).toBe(!scenarios[scenario].cannotSave);
+      if (made) {
+        expect(await getSyncConflicts()).toEqual([]);
+        expect(scenarios[scenario].made(mockCloud.get('u1')?.updateData as Update | undefined)).toBe(true);
+      } else expect((await getSyncConflicts()).map(item => item.localId)).toEqual(['u1']);
+      expect(at.changed).toBe(false);
+      // Every read of the cloud's copy in the choice, the choice's own and those of the uploads it runs.
+      expect(madeAs.length).toBeGreaterThan(scenarios[scenario].cannotSave ? 1 : 0);
+      expect(madeAs.every(as => as === A)).toBe(true);
+      expect(sentNotAsA).toEqual([]);
+    }
+  });
+});

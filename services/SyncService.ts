@@ -2825,14 +2825,20 @@ type PatchedProjectUpdate = {
  */
 const changesWhileKeepCloudRuns = new Map<string, FieldUpdateDocumentPatch[]>();
 
-async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: FieldUpdateDocumentPatch): Promise<void> {
+async function queueProjectUpdatePatch(
+  update: PatchedProjectUpdate,
+  patch: FieldUpdateDocumentPatch,
+  /** When a choice in Review Conflicts puts a change back: its account's lists, or nothing (second review, sync N1). */
+  itsAccount: ChoiceAccount = {},
+): Promise<void> {
+  stopChoiceWhoseAccountChanged(itsAccount);
   changesWhileKeepCloudRuns.get(update.id)?.push(patch); // at once: the card already shows it
   await projectUpdateLastVersionInCloud.loaded();
   const lastInCloud = projectUpdateLastVersionInCloud.get(update.id); // read before it goes (A7 pass 9 L1)
   projectUpdateLastVersionInCloud.delete(update.id);
   if (await hasProjectUpdateDeletionIntent(update.id)) return;
   if (!isFieldUpdatePhotoAnalysisPatch(patch) && patch.remove) {
-    await recordRemovedFieldUpdateDocument(update.id, patch.documentId).catch(() => undefined);
+    await recordRemovedFieldUpdateDocument(update.id, patch.documentId, () => stopChoiceWhoseAccountChanged(itsAccount)).catch(() => undefined);
   }
   // A photo result the copy last put in the cloud holds and that stands over
   // the card's is no change of the card's (A4 pass 30 L1), as in
@@ -2849,7 +2855,7 @@ async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: Fiel
   // app audit A4 pass 14 #4): Keep Phone sends the copy recorded with the
   // conflict, and undid the result once its patch had gone up. A document
   // change is already taken in at the choice (withDocumentChangesSinceConflict).
-  if (inConflict && isFieldUpdatePhotoAnalysisPatch(patch)) await addResultToConflictCopy(update.id, patch);
+  if (inConflict && isFieldUpdatePhotoAnalysisPatch(patch)) await addResultToConflictCopy(update.id, patch, itsAccount);
   const queueId = projectUpdateQueueItemId(update.id);
   const now = new Date().toISOString();
   const ownerId = currentCloudOwner().ownerId;
@@ -2898,11 +2904,11 @@ async function queueProjectUpdatePatch(update: PatchedProjectUpdate, patch: Fiel
           ...(ownerId ? { ownerId } : {}),
         };
     return { nextQueue: [...queue.filter(item => item.id !== queueId), next], result: undefined };
-  });
+  }, itsAccount);
 }
 
 /** The phone's copy recorded with an update's conflict, with this analysis result (A4 pass 14 #4). */
-async function addResultToConflictCopy(updateId: string, patch: FieldUpdatePhotoAnalysisPatch): Promise<void> {
+async function addResultToConflictCopy(updateId: string, patch: FieldUpdatePhotoAnalysisPatch, itsAccount: ChoiceAccount = {}): Promise<void> {
   await serializeSyncConflictMutation(async () => {
     const conflicts = await readSyncConflictsUnsafe();
     let changed = false;
@@ -2914,7 +2920,7 @@ async function addResultToConflictCopy(updateId: string, patch: FieldUpdatePhoto
       changed = true;
       return { ...conflict, localPayload: { ...local, updateData } };
     });
-    if (changed) await writeSyncConflicts(next);
+    if (changed) await writeSyncConflicts(next, itsAccount);
   });
 }
 
@@ -3275,7 +3281,7 @@ export async function removeProjectUpdateFromSyncQueue(updateId: string): Promis
 }
 
 /** The update's queued record work (its deletes stay), taken off the queue: the items as they were. */
-async function withdrawProjectUpdateFromSyncQueue(updateId: string): Promise<SyncQueueItem[]> {
+async function withdrawProjectUpdateFromSyncQueue(updateId: string, itsAccount: ChoiceAccount = {}): Promise<SyncQueueItem[]> {
   if (!updateId.trim()) return [];
 
   return mutateOfflineQueue(queue => {
@@ -3292,7 +3298,7 @@ async function withdrawProjectUpdateFromSyncQueue(updateId: string): Promise<Syn
       result: withdrawn,
       persist: withdrawn.length > 0,
     };
-  });
+  }, itsAccount);
 }
 
 /**
@@ -3311,7 +3317,12 @@ async function withdrawProjectUpdateFromSyncQueue(updateId: string): Promise<Syn
  * then sent his older edit. And a copy a killed app left went after this
  * one's, so its older analysis result won.
  */
-async function putBackWithdrawnProjectUpdateWork(withdrawn: readonly SyncQueueItem[], queued: SyncQueueItem | null): Promise<void> {
+async function putBackWithdrawnProjectUpdateWork(
+  withdrawn: readonly SyncQueueItem[],
+  queued: SyncQueueItem | null,
+  /** The account whose work it is: put back in its own waiting list, or not here at all (second review, sync N1). */
+  itsAccount: ChoiceAccount = {},
+): Promise<void> {
   const chosenFor = (queued?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.overConflict;
   const plans = await mutateOfflineQueue(queue => {
     // Keep Cloud's copy goes by its mark (whole-app audit A4 pass 21 F1),
@@ -3333,14 +3344,14 @@ async function putBackWithdrawnProjectUpdateWork(withdrawn: readonly SyncQueueIt
       result: plans,
       persist: kept.length !== queue.length || restored.length > 0,
     };
-  });
+  }, itsAccount);
   // The changes go onto the phone's work put back, as any such change does
   // (queueProjectUpdatePatch): an analysis result in a patch on the cloud's
   // copy that carries the held edit (A7 pass 14 L-2), a document change into
   // the held edit. Oldest first: a later result for a photo wins.
   for (const plan of plans) {
     if (!isRecord(plan.card)) continue;
-    for (const patch of plan.changes) await queueProjectUpdatePatch(plan.card as unknown as PatchedProjectUpdate, patch);
+    for (const patch of plan.changes) await queueProjectUpdatePatch(plan.card as unknown as PatchedProjectUpdate, patch, itsAccount);
   }
 }
 
@@ -3399,7 +3410,7 @@ function changesTakenIn(items: readonly SyncQueueItem[]): FieldUpdateDocumentPat
  * fails. A delete waiting stays, and the copy is not queued, as before
  * (enqueuePendingChange). The copy as queued.
  */
-async function queueKeepCloudChoice(choice: SyncQueueItem): Promise<{ chosen: unknown; taken: SyncQueueItem[] }> {
+async function queueKeepCloudChoice(choice: SyncQueueItem, itsAccount: ChoiceAccount = {}): Promise<{ chosen: unknown; taken: SyncQueueItem[] }> {
   const payload = choice.payload as ProjectUpdateRecordPayload;
   return mutateOfflineQueue(queue => {
     const existing = queue.find(item => item.id === choice.id);
@@ -3412,7 +3423,7 @@ async function queueKeepCloudChoice(choice: SyncQueueItem): Promise<{ chosen: un
       nextQueue: [...queue.filter(item => item !== existing), { ...choice, payload: { ...payload, updateData: chosen } }],
       result: { chosen, taken },
     };
-  });
+  }, itsAccount);
 }
 
 /** Keep Cloud's chosen copy (A7 pass 17 L-1), over this conflict when one is named. */
@@ -5700,6 +5711,32 @@ export async function clearScheduleItemSyncConflicts(
 export async function resolveProjectUpdateSyncConflict<TUpdate>(
   conflictId: string,
   resolution: 'keep_local' | 'keep_cloud',
+  options: Parameters<typeof chooseProjectUpdateSyncConflictCopy<TUpdate>>[2] = {},
+): Promise<TUpdate> {
+  // Second review, sync N1 (older, newly found; owner answer Q45, 6 Oct 2026: "check who is signed in at every step
+  // of sending, and always save an item under the account that made it"). A field update's Keep Phone and Keep Cloud
+  // took no account. The choice read the cloud's copy as whoever was signed in, and took "who is signed in" for the
+  // copy it queued only after that read: with account A signed out and B signed in while the read waited, A's update
+  // was queued as B's work and sent as B in an ordinary upload pass.
+  // As a task's choice (review pass 1, sync G3, and second review, sync N3): the account is taken here, as he
+  // chooses, before anything is waited on. Every read of the cloud's copy in the choice is made as it, and an answer
+  // that arrives after it has gone is "cannot be read". Everything the choice saves on the phone (the kept copy and
+  // its mark, a card, the work it puts back) is saved only while that account is still the one signed in; once it
+  // has gone nothing is saved, no upload is begun, no copy is handed to the screen, and the conflict stays open for
+  // that account. What Keep Cloud had already taken off its waiting list is kept for it (putBackWhenItsAccountIsBack).
+  const itsAccount: ChoiceAccount = { account: currentCloudOwner() };
+  try {
+    return await chooseProjectUpdateSyncConflictCopy<TUpdate>(conflictId, resolution, options, itsAccount);
+  } catch (error) {
+    // However a choice ends once its account has gone, what it had taken is kept for that account.
+    if (passAccountChanged(itsAccount)) keepWhatCutChoiceTook(itsAccount);
+    throw error;
+  }
+}
+
+async function chooseProjectUpdateSyncConflictCopy<TUpdate>(
+  conflictId: string,
+  resolution: 'keep_local' | 'keep_cloud',
   /**
    * The cloud copy Review Conflicts showed when David chose (whole-app audit
    * A4 pass 17 L1): the check below compares the cloud with it. Without it,
@@ -5715,6 +5752,8 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
      */
     beforeClose?: (chosen: TUpdate) => void;
   } = {},
+  /** The account this choice is made for (resolveProjectUpdateSyncConflict). */
+  itsAccount: ChoiceAccount = { account: currentCloudOwner() },
 ): Promise<TUpdate> {
   const conflicts = await getSyncConflicts();
   const conflict = conflicts.find(item => item.id === conflictId);
@@ -5729,7 +5768,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   // sent (sync_conflict_record_deleted, which Settings shows as closed). Keep
   // Phone failed every time (A4 pass 16 L2): the deletion record superseded
   // its kept copy, and Settings said neither copy was changed.
-  await closeConflictOfDeletedProjectUpdate(conflict);
+  await closeConflictOfDeletedProjectUpdate(conflict, itsAccount);
   // The cloud's copy as it is now, before either choice writes anything
   // (whole-app audit A4 pass 16 L3, A7 pass 14 M-1). Review Conflicts showed
   // the copy saved when the conflict was found: Keep Phone, stamped now, put
@@ -5741,12 +5780,12 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
   // (A4 pass 17 L1): on weak signal Review Conflicts' own read could land
   // while "Keep Phone Copy?" was up and save the iPad's newest copy into the
   // conflict, which then passed this check unseen.
-  const current = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId);
-  if (!current.ok || current.stubbed) throw new Error('sync_conflict_cloud_copy_unreadable');
+  const current = await asItsAccount(itsAccount, () => getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId));
+  if (!current.ok || current.stubbed || passAccountChanged(itsAccount)) throw new Error('sync_conflict_cloud_copy_unreadable');
   const withDocumentChanges = await withDocumentChangesSinceConflict(conflict.localId);
   const phoneCopies = phoneCopiesOfFieldUpdateInConflict(conflict, await getOfflineQueue());
   if (await recordCloudCopyIfChangedSinceConflict(conflict, current.data, phoneCopies, withDocumentChanges,
-    cloudCopyShown === undefined ? conflict.remotePayload : cloudCopyShown)) {
+    cloudCopyShown === undefined ? conflict.remotePayload : cloudCopyShown, itsAccount)) {
     throw new Error('sync_conflict_cloud_copy_changed');
   }
 
@@ -5765,18 +5804,32 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     // this phone's waiting work is withdrawn (A4 pass 12 L1): a failed read
     // had taken a newer phone edit or a document change off the queue, while
     // Settings said neither copy was changed.
-    const withdrawn = await withdrawProjectUpdateFromSyncQueue(conflict.localId);
+    const withdrawn = await withdrawProjectUpdateFromSyncQueue(conflict.localId, itsAccount);
     let queuedCloudCopy: SyncQueueItem | null = null;
     let chosenCloudUpdate: TUpdate;
+    // From here the choice holds work it took off the waiting list. Cut by a change of account, it cannot put it
+    // back (the list in front is no longer its account's): it is kept for its account, and put back as a Keep
+    // Cloud that fails puts it back, in place of the copy it queued (second review, sync N1). A choice cut before
+    // its second taking takes what was queued for the update meanwhile first, as it would have before putting
+    // anything back: a document change saved while the choice worked would otherwise stand in the list as "newer
+    // work", and his edit would not go back.
+    let takenTwice = false;
+    itsAccount.cut = () => putBackWhenItsAccountIsBack(itsAccount.account, async as => {
+      if (!takenTwice) withdrawn.push(...await withdrawProjectUpdateFromSyncQueue(conflict.localId, as));
+      takenTwice = true;
+      await putBackWithdrawnProjectUpdateWork(withdrawn, queuedCloudCopy, as);
+    });
     changesWhileKeepCloudRuns.set(conflict.localId, []);
     try {
+      stopChoiceWhoseAccountChanged(itsAccount); // no upload is begun for a choice whose account has gone
       await uploadPendingChanges();
-      withdrawn.push(...await withdrawProjectUpdateFromSyncQueue(conflict.localId));
+      withdrawn.push(...await withdrawProjectUpdateFromSyncQueue(conflict.localId, itsAccount));
+      takenTwice = true;
       // And read again now (A4 pass 13 L1): an iPad save that landed while
       // this phone's work was withdrawn and that upload pass ran went under
       // the copy read before it. The first read stays the check that the
       // cloud can be reached, and stands in when this one fails.
-      const reread = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId).catch(() => null);
+      const reread = await asItsAccount(itsAccount, () => getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId)).catch(() => null);
       const currentCopy = (reread?.ok && !reread.stubbed ? reread : current).data?.updateData;
       const currentStamp = (reread?.ok && !reread.stubbed ? reread : current).data?.updatedAt;
       const cloudNow = isRecord(currentCopy) && !phoneCopies.some(copy =>
@@ -5827,12 +5880,12 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       // Queued in the write that takes what was queued since the second
       // withdrawal (A4 pass 22): a change finishing while the cloud was read
       // again goes into the copy; replaced, it was lost.
-      const queuedChoice = await queueKeepCloudChoice(queuedCloudCopy);
+      const queuedChoice = await queueKeepCloudChoice(queuedCloudCopy, itsAccount);
       withdrawn.push(...queuedChoice.taken);
       chosenCloudUpdate = queuedChoice.chosen as TUpdate;
       keepCloudChoicesSending.add(conflict.id); // its copy goes in this pass only (A4 pass 21 F1)
       keepCloudChoicesMetNewerCloudCopy.delete(conflict.id);
-      const exact = await uploadExactQueueItem(projectUpdateQueueItemId(conflict.localId))
+      const exact = await uploadExactQueueItem(projectUpdateQueueItemId(conflict.localId), undefined, itsAccount)
         .finally(() => keepCloudChoicesSending.delete(conflict.id));
       // An iPad save it met is in the conflict now: David reviews again (A4 pass 22 L1).
       if (!exact.landed) {
@@ -5841,7 +5894,7 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
       }
     } catch (error) {
       changesWhileKeepCloudRuns.delete(conflict.localId);
-      await putBackWithdrawnProjectUpdateWork(withdrawn, queuedCloudCopy);
+      await putBackWithdrawnProjectUpdateWork(withdrawn, queuedCloudCopy, itsAccount);
       throw error;
     }
     // Sync batch Y1 (item 6): the card took the copy as it was queued. A photo result or a document upload finishing
@@ -5853,8 +5906,9 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     changesWhileKeepCloudRuns.delete(conflict.localId);
     chosenCloudUpdate = applyFieldUpdateDocumentPatches(chosenCloudUpdate as object,
       fieldUpdatePatchesNotSuperseded(chosenCloudUpdate as object, sinceItRan)) as TUpdate;
+    stopChoiceWhoseAccountChanged(itsAccount); // nor is a copy handed to a screen that is by now another account's
     beforeClose?.(chosenCloudUpdate);
-    await clearResolvedConflict(conflict.id);
+    await clearResolvedConflict(conflict.id, itsAccount);
     return chosenCloudUpdate;
   }
 
@@ -5904,15 +5958,19 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     };
     const nextQueue = existing?.operation === 'delete' ? queue : [...queue.filter(item => item.id !== queueItemId), kept];
     return { nextQueue, result: { written: kept, newerEdit: newer, before: existing ?? null }, persist: nextQueue !== queue };
-  });
+    // Second review, sync N1: saved only while the choice's account is still the one signed in, so the mark above
+    // (read after the choice's reads) is always the choice's own. A choice cut after this save leaves the kept copy
+    // where it is, in its own account's waiting list, marked as its choice: that account's next upload sends it,
+    // only over the copy he chose over, as after the app was closed in the middle of a Keep Phone.
+  }, itsAccount);
   keepPhoneChoicesMetChangedCloudCopy.delete(conflict.id);
-  const exact = await uploadExactQueueItem(queueItemId, written);
+  const exact = await uploadExactQueueItem(queueItemId, written, itsAccount);
   if (!exact.landed) {
     // The cloud's copy was no longer the one he chose over (sync batch Y3, item 5): it is on the card now, nothing
     // was sent, and what waited for the update is back as it was. He reviews again.
     if (keepPhoneChoicesMetChangedCloudCopy.delete(conflict.id)) {
       const earlier = (before?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.overConflict === conflict.id;
-      await putBackPhoneWorkAfterFailedKeepPhone(before && !earlier ? before : newerEdit, written);
+      await putBackPhoneWorkAfterFailedKeepPhone(before && !earlier ? before : newerEdit, written, itsAccount);
       throw new Error('sync_conflict_cloud_copy_changed');
     }
     // Sync batch Y1 (item 5): Settings said "Neither copy was changed" whenever the kept copy's write failed. A write
@@ -5920,12 +5978,12 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     // finds it there and ends as when the answer had arrived (the newer edit queued after it). It cannot be read, or
     // that second run does not get through either: Settings says the change may or may not have been saved. Only when
     // it is read and is not the kept copy is neither copy changed.
-    const after = await getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId).catch(() => null);
+    const after = await asItsAccount(itsAccount, () => getProjectUpdateSyncMetadata<Record<string, unknown>>(conflict.localId)).catch(() => null);
     const readable = Boolean(after?.ok && !after.stubbed);
     const landedUnanswered = readable && isRecord(after?.data?.updateData) &&
       daveProjectUpdateMatchesCloudReceipt((written.payload as ProjectUpdateRecordPayload).updateData, after!.data!.updateData);
-    if (landedUnanswered && (await uploadExactQueueItem(queueItemId, written)).landed) {
-      await clearResolvedConflict(conflict.id);
+    if (landedUnanswered && (await uploadExactQueueItem(queueItemId, written, itsAccount)).landed) {
+      await clearResolvedConflict(conflict.id, itsAccount);
       return localUpdateData;
     }
     // The queue as it was before the choice (whole-app audit A4 pass 16 L1):
@@ -5935,11 +5993,11 @@ export async function resolveProjectUpdateSyncConflict<TUpdate>(
     // for the update (a document change, a newer edit) goes back unmarked; an
     // earlier kept copy of this choice gives way to the edit it carries.
     const earlierChoice = (before?.payload as Partial<ProjectUpdateRecordPayload> | undefined)?.overConflict === conflict.id;
-    await putBackPhoneWorkAfterFailedKeepPhone(before && !earlierChoice ? before : newerEdit, written);
+    await putBackPhoneWorkAfterFailedKeepPhone(before && !earlierChoice ? before : newerEdit, written, itsAccount);
     throw new Error(!readable || landedUnanswered ? 'sync_conflict_save_unconfirmed' : exact.error || 'sync_conflict_save_failed');
   }
 
-  await clearResolvedConflict(conflict.id);
+  await clearResolvedConflict(conflict.id, itsAccount);
   return localUpdateData;
 }
 
@@ -6092,6 +6150,7 @@ async function recordCloudCopyIfChangedSinceConflict(
   phoneCopies: readonly unknown[],
   withDocumentChanges: (copy: unknown) => unknown,
   seen: unknown = conflict.remotePayload,
+  itsAccount: ChoiceAccount = {},
 ): Promise<boolean> {
   const cloudCopy = cloud?.updateData;
   if (!isRecord(cloudCopy)) return false;
@@ -6109,7 +6168,7 @@ async function recordCloudCopyIfChangedSinceConflict(
     if (!conflicts.some(item => item.id === conflict.id)) return;
     await writeSyncConflicts(conflicts.map(item => item.id === conflict.id
       ? { ...item, remotePayload: cloudCopy, remoteChangedAt: cloud?.updatedAt ?? item.remoteChangedAt }
-      : item));
+      : item), itsAccount);
   });
   return true;
 }
@@ -6140,7 +6199,7 @@ export async function refreshFieldUpdateConflictCloudCopies(): Promise<SyncConfl
  * (whole-app audit A4 pass 16 L2). The cloud's deletion history must be
  * readable, as for Keep Cloud before.
  */
-async function closeConflictOfDeletedProjectUpdate(conflict: SyncConflict): Promise<void> {
+async function closeConflictOfDeletedProjectUpdate(conflict: SyncConflict, itsAccount: ChoiceAccount = {}): Promise<void> {
   const tombstoneSync = await synchronizeDAVESyncTombstones();
   if (!tombstoneSync.cloudAuthoritative) {
     throw new Error('sync_conflict_deletion_history_unavailable');
@@ -6151,7 +6210,7 @@ async function closeConflictOfDeletedProjectUpdate(conflict: SyncConflict): Prom
     deletedDAVERecordIds(tombstoneSync.tombstones, 'project_update')
       .some(recordId => recordId.trim().toLowerCase() === normalizedUpdateId);
   if (!updateWasDeleted) return;
-  await clearConflictsForLocalRecord('project_update', conflict.localId);
+  await clearConflictsForLocalRecord('project_update', conflict.localId, itsAccount);
   throw new Error('sync_conflict_record_deleted');
 }
 
@@ -6227,7 +6286,7 @@ function isNewerQueuedPhoneEdit(item: SyncQueueItem, conflictCopy: unknown): boo
  * queued (none: the kept copy is dropped), never marked as a choice over the
  * conflict, unless something newer was queued meanwhile (A4 pass 16 L1).
  */
-async function putBackPhoneWorkAfterFailedKeepPhone(before: SyncQueueItem | null, written: SyncQueueItem): Promise<void> {
+async function putBackPhoneWorkAfterFailedKeepPhone(before: SyncQueueItem | null, written: SyncQueueItem, itsAccount: ChoiceAccount = {}): Promise<void> {
   await mutateOfflineQueue(queue => {
     const current = queue.find(item => item.id === written.id);
     if (current ? !sameStagedProjectUpdateRecord(current, written) : !before) {
@@ -6235,7 +6294,7 @@ async function putBackPhoneWorkAfterFailedKeepPhone(before: SyncQueueItem | null
     }
     const others = queue.filter(item => item.id !== written.id);
     return { nextQueue: before ? [...others, withoutChoiceOverConflict(before)] : others, result: undefined };
-  });
+  }, itsAccount);
 }
 
 /**
@@ -6277,13 +6336,17 @@ async function uploadExactQueueItem(
   queueItemId: string,
   /** The record written, when what replaces it once it lands is not it (Keep Phone's newer edit, A7 pass 11 L-2). */
   written?: SyncQueueItem,
+  /** The choice this is for: no upload is begun once its account has gone (second review, sync N1). */
+  itsAccount: ChoiceAccount = {},
 ): Promise<{ landed: boolean; error: string | null }> {
   const stillQueued = async () => (await getOfflineQueue()).find(item =>
     item.id === queueItemId && (!written || sameStagedProjectUpdateRecord(item, written)));
+  stopChoiceWhoseAccountChanged(itsAccount);
   let result = await uploadPendingChanges();
   let remaining = await stillQueued();
   let outcome = result.itemOutcomes?.[queueItemId];
   if (remaining && (!outcome || outcome === 'uploaded')) {
+    stopChoiceWhoseAccountChanged(itsAccount);
     result = await uploadPendingChanges();
     remaining = await stillQueued();
     outcome = result.itemOutcomes?.[queueItemId];

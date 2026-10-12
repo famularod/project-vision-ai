@@ -18,10 +18,16 @@ export async function loadRemovedFieldUpdateDocuments(): Promise<RemovedFieldUpd
   return new Set(await readRemovedDocumentKeys());
 }
 
-export function recordRemovedFieldUpdateDocument(updateId: string, documentId: string): Promise<void> {
+/**
+ * `beforeItIsSaved` (second review, sync N1): called after the list has been read and in the instant before it is
+ * saved; when it throws nothing is saved. A choice in Review Conflicts that puts a document change back passes its
+ * look at the account: the list read is one account's, and it is not saved into the storage of the next.
+ */
+export function recordRemovedFieldUpdateDocument(updateId: string, documentId: string, beforeItIsSaved?: () => void): Promise<void> {
   const key = removedFieldUpdateDocumentKey(updateId, documentId);
   const write = removedDocumentsWrite.then(async () => {
     const keys = (await readRemovedDocumentKeys()).filter(existing => existing !== key);
+    beforeItIsSaved?.();
     await AsyncStorage.setItem(
       REMOVED_FIELD_UPDATE_DOCUMENTS_STORAGE_KEY,
       JSON.stringify([...keys, key].slice(-REMOVED_FIELD_UPDATE_DOCUMENTS_LIMIT)),
