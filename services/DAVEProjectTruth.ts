@@ -587,6 +587,53 @@ export function daveProjectTruthUpdatesFor(input: {
 
 /** A stable-order view's truth as it was built (R4 item 4a); kept beside the view, never inside it. */
 const truthAsBuilt = new WeakMap<DAVEProjectTruth, DAVEProjectTruth>();
+
+/**
+ * R7 item C (the coordinator's decision on review pass 1, F1): the facts of a
+ * schedule document, for the truth a report is written from.
+ *
+ * Project Truth keeps each schedule document in effect WHOLE, as the device
+ * holds it, so everything a device keeps on its copy was in a report's facts
+ * and in its fingerprint, and the phone, the iPad and the web never had one
+ * fingerprint for one project. What is the device's own, and no fact of the
+ * project:
+ *  - `uri`: where the file sits inside this install's own folder (the web
+ *    has none; iOS moves the folder at an update or a reinstall);
+ *  - `cloudUpdatedAt`, `cloudDetailsSeen`: the device's own note of the
+ *    cloud row, which moves whenever any device writes the row again;
+ *  - `linkedScheduleItems`, `importedScheduleItemCount`,
+ *    `lookaheadReplaced`: what only the web's loader adds, for its own list;
+ *  - the text and the page index read out of the file (`extractedText`,
+ *    `extractedPages`): whole on the device that read the file, cut down or
+ *    emptied in the cloud's row and at the next launch
+ *    (ECOSDocumentIndexPersistence), so even one phone had two fingerprints
+ *    for one document;
+ *  - and the rest of the file's own housekeeping (where it is stored, its
+ *    size and checksum, the web's version marks, drawing fields, which
+ *    reader read it), saved as "none" by one device and left out by another.
+ * No report reads any of it. A report can say of a schedule document only
+ * what is kept here: which document it is, its name and its file's name, its
+ * category and notes, when it was imported, and whose schedule it is. That
+ * is all the truth a report is written from holds of it, and so all that is
+ * in version 2.0 of the fingerprint, which no released build has written. A
+ * field that holds nothing is left out, so "none" and "not there" are one.
+ * The truth as built keeps the documents whole, so version 1.0 is still
+ * Build 230's to the byte.
+ */
+const DOCUMENT_FACTS_A_REPORT_HOLDS = [
+  'id', 'name', 'originalFileName', 'category', 'notes', 'importedAt', 'isCurrent',
+  'projectId', 'projectName', 'projectNames', 'importBatchId', 'scheduleRole', 'retiredForProjectNames',
+] as const;
+function documentFactsOnly(document: ReferenceDocument): ReferenceDocument {
+  const whole = document as unknown as Record<string, unknown>;
+  const facts: Record<string, unknown> = { uri: '' };
+  DOCUMENT_FACTS_A_REPORT_HOLDS.forEach(field => {
+    const value = whole[field];
+    if (value === null || value === undefined || (Array.isArray(value) && value.length === 0)) return;
+    facts[field] = value;
+  });
+  return facts as unknown as ReferenceDocument;
+}
 /** The stable-order views whose report counts other field updates than the build before counted for the same saved data (R7 item A). */
 const truthsCountingOtherUpdates = new WeakSet<DAVEProjectTruth>();
 
@@ -668,8 +715,11 @@ export function daveProjectTruthInStableOrder(
   const byId = <T extends { id: string }>(items: readonly T[]): T[] => [...items].sort((left, right) => plainOrder(left.id, right.id));
   const evidence = { ...truth.evidence, records: byId(truth.evidence.records), unresolvedRecords: byId(truth.evidence.unresolvedRecords) };
   const verificationQueue = buildVerificationQueue(evidence, photoComparisons, schedule, reasoning);
+  // Of each schedule document only what a report can say (R7 item C).
+  const intelligence = { ...truth.intelligence, referenceDocuments: truth.intelligence.referenceDocuments.map(documentFactsOnly) };
   const stable = deepFreeze({
     ...truth,
+    intelligence,
     evidence,
     photoComparisons,
     correlations,
@@ -678,7 +728,7 @@ export function daveProjectTruthInStableOrder(
     verificationQueue,
     briefing: buildPMBriefing({
       projectName: truth.projectName,
-      intelligence: truth.intelligence,
+      intelligence,
       evidence,
       photoComparisons,
       correlations,

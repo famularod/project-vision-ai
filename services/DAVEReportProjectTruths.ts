@@ -29,6 +29,14 @@ export type DAVEReportProjectTruthsInput = {
   projectAreas?: readonly ProjectArea[];
   referenceDocuments?: readonly ReferenceDocument[];
   now?: string;
+  /**
+   * R7 item C: the same tasks as the build before handed them to the report,
+   * where that differs from `scheduleItems` and `knownScheduleItems` (the
+   * web: a task nobody has edited carried the cloud row's time as its
+   * updatedAt). Only for the truth as the build before built it, which the
+   * 1.0 fingerprint is taken from; the report is written from the others.
+   */
+  asBuiltBefore?: Readonly<{ scheduleItems: readonly ScheduleItem[]; knownScheduleItems?: readonly ScheduleItem[] }>;
 };
 
 /**
@@ -73,16 +81,16 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
       projectAreas: input.projectAreas,
       referenceDocuments: input.referenceDocuments,
     };
-    const truthOf = (scope: ReturnType<typeof buildDailyReportAuthorityScope>) => buildDAVEProjectTruth({
+    const truthOf = (scope: ReturnType<typeof buildDailyReportAuthorityScope>, knownItems = known) => buildDAVEProjectTruth({
       projectId: project.projectId,
       projectName: project.name,
       updates: scope.updates.map(update => ({ ...update, projectName: project.name })),
       scheduleItems: scope.scheduleItems,
       // The name fallback checks the update's own schedule (A10 pass 6 L2), and
       // what a newer lookahead replaced, for "since the last report" (owner answer 3 Oct 2026).
-      ...(known
+      ...(knownItems
         ? {
-            knownScheduleItems: known,
+            knownScheduleItems: knownItems,
             knownScheduleDocuments: input.knownScheduleDocuments ?? input.referenceDocuments,
             reportLookaheadReplacement: true,
           }
@@ -102,7 +110,13 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
     const sameUpdates = scope.updates.length === scopeAsBefore.updates.length &&
       scope.updates.every((update, index) => update === scopeAsBefore.updates[index]);
     const truth = truthOf(scope);
+    // As the build before built it, where that differs: it scoped the updates without the saved tasks, and (R7 item
+    // C) was handed the tasks as `asBuiltBefore` has them.
+    const before = input.asBuiltBefore;
+    const builtBefore = before
+      ? truthOf(buildDailyReportAuthorityScope({ ...scopeInput, scheduleItems: before.scheduleItems }), before.knownScheduleItems ?? known)
+      : sameUpdates ? truth : truthOf(scopeAsBefore);
     // In a stable order, so a sync that only reorders the saved rows changes nothing a report says (R4 item 4a).
-    return daveProjectTruthInStableOrder(truth, sameUpdates ? truth : truthOf(scopeAsBefore), !sameUpdates);
+    return daveProjectTruthInStableOrder(truth, builtBefore, !sameUpdates);
   });
 }

@@ -39,6 +39,29 @@ export type DAVEWebScheduleItem = ScheduleItem & Readonly<{
   cloudUpdatedAt: string | null;
 }>;
 
+/**
+ * R7 item C (the coordinator's decision on review pass 1, F1): the tasks, by
+ * id, whose saved record had no updatedAt of its own when its cloud row was
+ * last read. For those the web's `updatedAt` is the time the cloud last
+ * stamped the row, standing in: it moves at every upload and is no fact of
+ * the task. Kept beside the tasks, never on them, so nothing that is saved,
+ * compared or hashed changes shape. A real edit time is the task's own and is
+ * never one of these.
+ */
+const tasksWithNoUpdatedAtOfTheirOwn = new Set<string>();
+
+/** The web's loader says, for each task row it reads, whether the saved task has an updatedAt of its own. */
+export function noteDAVEWebTaskUpdatedAtOfItsOwn(taskId: string, hasItsOwn: boolean): void {
+  if (hasItsOwn) tasksWithNoUpdatedAtOfTheirOwn.delete(taskId);
+  else tasksWithNoUpdatedAtOfTheirOwn.add(taskId);
+}
+
+/** Whether this task's `updatedAt` is only the cloud row's time, standing in for one the saved task does not have. */
+export function daveWebTaskUpdatedAtIsCloudRowTime(item: Pick<DAVEWebScheduleItem, 'id' | 'updatedAt' | 'cloudUpdatedAt'>): boolean {
+  // (The last part: a task edited in this tab since its row was read has a time of its own by now.)
+  return tasksWithNoUpdatedAtOfTheirOwn.has(item.id) && Boolean(item.updatedAt) && item.updatedAt === item.cloudUpdatedAt;
+}
+
 export type DAVEWebTaskDraft = Readonly<{
   /** Immutable cloud project authority required by operational-row writes. */
   projectId?: string | null;

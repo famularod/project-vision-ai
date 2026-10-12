@@ -25,7 +25,7 @@ import {
 } from './PIEScheduleReconciliation';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { daveWebSupabaseGateway } from './DAVEWebSupabaseClient';
-import type { DAVEWebScheduleItem } from './DAVEWebTaskEditing';
+import { noteDAVEWebTaskUpdatedAtOfItsOwn, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
 import type {
   DAVEWebDocumentExtension,
   DAVEWebReportRecord,
@@ -251,6 +251,8 @@ function normalizeScheduleItem(value: unknown): DAVEWebScheduleItem | null {
   if (!isDAVESafeCloudScheduleRecord(data)) return null;
   const progress = reconcileScheduleProgress(data.status, data.percentComplete);
   const projectName = readString(data.projectName) ?? readString(data.scheduleProjectName) ?? '';
+  // Whether the `updatedAt` below is the saved task's own or the cloud row's time standing in (R7 item C).
+  noteDAVEWebTaskUpdatedAtOfItsOwn(data.id.trim(), Boolean(readString(data.updatedAt)));
 
   return {
     ...(data as Partial<ScheduleItem>),

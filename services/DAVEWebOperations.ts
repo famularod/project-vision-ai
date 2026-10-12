@@ -45,7 +45,7 @@ import { scheduleDocumentsAfterApproval } from './ScheduleDocumentLabels';
 import { scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { scheduleItemIdsDeletedWithTask } from './DAVEDeletedTaskEvidence';
 import { dependencyChangesForDeletedTask } from './VitruviusScheduleEngine';
-import { scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
+import { daveWebTaskUpdatedAtIsCloudRowTime, scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
 import { buildDAVEReportProjectTruths } from './DAVEReportProjectTruths';
 import { daveWebListedDocuments } from './DAVEWebDocumentManagement';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
@@ -984,13 +984,30 @@ function buildDAVEWebProjectTruths(
     id: project.id,
     name: project.name,
   }));
+  // R7 item C (the coordinator's decision on review pass 1, F1): a task nobody has edited is saved with no
+  // updatedAt, and the phone and the iPad read it by its createdAt. The web's loader fills a missing updatedAt with
+  // the time the cloud last stamped the task's row, which moves at every upload, so the web never had the phone's
+  // fingerprint for the same project, and its "Last updated" could name the day of an upload. The report is written
+  // from the tasks as the device that saved them has them. Fixed here and not by changing what the loader hands
+  // out: other web pages and the schedule's own reconciling read the loader's updatedAt, and Build 230 handed it
+  // to the report, so the truth as Build 230 built it (for the 1.0 fingerprint only) is still built from the
+  // loader's tasks as they are. The loader says which tasks had no updatedAt of their own
+  // (daveWebTaskUpdatedAtIsCloudRowTime); a real edit time is the task's own and stays.
+  const cloudRowTimeOnly = daveWebTaskUpdatedAtIsCloudRowTime;
+  const asSaved = <T extends readonly DAVEWebScheduleItem[] | undefined>(items: T): T => (items && items.some(cloudRowTimeOnly)
+    ? items.map(item => { if (!cloudRowTimeOnly(item)) return item; const { updatedAt: _cloudRowTime, ...saved } = item; return saved as DAVEWebScheduleItem; }) as unknown as T
+    : items);
+  const scheduleItems = asSaved(snapshot.scheduleItems);
+  const knownScheduleItems = asSaved(snapshot.knownScheduleItems as readonly DAVEWebScheduleItem[] | undefined);
+  const handedAsBefore = scheduleItems !== snapshot.scheduleItems || knownScheduleItems !== snapshot.knownScheduleItems;
   // One recipe with the phone's Reports screen (open item, 6 Oct 2026).
   return buildDAVEReportProjectTruths({
     projects: projects.map(project => ({ name: project.name, projectId: project.id || normalized(project.name) })),
     projectRecords,
     updates: snapshot.projectUpdates.map(update => update.updateData),
-    scheduleItems: snapshot.scheduleItems,
-    knownScheduleItems: snapshot.knownScheduleItems,
+    scheduleItems,
+    knownScheduleItems,
+    ...(handedAsBefore ? { asBuiltBefore: { scheduleItems: snapshot.scheduleItems, knownScheduleItems: snapshot.knownScheduleItems } } : {}),
     knownScheduleDocuments: snapshot.referenceDocuments,
     // A document the cloud marks archived is not counted (owner answer Q44; review of D1, L10); with none, this is the list itself.
     referenceDocuments: daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds),

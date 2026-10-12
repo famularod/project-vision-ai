@@ -93,6 +93,10 @@ describe('R4 item 4a: a sync that only reorders the saved tasks changes nothing 
   });
 });
 
+// (R7 item C, review pass 1 F1: the two tests below hand the web the phone's own task objects and no schedule
+// document, so they show one thing only: the id each files the project under is not in the fingerprint. The phone
+// against the web through the web's OWN loader, from cloud rows with the cloud's own times and a schedule document
+// held on the phone, is tests/services/r7-report-fingerprint-not-the-devices-own.test.ts.)
 describe('R4 item 4a: the phone and the web give the same facts one fingerprint', () => {
   it('whatever id each files the project under', () => {
     const phone = buildDAVEReportSourceFingerprint(phoneTruths(SAVED));
