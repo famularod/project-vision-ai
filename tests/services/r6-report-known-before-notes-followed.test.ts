@@ -486,3 +486,77 @@ describe('R6 item 1: what the report\'s Project Truth hands over, and the finger
     expect(reportSourcesBeforeNotesFollowedOf(fingerprints(before, NOW).today)).toEqual([]);
   });
 });
+
+describe('R6 item 1: the written report', () => {
+  /**
+   * As the build before left it, with its reports: he types a note on Paint; a report goes out and says it; he types
+   * a second note; master 2 moves Paint (the notes stay on the old row); a second report goes out, with Paint on its
+   * new row and no note.
+   */
+  function twoReportsBeforeTheUpdate() {
+    let state = approve({ items: [], documents: [] }, schedule('MASTER 1', '2026-09-07T12:00:00.000Z'), [...OTHERS, 'Paint,Alpha,Lot,10/01/2026,10/05/2026,']);
+    state = withNote(state, 'MASTER 1-3', INSPECTOR);
+    const first = readFromStorage(markReportSnapshotDelivered(approved(state, '2026-09-08T10:00:00.000Z', fingerprints(state, '2026-09-08T10:00:00.000Z').today), '2026-09-08T10:00:00.000Z', 'phone'));
+    return { state, first };
+  }
+  const moved = (state: State) => approve(state, schedule('MASTER 2', '2026-09-09T12:00:00.000Z'), [...OTHERS, 'Paint,Alpha,Lot,10/03/2026,10/07/2026,']);
+  /** The rows as the build before left them after master 2: the old row's notes are not on the new row. */
+  const asTheBuildBeforeLeftThem = (state: State): State => {
+    const old = new Set(notesOf(state, 'MASTER 1-3'));
+    return { ...state, items: state.items.map(item => (item.id === 'MASTER 2-3' ? { ...item, activity: (item.activity ?? []).filter(entry => !old.has(entry.id)) } as ScheduleItem : item)) };
+  };
+  const secondReport = (state: State, first: DAVEReportSnapshot) =>
+    readFromStorage(markReportSnapshotDelivered(approved(state, REPORT_MADE, fingerprints(state, REPORT_MADE).today, first), REPORT_MADE, 'phone'));
+
+  it('the report after the sync does not say again a note that followed the task and that a report had already said', () => {
+    const { state, first } = twoReportsBeforeTheUpdate();
+    const before = asTheBuildBeforeLeftThem(moved(state));
+    expect([notesOf(before, 'MASTER 1-3'), notesOf(before, 'MASTER 2-3')]).toEqual([['note-1'], []]);
+    const second = secondReport(before, first);
+    // The update, its first sync, and something else changes so that a new report is due.
+    const after = setPercent(sync(before), 'Drywall', 20, NOW);
+    expect(notesOf(after, 'MASTER 2-3')).toEqual(['note-1']);
+    const report = reportOf(after, second, '2026-09-12T15:00:00.000Z');
+    // (It read, among its recent changes: "Alpha: Paint — Inspector called.", which the first report had said on 8 Sep.)
+    expect(report.lines.filter(line => line.includes('Paint'))).toEqual([]);
+    expect(report.newNotes).toEqual([]);
+    expect(report.lines.some(line => line.includes('Drywall moved from 0% to 20% complete.'))).toBe(true);
+  });
+
+  it('guard: a note typed after that first report, which the second (on the new row) never had, is said: no report has said it', () => {
+    const { state, first } = twoReportsBeforeTheUpdate();
+    const before = asTheBuildBeforeLeftThem(moved(withNote(state, 'MASTER 1-3', CREW)));
+    const second = secondReport(before, first);
+    const report = reportOf(setPercent(sync(before), 'Drywall', 20, NOW), second, '2026-09-12T15:00:00.000Z');
+    expect(report.lines.filter(line => line.includes('Paint'))).toEqual(['Alpha: Paint — Crew short Tuesday.']);
+    expect(report.newNotes).toEqual(['MASTER 2-3']);
+  });
+
+  it('guard: with no report before the one it counts from, nothing can have said the notes: they are said', () => {
+    const before = beforeTheUpdate();
+    const only = readFromStorage(markReportSnapshotDelivered(approved(before, REPORT_MADE, fingerprints(before, REPORT_MADE).today), REPORT_MADE, 'phone'));
+    expect(reportOf(setPercent(sync(before), 'Drywall', 20, NOW), only, '2026-09-12T15:00:00.000Z').newNotes).toEqual(['MASTER 2-3']);
+  });
+
+  it('guard: a note typed on the task\'s own row since the last report is said, with older notes brought forward or not', () => {
+    const { state, first } = twoReportsBeforeTheUpdate();
+    const before = asTheBuildBeforeLeftThem(moved(state));
+    const second = secondReport(before, first);
+    const after = withNote(sync(before), 'MASTER 2-3', note('note-3', 'Second pass started.', '2026-09-11T07:00:00.000Z'));
+    const report = reportOf(after, second, '2026-09-12T15:00:00.000Z');
+    expect(report.lines.filter(line => line.includes('Paint'))).toEqual(['Alpha: Paint — Second pass started.']);
+  });
+
+  it('the same on the web', () => {
+    const { state, first } = twoReportsBeforeTheUpdate();
+    const before = asTheBuildBeforeLeftThem(moved(state));
+    const second = secondReport(before, first);
+    const newNotes = (current: State) => {
+      const snapshot = webSnapshot(current, '2026-09-12T15:00:00.000Z');
+      const fingerprint = buildDAVEReportSourceFingerprint(buildDAVEWebReportTruths(snapshot, 'Alpha'));
+      return [...(buildDAVEWebReportDraft(snapshot, 'Alpha', { previousSnapshot: reportBaselineSnapshot(second, fingerprint), waitingForOtherDevice: false }).reportingPeriod.newActivityTaskIds ?? [])];
+    };
+    expect(newNotes(setPercent(sync(before), 'Drywall', 20, NOW))).toEqual([]);
+    expect(newNotes(withNote(sync(before), 'MASTER 2-3', note('note-3', 'Second pass started.', '2026-09-11T07:00:00.000Z')))).toEqual(['MASTER 2-3']);
+  });
+});

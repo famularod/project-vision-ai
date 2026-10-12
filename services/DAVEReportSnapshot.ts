@@ -795,6 +795,20 @@ export function reportTasksAddedByLookahead(truths: readonly DAVEProjectTruth[])
   return truths.flatMap(truth => truth.lookaheadAddedTaskIds ?? []);
 }
 
+/** A task shown whose latest note followed it from an earlier row, with its row's latest note without those (R6 item 1). */
+export type DAVEReportTaskActivityBeforeNotesFollowed = Readonly<{
+  taskId: string;
+  latestActivityAt: string | null;
+  latestActivitySummary: string | null;
+  /** When the newest note that followed was typed. */
+  followedAt: string;
+}>;
+
+/** Those tasks, as the truths give them (R6 item 1). */
+export function reportTaskActivityBeforeNotesFollowed(truths: readonly DAVEProjectTruth[]): DAVEReportTaskActivityBeforeNotesFollowed[] {
+  return truths.flatMap(truth => truth.activityBeforeNotesFollowed ?? []);
+}
+
 export function buildDAVEReportSnapshot({
   truths,
   scopeKey,
@@ -869,9 +883,17 @@ export function compareDAVEReportSnapshots({
   tasksLeftByLookahead = [],
   earlierRows = [],
   lookaheadAddedTaskIds = [],
+  activityBeforeNotesFollowed = [],
 }: {
   current: DAVEReportSnapshot;
   previous?: DAVEReportSnapshot | null;
+  /**
+   * The tasks shown whose latest note followed them from an earlier row (R6
+   * item 1), each with its row's latest note without those. Such a note that
+   * was already typed when the report before the earlier one was made is not
+   * said again. Without them every note a row gains reads as new, as before.
+   */
+  activityBeforeNotesFollowed?: readonly DAVEReportTaskActivityBeforeNotesFollowed[];
   /**
    * The saved earlier rows of the tasks shown (R5 item 1, the returning
    * task): how a task that is back last stood when no report kept has it,
@@ -1015,6 +1037,20 @@ export function compareDAVEReportSnapshots({
     !previousById.has(task.taskId) && !linked.pairs.has(task) && !revisions.has(task) && !linked.current.has(task)));
   const linkedBefore = reportBefore ? linkTasksById(reportBefore.tasks, [...noPriorNow]) : null;
   const earlierReportMade = Date.parse(previous.capturedAt);
+  const followedByTask = new Map(activityBeforeNotesFollowed.map(entry => [entry.taskId, entry] as const));
+  const reportBeforeMade = Date.parse(reportBefore?.capturedAt ?? '');
+  /** The task with its row's latest note as it was before notes followed it, when those were typed before the report before the earlier one. */
+  const asBeforeNotesFollowed = (task: DAVEReportSnapshotTask): DAVEReportSnapshotTask => {
+    const before = followedByTask.get(task.taskId);
+    const followedAt = Date.parse(before?.followedAt ?? '');
+    if (!before || Number.isNaN(followedAt) || Number.isNaN(reportBeforeMade) || followedAt > reportBeforeMade) return task;
+    const { activityAt: _at, ...rest } = task;
+    return {
+      ...rest,
+      activityKey: reportTaskActivityKey(before),
+      ...(validDate(before.latestActivityAt) ? { activityAt: validDate(before.latestActivityAt) } : {}),
+    };
+  };
   const returnedFrom = (task: DAVEReportSnapshotTask): DAVEReportSnapshotTask | null => {
     if (!noPriorNow.has(task)) return null;
     const before = reportBeforeById.get(task.taskId) ?? linkedBefore?.pairs.get(task);
@@ -1076,8 +1112,16 @@ export function compareDAVEReportSnapshots({
     // Schedule batch S5, item 1 (7 Oct 2026): a task's activity notes follow it from row to row now (a master that
     // moves it, Set Active, Make Current), so the row the earlier report had for this task can hold the very note this
     // row shows. That note was there for the earlier report: it is not said again.
+    // R6 item 1 (the coordinator's decision on R5's finding): and the first sync on that build brings the notes
+    // forward for a row made before it. The row the earlier report had is then this very row, without them: the
+    // build that made the report had left them on the row the task had before. "Paint — Crew short Tuesday." read
+    // as new in the first report after the update, weeks after it was typed and after a report had said it. A
+    // note that followed the task and was already typed when the report BEFORE the earlier one was made is taken
+    // as said by then (the task's row of that time held it): the task is read by its row's latest note without
+    // those, as the build that made the earlier report read it. One typed after that report is new: the earlier
+    // report's row did not have it, so no report has said it, and the build before never would have.
     const activity = prior.taskId === task.taskId
-      ? activityAgainstOwnRow(prior, task)
+      ? activityAgainstOwnRow(prior, asBeforeNotesFollowed(task))
       : activityFollowedTheTask(prior, task) ?? activityAgainstReportBefore(task, reportBefore, reportBeforeById.get(task.taskId));
     if (activity) (activity === 'new' ? newActivityTaskIds : sameActivityTaskIds).add(task.taskId);
     changes.push(...changesBetween(prior, task));
@@ -1422,7 +1466,7 @@ const TASK_ACTIVITY_KEY_VERSION = 'task-activity/1';
  * was updated." instead. Project Truth keeps no activity id, so the time and
  * text stand for it.
  */
-function reportTaskActivityKey(task: DAVEProjectTruth['schedule'][number]): string {
+function reportTaskActivityKey(task: Pick<DAVEProjectTruth['schedule'][number], 'latestActivityAt' | 'latestActivitySummary'>): string {
   const at = clean(task.latestActivityAt);
   return `${TASK_ACTIVITY_KEY_VERSION}:${contentHash(JSON.stringify([validDate(at) || at, clean(task.latestActivitySummary)]))}`;
 }
