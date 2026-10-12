@@ -9,8 +9,12 @@
  * logic and its audit history are the phone's, moved here unchanged.
  */
 import {
+  forgetReportSourcesKnownAs,
   laterReportPeriod,
+  onReportSourceRecognised,
   reportPeriodIsLater,
+  reportSourcesKnownAsToKeep,
+  restoreReportSourcesKnownAs,
   validReportPeriodSnapshot,
   type DAVEReportFormat,
   type DAVEReportSnapshot,
@@ -375,11 +379,51 @@ function randomSenderId(): string {
   return Array.from({ length: 4 }, () => Math.floor(Math.random() * 0x100000000).toString(16).padStart(8, '0')).join('');
 }
 
+/**
+ * R6 item 1 (the coordinator's decision on review pass 1): the saved reports of a released build that this device
+ * has recognised, each with the full fingerprint it was last known as and the key of the notes on the earlier rows
+ * of its tasks as they were when it was first recognised (DAVEReportSnapshot, reportSourceKnownAs). That key is
+ * what the report is held to from then on, so it has to outlive the app session. Kept on this device only: in its
+ * own storage, under the report snapshot prefix (each account its own), and never in the shared record.
+ * Fingerprints and that key only: no project name, no note text.
+ */
+const KNOWN_AS_KEY = '@vitruvius/report-snapshots/known-as/v1';
+let knownAsStorage: SnapshotStorage | null = null;
+let knownAsWrite: Promise<void> = Promise.resolve();
+
+/** Before a saved period is read: what this storage keeps is put back (another storage is another account's). */
+async function recallReportSourcesKnownAs(storage: SnapshotStorage): Promise<void> {
+  await knownAsWrite;
+  if (knownAsStorage !== storage) {
+    forgetReportSourcesKnownAs();
+    knownAsStorage = storage;
+  }
+  try {
+    const raw = await storage.getItem(KNOWN_AS_KEY);
+    const parsed: unknown = JSON.parse(raw ?? '[]');
+    restoreReportSourcesKnownAs((Array.isArray(parsed) ? parsed : [])
+      .filter((entry): entry is [string, string, string] => Array.isArray(entry) && entry.length === 3 && entry.every(part => typeof part === 'string')));
+  } catch {
+    // Nothing kept that can be read: a saved report is recognised afresh.
+  }
+}
+
+/** A saved report was recognised for the first time: kept at once. */
+function keepReportSourcesKnownAs(): void {
+  const storage = knownAsStorage;
+  if (!storage) return;
+  const raw = JSON.stringify(reportSourcesKnownAsToKeep());
+  // (A failed write is not retried: the report is then recognised afresh the next time the app is opened.)
+  knownAsWrite = knownAsWrite.then(() => storage.setItem(KNOWN_AS_KEY, raw)).catch(() => undefined);
+}
+onReportSourceRecognised(keepReportSourcesKnownAs);
+
 async function loadLocalDAVEReportSnapshot(
   scopeKey: string,
   reportFormat: DAVEReportFormat,
   storage: SnapshotStorage,
 ): Promise<DAVEReportSnapshot | null> {
+  await recallReportSourcesKnownAs(storage);
   const own = await storage.getItem(storageKey(scopeKey, reportFormat));
   if (own) return parseSnapshot(own, scopeKey, reportFormat);
   const shared = parseSnapshot(await storage.getItem(storageKey(scopeKey, undefined)), scopeKey, undefined);
