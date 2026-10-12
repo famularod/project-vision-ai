@@ -45,11 +45,21 @@ export type DAVEReportProjectTruthsInput = {
  * not.
  *
  * That changes which updates a report counts for the same saved data, and so
- * its fingerprint. A report approved or sent by Build 230 must still be
- * known, so where the two ways of scoping differ the truth is also built as
- * Build 230 scoped it, and kept beside the report's truth for the 1.0
- * fingerprint only (daveProjectTruthAsBuilt). Where they do not differ,
- * which is nearly always, nothing is built twice.
+ * its fingerprint. Where the two ways of scoping count the same updates,
+ * which is nearly always, nothing is built twice and a report approved or
+ * sent by Build 230 is known by the 1.0 fingerprint of this very truth.
+ *
+ * Where they differ (R7 item A, the coordinator's decision on review pass 1,
+ * F0): the report has other updates in it than Build 230's report of the
+ * same saved data, so it is another report, and no 1.0 fingerprint is a
+ * name of its facts. (R4 took the 1.0 fingerprint of the truth as Build 230
+ * scoped it as such a name. That name was blind to every update only this
+ * build counts: one could be reworded, or a second arrive, and the Build 230
+ * report was still taken for it.) The truth as Build 230 scoped it is still
+ * built and kept beside the report's truth (daveProjectTruthAsBuilt), to
+ * say what Build 230 wrote, and the view is marked
+ * (daveProjectTruthCountsOtherUpdatesThanBefore) so that nothing takes it
+ * for a name.
  */
 export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput): DAVEProjectTruth[] {
   const known = input.knownScheduleItems;
@@ -93,6 +103,6 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
       scope.updates.every((update, index) => update === scopeAsBefore.updates[index]);
     const truth = truthOf(scope);
     // In a stable order, so a sync that only reorders the saved rows changes nothing a report says (R4 item 4a).
-    return daveProjectTruthInStableOrder(truth, sameUpdates ? truth : truthOf(scopeAsBefore));
+    return daveProjectTruthInStableOrder(truth, sameUpdates ? truth : truthOf(scopeAsBefore), !sameUpdates);
   });
 }

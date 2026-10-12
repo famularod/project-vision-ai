@@ -134,17 +134,27 @@ describe('R4 item 4a with R3 item 1: an update on a task\'s hidden row is counte
     expect(buildDAVELegacyReportSourceFingerprint([view])).toBe(buildDAVELegacyReportSourceFingerprint(truthsWith(UPDATES)));
   });
 
-  it('so a report Build 230 approved for such a project is still that report\'s approval', () => {
+  // R7 item A (the coordinator's decision on review pass 1, F0). This test said "so a report Build 230 approved for
+  // such a project is still that report's approval": the 1.0 fingerprint above stood as a name of today's facts.
+  // It left the update out, so it went on standing when the update was reworded or a second one arrived. Where
+  // this build's report counts an update Build 230 left out, the report is another report.
+  it('but it is no name of this report\'s facts: a report Build 230 approved for such a project is another report, offered for approval again', () => {
     const fromBuild230 = buildDAVELegacyReportSourceFingerprint(truthsWith(UPDATES));
     const truths = truthsWith([...UPDATES, onHiddenRow]);
     const fingerprint = buildDAVEReportSourceFingerprint(truths);
-    expect(sameReportSource(fromBuild230, fingerprint)).toBe(true);
+    expect(sameReportSource(fromBuild230, fingerprint)).toBe(false);
     const snapshot = (source: string) => buildDAVEReportSnapshot({
       truths, scopeKey: daveReportSnapshotScopeKey(['Alpha']), sourceFingerprint: source, capturedAt: NOW, reportFormat: 'project_manager',
     });
     const approved = { ...snapshot(fromBuild230), deliveredAt: null } as DAVEReportSnapshot;
-    expect(reportSnapshotToSave(snapshot(fingerprint), approved)).toBeNull();
-    expect(approvalReplacesUnsentApproval(approved, fingerprint)).toBe(false);
+    expect(reportSnapshotToSave(snapshot(fingerprint), approved)).not.toBeNull();
+    expect(approvalReplacesUnsentApproval(approved, fingerprint)).toBe(true);
+    // Nor with that update reworded (it was taken for this too).
+    const reworded = buildDAVEReportSourceFingerprint(truthsWith([...UPDATES, { ...onHiddenRow, notes: 'Paint primer short by two pails.' } as ProjectUpdate]));
+    expect(reworded).not.toBe(fingerprint);
+    expect(sameReportSource(fromBuild230, reworded)).toBe(false);
+    // Without that update the report is the one Build 230 made, and is known.
+    expect(sameReportSource(fromBuild230, buildDAVEReportSourceFingerprint(truthsWith(UPDATES)))).toBe(true);
   });
 
   it('guard: where the saved tasks change nothing, nothing is built twice (the truth as built is the report\'s own)', () => {

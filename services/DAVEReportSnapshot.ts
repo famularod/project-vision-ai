@@ -219,8 +219,12 @@ export function isLegacyReportSource(fingerprint: string | null | undefined): bo
   return typeof fingerprint === 'string' && fingerprint.startsWith(LEGACY_REPORT_SOURCE_PREFIX);
 }
 
-/** Today's fingerprint of some facts, and the 1.0 fingerprint of the same facts. */
-export function rememberLegacyReportSource(current: string, legacy: string): void {
+/**
+ * Today's fingerprint of some facts, and the 1.0 fingerprint of the same facts. `null`: no 1.0 fingerprint is a
+ * name of these facts as they were last worked out (R7 item A), and none worked out before stands for them.
+ */
+export function rememberLegacyReportSource(current: string, legacy: string | null): void {
+  if (current && legacy === null) legacyReportSources.delete(current);
   if (!current || !legacy || current === legacy) return;
   const known = legacyReportSources.get(current) ?? new Set<string>();
   known.add(legacy);

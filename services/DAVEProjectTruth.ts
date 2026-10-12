@@ -587,6 +587,8 @@ export function daveProjectTruthUpdatesFor(input: {
 
 /** A stable-order view's truth as it was built (R4 item 4a); kept beside the view, never inside it. */
 const truthAsBuilt = new WeakMap<DAVEProjectTruth, DAVEProjectTruth>();
+/** The stable-order views whose report counts other field updates than the build before counted for the same saved data (R7 item A). */
+const truthsCountingOtherUpdates = new WeakSet<DAVEProjectTruth>();
 
 /**
  * A task date as a number, read the same way on every device; a date that
@@ -650,6 +652,8 @@ export function daveProjectTruthInStableOrder(
   truth: DAVEProjectTruth,
   /** The same project's truth as the build before scoped its updates, where that differs (for the 1.0 fingerprint). */
   asBuiltBefore: DAVEProjectTruth = truth,
+  /** This build's report counts other field updates than the build before did for the same saved data (R7 item A). */
+  countsOtherUpdatesThanBefore = false,
 ): DAVEProjectTruth {
   if (truthAsBuilt.has(truth)) return truth;
   const schedule = scheduleTruthInStableOrder(truth.schedule);
@@ -684,7 +688,19 @@ export function daveProjectTruthInStableOrder(
     }),
   }) as DAVEProjectTruth;
   truthAsBuilt.set(stable, asBuiltBefore);
+  if (countsOtherUpdatesThanBefore) truthsCountingOtherUpdates.add(stable);
   return stable;
+}
+
+/**
+ * Whether this report truth counts other field updates than the build before
+ * counted for the same saved data (R7 item A; false for any truth that is
+ * not such a stable-order view). Where it does, the 1.0 fingerprint of the
+ * truth as the build before built it says what that build wrote, and is NOT
+ * a name of this truth's facts.
+ */
+export function daveProjectTruthCountsOtherUpdatesThanBefore(truth: DAVEProjectTruth): boolean {
+  return truthsCountingOtherUpdates.has(truth);
 }
 
 /** The truth as the build before built it, for a stable-order view; any other truth is its own. */

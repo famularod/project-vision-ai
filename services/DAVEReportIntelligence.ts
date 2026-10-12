@@ -1,4 +1,4 @@
-import { daveProjectTruthAsBuilt, type DAVEProjectTruth } from './DAVEProjectTruth';
+import { daveProjectTruthAsBuilt, daveProjectTruthCountsOtherUpdatesThanBefore, type DAVEProjectTruth } from './DAVEProjectTruth';
 import type { PIEReportDraft } from './PIEReporter';
 import {
   buildScheduleTaskAccounting,
@@ -160,11 +160,16 @@ export function buildDAVEReportSourceFingerprint(
   truths: readonly DAVEProjectTruth[],
 ): string {
   const fingerprint = reportSourceFingerprintOf(truths);
+  // R7 item A (the coordinator's decision on review pass 1, F0): a 1.0 fingerprint is a name of these facts only
+  // where this build's report counts the same field updates as Build 230's did for the same saved data. Where it
+  // counts even one that Build 230 left out, the 1.0 fingerprint is of a report without it, blind to whatever
+  // happens to it: no 1.0 name stands, and a report made on Build 230 is another report.
+  const countsWhatBuild230Counted = !truths.some(daveProjectTruthCountsOtherUpdatesThanBefore);
   // The 1.0 fingerprint of the same facts, so a report made under it is still known (R4 item 4a).
-  rememberLegacyReportSource(fingerprint, buildDAVELegacyReportSourceFingerprint(truths));
+  rememberLegacyReportSource(fingerprint, countsWhatBuild230Counted ? buildDAVELegacyReportSourceFingerprint(truths) : null);
   // And the 1.0 fingerprint the same facts had before a task's notes followed it, so a report a released build
   // made then is still known (R6 item 1).
-  const before = truthsAsBuiltBeforeNotesFollowed(truths);
+  const before = countsWhatBuild230Counted ? truthsAsBuiltBeforeNotesFollowed(truths) : null;
   rememberReportSourceBeforeNotesFollowed(
     fingerprint,
     before ? buildDAVELegacyReportSourceFingerprint(before) : null,
