@@ -174,6 +174,30 @@ const SIGN_IN_LOCK_PREFIX = 'vitruvius.web.sign-in.';
 const REFRESH_PERIOD_MS = 60 * 60_000;
 /** A sign-in nobody refreshed for this long is dropped from the note. */
 const SIGN_IN_FORGOTTEN_AFTER_MS = 7 * 24 * 60 * 60_000;
+/**
+ * The answers by which the sign-in server did NOT speak about the sign-in: an error of its own (500, 501), of
+ * a gateway in front of it (502, 503, 504), or of the proxy in front of that when the server is down (520 to
+ * 530). The sign-in library keeps the sign-in on exactly these and tries again (auth-js, lib/fetch.js,
+ * NETWORK_ERROR_CODES); on any other failed answer to a refresh it ends the sign-in in the tab.
+ *
+ * Web review pass 3, P3-1 (12 Oct 2026; the coordinator's decision): the guard goes by this ONE list in both
+ * places where it tells "the server could not say" from "the sign-in ended", and a test holds the list to
+ * the library's own, number for number. The guard had 502, 503 and 504 only, twice. So a refresh answered
+ * 500 or 520 left the tab signed in while the guard threw away its note of that sign-in and the tab's key:
+ * an old copy clicked later then ended the sign-in for both tabs, a copy on the sign-in page deleted the
+ * report periods, and a Sign Out of This Computer with the hourly token run out took 27 seconds and was
+ * taken for confirmed by the cloud.
+ */
+export const DAVE_WEB_SERVER_COULD_NOT_SAY_STATUSES: readonly number[] = Object.freeze([
+  500, 501, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530,
+]);
+/**
+ * The server's answer to a refresh for a token it does not take (the sign-in has ended, or the token was
+ * replaced too long ago): its own word that the sign-in is over. A refresh that fails with any other answer
+ * (a request timeout, say) ends the sign-in in the tab, as the library does, but is not the cloud confirming
+ * a sign-out (web review pass 3, P3-1 c).
+ */
+const REFRESH_TOKEN_NOT_TAKEN_STATUS = 400;
 
 type Turns = Record<string, { until: number; tokens: string[] }>;
 
@@ -218,7 +242,8 @@ export type DAVEWebSignInRefreshGuard = Readonly<{
    * After a sign-out run inside `signingOut`: whether the sign-in server's own answers mean that sign-in is
    * over there too. It took the sign-out, or said that sign-in is not there, or refused its token. False
    * when it could not be told or did not say: no connection, "unavailable", "too many requests", another
-   * error, or no answer in time (the request stays sent, so the server may still end it later).
+   * error (its own, a proxy's, or any answer to the refresh other than the one for a token it does not
+   * take), or no answer in time (the request stays sent, so the server may still end it later).
    */
   signOutConfirmed: () => boolean;
 }>;
@@ -702,7 +727,7 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
       } catch {
         return notNow();
       }
-      if ([502, 503, 504].includes(response.status)) return notNow();
+      if (DAVE_WEB_SERVER_COULD_NOT_SAY_STATUSES.includes(response.status)) return notNow();
     } else {
       response = await options.fetch(input, init);
     }
@@ -711,10 +736,11 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
       refreshWaitsUntil = Date.now() + (asked > 0 ? Math.min(asked, REFRESH_WAIT_LIMIT_MS) : DAVE_WEB_REFRESH_WAIT_MS);
       return notNow();
     }
-    if (grant === 'refresh_token' && !response.ok && ![502, 503, 504].includes(response.status)) {
-      // The server refused this tab's token (auth-js takes every answer but these for a refusal): the sign-in
-      // has ended, for every tab holding it. Its note goes, and this tab's key with it.
-      if (signOut) signOutConfirmed = true;
+    if (grant === 'refresh_token' && !response.ok && !DAVE_WEB_SERVER_COULD_NOT_SAY_STATUSES.includes(response.status)) {
+      // Not an answer by which the server could not say: the sign-in library ends the sign-in in this tab on
+      // it, and so does the guard: its note of that sign-in goes, and this tab's key with it. Only the
+      // server's answer for a token it does not take is its word that the sign-in is over everywhere.
+      if (signOut && response.status === REFRESH_TOKEN_NOT_TAKEN_STATUS) signOutConfirmed = true;
       gaveWay = false;
       stopWatching?.();
       try {

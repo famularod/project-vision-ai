@@ -30,7 +30,7 @@ useBrowserGlobals();
 
 type ServerState = {
   /** What the sign-in server does with a refresh. */
-  refresh: 'ok' | 'too-many-requests' | 503 | 'dropped' | 'never-answers';
+  refresh: 'ok' | 'too-many-requests' | 'dropped' | 'never-answers' | number;
   /** …and with a sign-out (a number: it answers with that status). */
   logout: 'ok' | 'dropped' | 'never-answers' | number;
   refreshesAsked: number;
@@ -55,7 +55,7 @@ function withServer(cloud: TabCloud): TabCloud {
       if (server.refresh === 'too-many-requests') {
         return json(429, { code: 'over_request_rate_limit', message: 'Request rate limit reached' }, { 'retry-after': '600' });
       }
-      if (server.refresh === 503) return json(503, { message: 'Service Unavailable' });
+      if (typeof server.refresh === 'number') return json(server.refresh, { message: `HTTP ${server.refresh}` });
       if (server.refresh === 'dropped') throw new TypeError('Failed to fetch');
       if (server.refresh === 'never-answers') return never();
     }
@@ -337,5 +337,71 @@ describe('second review, web F5 (b): a second open tab of the account, hearing t
 
     expect((await ending).value).toBe('kept');
     expect(tabSignIn(tab.storage)?.sessionId).toBe('5e55101d-0001-4000-8000-000000000777');
+  });
+});
+
+// Web review pass 3, P3-1 (c) (12 Oct 2026; caused earlier in this round). With the hourly token run out, the
+// sign-out first refreshes it. When the server answered that refresh with an error of its own (500, or the 520 a
+// proxy gives when the server is down), the guard did not take it for "cannot be done just now": he waited 27
+// seconds and eight requests, and then the web client said the cloud HAD confirmed, though that sign-in was
+// still good on the server, so the sign-in page did not say so. The guard now goes by the sign-in library's
+// own list of such answers, here as everywhere. And a refresh that fails with any other answer counts as the
+// cloud's word that the sign-in is over only when it is the answer the server gives for a token it does not
+// take (400); a request timeout (408) or another answer says nothing about the sign-in.
+describe('web review pass 3, P3-1 (c): Sign Out of This Computer, the hourly token run out, the refresh answered with an error', () => {
+  it.each([500, 501, 502, 504, 520, 525, 530])('the server answers the refresh %i (an error of its own, or of the proxy in front of it): signed out at once with one request, and NOT confirmed', async status => {
+    const tab = await signedInTab();
+    const accessTokenThen = browser.accessTokenOf(tab.storage);
+    browser.hourlyTokenRunsOut(tab.storage);
+    server.refresh = status;
+
+    const signOut = await whileTimePasses(tab.gateway!.signOut('local'));
+
+    expect(signOut.seconds).toBeLessThanOrEqual(1);
+    expect(server.refreshesAsked + server.logoutsAsked).toBe(1);
+    expect(tab.gateway!.signedOutWithoutCloudConfirmation()).toBe(true);
+    expectSignedOutOfThisComputer(tab);
+    expect(browser.cloud.signInEnded(accessTokenThen)).toBe(false);
+  });
+
+  it.each([408, 409, 401, 403, 422])('the server answers the refresh %i (not its answer for a token it does not take): signed out at once, and NOT confirmed', async status => {
+    const tab = await signedInTab();
+    const accessTokenThen = browser.accessTokenOf(tab.storage);
+    browser.hourlyTokenRunsOut(tab.storage);
+    server.refresh = status;
+
+    const signOut = await whileTimePasses(tab.gateway!.signOut('local'));
+
+    expect(signOut.seconds).toBeLessThanOrEqual(1);
+    expect(server.refreshesAsked + server.logoutsAsked).toBe(1);
+    expect(tab.gateway!.signedOutWithoutCloudConfirmation()).toBe(true);
+    expectSignedOutOfThisComputer(tab);
+    expect(browser.cloud.signInEnded(accessTokenThen)).toBe(false);
+  });
+
+  it('guard: the server answers the refresh 400, its answer for a token it does not take (here: the phone’s Sign Out of All Devices had ended the sign-in): confirmed, as before', async () => {
+    const tab = await signedInTab();
+    const accessTokenThen = browser.accessTokenOf(tab.storage);
+    await browser.serverEndsSignInOf(accessTokenThen);
+    browser.hourlyTokenRunsOut(tab.storage);
+
+    await whileTimePasses(tab.gateway!.signOut('local'));
+
+    expect(browser.outcomes()).toContain('refused');
+    expect(tab.gateway!.signedOutWithoutCloudConfirmation()).toBe(false);
+    expect(browser.cloud.signInEnded(accessTokenThen)).toBe(true);
+  });
+
+  it('a second open tab that hears the sign-out, its hourly token run out, the server answering its refresh 500: signed out at once with one request', async () => {
+    const tab = await signedInTab();
+    browser.hourlyTokenRunsOut(tab.storage);
+    server.refresh = 500;
+
+    const ended = await whileTimePasses(tab.gateway!.signOutThisTabToo('owner-1'), 110);
+
+    expect(ended.value).toBe('ended');
+    expect(ended.seconds).toBeLessThanOrEqual(1);
+    expectNothingLeftHere(tab);
+    expect(server.refreshesAsked + server.logoutsAsked).toBe(1);
   });
 });
