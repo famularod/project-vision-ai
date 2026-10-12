@@ -8,7 +8,7 @@
  * connection returns, after startup, and on Sync Now.
  */
 
-import { cloudOwnerUnchanged, currentCloudOwner } from './CloudOwnerBinding';
+import { callAsCloudOwner, cloudOwnerUnchanged, currentCloudOwner } from './CloudOwnerBinding';
 import { requireOwnedProjectDocumentAccess } from './ProjectDocumentLifecycle';
 import { syncFailureCategoryOfError } from './SyncFailureCategory';
 
@@ -114,10 +114,27 @@ export function projectDocumentsDueForUploadRetry<T extends UploadRetryDocument>
  * documents on this phone (whole-app audit A8 pass 3 M3). Uses the same
  * account binding as the sync queue (audit A1 M3).
  */
-export function bindProjectDocumentUploadToAccount(): () => boolean {
+export function bindProjectDocumentUploadToAccount(): ProjectDocumentUploadAccount {
   const owner = currentCloudOwner();
-  return () => cloudOwnerUnchanged(owner);
+  const sameAccount = () => cloudOwnerUnchanged(owner);
+  sameAccount.asItsAccount = <P, R>(call: (params: P) => R, params: P): R => callAsCloudOwner(owner.ownerId, () => call(params));
+  return sameAccount;
 }
+
+/**
+ * The answer of bindProjectDocumentUploadToAccount: whether the account the upload began under is still the one
+ * signed in; and `asItsAccount`, which makes one cloud call for that upload AS that account.
+ *
+ * Second review, sync N4 (left from pass 1's G1 / G2; owner answer Q45, 6 Oct 2026). The phone's own upload of a
+ * project document looked at the account before it sent the file and after, not when the file left: the cloud layer
+ * was called with no account named, so its looks after the file is measured, read and hashed, and the last look
+ * where the request leaves (review pass 1, sync G1), did not apply, and the file could leave under the next sign-in.
+ * The file is now sent through here, as the upload queue and Sync Now send theirs. Before the app knows who is signed
+ * in no account is named, and the call is made as it always was.
+ */
+export type ProjectDocumentUploadAccount = (() => boolean) & Readonly<{
+  asItsAccount: <P, R>(call: (params: P) => R, params: P) => R;
+}>;
 
 /**
  * The uploaded document as the list holds it now, while its shared copy may

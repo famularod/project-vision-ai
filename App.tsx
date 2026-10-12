@@ -7071,7 +7071,7 @@ useEffect(() => {
       await verifyOwnedProjectDocument(target);
       if (!sameAccount()) return false;
       let lastReportedPercent = -1;
-      const result = await uploadPhoto({
+      const result = await sameAccount.asItsAccount(uploadPhoto, {
         bucket: PROJECT_DOCUMENT_UPLOAD_FOLDER,
         path: storagePath,
         uri: target.localUri,
