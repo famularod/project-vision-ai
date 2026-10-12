@@ -93,6 +93,18 @@
  * only after a week, or when eight newer ones are noted). A tab that was
  * closed, reloaded or put to sleep, and an hour running out, end nothing.
  *
+ * Web review pass 3, P3-2 (12 Oct 2026; the coordinator's decision): the
+ * tab that gave way also looked again at every sign-out it HEARD, from any
+ * tab of any account, and "no longer listed, and fewer than eight listed"
+ * was its test. In three orders that deleted the owner's current report
+ * periods while he was signed in and working in another tab. A tab that
+ * holds no sign-in now removes nothing because a sign-out was heard. It
+ * looks only when a tab holding a token of that very sign-in lets go of
+ * it (it follows the sign-in from refresh to refresh), and the end is
+ * established only when the note then holds no sign-in at all: while it
+ * lists any, this one may only have been pushed out, or another sign-in
+ * of his may be at work here.
+ *
  * Open item W1-3 (6 Oct 2026): "too many requests" is not an ended
  * sign-in. When the sign-in server answered a routine refresh with 429,
  * auth-js took it for a refusal: with the hourly token run out the tab
@@ -218,16 +230,18 @@ export type DAVEWebSignInRefreshGuard = Readonly<{
   signInOver: (sessionId: string | null) => Promise<void>;
   /**
    * For a tab that gave way: watches for the real end, in this browser, of
-   * the sign-in it gave way for (a sign-out made or heard in a tab of it,
-   * or the server refusing its token), and runs `lapsed` once when it
-   * sees it: at once when it has ended already, else when the tab given
-   * way to lets go of its token. Nothing else runs it: not that tab being
-   * closed, reloaded or put to sleep, and not an hour running out (second
-   * review, web F2). The watch is over when nobody open holds the tokens
-   * it gave way for any more (that tab was closed, reloaded, put to sleep,
-   * or given a newer token); calling this again looks again. True when
-   * this tab gave way (there is something to watch for), false otherwise.
-   * Never after this tab is given tokens itself.
+   * the very sign-in it gave way for (a sign-out made or heard in a tab of
+   * it, or the server refusing its token), and runs `lapsed` once when
+   * that is established. It looks only when a tab that holds a token of
+   * that sign-in lets go of it, following the sign-in from refresh to
+   * refresh, and takes it for ended only when the browser's note then
+   * holds no sign-in at all. Nothing else runs it: not that tab being
+   * closed, reloaded or put to sleep, not an hour running out (second
+   * review, web F2), and not a sign-out heard from any tab (web review
+   * pass 3, P3-2). The watch is over for good when nobody open holds a
+   * token of that sign-in any more. True when this tab gave way (there is
+   * something to watch for), false otherwise. Never after this tab is
+   * given tokens itself.
    */
   vouchedFor: (lapsed: () => void) => boolean;
   /**
@@ -601,21 +615,23 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
   }
 
   /**
-   * Whether the note shows that this sign-in has ended in this browser: it can be read and no longer lists
-   * it, though it would still have to. (A sign-in also leaves the note a week after its last refresh, and
-   * when eight newer ones are noted: neither is its end.) When it cannot be told, it has not.
+   * Whether the browser's note establishes that the sign-in this tab gave way to has ended here: it can be
+   * read, and it holds NO sign-in at all any more (the last sign-in to end takes the note with it). `until`:
+   * the newest hourly end this tab has read for that sign-in; a week after it the note forgets it by itself,
+   * and that is not its end.
+   *
+   * Web review pass 3, P3-2 (12 Oct 2026; the coordinator's decision): "the note no longer lists it, and
+   * lists fewer than eight" was taken for the end. It is not always: eight newer sign-ins push the oldest
+   * out of the note, and one of those leaving then made the count come right. While the note lists ANY
+   * sign-in, this one may only have been pushed out, or another sign-in of his may be at work in this
+   * browser: nothing is established, and nothing is removed.
    */
-  function endedInThisBrowser(watched: { name: string; until: number }): boolean {
+  function endedInThisBrowser(until: number): boolean {
     try {
       const shared = sharedStorage();
-      if (!shared || Date.now() > watched.until + SIGN_IN_FORGOTTEN_AFTER_MS) return false;
+      if (!shared || Date.now() > until + SIGN_IN_FORGOTTEN_AFTER_MS) return false;
       const written = shared.getItem(DAVE_WEB_SIGN_IN_TURNS_KEY);
-      // No note at all: every sign-in it listed has ended (the last one to go takes the note with it).
-      if (written === null || written === undefined) return true;
-      const noted = parsed(written);
-      if (!noted || typeof noted !== 'object') return false;
-      const names = Object.keys(noted as Record<string, unknown>);
-      return !names.includes(watched.name) && names.length < SIGN_INS_REMEMBERED;
+      return written === null || written === undefined;
     } catch {
       return false;
     }
@@ -643,18 +659,24 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
     stopWatching = stop;
     void (async () => {
       const locks = tabLocks();
-      while (!over && locks && !endedInThisBrowser(watched)) {
-        const there = await someoneElseHolds(watched.tokens);
+      /** The newest hourly end read for that sign-in so far. */
+      let until = watched.until;
+      while (!over && locks && !endedInThisBrowser(until)) {
+        // The two tokens of that very sign-in the server would take NOW: the tab given way to may have
+        // refreshed since, and this tab goes on looking at whoever holds them (web review pass 3, P3-2).
+        const noted = readTurns()[watched.name];
+        if (noted) until = Math.max(until, noted.until);
+        const there = await someoneElseHolds(noted ? noted.tokens.slice(0, 2) : watched.tokens);
         if (over) return;
-        // Nobody open holds them any more: the tab given way to was closed, reloaded or put to sleep, or it was
-        // given a newer token (the server said "good" again, and that tab carries the sign-in). Nobody signed out.
+        // Nobody open holds a token of it any more: the tab given way to was closed, reloaded or put to sleep.
+        // Nobody signed out, and this tab stops looking for good.
         if (!there) break;
         // Granted once every tab holding that token has let go of it: it was closed, or given a newer token,
         // or its sign-in ended. Asked 'exclusive', so this request never counts as a tab holding the token.
         await locks.request(`${SIGN_IN_LOCK_PREFIX}${there}`, { mode: 'exclusive', signal: withdrawn?.signal }, async () => undefined);
       }
       // The page is told only of a sign-in that really ended here (second review, web F2).
-      end(endedInThisBrowser(watched));
+      end(endedInThisBrowser(until));
     })().catch(() => undefined); // Withdrawn, or the browser cannot say: nothing is known to have ended.
     return true;
   }

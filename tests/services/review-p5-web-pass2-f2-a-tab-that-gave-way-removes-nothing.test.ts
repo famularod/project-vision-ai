@@ -173,20 +173,84 @@ describe('second review, web F2: when that sign-in really ends here, the periods
     expect(browser.periodKeys()).toEqual([]);
   });
 
-  it('a second open tab of that sign-in still holds its token when the working tab signs out: they leave at once, not only when the second tab lets go', async () => {
-    const { working } = await copyGaveWayToTheOpenWorkingTab();
-    const second = browser.openTab(browser.duplicateOf(working.storage));
+  // Changed for web review pass 3, P3-2 (12 Oct 2026). Three tests here held the copy to look again at every
+  // sign-out it HEARD: "a second open tab still holds its token ...: they leave at once", and "the working tab
+  // was reloaded first, then the server refuses it / then signs out: they leave then". The coordinator's
+  // decision: a sign-out heard is never a reason to remove anything; the copy looks only when a tab holding
+  // a token of that very sign-in lets go of it. In this fixture only the copy has a page, so what the tab whose
+  // sign-in ends does itself is held in tests/services/review-p5-web-pass3-p32-a-tab-with-no-sign-in.test.ts,
+  // where every tab runs the app (its last three guards are these orders).
+  it('a second open tab of that sign-in still holds its token when the working tab signs out: the copy drops them when that second tab lets go too, not at a sign-out it only heard', async () => {
+    const first = createTabStorage();
+    storeTabSignIn(first, 'owner-1');
+    const working = browser.openTab(first);
+    await working.client.auth.initialize();
+    const copy = browser.openAppTab(browser.duplicateOf(first));
+    await copy.client.auth.initialize();
+    expect(await browser.refreshes(working)).toBe('refreshed');
+    expect(await browser.refreshes(working)).toBe('refreshed');
+    // A second tab of that sign-in, open and holding its newest token before the old copy is looked at.
+    const second = browser.openTab(browser.duplicateOf(first));
     await second.client.auth.initialize();
     await settleTabs();
+    browser.hourlyTokenRunsOut(copy.storage);
+    expect(await browser.looksAtItsSignIn(copy)).toBe('no sign-in');
+    expect(copy.guard.gaveWay()).toBe(true);
+
+    await working.client.auth.signOut({ scope: 'local' });
+    await settleTabs(40);
+    // In the app the tab that signs out removes them itself, at once. The copy has only heard a sign-out.
+    expect(tabHoldsSignIn(second.storage)).toBe(true);
+    expect(browser.periodKeys()).toEqual([WEB_SIGN_IN_PERIOD_KEY]);
+
+    browser.closeTab(second);
+    await settleTabs(40);
+    expect(browser.periodKeys()).toEqual([]);
+  });
+
+  // Added for web review pass 3, P3-2: the copy follows that very sign-in from refresh to refresh, and goes by
+  // the note at the moment a tab holding its newest token lets go.
+  it('the working tab signs out while another tab of that sign-in still holds the token just before the newest: the note holds no sign-in any more, and the copy drops them at that moment', async () => {
+    const first = createTabStorage();
+    storeTabSignIn(first, 'owner-1');
+    const working = browser.openTab(first);
+    await working.client.auth.initialize();
+    const copy = browser.openAppTab(browser.duplicateOf(first));
+    await copy.client.auth.initialize();
+    expect(await browser.refreshes(working)).toBe('refreshed');
+    const before = browser.openTab(browser.duplicateOf(first));
+    await before.client.auth.initialize();
+    expect(await browser.refreshes(working)).toBe('refreshed');
+    await settleTabs();
+    browser.hourlyTokenRunsOut(copy.storage);
+    expect(await browser.looksAtItsSignIn(copy)).toBe('no sign-in');
+    expect(copy.guard.gaveWay()).toBe(true);
 
     await working.client.auth.signOut({ scope: 'local' });
     await settleTabs(40);
 
-    expect(tabHoldsSignIn(second.storage)).toBe(true);
+    expect(tabHoldsSignIn(before.storage)).toBe(true);
+    expect(browser.noteText()).toBeNull();
     expect(browser.periodKeys()).toEqual([]);
   });
 
-  it('the working tab was RELOADED first, then the server refuses it (the phone’s Sign Out of All Devices): they leave then', async () => {
+  it('the working tab goes on refreshing for over a week after the copy gave way, then signs out: the copy has followed it, and drops them then', async () => {
+    const { working } = await copyGaveWayToTheOpenWorkingTab();
+    minutesLater(6 * 24 * 60);
+    expect(await browser.refreshes(working)).toBe('refreshed');
+    await settleTabs();
+    jest.spyOn(Date, 'now').mockRestore();
+    // Nine days after the copy gave way, three after the working tab's last refresh.
+    minutesLater(9 * 24 * 60);
+    expect(browser.periodKeys()).toEqual([WEB_SIGN_IN_PERIOD_KEY]);
+
+    await working.client.auth.signOut({ scope: 'local' });
+    await settleTabs(40);
+
+    expect(browser.periodKeys()).toEqual([]);
+  });
+
+  it('the working tab was reloaded first, then its sign-in ends (the server refuses it, or it signs out): the copy, which stopped looking at the reload, removes nothing on hearing of it', async () => {
     const { working, first } = await copyGaveWayToTheOpenWorkingTab();
     const again = await reloads(working, first);
     expect(browser.periodKeys()).toEqual([WEB_SIGN_IN_PERIOD_KEY]);
@@ -196,18 +260,8 @@ describe('second review, web F2: when that sign-in really ends here, the periods
     expect(await browser.looksAtItsSignIn(again)).toBe('no sign-in');
     await settleTabs(40);
 
-    expect(browser.periodKeys()).toEqual([]);
-  });
-
-  it('the working tab was reloaded first, then signs out of this computer: they leave then', async () => {
-    const { working, first } = await copyGaveWayToTheOpenWorkingTab();
-    const again = await reloads(working, first);
+    // (This fixture's working tab has no page; in the app its own page removes them here.)
     expect(browser.periodKeys()).toEqual([WEB_SIGN_IN_PERIOD_KEY]);
-
-    await again.client.auth.signOut({ scope: 'local' });
-    await settleTabs(40);
-
-    expect(browser.periodKeys()).toEqual([]);
   });
 
   it('the working tab stayed out of sight past its hour, then he looks at it and the server refuses it: they leave then, not at the end of the hour', async () => {
