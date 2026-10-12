@@ -38,7 +38,7 @@ import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import { scheduleTaskEarlierIds, scheduleTaskLinks } from './ScheduleTaskRevisions';
 import { scheduleItemImportBatchIds, scheduleTaskAddedByLookaheadsOnly } from './ScheduleImportProvenance';
-import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
+import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendarDay';
 import { photoDisplayResultCanInformProject } from './PhotoAssessment';
 import {
   DEFAULT_PROJECT_TIME_ZONE,
@@ -588,13 +588,24 @@ export function daveProjectTruthUpdatesFor(input: {
 /** A stable-order view's truth as it was built (R4 item 4a); kept beside the view, never inside it. */
 const truthAsBuilt = new WeakMap<DAVEProjectTruth, DAVEProjectTruth>();
 
-/** A task date as a number, read the same way on every device ("10/08/2026", "2026-10-08…"); unreadable or blank: null. */
+/**
+ * A task date as a number, read the same way on every device; a date that
+ * names no day (blank, "TBD", an impossible date): null.
+ *
+ * R7 item E (review pass 1, F8): it read only "10/08/2026" and "2026-10-08",
+ * so a task whose finish was saved as "Nov 8, 2026" was listed last, as if it
+ * had no date. Read by the app's one reading of a schedule date
+ * (scheduleCalendarDay), which reads every form the app has saved a task's
+ * date in: 10/08/2026 (files and the phone, since 30 Sep 2026), 2026-10-08
+ * (the web's schedule builder), "Oct 8, 2026" (schedule imports until
+ * 30 Sep 2026), and the forms a date typed by hand can have (10/8/26,
+ * 2026/10/08, 8 Oct 2026, a weekday in front, a time after).
+ */
 function stableDateValue(value: string | null | undefined): number | null {
-  const text = (value || '').trim();
-  const us = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(text);
-  if (us) return Date.UTC(Number(us[3]), Number(us[1]) - 1, Number(us[2]));
-  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(text);
-  return iso ? Date.UTC(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3])) : null;
+  const day = scheduleCalendarDay(value);
+  if (!day) return null;
+  const [year, month, dayOfMonth] = day.split('-').map(Number);
+  return Date.UTC(year, month - 1, dayOfMonth);
 }
 const plainOrder = (left: string, right: string) => (left < right ? -1 : left > right ? 1 : 0);
 
