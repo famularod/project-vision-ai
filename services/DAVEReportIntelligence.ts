@@ -604,14 +604,26 @@ function reportCompletedTaskRank(task: DAVEProjectTruth['schedule'][number], las
   return timestamp === null ? Number.MAX_SAFE_INTEGER : -timestamp;
 }
 
+/**
+ * The day of `value`, written out ("Oct 1, 2026").
+ *
+ * R7 item D (the coordinator's decision on review pass 1, F4): a moment (a
+ * date with a time of day: when a note was typed, a percent confirmed, a
+ * master schedule approved, a task last saved) is written as the day it was
+ * on this device. It was written as its day in UTC, so a task completed at
+ * 6:30 in the evening Pacific time read "Last updated" the next day. A date
+ * with no time is written exactly as before: it names a calendar day, which
+ * no time zone moves.
+ */
 function formatReportDate(value: string) {
   const timestamp = dateValue(value);
   if (timestamp === null) return value;
+  const isMoment = /\d{1,2}:\d{2}/.test(value);
   return new Date(timestamp).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
-    timeZone: 'UTC',
+    ...(isMoment ? {} : { timeZone: 'UTC' }),
   });
 }
 
