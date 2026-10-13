@@ -239,18 +239,21 @@ describe('a routine refresh answered "too many requests"', () => {
   it('the wait is the one the server names, up to ten minutes', async () => {
     await openTab();
     await client.auth.initialize();
-    server.refresh = { tooManyRequests: true, retryAfterSeconds: 300 };
+    server.refresh = { tooManyRequests: true, retryAfterSeconds: 480 };
     hourlyTokenRunsOut();
     await expect(whileTimePasses(gateway.getSessionStatus())).rejects.toThrow(STILL_SIGNED_IN);
     server.refresh = 'ok';
 
-    // Four minutes on: still inside the five the server asked for.
-    await jest.advanceTimersByTimeAsync(4 * 60_000);
+    // Two minutes on: past the minute waited when the server names none, and still well inside the
+    // eight it asked for. (Not "four of five": with advanceTimers the test's clock also moves with
+    // real time, and the first check alone can use up to 90 s of it, so on a loaded machine a
+    // one-minute margin was crossed and this read as "the wait is over": the release gate, 13 Oct 2026.)
+    await jest.advanceTimersByTimeAsync(2 * 60_000);
     await expect(whileTimePasses(gateway.getSessionStatus())).rejects.toThrow(STILL_SIGNED_IN);
     expect(server.refreshesAsked).toBe(1);
 
     // Past it (and past auth-js's own minute of not asking again).
-    await jest.advanceTimersByTimeAsync(2 * 60_000 + 5_000);
+    await jest.advanceTimersByTimeAsync(7 * 60_000 + 5_000);
     expect((await whileTimePasses(gateway.getSessionStatus())).session?.user.id).toBe('owner-1');
     expect(server.refreshesAsked).toBe(2);
 
