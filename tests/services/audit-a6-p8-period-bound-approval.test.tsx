@@ -261,6 +261,39 @@ afterEach(() => {
 const settle = () => act(async () => {
   await new Promise(resolve => setTimeout(resolve, 0));
 });
+/**
+ * The four seconds the app waits for the shared copy before it reads the period from this device
+ * (DAVEReportSnapshotStore, CLOUD_READ_TIMEOUT_MS = 4000), held by the test instead of the real clock, and ended
+ * inside act (Build 232 item 3 part 4). The case that waits for them let them run out on the real clock and
+ * watched with waitFor; under load (four test files at once) the screen's last state update of that load, the
+ * approval effect that runs after the render, could land after waitFor had returned: "An update to ReportsScreen
+ * inside a test was not wrapped in act(...)", which the release gate fails a build on. Now nothing of that load
+ * can happen before `pass()`, and all of it happens inside it. Every other timer is the real one.
+ */
+const holdTheFourSecondLimit = () => {
+  const realSetTimeout = global.setTimeout;
+  const held: Array<() => void> = [];
+  const spy = jest.spyOn(global, 'setTimeout').mockImplementation(((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) => {
+    if (delay !== 4000) return realSetTimeout(callback, delay, ...args);
+    held.push(() => callback(...args));
+    return realSetTimeout(() => undefined, 0);   // a handle to clear, as the app does when the read answers
+  }) as never);
+  return {
+    /** How many reads are waiting out their four seconds. */
+    waiting: () => held.length,
+    /** The four seconds pass: the app gives up on the shared copy, and what the screen then sets is set inside act. */
+    pass: async () => {
+      while (held.length) {
+        const giveUp = held.splice(0);
+        await act(async () => {
+          giveUp.forEach(run => run());
+          await new Promise(resolve => realSetTimeout(resolve, 0));
+        });
+      }
+    },
+    release: () => spy.mockRestore(),
+  };
+};
 const approvable = () =>
   screen.findByText('Copy, Email, and Text unlock after approval. No report is sent automatically.', {}, SLOW);
 const shareable = () => screen.findByRole('button', { name: 'Share Report' }, SLOW);
@@ -496,13 +529,21 @@ describe('edits made on another period are not current (A6 pass 8 M1)', () => {
     phone.unmount();
     // The shared copy does not answer, so the period loads from this device after four seconds.
     mockCloudState = 'hanging';
-    mount(tower(1));
-    expect(screen.getByText('The reporting period is still loading.')).toBeTruthy();
-    await addOwnLine('Crane arrives Monday.');
-    await waitFor(() => expect(screen.getByText(
-      'The reporting period changed after you edited this report. Discard your edits and review what changed since then before you approve.',
-    )).toBeTruthy(), SLOW);
-    expect(screen.getByRole('button', { name: 'Approve Report' }).props.accessibilityState).toMatchObject({ disabled: true });
+    const fourSeconds = holdTheFourSecondLimit();
+    try {
+      mount(tower(1));
+      expect(screen.getByText('The reporting period is still loading.')).toBeTruthy();
+      await addOwnLine('Crane arrives Monday.');
+      // The edit was made while the app was still waiting for the shared copy; now the four seconds run out.
+      expect(fourSeconds.waiting()).toBeGreaterThan(0);
+      await fourSeconds.pass();
+      await waitFor(() => expect(screen.getByText(
+        'The reporting period changed after you edited this report. Discard your edits and review what changed since then before you approve.',
+      )).toBeTruthy(), SLOW);
+      expect(screen.getByRole('button', { name: 'Approve Report' }).props.accessibilityState).toMatchObject({ disabled: true });
+    } finally {
+      fourSeconds.release();
+    }
   });
 
   it('edits on the same period stay current: an own send, a tab switch, and nothing new keep them approvable', async () => {
