@@ -764,7 +764,11 @@ function newestConfirmedComparison(
 }
 
 function isIncidentalReportEvidence(item: PIEReportSourceEvidence) {
-  if (!['note', 'photo', 'runtime'].includes(item.source)) return false;
+  // Not his field notes (Build 232 item 4 part B): the filter is for what a
+  // photo's analysis sees in passing (a dog, a desk, a chair). A note he
+  // typed with such a word and no construction word ("Conference table and
+  // chairs were delivered to the trailer.") was dropped here, unseen.
+  if (!['photo', 'runtime'].includes(item.source)) return false;
   return isIncidentalVisualObservation(item.summary);
 }
 
@@ -834,7 +838,13 @@ export function buildConstructionUnderstanding(
         sourceEvidenceIds: item.sourceEvidenceIds,
       }));
     const status = resolveWorkAreaStatus(items, issues, nextSteps);
-    const changed = progress.map(item => item.summary);
+    // The area's progress LINES: the verified progress, and with it, in the
+    // same order, his field notes of none of the three kinds (item 4 part B).
+    // Only verified construction evidence still COUNTS as progress above.
+    const changed = items
+      .filter(item => isVerifiedConstructionProgressEvidence(item) || isPlainFieldNote(item))
+      .map(item => cleanReportBulletText(item.summary))
+      .filter(Boolean);
 
     const printedName = printedNameOfFiledWorkArea(areaName, items);
 
@@ -2587,6 +2597,30 @@ function isVerifiedConstructionProgressEvidence(item: PIEReportSourceEvidence) {
   }
 
   return isConstructionRelevantObservation(item.summary);
+}
+
+/**
+ * A field note that is neither progress, nor a problem, nor a next step
+ * (Build 232 item 4 part B, the coordinator's decision): no field note
+ * falls through.
+ *
+ * A work area's lines are made from three lists. A note was "progress" only
+ * with a word of the writer's construction vocabulary
+ * (dave-construction-relevance), a problem only if it read as an issue or a
+ * blocker, a next step only with an action word. A note of none of the
+ * three was in no list, so in no line of the report: "Glazing shop drawings
+ * are approved.", "Sprinkler main is hung in Bay B.", "Anchor bolts were
+ * surveyed at the dock.", "Plumber found a broken cleanout at the site
+ * lateral. Dana to call the city." It is listed with the progress notes, a
+ * plain observation: in the same order (newest first) and under the same
+ * allowance of lines. It is printed among the progress lines and is not
+ * counted as verified construction progress.
+ */
+function isPlainFieldNote(item: PIEReportSourceEvidence) {
+  return item.source === 'note' &&
+    !isActionEvidence(item) &&
+    !isRiskText(item.summary) &&
+    !isConstructionRelevantObservation(item.summary);
 }
 
 function resolveWorkAreaStatus(

@@ -202,6 +202,8 @@ const THE_SECTION = [
   '• Building 2100 — 2100 Unit 2026: Damaged door slab. See Image 2.',
   '• Building 2100 — 2100 Unit 2026: Doors for Unit 2026 arrived damaged. Luis to confirm the reorder.',
   '• Building 2100 — 2100 Unit 2026: Luis – Please confirm the current status of Hang doors.',
+  // Item 4 part B: this note was in no line before (no word of the writer's construction vocabulary: "grading" is not "grade").
+  '• Building 2100 — 2100 Site: Lot grading starts October 2026 per the sitework sub.',
   '• Building 2100 — 2100: Latest update: Electrical rough in is 30 percent complete on Level 3. Pour moved to 10/20/2026. Latest photo: Conduit at Level 3 corridor Schedule focus: Hang doors (due 10/18/2026).',
   '',
   'Please let me know if you have any questions.',
