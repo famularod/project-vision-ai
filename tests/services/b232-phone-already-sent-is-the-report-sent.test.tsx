@@ -356,6 +356,9 @@ describe('B232 item 2: "Your other device already sent this report" is said of t
     const doors = lines.findIndex(line => line.includes('Hang doors'));
     const glass = lines.findIndex(line => line.includes('Install storefront'));
     expect({ doors: doors >= 0, glass: glass >= 0, doorsFirst: doors < glass }).toEqual({ doors: true, glass: true, doorsFirst: true });
+    // Item 3 part 2: each is under its area's own name, not under the year of its due date ("Tower — 2026 Level 3").
+    expect(lines.filter(line => /— 20\d\d /.test(line))).toEqual([]);
+    expect(lines).toContain('• Tower — Level 3: Hang doors, due 11/15/2026, status Waiting, owner Luis.');
     expect({ saidAlreadySent, theSameSection: section(sentFromTheIpad) === section(sentFromThePhone), theSameReport: sentFromTheIpad === sentFromThePhone })
       .toEqual({ saidAlreadySent: true, theSameSection: true, theSameReport: true });
   });

@@ -144,7 +144,7 @@ function project(seed: number): World {
 
 // ---- what the phone makes of it, as the Reports screen does ----
 const HEADING = 'WORK AREAS / PHOTO NOTES';
-type Read = { fingerprint: string; text: string; section: string };
+type Read = { fingerprint: string; text: string; section: string; areas: string[] };
 /** The fingerprint that decides "already sent", and the written report in both formats, read at `now`. */
 function phone(world: World, now: string = at(0)): Read {
   jest.useFakeTimers({ now: Date.parse(now), doNotFake: ['nextTick', 'setImmediate', 'setInterval', 'setTimeout', 'clearTimeout', 'clearInterval', 'queueMicrotask'] });
@@ -175,7 +175,10 @@ function phone(world: World, now: string = at(0)): Read {
       ...(fallback ? [String(enhanceDAVEReportDraft(fallback, briefing, 'project_manager').body)] : []),
     ].join('\n=====\n');
     const from = projectManager.indexOf(HEADING);
-    return { fingerprint, text, section: from >= 0 ? projectManager.slice(from) : '' };
+    // The work areas as the Reports screen lists them: "<project> — <area>".
+    const areas = (core.reportDraft as unknown as { locationGroups: Array<{ workAreas: Array<{ projectName: string; title: string }> }> })
+      .locationGroups.flatMap(group => group.workAreas.map(area => `${area.projectName} — ${area.title}`));
+    return { fingerprint, text, section: from >= 0 ? projectManager.slice(from) : '', areas };
   } finally {
     jest.useRealTimers();
   }
@@ -200,13 +203,18 @@ const withPhoto = (world: World, change: (item: Record<string, unknown>) => Reco
 describe('B232 item 2 part C: the phone\'s whole written report against the 2.0 fingerprint', () => {
   it('the generator makes the section in full: a latest update, a latest photo, a schedule focus, image numbers', () => {
     for (const seed of SEEDS) {
-      const { section, fingerprint } = phone(project(seed));
+      const { section, fingerprint, areas } = phone(project(seed));
       say(`=== seed ${seed}: the section on day 0 ===\n${section}`);
       expect(fingerprint.split(':')[0]).toBe('dave-report-source/2.0');
       expect(section).toContain(HEADING);
       expect(section).toMatch(/Latest update: /);
       expect(section).toMatch(/Schedule focus: /);
       expect(section).toMatch(/See Images? \d/);
+      // Item 3 part 2: no line is filed under the year of a date it prints ("Tower — 2026 Site"),
+      expect(section).not.toMatch(/^• Tower — 20\d\d /m);
+      // and the Reports screen lists each work area once.
+      expect(areas.filter((area, index) => areas.indexOf(area) !== index)).toEqual([]);
+      expect(areas.filter(area => /— 20\d\d /.test(area))).toEqual([]);
     }
   });
 

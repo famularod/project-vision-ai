@@ -158,7 +158,14 @@ export type PIEWorkAreaUnderstanding = {
   id: string;
   projectName: string;
   locationTitle: string;
+  /** The name the area's lines are FILED under: each such group has its own three lines of the report. */
   workAreaName: string;
+  /**
+   * The name the area is PRINTED under (Build 232 item 3 part 2): its name
+   * without the year of a date one of its lines prints ("2026 Site" is
+   * "Site"). Missing where it is the name it is filed under.
+   */
+  printedName?: string;
   status: PIEWorkAreaStatus;
   whatWorkIsAbout: string;
   whatChanged: string[];
@@ -829,11 +836,14 @@ export function buildConstructionUnderstanding(
     const status = resolveWorkAreaStatus(items, issues, nextSteps);
     const changed = progress.map(item => item.summary);
 
+    const printedName = printedNameOfFiledWorkArea(areaName, items);
+
     return {
       id: slug(`understanding-${location}-${areaName}`),
       projectName,
       locationTitle: location,
       workAreaName: areaName,
+      ...(printedName !== areaName ? { printedName } : {}),
       status,
       whatWorkIsAbout: areaName,
       whatChanged: uniqueText(changed).slice(0, 4),
@@ -956,13 +966,13 @@ export function buildProjectNarrative(
   const locationGroups = understanding.locationGroups.map(group => ({
     id: group.id,
     title: group.title,
-    workAreas: group.workAreas.map(area => {
+    workAreas: workAreasPrintedOncePerName(group.workAreas.map(area => {
       const actionItems = buildReportActionItems(area);
       const bullets = buildReportBulletsFromUnderstanding(area, actionItems);
       const risks = area.issues.map(issue => ({
         id: slug(`risk-${area.id}-${issue.summary}`),
         projectName: area.projectName,
-        areaName: area.workAreaName,
+        areaName: printedWorkAreaName(area),
         summary: issue.summary,
         severity: issue.severity,
         sourceEvidenceIds: issue.sourceEvidenceIds,
@@ -970,7 +980,7 @@ export function buildProjectNarrative(
       const decisionsNeeded = area.decisions.map(decision => ({
         id: slug(`decision-${area.id}-${decision.summary}`),
         projectName: area.projectName,
-        areaName: area.workAreaName,
+        areaName: printedWorkAreaName(area),
         question: decision.summary,
         owner: decision.owner || 'Action Required',
         sourceEvidenceIds: decision.sourceEvidenceIds,
@@ -978,16 +988,16 @@ export function buildProjectNarrative(
 
       return {
         id: area.id,
-        title: area.workAreaName,
+        title: printedWorkAreaName(area),
         projectName: area.projectName,
-        areaName: area.workAreaName,
+        areaName: printedWorkAreaName(area),
         bullets,
         actionItems,
         imageReferences: area.imageReferences,
         risks,
         decisionsNeeded,
       };
-    }),
+    })),
   }));
 
   const actionItems = locationGroups.flatMap(group =>
@@ -1007,6 +1017,61 @@ export function buildProjectNarrative(
     risks,
     decisionsNeeded,
   };
+}
+
+/**
+ * Build 232 item 3 part 2 (the coordinator's decision): the heading is
+ * corrected and NOT ONE LINE LEAVES OR COMES.
+ *
+ * A work area prints at most three lines (selectConciseAreaBullets). The
+ * lines that print a date were filed under "2026 <area>", a work area of
+ * their own with its own three, beside "<area>" with the field notes' three.
+ * They are filed exactly as before, so each group keeps its own three lines
+ * and its own photos, and the groups one name is printed for are joined
+ * here, when the report is written: the first group's lines, then the
+ * other's, under the one heading. The Reports screen lists the area once.
+ */
+function workAreasPrintedOncePerName(areas: PIEReportWorkArea[]): PIEReportWorkArea[] {
+  const printed: PIEReportWorkArea[] = [];
+  const placeOf = new Map<string, number>();
+  areas.forEach(area => {
+    const key = `${normalizeName(area.projectName)}|${normalizeName(area.title)}`;
+    const place = placeOf.get(key);
+    if (place === undefined) {
+      placeOf.set(key, printed.length);
+      printed.push(area);
+      return;
+    }
+    const first = printed[place];
+    const photoIds = new Set(first.imageReferences.map(reference => reference.photoId));
+    printed[place] = {
+      ...first,
+      bullets: [...first.bullets, ...area.bullets],
+      actionItems: [...first.actionItems, ...area.actionItems],
+      imageReferences: [...first.imageReferences, ...area.imageReferences.filter(reference => !photoIds.has(reference.photoId))],
+      risks: [...first.risks, ...area.risks],
+      decisionsNeeded: [...first.decisionsNeeded, ...area.decisionsNeeded],
+    };
+  });
+  return printed;
+}
+
+/** The name a work area is printed under: its own, without the year of a date (see `printedName`). */
+function printedWorkAreaName(area: PIEWorkAreaUnderstanding) {
+  return area.printedName ?? area.workAreaName;
+}
+
+/**
+ * The name the lines filed under `filedUnder` are printed under. Each line
+ * is named again without the dates it prints; if that gives another name for
+ * all of them, the number in the name was only ever a date's year, and the
+ * area is printed under the name without it. A number that is any line's
+ * own (a building in the task's name) names the area as before.
+ */
+function printedNameOfFiledWorkArea(filedUnder: string, items: PIEReportSourceEvidence[]) {
+  const named = items.map(item =>
+    printedReportWorkAreaName(item.projectName, item.areaName, item.workAreaNameFrom ?? item.summary));
+  return named.length === 0 || named.includes(filedUnder) ? filedUnder : named[0] || filedUnder;
 }
 
 export function buildDavidStyleReport({
@@ -1082,7 +1147,7 @@ export function buildReportActionItems(
         owner: step.owner || 'Action Required',
         action: step.summary,
         projectName: area.projectName,
-        areaName: area.workAreaName,
+        areaName: printedWorkAreaName(area),
         needsOwner: !step.owner,
         sourceEvidenceIds: step.sourceEvidenceIds,
       }));
@@ -1217,6 +1282,41 @@ export function buildReportReviewFlags({
   ].filter(Boolean) as string[];
 
   return Array.from(new Set(flags));
+}
+
+const REPORT_MONTH_NAME =
+  '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?';
+/** The dates a line can print: 10/08/2026, 2026-10-08, Oct 8, 2026, 8 Oct 2026, October 2026. */
+const REPORT_LINE_DATES = new RegExp([
+  '\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b',
+  '\\b\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}\\b',
+  `\\b${REPORT_MONTH_NAME}\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}\\b`,
+  `\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${REPORT_MONTH_NAME},?\\s+\\d{4}\\b`,
+  `\\b${REPORT_MONTH_NAME},?\\s+\\d{4}\\b`,
+].join('|'), 'gi');
+
+/**
+ * The name one line's work area is PRINTED under (Build 232 item 3 part 2,
+ * the coordinator's decision): a date printed in a line is never a building
+ * number. `cleanReportWorkAreaName` names a work area from the project's
+ * name, the area's name and the line's own words, and takes a four-digit
+ * number among them for a building number ("Building 2321 East Driveway" is
+ * "2321 East Driveway"). It took the year of a date the same way, so every
+ * schedule line that prints its due date read "<project> — 2026 <area>".
+ * This is that name with the line's dates left out of its words. A number
+ * in the project's, the area's or the task's own name still names the area.
+ * (How a line is FILED is `cleanReportWorkAreaName`, unchanged.)
+ */
+export function printedReportWorkAreaName(
+  projectName: string,
+  areaName: string,
+  lineWords = '',
+) {
+  return cleanReportWorkAreaName(
+    projectName,
+    areaName,
+    lineWords.replace(REPORT_LINE_DATES, ' ').replace(/\s+/g, ' ').trim(),
+  );
 }
 
 export function cleanReportWorkAreaName(
@@ -1656,7 +1756,7 @@ function buildExecutiveSummaryBullets(
 
 function executiveAreaLabel(area: PIEWorkAreaUnderstanding) {
   const projectName = area.projectName.trim();
-  const workAreaName = area.workAreaName.trim();
+  const workAreaName = printedWorkAreaName(area).trim();
 
   if (!workAreaName || normalizeName(workAreaName) === normalizeName(projectName)) {
     return projectName || 'Project';
