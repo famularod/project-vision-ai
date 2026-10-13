@@ -244,155 +244,10 @@ export function legacyReportSourcesOf(current: string | null | undefined): reado
 }
 
 /**
- * R6 item 1 (the coordinator's decisions on R5's finding and on review pass
- * 1): a report made before a task's notes followed it. Schedule batch S5
- * brings a task's notes forward to the row a newer master gave it, and the
- * task's latest note is a fact of a report: after the first sync on that
- * build a report approved, sent or saved before the update was a report "of
- * other facts" (689 of 1,868 report points on the reviewer's sequences).
- *
- * Every report a released build made carries a 1.0 fingerprint. So wherever
- * the app works out today's fingerprint it also works out the 1.0
- * fingerprint of the same facts as they were BEFORE the notes followed (each
- * task's latest note without the notes it took from its earlier rows), and
- * remembers it here as one more name of today's facts.
- *
- * That name leaves the notes that followed out, and a name that leaves
- * something out goes on matching when that something changes (review pass 1,
- * F0). So it is not taken alone. The first time this device recognises a
- * saved 1.0 fingerprint as today's facts, by either 1.0 name, it keeps
- * beside it (`reportSourceKnownAs`; in the device's own storage, by
- * DAVEReportSnapshotStore; never in the shared record):
- *  - today's full fingerprint, and
- *  - a key of the notes on the earlier rows of the tasks shown, as they are
- *    then: the very notes the name leaves out (which notes, when typed, what
- *    they say; the same key before and after they follow the task).
- * From then on the saved report is today's report only when
- *  - today's full fingerprint is the one it was last known as (nothing has
- *    changed); or
- *  - one of today's two 1.0 names is the saved fingerprint AND the notes of
- *    the earlier rows are exactly as they were when it was first recognised:
- *    all that can have happened is that those notes followed the task.
- * A note typed on an earlier row afterwards and brought forward, or one of
- * those notes reworded or deleted, makes it another report. No clock decides
- * anything. A report recognised before this build's first sync is still
- * known after that sync (the notes only followed).
- *
- * One way by construction, as the version hand-over is: the name is a 1.0
- * fingerprint, which this build never writes, so a report made on this build
- * is never known through it.
- *
- * What it cannot tell: a note that reached an earlier row of the task between
- * the day the report was made and the first time this device recognises it
- * (typed on another device that had not heard of the newer master). It is
- * taken as part of that report: Build 230 left every such note on the
- * earlier row, the report's own among them.
- *
- * Needed for as long as a 1.0 fingerprint can still be in a saved period,
- * the shared record, a saved web report or the web's list of sent reports.
- */
-const reportSourcesBeforeNotesFollowed = new Map<string, string>();
-/** For each of today's fingerprints as last worked out: the key of the notes on the earlier rows of its tasks. */
-const reportSourceEarlierRowNotes = new Map<string, string>();
-const REPORT_SOURCES_KNOWN_AS_KEPT = 100;
-/** A saved 1.0 fingerprint this device has recognised: the full fingerprint it was last known as, and the notes key at its first recognition. */
-type ReportSourceKnownAs = Readonly<{ fingerprint: string; earlierRowNotes: string }>;
-const reportSourcesKnownAs = new Map<string, ReportSourceKnownAs>();
-const recognisedListeners = new Set<() => void>();
-
-/**
- * Today's fingerprint of some facts; the 1.0 fingerprint the same facts had before notes followed their tasks (null
- * when no task's latest note followed it); and the key of the notes on the earlier rows of the tasks shown. As the
- * facts were LAST worked out: which notes followed is not in the fingerprint (a note typed on the task's own row
- * reads the same as one brought to it), so an earlier answer for the same fingerprint is replaced, never added to.
- */
-export function rememberReportSourceBeforeNotesFollowed(current: string, before: string | null, earlierRowNotes = ''): void {
-  if (!current || isLegacyReportSource(current)) return;
-  reportSourcesBeforeNotesFollowed.delete(current);
-  reportSourceEarlierRowNotes.delete(current);
-  reportSourceEarlierRowNotes.set(current, earlierRowNotes);
-  if (before && isLegacyReportSource(before)) reportSourcesBeforeNotesFollowed.set(current, before);
-  for (const kept of [reportSourcesBeforeNotesFollowed, reportSourceEarlierRowNotes]) {
-    while (kept.size > REMEMBERED_LEGACY_SOURCES) {
-      const oldest = kept.keys().next().value;
-      if (oldest === undefined) break;
-      kept.delete(oldest);
-    }
-  }
-}
-
-/** The 1.0 fingerprints the facts of `current` had before notes followed their tasks; none when no task's latest note followed it. */
-export function reportSourcesBeforeNotesFollowedOf(current: string | null | undefined): readonly string[] {
-  const before = current ? reportSourcesBeforeNotesFollowed.get(current) : undefined;
-  return before ? [before] : [];
-}
-
-/** The full fingerprint a saved 1.0 report was last known as on this device; undefined when it has not been recognised here. */
-export function reportSourceKnownAs(saved: string | null | undefined): string | undefined {
-  return saved ? reportSourcesKnownAs.get(saved)?.fingerprint : undefined;
-}
-
-/** Every saved report recognised, oldest first, as the device's storage keeps it (DAVEReportSnapshotStore): [saved, last known as, notes key]. */
-export function reportSourcesKnownAsToKeep(): Array<readonly [string, string, string]> {
-  return [...reportSourcesKnownAs].map(([saved, known]) => [saved, known.fingerprint, known.earlierRowNotes] as const);
-}
-
-/**
- * What the device's storage kept, put back for the app session. It stands over what this session recognised before
- * the storage was read: the kept one holds the notes as they were at the FIRST recognition, which is what decides.
- */
-export function restoreReportSourcesKnownAs(kept: ReadonlyArray<readonly [string, string, string]>): void {
-  kept.forEach(([saved, fingerprint, earlierRowNotes]) => {
-    if (isLegacyReportSource(saved) && fingerprint && !isLegacyReportSource(fingerprint) && typeof earlierRowNotes === 'string') {
-      reportSourcesKnownAs.set(saved, { fingerprint, earlierRowNotes });
-    }
-  });
-}
-
-/** Called each time what is kept for a saved report changes, so the device can keep it. */
-export function onReportSourceRecognised(listener: () => void): () => void {
-  recognisedListeners.add(listener);
-  return () => { recognisedListeners.delete(listener); };
-}
-
-/** Another account's reports, or a test's: nothing recognised is remembered. */
-export function forgetReportSourcesKnownAs(): void {
-  reportSourcesKnownAs.clear();
-}
-
-/**
- * Whether `saved`, a 1.0 fingerprint, is a report of the facts of `current`, today's fingerprint (the rules above).
- */
-function savedUnderTheEarlierVersion(saved: string, current: string): boolean {
-  const known = reportSourcesKnownAs.get(saved);
-  if (known?.fingerprint === current) return true;
-  const asTheyAre = legacyReportSourcesOf(current).includes(saved);
-  const beforeNotesFollowed = !asTheyAre && reportSourcesBeforeNotesFollowed.get(current) === saved;
-  if (!asTheyAre && !beforeNotesFollowed) return false;
-  const earlierRowNotes = reportSourceEarlierRowNotes.get(current) ?? '';
-  // Once recognised, a 1.0 name stands only while the notes of the earlier rows are as they were at the first
-  // recognition: the name that leaves the followed notes out is never taken alone.
-  if (known && known.earlierRowNotes !== earlierRowNotes) return false;
-  reportSourcesKnownAs.delete(saved);
-  // (The notes kept stay those of the first recognition: a later one gets here only with the very same notes.)
-  reportSourcesKnownAs.set(saved, { fingerprint: current, earlierRowNotes });
-  while (reportSourcesKnownAs.size > REPORT_SOURCES_KNOWN_AS_KEPT) {
-    const oldest = reportSourcesKnownAs.keys().next().value;
-    if (oldest === undefined) break;
-    reportSourcesKnownAs.delete(oldest);
-  }
-  recognisedListeners.forEach(listener => listener());
-  return true;
-}
-
-/**
- * Whether two fingerprints are of the same facts: the same fingerprint; or
- * one written under 1.0 and the other today's fingerprint of those facts
- * (as they are, or, R6 item 1, as they were before a task's notes followed
- * it, and then only while the notes that followed are as this device first
- * knew them). Given in either order. The web's
- * longer source fingerprint ("<facts>:media-…") is compared by its facts
- * part, with the rest the same.
+ * Whether two fingerprints are of the same facts: the same fingerprint, or
+ * one written under 1.0 and the other today's fingerprint of those facts.
+ * The web's longer source fingerprint ("<facts>:media-…") is compared by its
+ * facts part, with the rest the same.
  */
 export function sameReportSource(left: string | null | undefined, right: string | null | undefined): boolean {
   if (!left || !right) return false;
@@ -401,7 +256,9 @@ export function sameReportSource(left: string | null | undefined, right: string 
   const [rightFacts, ...rightRest] = right.split(':media-');
   if (leftRest.join(':media-') !== rightRest.join(':media-')) return false;
   if (isLegacyReportSource(leftFacts) === isLegacyReportSource(rightFacts)) return false;
-  return isLegacyReportSource(leftFacts) ? savedUnderTheEarlierVersion(leftFacts, rightFacts) : savedUnderTheEarlierVersion(rightFacts, leftFacts);
+  return isLegacyReportSource(leftFacts)
+    ? legacyReportSourcesOf(rightFacts).includes(leftFacts)
+    : legacyReportSourcesOf(leftFacts).includes(rightFacts);
 }
 
 function wasDelivered(snapshot: DAVEReportSnapshot): boolean {

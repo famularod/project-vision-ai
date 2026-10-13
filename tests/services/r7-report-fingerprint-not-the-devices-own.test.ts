@@ -33,7 +33,7 @@ import {
 } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
 import {
-  buildDAVEReportSnapshot, daveReportSnapshotScopeKey, forgetReportSourcesKnownAs, markReportSnapshotDelivered, sameReportSource, type DAVEReportSnapshot,
+  buildDAVEReportSnapshot, daveReportSnapshotScopeKey, markReportSnapshotDelivered, sameReportSource, type DAVEReportSnapshot,
 } from '../../services/DAVEReportSnapshot';
 import { buildDAVEWebReportDraft, buildDAVEWebReportTruths, formatDAVEWebReport } from '../../services/DAVEWebOperations';
 import { loadDAVEWebReadOnlySnapshot, type DAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
@@ -148,7 +148,6 @@ function written(truths: DAVEProjectTruth[], items: readonly ScheduleItem[]): st
 
 const PHONE_DOCUMENT = deviceDocument(PHONE_FOLDER, SAVED_DOCUMENT);
 const ITEMS = importedTasks();
-beforeEach(() => forgetReportSourcesKnownAs());
 
 describe('R7 item C: one project has one fingerprint on the phone, the iPad and the web', () => {
   it('(the rig) the phone\'s document keeps the file\'s path inside this install\'s own folder, and an unedited task has no updatedAt', () => {

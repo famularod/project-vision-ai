@@ -28,10 +28,10 @@ import {
 import { daveProjectTruthAsBuilt } from '../../services/DAVEProjectTruth';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
 import {
-  buildDAVEReportSnapshot, daveReportSnapshotScopeKey, forgetReportSourcesKnownAs, legacyReportSourcesOf, markReportSnapshotDelivered, rememberLegacyReportSource,
-  reportBaselineSnapshot, reportSnapshotToSave, reportSourcesBeforeNotesFollowedOf, sameReportSource, type DAVEReportSnapshot,
+  buildDAVEReportSnapshot, daveReportSnapshotScopeKey, legacyReportSourcesOf, markReportSnapshotDelivered, rememberLegacyReportSource,
+  reportBaselineSnapshot, reportSnapshotToSave, sameReportSource, type DAVEReportSnapshot,
 } from '../../services/DAVEReportSnapshot';
-import { reconcileDAVEScheduleRecords, recoverDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
+import { reconcileDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
 import { buildDAVEWebReportSource, buildDAVEWebReportTruths, daveWebReportSourceIsCurrent, formatDAVEWebReport } from '../../services/DAVEWebOperations';
 import type { DAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
@@ -145,7 +145,6 @@ const WITH_PHOTO = {
 /** The same update filed as updates are today: with its parent project kept. Both builds count it. */
 const FILED_UNDER_THE_PROJECT = { ...FIRST, scheduleProjectName: 'Alpha' } as ProjectUpdate;
 
-beforeEach(() => forgetReportSourcesKnownAs());
 
 describe('R7 item A: where this build\'s report counts a field update Build 230 left out, a Build 230 report is another report', () => {
   it('(the rig) the task was moved, the update sits on its old row under a building name: this build counts it, Build 230 did not', () => {
@@ -161,9 +160,8 @@ describe('R7 item A: where this build\'s report counts a field update Build 230 
   it('the report approved on Build 230 is not this report: it has more in it (the one-time loss the decision accepts)', () => {
     const today = phone(STATE, [FIRST]);
     expect(sameReportSource(today.onBuild230, today.fingerprint)).toBe(false);
-    // No 1.0 name stands for these facts at all: neither as they are nor as they were before notes followed a task (R6).
+    // No 1.0 name stands for these facts at all.
     expect(legacyReportSourcesOf(today.fingerprint)).toEqual([]);
-    expect(reportSourcesBeforeNotesFollowedOf(today.fingerprint)).toEqual([]);
     // On the phone: the approval waiting from Build 230 is another report's, and approving saves a new one.
     const approvedOn230 = { ...snapshotOf(today, today.onBuild230), deliveredAt: null } as DAVEReportSnapshot;
     expect(approvalReplacesUnsentApproval(approvedOn230, today.fingerprint)).toBe(true);
@@ -237,7 +235,6 @@ describe('R7 item A: where both builds count the same field updates, the hand-ov
       [],
       [FILED_UNDER_THE_PROJECT, { ...SECOND, scheduleProjectName: 'Alpha' } as ProjectUpdate],
     ]) {
-      forgetReportSourcesKnownAs();
       const changed = phone(STATE, updates);
       expect(changed.fingerprint).not.toBe(approved.fingerprint);
       expect(sameReportSource(approved.onBuild230, changed.fingerprint)).toBe(false);
@@ -258,28 +255,9 @@ describe('R7 item A: where both builds count the same field updates, the hand-ov
     const earlier = 'dave-report-source/1.0:0b0b0b0b';
     rememberLegacyReportSource(today, earlier);
     expect(sameReportSource(earlier, today)).toBe(true);
-    forgetReportSourcesKnownAs();
     rememberLegacyReportSource(today, null);
     expect(legacyReportSourcesOf(today)).toEqual([]);
     expect(sameReportSource(earlier, today)).toBe(false);
-  });
-
-  it('nor does the name the facts had before notes followed a task (R6) stand where the report counts more', () => {
-    // A note was typed on Paint's old row; this build's first sync brings it forward to the row shown.
-    const withANote: State = { ...STATE, items: STATE.items.map(item => (item.id === 'MASTER M1-1'
-      ? { ...item, activity: [{ id: 'note-1', message: 'Crew short Tuesday.', author: 'David', createdAt: '2026-09-08T11:00:00.000Z' }] } as ScheduleItem : item)) };
-    const synced: State = { ...withANote, items: recoverDAVEScheduleRecords({ local: withANote.items, cloud: withANote.items, allowCloudOnly: true }) as ScheduleItem[] };
-    expect(synced.items.find(item => item.id === 'MASTER M2-1')?.activity?.map(entry => entry.id)).toEqual(['note-1']);
-    // Guard: with no such update the Build 230 report (made before the note followed) is known, by that name.
-    const madeOnBuild230 = phone(withANote, []).onBuild230;
-    const plain = phone(synced, []);
-    expect(reportSourcesBeforeNotesFollowedOf(plain.fingerprint)).toEqual([madeOnBuild230]);
-    expect(sameReportSource(madeOnBuild230, plain.fingerprint)).toBe(true);
-    // With an update only this build counts: no name of before, and it is another report.
-    forgetReportSourcesKnownAs();
-    const countsMore = phone(synced, [FIRST]);
-    expect(reportSourcesBeforeNotesFollowedOf(countsMore.fingerprint)).toEqual([]);
-    expect(sameReportSource(madeOnBuild230, countsMore.fingerprint)).toBe(false);
   });
 
   it('one project of two counts an update Build 230 left out: the report of both is another report', () => {

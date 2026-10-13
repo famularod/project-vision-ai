@@ -11,7 +11,6 @@ import {
   buildDAVEReportSnapshot,
   compareDAVEReportSnapshots,
   rememberLegacyReportSource,
-  rememberReportSourceBeforeNotesFollowed,
   daveReportSnapshotScopeKey,
   reportPeriodWaitingForOtherDevice,
   reportTaskEarlierRows,
@@ -158,29 +157,6 @@ export type DAVEReportBriefing = Readonly<{
 export function buildDAVEReportSourceFingerprint(
   truths: readonly DAVEProjectTruth[],
 ): string {
-  const fingerprint = reportSourceFingerprintOf(truths);
-  // R7 item A (the coordinator's decision on review pass 1, F0): a 1.0 fingerprint is a name of these facts only
-  // where this build's report counts the same field updates as Build 230's did for the same saved data. Where it
-  // counts even one that Build 230 left out, the 1.0 fingerprint is of a report without it, blind to whatever
-  // happens to it: no 1.0 name stands, and a report made on Build 230 is another report.
-  const countsWhatBuild230Counted = !truths.some(daveProjectTruthCountsOtherUpdatesThanBefore);
-  // The 1.0 fingerprint of the same facts, so a report made under it is still known (R4 item 4a).
-  rememberLegacyReportSource(fingerprint, countsWhatBuild230Counted ? buildDAVELegacyReportSourceFingerprint(truths) : null);
-  // And the 1.0 fingerprint the same facts had before a task's notes followed it, so a report a released build
-  // made then is still known (R6 item 1).
-  const before = countsWhatBuild230Counted ? truthsAsBuiltBeforeNotesFollowed(truths) : null;
-  rememberReportSourceBeforeNotesFollowed(
-    fingerprint,
-    before ? buildDAVELegacyReportSourceFingerprint(before) : null,
-    // The notes of the earlier rows of the tasks shown, as they are now: what a report recognised by that name is
-    // held to from then on.
-    stableHash(stableStringify(truths.map(truth => `${normalized(truth.projectName)}:${truth.earlierRowNotesKey ?? ''}`).sort())),
-  );
-  return fingerprint;
-}
-
-/** Today's fingerprint of these truths, and nothing remembered. */
-function reportSourceFingerprintOf(truths: readonly DAVEProjectTruth[]): string {
   const truthFingerprints = truths
     .map(truth => ({
       projectName: normalized(truth.projectName),
@@ -189,34 +165,15 @@ function reportSourceFingerprintOf(truths: readonly DAVEProjectTruth[]): string 
       ))),
     }))
     .sort((left, right) => left.projectName.localeCompare(right.projectName));
-  return `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify(truthFingerprints))}`;
-}
-
-/**
- * R6 item 1: the truths as built, as the build before read the same saved
- * rows, when they differ. Since schedule batch S5 a task's notes follow it to
- * the row a newer master gives it; the build before left them on the old
- * row. The only facts of a report that moves are the task's latest note, its
- * time and its text (measured on the reviewer's sequences: nothing else).
- * Each truth says which tasks' latest note followed them, and what the row's
- * latest note is without those (activityBeforeNotesFollowed); here those two
- * facts are put back in the truth as built, which the 1.0 fingerprint is
- * taken from. Null when no task's latest note followed it.
- */
-function truthsAsBuiltBeforeNotesFollowed(truths: readonly DAVEProjectTruth[]): DAVEProjectTruth[] | null {
-  if (!truths.some(truth => (truth.activityBeforeNotesFollowed?.length ?? 0) > 0)) return null;
-  return truths.map(truth => {
-    const built = daveProjectTruthAsBuilt(truth);
-    const byTask = new Map((built.activityBeforeNotesFollowed ?? truth.activityBeforeNotesFollowed ?? []).map(entry => [entry.taskId, entry] as const));
-    if (byTask.size === 0) return built;
-    return {
-      ...built,
-      schedule: built.schedule.map(task => {
-        const entry = byTask.get(task.taskId);
-        return entry ? { ...task, latestActivityAt: entry.latestActivityAt, latestActivitySummary: entry.latestActivitySummary } : task;
-      }),
-    };
-  });
+  const fingerprint = `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify(truthFingerprints))}`;
+  // R7 item A (the coordinator's decision on review pass 1, F0): a 1.0 fingerprint is a name of these facts only
+  // where this build's report counts the same field updates as Build 230's did for the same saved data. Where it
+  // counts even one that Build 230 left out, the 1.0 fingerprint is of a report without it, blind to whatever
+  // happens to it: no 1.0 name stands, and a report made on Build 230 is another report.
+  const countsWhatBuild230Counted = !truths.some(daveProjectTruthCountsOtherUpdatesThanBefore);
+  // The 1.0 fingerprint of the same facts, so a report made under it is still known (R4 item 4a).
+  rememberLegacyReportSource(fingerprint, countsWhatBuild230Counted ? buildDAVELegacyReportSourceFingerprint(truths) : null);
+  return fingerprint;
 }
 
 /**
@@ -1442,10 +1399,6 @@ const VOLATILE_REPORT_SOURCE_FIELDS = new Set([
   // added. Which task a row is and how it last stood; the tasks shown and what each says are in the fingerprint
   // themselves.
   'earlierRows', 'lookaheadAddedTaskIds',
-  // R6 item 1 (a report made before notes followed a task): how the build before read the same rows, and the key
-  // of the notes on the tasks' earlier rows. The tasks' latest notes as they are now are in the fingerprint
-  // themselves.
-  'activityBeforeNotesFollowed', 'earlierRowNotesKey',
 ]);
 
 function withoutVolatileReportSourceFields(value: unknown): unknown {

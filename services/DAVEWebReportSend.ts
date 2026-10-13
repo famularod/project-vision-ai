@@ -9,7 +9,6 @@ import {
   type DAVEReportSnapshot,
   sameReportSource,
   legacyReportSourcesOf,
-  reportSourcesBeforeNotesFollowedOf,
 } from './DAVEReportSnapshot';
 import {
   carryUpDAVEReportPeriod,
@@ -811,12 +810,9 @@ export function daveWebReportSentHereAt(
   // R2 item 1: a report from before the three the period remembers, by this browser's own list of what it sent.
   // By these facts' fingerprint, or by the one the earlier version gave them when the report was sent (R4 item 4a).
   if (!period?.reportFormat) return null;
-  // Or by the one a released build gave its facts before a task's notes followed it (R6 item 1). A 1.0 name
-  // stands the first time, and from then on only while the notes it leaves out are as they were then
-  // (sameReportSource).
-  for (const facts of [fingerprint, ...legacyReportSourcesOf(fingerprint), ...reportSourcesBeforeNotesFollowedOf(fingerprint)]) {
+  for (const facts of [fingerprint, ...legacyReportSourcesOf(fingerprint)]) {
     const sentAt = ownSendFacts.get(ownSendFactsKey(period.scopeKey, period.reportFormat, facts));
-    if (sentAt && (facts === fingerprint || sameReportSource(facts, fingerprint))) return sentAt;
+    if (sentAt) return sentAt;
   }
   return null;
 }

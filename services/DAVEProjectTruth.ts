@@ -1,7 +1,6 @@
 import type {
   DAVECompletionVerificationStatus,
   ProjectArea,
-  ProjectItemActivity,
   ProjectUpdate,
   ReferenceDocument,
   ScheduleItem,
@@ -250,46 +249,8 @@ export type DAVEProjectTruth = {
    * the report's fingerprint.
    */
   lookaheadAddedTaskIds?: string[];
-  /**
-   * Only on a truth built for a report, from every saved task: for each task
-   * shown whose latest note is one that followed it from an earlier row, its
-   * latest note without those (R6 item 1). Left out of the report's
-   * fingerprint: it says how the build before read the same rows.
-   */
-  activityBeforeNotesFollowed?: DAVETaskActivityBeforeNotesFollowed[];
-  /**
-   * Only on a truth built for a report, from every saved task: one key for
-   * the notes that sit on an earlier row of a task shown, and for the shown
-   * row's own copy of each: which notes they are, when each was typed and
-   * what each says (R6 item 1). It is the same before and after those notes
-   * follow the task to the row shown, and another one once any of them is
-   * added, reworded or deleted. Left out of the report's fingerprint; absent
-   * when no task shown has such a note.
-   */
-  earlierRowNotesKey?: string;
   verificationQueue: DAVEVerificationRequest[];
   briefing: DAVEPMBriefing;
-};
-
-/**
- * R6 item 1 (the coordinator's decision on R5's finding). Since schedule
- * batch S5 a task's activity notes follow it from row to row: the row a newer
- * master gives a task takes the notes of the rows it answers to, and the
- * first sync on that build brings them forward for rows made before it. The
- * task's latest note is a fact of a report, so a report made before the
- * notes followed was a report of other facts afterwards. For a task shown
- * whose latest note is one of those (it also sits, by its id, on a row the
- * task answers to): the latest note of its row without them, as the build
- * before read that row, and when the newest of them was typed. A report made
- * after that time by a build that left the notes behind had the same facts.
- */
-export type DAVETaskActivityBeforeNotesFollowed = {
-  taskId: string;
-  /** The row's latest note without those that followed; null for none. */
-  latestActivityAt: string | null;
-  latestActivitySummary: string | null;
-  /** When the newest note that followed was typed: the task's latest note now. */
-  followedAt: string;
 };
 
 /**
@@ -508,11 +469,6 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
   const lookaheadAddedTaskIds = input.reportLookaheadReplacement && input.knownScheduleItems
     ? scheduleItems.filter(item => item.importedAsLookahead === true).map(item => item.id)
     : [];
-  // The tasks' latest notes as they were before notes followed a task, for a report made then (R6 item 1).
-  const notesOfEarlierRows = input.reportLookaheadReplacement && input.knownScheduleItems
-    ? activityBeforeNotesFollowedOfTasksShown(input.knownScheduleItems, scheduleItems)
-    : { followed: [], earlierRowNotesKey: null };
-  const activityBeforeNotesFollowed = notesOfEarlierRows.followed;
   const evidence = summarizeEvidence(records);
   const verificationQueue = buildVerificationQueue(evidence, photoComparisons, schedule, reasoning);
   const briefing = buildPMBriefing({
@@ -543,8 +499,6 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
     ...(lookaheadReplacement ? { lookaheadReplacement } : {}),
     ...(earlierRows.length > 0 ? { earlierRows } : {}),
     ...(lookaheadAddedTaskIds.length > 0 ? { lookaheadAddedTaskIds } : {}),
-    ...(activityBeforeNotesFollowed.length > 0 ? { activityBeforeNotesFollowed } : {}),
-    ...(notesOfEarlierRows.earlierRowNotesKey ? { earlierRowNotesKey: notesOfEarlierRows.earlierRowNotesKey } : {}),
     verificationQueue,
     briefing,
   });
@@ -820,70 +774,6 @@ function tasksLeftByLookaheadReplacement(
     replaced: uniqueText([...replaced.map(keyOf), ...tasksLeft.map(task => task.lookahead)]).sort(),
     tasksLeft,
   };
-}
-
-
-/** The row's latest note, as the schedule truth takes it: the newest by its time, of those with one. */
-function latestActivityOf(activity: readonly ProjectItemActivity[]): ProjectItemActivity | undefined {
-  return [...activity]
-    .filter(entry => clean(entry.createdAt))
-    .sort((left, right) => (clean(right.createdAt) || '').localeCompare(clean(left.createdAt) || ''))[0];
-}
-
-/** A short key of a text: two 32-bit hashes of it, side by side. */
-function textKey(value: string): string {
-  let first = 2166136261;
-  let second = 5381;
-  for (let index = 0; index < value.length; index += 1) {
-    const code = value.charCodeAt(index);
-    first = Math.imul(first ^ code, 16777619);
-    second = (Math.imul(second, 33) + code) | 0;
-  }
-  return `${(first >>> 0).toString(16).padStart(8, '0')}${(second >>> 0).toString(16).padStart(8, '0')}`;
-}
-
-/**
- * R6 item 1: the tasks shown whose latest note followed them from an earlier
- * row, each with its row's latest note without the notes that followed
- * (DAVETaskActivityBeforeNotesFollowed). A note followed when a saved row the
- * task answers to holds it too, by its id: a note is typed on one row and
- * only ever copied forward with its id. Nothing for a task whose latest note
- * is its row's own: its facts are as the build before read them.
- *
- * And one key for every note an earlier row of a task shown holds, together
- * with the shown row's own copy of each (`earlierRowNotesKey`): the notes
- * that can follow a task or have followed it. A note brought forward is the
- * same note on both rows, so the key does not move when notes follow; it
- * moves when one is typed on an earlier row, reworded or deleted, on either.
- */
-function activityBeforeNotesFollowedOfTasksShown(
-  known: readonly ScheduleItem[],
-  shown: readonly ScheduleItem[],
-): { followed: DAVETaskActivityBeforeNotesFollowed[]; earlierRowNotesKey: string | null } {
-  const idOf = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
-  const byId = new Map(known.map(item => [idOf(item.id), item] as const));
-  const notes = new Set<string>();
-  const followed = shown.flatMap((item): DAVETaskActivityBeforeNotesFollowed[] => {
-    const activity = item.activity ?? [];
-    const onEarlier = scheduleTaskEarlierIds(item)
-      .filter(id => idOf(id) !== idOf(item.id))
-      .flatMap(id => byId.get(idOf(id))?.activity ?? [])
-      .filter(entry => entry && typeof entry.id === 'string' && entry.id);
-    if (onEarlier.length === 0) return [];
-    const onEarlierRows = new Set(onEarlier.map(entry => entry.id));
-    [...onEarlier, ...activity.filter(entry => onEarlierRows.has(entry?.id))]
-      .forEach(entry => notes.add(JSON.stringify([entry.id, clean(entry.createdAt), clean(entry.message)])));
-    const latest = latestActivityOf(activity);
-    if (!latest || !onEarlierRows.has(latest.id)) return [];
-    const ownLatest = latestActivityOf(activity.filter(entry => !onEarlierRows.has(entry.id)));
-    return [{
-      taskId: item.id,
-      latestActivityAt: clean(ownLatest?.createdAt),
-      latestActivitySummary: clean(ownLatest?.message),
-      followedAt: clean(latest.createdAt) as string,
-    }];
-  });
-  return { followed, earlierRowNotesKey: notes.size > 0 ? textKey([...notes].sort().join('\n')) : null };
 }
 
 /**
@@ -1297,7 +1187,11 @@ function buildScheduleTruth(
     const conflicting = completionState === 'conflicting_evidence';
     const correlationEvidenceIds = correlation?.corroboratingEvidenceIds ?? [];
     const controls = item.projectControls;
-    const latestActivity = latestActivityOf(item.activity ?? []);
+    const latestActivity = [...(item.activity ?? [])]
+      .filter(activity => clean(activity.createdAt))
+      .sort((left, right) =>
+        (clean(right.createdAt) || '').localeCompare(clean(left.createdAt) || ''),
+      )[0];
     const earlierTaskIds = scheduleTaskEarlierIds(item);
     const notTaskIds = uniqueText([
       ...(Array.isArray(item.notRevisionOfTaskIds) ? item.notRevisionOfTaskIds : []),
