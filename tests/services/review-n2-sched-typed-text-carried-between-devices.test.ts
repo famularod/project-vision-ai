@@ -5761,3 +5761,180 @@ describe('Build 232 item 1: an edit of a task not yet confirmed by the cloud, th
       expect(end).toMatchObject({ framing: Array(3).fill([{ dates: '10/20/2026 - 10/30/2026', percent: 55, owner: 'Mike' }]), cards: [0, 0], waiting: [0, 0] });
     });
 });
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Build 232, item 1b (13 Oct 2026; review pass 2's M1: Medium, caused by item 1; Build 231 does not have it). The
+ * iPad has no signal. On it he types a note on a task (or makes a hand link, sets an owner or a priority). Still with
+ * no signal he deletes, on the iPad, the lookahead that holds that task, with "Delete PDF + Items". Meanwhile another
+ * device approves a new master, or makes another one current, so the task has a new row. Once everything had synced
+ * his note was on the replaced master's row alone, which nobody is shown, and nothing asked him.
+ *
+ * Why: an edit that waits as a list of fields is sent on to the row the task lives on now (review N3 R3). Item 1 made
+ * the delete's save of the whole task join his waiting edit as one whole copy of the task, and a whole copy is
+ * written to its own row only. (Where the new row was made after his edit and is still blank there, the sync's own
+ * carry fills it from the old row, so a note still arrived; not a link, not over a row the same delete had also put
+ * back, and with nothing asked when another device had typed there.)
+ *
+ * The coordinator's decision: what he typed follows the task. The whole copy keeps the list of the fields of his
+ * edit, and those are sent on to the task's new row exactly as when the edit waits alone: the same rule, the same
+ * card when another device changed the same field there, the same write the cloud can refuse. What the delete itself
+ * put back (the master's dates, the percent, the lookahead's note taken off) belongs to the old row and is not sent
+ * on: the new master states its own.
+ */
+describe('Build 232 item 1b: an edit made with no signal, then the lookahead deleted with no signal too, while another device changes the master', () => {
+  const LOOK = scheduleDoc('LOOKAHEAD B232B', '2026-09-09T12:00:00.000Z', 'lookahead');
+  const OLD_ROW = 'MASTER F-1';
+  const NEW_ROW = 'MASTER G-1';
+  type Kind = 'a note' | 'a hand link' | 'an owner' | 'a priority' | 'a percent';
+  const KINDS: Kind[] = ['a note', 'a hand link', 'an owner', 'a priority', 'a percent'];
+  const EDIT: Record<Kind, Partial<ScheduleItem>> = {
+    'a note': { notes: NOTE }, 'an owner': { owner: 'Mike' }, 'a priority': { priority: 'Low' }, 'a percent': { percentComplete: 30 },
+    'a hand link': { dependencies: [{ predecessorItemId: 'MASTER F-2', type: 'FS', lagDays: 0 }] } as unknown as Partial<ScheduleItem>,
+  };
+  /** What he set, as it reads on the row a place shows for Framing (a link by the task it names). */
+  const HIS: Record<Kind, unknown> = { 'a note': NOTE, 'an owner': 'Mike', 'a priority': 'Low', 'a percent': 30, 'a hand link': ['Survey'] };
+  /**
+   * How the task comes by its new row while the iPad has no signal:
+   *  - the phone approves master G (the shape of the generator's seed 5311);
+   *  - master G was approved earlier, under the lookahead, and F made current again; the phone now makes G current
+   *    again (seed 6261). The iPad's delete then puts G's row back as well, since the lookahead had moved it too.
+   */
+  type Elsewhere = 'approves a new master' | 'makes the other master current again';
+  const ELSEWHERE: Elsewhere[] = ['approves a new master', 'makes the other master current again'];
+  /** Framing as a place shows it: the row, its dates, and what he can set on it. */
+  const framingIn = (shown: readonly ScheduleItem[], all: readonly ScheduleItem[]) => framingOf(shown).map(item => ({
+    row: item.id, dates: `${item.startDate} - ${item.finishDate}`,
+    'a note': item.notes || '', 'an owner': item.owner || '', 'a priority': item.priority, 'a percent': item.percentComplete,
+    'a hand link': (item.dependencies ?? []).map(link => all.find(row => row.id === link.predecessorItemId)?.taskName ?? link.predecessorItemId),
+  }));
+  /** The phone, the iPad and the web. */
+  const places = (phone: Device, ipad: Device) => [framingIn(deviceShown(phone), phone.state), framingIn(deviceShown(ipad), ipad.state), framingIn(webShown(), cloudItems())];
+  const asked = async (device: Device) => (await conflictsOf(device)).map(conflict => {
+    const mine = conflict.localPayload as { askedFields?: string[]; itemData?: Record<string, unknown> };
+    const fields = mine.askedFields ?? [];
+    return { row: conflict.localId, fields, here: fields.map(field => mine.itemData?.[field]), cloud: fields.map(field => (conflict.remotePayload as Record<string, unknown>)[field]) };
+  });
+  const nothingWaitsOrIsAsked = async (phone: Device, ipad: Device) =>
+    expect([await conflictsOf(phone), await conflictsOf(ipad), await queueOf(phone), await queueOf(ipad)]).toEqual([[], [], [], []]);
+  async function everythingSyncs(phone: Device, ipad: Device) {
+    setOnline(ipad, true);
+    shareDocuments(ipad);
+    await settle(phone, ipad);
+    await refresh(phone); await refresh(ipad);
+  }
+  const heardEverywhere = async (phone: Device, ipad: Device) => { shareDocuments(phone); await backgroundUpload(phone); await settle(phone, ipad); };
+  /**
+   * The lookahead that moves Framing is in effect under master F, heard everywhere. With no signal, on the iPad: he
+   * makes the edit and (`deletes`) deletes the lookahead with its items. Meanwhile, on the phone, the task comes by
+   * its new row (`elsewhere`). The iPad has heard nothing of that and has sent nothing.
+   */
+  async function editedWithNoSignal(kind: Kind, deletes: boolean, elsewhere: Elsewhere = 'approves a new master', afterTheDelete?: Partial<ScheduleItem>) {
+    const { phone, ipad } = await start();
+    at(LOOK.importedAt!);
+    await approve(phone, LOOK, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true);
+    await heardEverywhere(phone, ipad);
+    if (elsewhere === 'makes the other master current again') {
+      at(G.importedAt!);
+      await approve(phone, G, [G_ROW, SURVEY]);
+      await heardEverywhere(phone, ipad);
+      at('2026-09-11T08:00:00.000Z');
+      await setActiveOn(phone, F);
+      await heardEverywhere(phone, ipad);
+    }
+    expect(places(phone, ipad).map(place => place[0]?.row)).toEqual(Array(3).fill(OLD_ROW));
+    setOnline(ipad, false);
+    at('2026-09-12T09:00:00.000Z');
+    await edit(ipad, OLD_ROW, EDIT[kind]);
+    at('2026-09-12T12:00:00.000Z');
+    if (deletes) await deleteWithItems(ipad, LOOK);
+    at('2026-09-12T15:00:00.000Z');
+    if (afterTheDelete) await edit(ipad, OLD_ROW, afterTheDelete);
+    at('2026-09-12T18:00:00.000Z');
+    if (elsewhere === 'approves a new master') await approve(phone, scheduleDoc('MASTER G', '2026-09-12T18:00:00.000Z'), [G_ROW, SURVEY]);
+    else await setActiveOn(phone, G);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    expect(cloudRow(NEW_ROW)).toMatchObject({ taskName: 'Framing' });
+    at('2026-09-13T08:00:00.000Z');
+    return { phone, ipad };
+  }
+
+  describe.each(ELSEWHERE)('meanwhile the phone %s', elsewhere => {
+    it.each(KINDS)('%s: it is on the row every place shows for the task, as when the edit waits alone, and nothing is asked', async kind => {
+      // The same steps without the delete: the edit waits alone, as a list of fields, and is sent on to the new row.
+      const alone = await editedWithNoSignal(kind, false, elsewhere);
+      await everythingSyncs(alone.phone, alone.ipad);
+      const whenAlone = places(alone.phone, alone.ipad).map(place => [place[0]?.row, place[0]?.[kind]]);
+      expect(whenAlone).toEqual(Array(3).fill([NEW_ROW, HIS[kind]]));
+      const { phone, ipad } = await editedWithNoSignal(kind, true, elsewhere);
+      await everythingSyncs(phone, ipad);
+      expect(places(phone, ipad).map(place => [place[0]?.row, place[0]?.[kind]])).toEqual(whenAlone);
+      await nothingWaitsOrIsAsked(phone, ipad);
+    });
+  });
+
+  it('a hand link he makes after the delete, still with no signal, joins the same record (seed 5311 links again after its delete): his note and his link are both on the row every place shows', async () => {
+    const { phone, ipad } = await editedWithNoSignal('a note', true, 'approves a new master', EDIT['a hand link']);
+    await everythingSyncs(phone, ipad);
+    // (It was: the note, and no link, in all three places.)
+    expect(places(phone, ipad).map(place => [place[0]?.row, place[0]?.['a note'], place[0]?.['a hand link']])).toEqual(Array(3).fill([NEW_ROW, NOTE, ['Survey']]));
+    await nothingWaitsOrIsAsked(phone, ipad);
+  });
+
+  it('what the delete itself put back stays on the old row: that row is on its master\'s dates with no lookahead note, and the new row keeps the new master\'s own dates', async () => {
+    const { phone, ipad } = await editedWithNoSignal('a note', true);
+    await everythingSyncs(phone, ipad);
+    // The old row, which nobody is shown: item 1's result stands on it, with his note.
+    expect(cloudRow(OLD_ROW)).toMatchObject({ startDate: '10/15/2026', finishDate: '10/25/2026', notes: NOTE });
+    expect(Boolean(cloudRow(OLD_ROW)!.lookaheadOverlay)).toBe(false);
+    // The new row: the new master's dates, and his note.
+    expect(places(phone, ipad).map(place => [place[0]?.row, place[0]?.dates, place[0]?.['a note']])).toEqual(Array(3).fill([NEW_ROW, '10/20/2026 - 10/30/2026', NOTE]));
+    // More syncing writes nothing more.
+    const writes = cloudWrites();
+    await settle(phone, ipad);
+    expect(cloudWrites()).toBe(writes);
+  });
+
+  it('another device typed a note on the new row meanwhile: he is asked as for any edit of his, and that note is not written over', async () => {
+    const { phone, ipad } = await editedWithNoSignal('a note', true);
+    await edit(phone, NEW_ROW, { notes: IPAD_NOTE });
+    await backgroundUpload(phone);
+    at('2026-09-13T12:00:00.000Z');
+    await everythingSyncs(phone, ipad);
+    // (It was: no card. His note was on the hidden row alone, and there was nothing to choose.)
+    expect(await asked(ipad)).toEqual([{ row: NEW_ROW, fields: ['notes'], here: [NOTE], cloud: [IPAD_NOTE] }]);
+    expect([cloudRow(NEW_ROW)!.notes, await conflictsOf(phone)]).toEqual([IPAD_NOTE, []]);
+  });
+
+  describe('with a cloud that refuses a write made against a row changed since it was read', () => {
+    /** The iPad has signal again and has sent nothing yet. */
+    async function aboutToSend() {
+      const rig = await editedWithNoSignal('a note', true);
+      setOnline(rig.ipad, true);
+      shareDocuments(rig.ipad);
+      mockCloud.versioned = true;
+      return rig;
+    }
+
+    it('a note lands on the new row in the moment before his is written there: refused, read again, asked; nothing is written over', async () => {
+      const { phone, ipad } = await aboutToSend();
+      mockCloud.beforeNextTaskWrite = () => webWrite(webEdited(cloudRow(NEW_ROW)!, { notes: IPAD_NOTE }));
+      await backgroundUpload(ipad);
+      // (It was: nothing written to the new row at all, so nothing refused and nothing asked.)
+      expect(mockCloud.refused).toEqual([`ipad:${NEW_ROW}`]);
+      expect(cloudRow(NEW_ROW)).toMatchObject({ notes: IPAD_NOTE });
+      expect(await asked(ipad)).toEqual([{ row: NEW_ROW, fields: ['notes'], here: [NOTE], cloud: [IPAD_NOTE] }]);
+      await settle(phone, ipad);
+      expect([cloudRow(NEW_ROW)!.notes, mockCloud.refused]).toEqual([IPAD_NOTE, [`ipad:${NEW_ROW}`]]);
+    });
+
+    it('nobody else writing: one write on the new row (his note alone) and one on the old row (the whole task), neither refused', async () => {
+      const { ipad } = await aboutToSend();
+      const writes = cloudWrites();
+      await backgroundUpload(ipad);
+      expect([mockCloud.refused, mockCloud.writes.slice(writes)]).toEqual([[], [`ipad:${NEW_ROW}`, `ipad:${OLD_ROW}`]]);
+      expect([cloudRow(NEW_ROW)!.notes, cloudRow(NEW_ROW)!.startDate, cloudRow(OLD_ROW)!.notes, cloudRow(OLD_ROW)!.startDate]).toEqual([NOTE, '10/20/2026', NOTE, '10/15/2026']);
+    });
+  });
+});
