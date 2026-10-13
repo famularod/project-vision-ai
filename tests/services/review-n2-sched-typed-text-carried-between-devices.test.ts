@@ -5938,3 +5938,195 @@ describe('Build 232 item 1b: an edit made with no signal, then the lookahead del
     });
   });
 });
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Build 232, item 1c (13 Oct 2026; review pass 3's S3-1 and S3-2). Two small things in the lines of items 1 and 1b:
+ * what a whole-task save ("Delete PDF + Items") does with the record that waits for the task when it comes.
+ * The steps both parts share, and what the tests read.
+ */
+const ITEM_1C = (() => {
+  const LOOK = scheduleDoc('LOOKAHEAD B232C', '2026-09-09T12:00:00.000Z', 'lookahead');
+  const OLD_ROW = 'MASTER F-1';
+  const NEW_ROW = 'MASTER G-1';
+  const later = (minutes: number) => jest.setSystemTime(Date.now() + minutes * 60_000);
+  /** Framing as a place shows it: the row, its dates, and what he can set on it (a link by the task it names). */
+  const framingIn = (shown: readonly ScheduleItem[], all: readonly ScheduleItem[]) => framingOf(shown).map(item => ({
+    row: item.id, dates: `${item.startDate} - ${item.finishDate}`, note: item.notes || '', owner: item.owner || '', priority: item.priority,
+    links: (item.dependencies ?? []).map(link => all.find(row => row.id === link.predecessorItemId)?.taskName ?? link.predecessorItemId),
+  }));
+  /** The phone, the iPad and the web. */
+  const places = (phone: Device, ipad: Device) => [framingIn(deviceShown(phone), phone.state), framingIn(deviceShown(ipad), ipad.state), framingIn(webShown(), cloudItems())];
+  const asked = async (device: Device) => (await conflictsOf(device)).map(conflict => {
+    const mine = conflict.localPayload as { askedFields?: string[]; itemData?: Record<string, unknown> };
+    const fields = mine.askedFields ?? [];
+    return { row: conflict.localId, fields, here: fields.map(field => mine.itemData?.[field]), cloud: fields.map(field => (conflict.remotePayload as Record<string, unknown>)[field]) };
+  });
+  type Waiting = { id?: string; changedFields?: string[]; carriedText?: string[]; carriedProgress?: boolean; joinedEditFields?: string[]; joinedCarriedText?: string[] };
+  /** What waits to go up on a device, record by record. */
+  const waiting = async (device: Device) => (await queueOf(device)).map(item => item.payload as Waiting);
+  const nothingWaitsOrIsAsked = async (phone: Device, ipad: Device) =>
+    expect([await conflictsOf(phone), await conflictsOf(ipad), await queueOf(phone), await queueOf(ipad)]).toEqual([[], [], [], []]);
+  const heardEverywhere = async (phone: Device, ipad: Device) => { shareDocuments(phone); await backgroundUpload(phone); await settle(phone, ipad); };
+  /** The lookahead that moves Framing is approved on the phone under master F and heard everywhere. */
+  async function underTheLookahead() {
+    const { phone, ipad } = await start();
+    at(LOOK.importedAt!);
+    await approve(phone, LOOK, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true);
+    await heardEverywhere(phone, ipad);
+    return { phone, ipad };
+  }
+  /**
+   * What the SYNC ITSELF carried waits to go up on the phone (the reviewer's C1 / C2). The phone, with no signal,
+   * approves master G under the lookahead; with `rowsAsBuild229` its rows are saved as Build 229 saved them (no record
+   * of what they took: only such a row has his owner and note brought forward later by the sync). On the iPad, which
+   * has not heard of G, he sets `what` on Framing; it reaches the cloud. The phone gets signal, sends master G and
+   * refreshes: its sync carries what he set to the task's new row, and that carry does not go up (weak signal). The
+   * phone is left with no signal.
+   */
+  async function carriedAndWaitingOnThePhone(what: 'his owner and note' | 'his percent', rowsAsBuild229 = true) {
+    const { phone, ipad } = await underTheLookahead();
+    at('2026-09-10T08:00:00.000Z');
+    setOnline(phone, false);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    if (what === 'his owner and note' && rowsAsBuild229) masterRowsAsBuild229SavedThem(phone);
+    at('2026-09-11T09:00:00.000Z');
+    if (what === 'his owner and note') { await edit(ipad, OLD_ROW, { notes: NOTE }); at('2026-09-11T09:05:00.000Z'); await edit(ipad, OLD_ROW, { owner: 'Mike' }); }
+    else await edit(ipad, OLD_ROW, { percentComplete: 30 });
+    await backgroundUpload(ipad);
+    setOnline(ipad, false); // the iPad is put away: it carries nothing itself until the end
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    at('2026-09-12T10:00:00.000Z');
+    await refresh(phone, false); // the refresh merges; what the sync carried is queued and does not go up yet
+    setOnline(phone, false);
+    at('2026-09-12T12:00:00.000Z');
+    return { phone, ipad };
+  }
+  /** The phone has signal again and sends what waits. */
+  async function thePhoneSends(phone: Device) {
+    at('2026-09-13T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+  }
+  /** Then: the phone refreshes twice, the iPad comes back, everything syncs twice, and a Full Sync on both. */
+  async function everythingSyncsAndFullSync(phone: Device, ipad: Device) {
+    await refresh(phone);
+    later(60);
+    await refresh(phone); await backgroundUpload(phone);
+    later(60);
+    setOnline(ipad, true);
+    await settle(phone, ipad);
+    await refresh(phone); await refresh(ipad);
+    later(60);
+    await fullSync(phone); await fullSync(ipad); await settle(phone, ipad);
+  }
+  return { LOOK, OLD_ROW, NEW_ROW, later, places, asked, waiting, nothingWaitsOrIsAsked, heardEverywhere, underTheLookahead, carriedAndWaitingOnThePhone, thePhoneSends, everythingSyncsAndFullSync };
+})();
+
+/**
+ * Part A (S3-1; Medium by the coordinator's grading, caused by item 1; Build 231 does not have it). The record that
+ * waits is the SYNC'S OWN CARRY of his owner and note to a row a Build 229 master made. He then deletes the lookahead
+ * with its items, with no signal. Item 1 made the delete's save of the whole task take the carry's place as one whole
+ * copy, which read the carried owner and note as part of the copy it started from: its write left the cloud's blank,
+ * and the next refresh blanked them on every device, for good.
+ *
+ * The coordinator's decision: the carried fields still go up by the carry's own rule (each only fills a blank in the
+ * cloud's row; over another device's value the cloud's stands and nothing is asked), in the same one write the cloud
+ * can refuse.
+ */
+describe('Build 232 item 1c, part A: what the sync itself carried still goes up when a lookahead is then deleted with no signal', () => {
+  const { LOOK, OLD_ROW, NEW_ROW, places, asked, waiting, nothingWaitsOrIsAsked, carriedAndWaitingOnThePhone, thePhoneSends, everythingSyncsAndFullSync } = ITEM_1C;
+  const shown = (phone: Device, ipad: Device) => places(phone, ipad).map(place => [place[0]?.row, place[0]?.note, place[0]?.owner]);
+
+  it('his carried owner and note are on the task in all three places, as when the carry goes up by itself (the reviewer\'s C1 and C1c)', async () => {
+    // The control: the same steps without the delete.
+    const alone = await carriedAndWaitingOnThePhone('his owner and note');
+    expect(await waiting(alone.phone)).toMatchObject([{ id: NEW_ROW, carriedText: ['owner', 'notes'] }]);
+    await thePhoneSends(alone.phone);
+    await everythingSyncsAndFullSync(alone.phone, alone.ipad);
+    const whenAlone = shown(alone.phone, alone.ipad);
+    expect(whenAlone).toEqual(Array(3).fill([NEW_ROW, NOTE, 'Mike']));
+    const { phone, ipad } = await carriedAndWaitingOnThePhone('his owner and note');
+    await deleteWithItems(phone, LOOK);
+    await thePhoneSends(phone);
+    // (It was: the cloud's row left blank by that upload; at the phone's next refresh no note and no owner on any device.)
+    expect(cloudRow(NEW_ROW)).toMatchObject({ notes: NOTE, owner: 'Mike' });
+    await everythingSyncsAndFullSync(phone, ipad);
+    expect(shown(phone, ipad)).toEqual(whenAlone);
+    await nothingWaitsOrIsAsked(phone, ipad);
+  });
+
+  it('the delete\'s own work stands beside them (item 1): the task\'s row is on the new master\'s dates without the lookahead\'s note, and the old row on its master\'s dates', async () => {
+    const { phone, ipad } = await carriedAndWaitingOnThePhone('his owner and note');
+    await deleteWithItems(phone, LOOK);
+    await thePhoneSends(phone);
+    await everythingSyncsAndFullSync(phone, ipad);
+    expect([places(phone, ipad).map(place => place[0]?.dates), Boolean(cloudRow(NEW_ROW)!.lookaheadOverlay), cloudRow(OLD_ROW)!.startDate])
+      .toEqual([Array(3).fill('10/20/2026 - 10/30/2026'), false, '10/15/2026']);
+  });
+
+  it('he sets a next step on that row after the delete, still with no signal: his carried owner and note still go up, and the next step with them', async () => {
+    const { phone, ipad } = await carriedAndWaitingOnThePhone('his owner and note');
+    await deleteWithItems(phone, LOOK);
+    at('2026-09-12T12:30:00.000Z');
+    await edit(phone, NEW_ROW, { nextAction: 'Call the inspector' });
+    await thePhoneSends(phone);
+    expect(cloudRow(NEW_ROW)).toMatchObject({ notes: NOTE, owner: 'Mike', nextAction: 'Call the inspector' });
+    await everythingSyncsAndFullSync(phone, ipad);
+    expect([shown(phone, ipad), cloudRow(NEW_ROW)!.nextAction]).toEqual([Array(3).fill([NEW_ROW, NOTE, 'Mike']), 'Call the inspector']);
+    await nothingWaitsOrIsAsked(phone, ipad);
+  });
+
+  it('with rows saved as today\'s build saves them no carry waits, and the same steps end right, as before (C3)', async () => {
+    const { phone, ipad } = await carriedAndWaitingOnThePhone('his owner and note', false);
+    expect(await waiting(phone)).toEqual([]);
+    await deleteWithItems(phone, LOOK);
+    await thePhoneSends(phone);
+    await everythingSyncsAndFullSync(phone, ipad);
+    expect(shown(phone, ipad)).toEqual(Array(3).fill([NEW_ROW, NOTE, 'Mike']));
+    await nothingWaitsOrIsAsked(phone, ipad);
+  });
+
+  it('another device set the owner of that row meanwhile: its owner stands, his carried note still fills the blank, and nothing is asked, as when the carry goes up by itself', async () => {
+    const meanwhileOnTheWeb = () => { at('2026-09-12T13:00:00.000Z'); webWrite(webEdited(cloudRow(NEW_ROW)!, { owner: 'Ana' })); };
+    const alone = await carriedAndWaitingOnThePhone('his owner and note');
+    meanwhileOnTheWeb();
+    await thePhoneSends(alone.phone);
+    await everythingSyncsAndFullSync(alone.phone, alone.ipad);
+    const whenAlone = [shown(alone.phone, alone.ipad), await asked(alone.phone), await asked(alone.ipad)];
+    expect(whenAlone).toEqual([Array(3).fill([NEW_ROW, NOTE, 'Ana']), [], []]);
+    const { phone, ipad } = await carriedAndWaitingOnThePhone('his owner and note');
+    await deleteWithItems(phone, LOOK);
+    meanwhileOnTheWeb();
+    await thePhoneSends(phone);
+    await everythingSyncsAndFullSync(phone, ipad);
+    expect([shown(phone, ipad), await asked(phone), await asked(ipad)]).toEqual(whenAlone);
+  });
+
+  describe('with a cloud that refuses a write made against a row changed since it was read', () => {
+    it('nobody else writing: the task\'s row is written once, with what the delete put back and his carried owner and note together', async () => {
+      const { phone } = await carriedAndWaitingOnThePhone('his owner and note');
+      await deleteWithItems(phone, LOOK);
+      mockCloud.versioned = true;
+      const writes = cloudWrites();
+      await thePhoneSends(phone);
+      expect([mockCloud.refused, mockCloud.writes.slice(writes).sort()]).toEqual([[], [`phone:${OLD_ROW}`, `phone:${NEW_ROW}`]]);
+      expect([cloudRow(NEW_ROW)!.notes, cloudRow(NEW_ROW)!.owner]).toEqual([NOTE, 'Mike']);
+    });
+
+    it('an owner lands on that row in the moment before: the write is refused, the row read again; that owner stands, his note fills its blank, nothing is asked', async () => {
+      const { phone } = await carriedAndWaitingOnThePhone('his owner and note');
+      await deleteWithItems(phone, LOOK);
+      mockCloud.versioned = true;
+      mockCloud.beforeNextTaskWrite = () => webWrite(webEdited(cloudRow(NEW_ROW)!, { owner: 'Ana' }));
+      await thePhoneSends(phone);
+      expect(mockCloud.refused).toEqual([`phone:${NEW_ROW}`]);
+      expect([cloudRow(NEW_ROW)!.notes, cloudRow(NEW_ROW)!.owner, await asked(phone)]).toEqual([NOTE, 'Ana', []]);
+    });
+  });
+});

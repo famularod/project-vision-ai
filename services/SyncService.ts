@@ -801,6 +801,13 @@ type ScheduleItemRecordPayload = {
    */
   joinedEditFields?: Array<keyof ScheduleItem>;
   /**
+   * On a whole copy (Build 232, item 1c part A): the fields the sync itself had carried to the task (carriedText) in
+   * the record that was waiting when a save of the whole task joined it. They still go up by the carry's own rule
+   * (each only fills a blank in the cloud's row), in the whole copy's one write. A field he edits afterwards leaves
+   * this list: it is his then.
+   */
+  joinedCarriedText?: Array<keyof ScheduleItem>;
+  /**
    * The copy the edit started from (owner answer Q28, 2 Oct 2026): each
    * changed field's value before the edit, and that copy's stamp. The upload
    * weighs each field against it (ScheduleItemEditBase). Missing on an edit
@@ -1744,11 +1751,15 @@ function mergeScheduleItemQueueChangeScope(
     const joinedEditFields = Array.isArray(existingPayload.joinedEditFields)
       ? [...new Set([...existingPayload.joinedEditFields, ...(incomingPayload.joinedEditFields ?? []), ...scheduleItemFieldsOfHisEdit(incomingPayload)])]
       : incomingPayload.joinedEditFields;
+    // Build 232, item 1c part A: so does the list of what the sync had carried, less a field an edit of his now names.
+    const joinedCarriedText = Array.isArray(existingPayload.joinedCarriedText)
+      ? [...new Set([...existingPayload.joinedCarriedText.filter(field => !(incomingPayload.changedFields ?? []).includes(field)), ...(incomingPayload.joinedCarriedText ?? [])])]
+      : incomingPayload.joinedCarriedText;
     return {
       ...incoming,
       // (An edit of his joining a master's new row that still waits whole: what he has changed on the row since it was
       // made, review P6-2. None after anything else joins it.)
-      payload: { ...fullRecordPayload, ...(joinedEditFields ? { joinedEditFields } : {}), ...(wholeBase ? { base: wholeBase } : {}), sinceMade: scheduleItemChangedSinceMade(existingPayload, incomingPayload) },
+      payload: { ...fullRecordPayload, ...(joinedEditFields ? { joinedEditFields } : {}), ...(joinedCarriedText ? { joinedCarriedText } : {}), ...(wholeBase ? { base: wholeBase } : {}), sinceMade: scheduleItemChangedSinceMade(existingPayload, incomingPayload) },
     };
   }
 
@@ -1930,11 +1941,20 @@ function scheduleItemFieldsOfHisEdit(payload: Partial<ScheduleItemRecordPayload>
  * The whole copy now keeps the list of his edit's fields (taken inside the queue's own change, from what waits
  * there), and the upload sends those on exactly as when the edit waits alone. What the save itself put back (the
  * master's dates, the percent, the lookahead's note taken off) is not in the list: it belongs to this row.
+ *
+ * Build 232, item 1c part A (review pass 3's S3-1; Medium, caused by item 1; the coordinator's decision). When what
+ * waits is, or holds, the SYNC'S OWN CARRY of his owner and note to the task's row (carriedText), the whole copy read
+ * the carried values as part of the copy it started from, so its write left the cloud's blank and the next refresh
+ * blanked them on every device, for good. It now also keeps the list of the carried fields (joinedCarriedText), and
+ * the upload sends them by the carry's own rule in the same write.
  */
 function wholeTaskSaveJoiningHisEdit(existing: SyncQueueItem | undefined, queued: SyncQueueItem): SyncQueueItem {
   const waiting = existing?.entity === 'schedule_item' && existing.operation === 'update' ? existing.payload as Partial<ScheduleItemRecordPayload> : null;
   const his = Array.isArray(waiting?.changedFields) ? scheduleItemFieldsOfHisEdit(waiting) : waiting?.joinedEditFields ?? [];
-  return his.length > 0 ? { ...queued, payload: { ...(queued.payload as ScheduleItemRecordPayload), joinedEditFields: [...his] } } : queued;
+  const carried = (Array.isArray(waiting?.changedFields) ? waiting.carriedText : waiting?.joinedCarriedText) ?? [];
+  return his.length > 0 || carried.length > 0
+    ? { ...queued, payload: { ...(queued.payload as ScheduleItemRecordPayload), ...(his.length > 0 ? { joinedEditFields: [...his] } : {}), ...(carried.length > 0 ? { joinedCarriedText: [...carried] } : {}) } }
+    : queued;
 }
 
 export async function queueScheduleItemRecord(
@@ -8098,9 +8118,26 @@ async function uploadQueueItem(
     // field changed on both is asked about. (Without that copy, or where the sync merge alone has a rule: the merge.)
     const byField = merged && remote ? scheduleItemWholeCopyFieldByField(payload.itemData, payload.base, remote, merged) : null;
     const recovered = remote && !changedFields && !payload.forceLocal ? restUnchanged ? payload.itemData : byField?.itemData ?? merged : null;
-    const wholeWeighed = recovered && remote && isEditBase(payload.base)
+    const wholeWeighedAsItStarted = recovered && remote && isEditBase(payload.base)
       ? scheduleItemWholeCopyAgainstCloud(recovered, payload.itemData, payload.base, remote, taskOfRow)
       : null;
+    // Build 232, item 1c part A: what the sync had carried into the record this whole copy took the place of. The
+    // copy reads those fields as "as it started", so the cloud's row would keep its blank. They go into this same
+    // write by the carry's own rule (scheduleItemCarriedFieldsToSend: his text only fills a blank; over another
+    // device's value the cloud's stands and nothing is asked), as the carry's own upload writes them.
+    const carriedInWhole = wholeWeighedAsItStarted && remote && Array.isArray(payload.joinedCarriedText)
+      ? scheduleItemCarriedFieldsToSend(payload.joinedCarriedText.map(String), payload.itemData, remote) : [];
+    const wholeWeighed = wholeWeighedAsItStarted && remote && carriedInWhole.length > 0
+      ? {
+          ...wholeWeighedAsItStarted,
+          itemData: {
+            ...carriedInWhole.reduce<ScheduleItem>((row, field) => (field === 'activity'
+              ? { ...row, activity: scheduleItemActivityWithOtherRows(remote.activity, payload.itemData.activity) ?? remote.activity }
+              : { ...row, [field]: payload.itemData[field as keyof ScheduleItem] }), wholeWeighedAsItStarted.itemData),
+            ...scheduleItemRecordAfterTheSyncWrote(remote, payload.itemData, carriedInWhole),
+          },
+        }
+      : wholeWeighedAsItStarted;
     const asked = weighed?.asked ?? (wholeWeighed ? [...(byField?.asked ?? []), ...wholeWeighed.asked] : null) ?? firstSent?.asked ?? [];
     // What this upload decides for the task's open conflicts: the fields an edit sends of this device's own (owner
     // answer Q28). A whole copy decides none of a card's fields (review N1): null.
