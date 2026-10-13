@@ -15,6 +15,7 @@ import {
 } from './PIEScheduleReconciliation';
 import type { PIEScheduleImportBatch } from './PIEScheduleImportBatch';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
+import { SCHEDULE_IMPORT_NEEDS_PROJECT } from './ScheduleImportScopeGuard';
 import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
 import { scheduleEditWithDateChangedAlone } from './ScheduleDateEdit';
 import { scheduleItemAsLastSetOnItsOtherRow } from './ScheduleItemEditBase';
@@ -1497,6 +1498,16 @@ function spanWords(count: number): string {
  * for its app project (scheduleTaskProjectKey, as the merge, the delete and
  * the shown schedule key it), or for its root when a master was saved for the
  * root itself.
+ *
+ * Build 232 round, item 10 (13 Oct 2026): the file's projects are its rows'
+ * projects. Until its approval the file's own label is every project the
+ * import could have used (picked from the Tasks tab, every active project;
+ * on the web, every project ticked), and it was read as the file's projects:
+ * the first schedule of a new project, three weeks long, came preselected as
+ * a lookahead "because ... the master for [another project] covers about 16
+ * months", and Accept All saves the preselected choice. The label is read
+ * only when no row names a project (a row still waiting for its project,
+ * "Needs Project", names none).
  */
 export function suggestScheduleImportRole({
   batch,
@@ -1517,11 +1528,12 @@ export function suggestScheduleImportRole({
   }
   const distinct = (names: readonly string[]) =>
     [...new Map(names.map(name => name.trim()).filter(Boolean).map(name => [key(name), name] as const)).values()];
-  // Each row's app project, not its Microsoft Project root (whole-app audit A5 pass 12 K1, above).
-  const projects = distinct([
-    ...batch.items.map(item => item.projectName || item.scheduleProjectName || ''),
-    ...(file?.projectNames || []),
-  ]);
+  // Each row's app project, not its Microsoft Project root (whole-app audit A5 pass 12 K1, above); the file's own
+  // label only when no row names a project (Build 232 item 10, above).
+  const rowProject = (item: ScheduleItem) =>
+    (item.projectName?.trim() === SCHEDULE_IMPORT_NEEDS_PROJECT ? '' : item.projectName) || item.scheduleProjectName || '';
+  const rowProjects = distinct(batch.items.map(rowProject));
+  const projects = rowProjects.length > 0 ? rowProjects : distinct(file?.projectNames || []);
   const current = currentScheduleDocumentsByProject(documents);
   // A master saved for the root itself (an app project made from it) is still the root's.
   const masters = distinct([...projects, ...batch.items.map(item => item.scheduleProjectName || '')])
