@@ -1008,6 +1008,8 @@ function buildDAVEWebProjectTruths(
     scheduleItems,
     knownScheduleItems,
     ...(handedAsBefore ? { asBuiltBefore: { scheduleItems: snapshot.scheduleItems, knownScheduleItems: snapshot.knownScheduleItems } } : {}),
+    // The web's Word report cites drawings from every document downloaded (the Reports page), so the fingerprint does (R8 item 2).
+    drawingDocuments: snapshot.referenceDocuments,
     knownScheduleDocuments: snapshot.referenceDocuments,
     // A document the cloud marks archived is not counted (owner answer Q44; review of D1, L10); with none, this is the list itself.
     referenceDocuments: daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds),

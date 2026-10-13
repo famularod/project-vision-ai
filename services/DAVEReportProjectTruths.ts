@@ -7,6 +7,7 @@ import type {
 import { buildDAVEProjectTruth, daveProjectTruthInStableOrder, type DAVEProjectTruth } from './DAVEProjectTruth';
 import type { ProjectRecord } from './ProjectCoverPhotoService';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
+import { buildAutomaticReportDrawingReferences } from './ReportDrawingReferences';
 
 export type DAVEReportProjectTruthsInput = {
   /** The report's projects in the order shown, each with the id its Project Truth carries. */
@@ -37,6 +38,13 @@ export type DAVEReportProjectTruthsInput = {
    * 1.0 fingerprint is taken from; the report is written from the others.
    */
   asBuiltBefore?: Readonly<{ scheduleItems: readonly ScheduleItem[]; knownScheduleItems?: readonly ScheduleItem[] }>;
+  /**
+   * R8 item 2: the documents the report's drawings are cited from, where that
+   * is another list than `referenceDocuments` (the web's Word report cites
+   * from every document it has downloaded). The same list, and the same
+   * tasks, the screen hands to buildAutomaticReportDrawingReferences.
+   */
+  drawingDocuments?: readonly ReferenceDocument[];
 };
 
 /**
@@ -110,6 +118,14 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
     const sameUpdates = scope.updates.length === scopeAsBefore.updates.length &&
       scope.updates.every((update, index) => update === scopeAsBefore.updates[index]);
     const truth = truthOf(scope);
+    // R8 item 2 (the coordinator's decision on review pass 2, P2-2): the drawings the report cites for this
+    // project's work areas, worked out as the Reports screen and the Word report work them out, so that the
+    // fingerprint holds exactly what the report prints and saves of a drawing.
+    const drawingCitations = buildAutomaticReportDrawingReferences({
+      documents: [...(input.drawingDocuments ?? input.referenceDocuments ?? [])],
+      scheduleItems: [...input.scheduleItems],
+      selectedProjectNames: [project.name],
+    }).map(reference => ({ ...reference.citation, projectName: reference.projectName, areaName: reference.areaName }));
     // As the build before built it, where that differs: it scoped the updates without the saved tasks, and (R7 item
     // C) was handed the tasks as `asBuiltBefore` has them.
     const before = input.asBuiltBefore;
@@ -117,6 +133,6 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
       ? truthOf(buildDailyReportAuthorityScope({ ...scopeInput, scheduleItems: before.scheduleItems }), before.knownScheduleItems ?? known)
       : sameUpdates ? truth : truthOf(scopeAsBefore);
     // In a stable order, so a sync that only reorders the saved rows changes nothing a report says (R4 item 4a).
-    return daveProjectTruthInStableOrder(truth, builtBefore, !sameUpdates);
+    return daveProjectTruthInStableOrder(truth, builtBefore, !sameUpdates, drawingCitations);
   });
 }

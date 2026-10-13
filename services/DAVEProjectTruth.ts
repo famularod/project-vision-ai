@@ -3,6 +3,7 @@ import type {
   ProjectArea,
   ProjectUpdate,
   ReferenceDocument,
+  ReferenceDocumentCitation,
   ScheduleItem,
   UpdatePhoto,
 } from '../types';
@@ -249,9 +250,34 @@ export type DAVEProjectTruth = {
    * the report's fingerprint.
    */
   lookaheadAddedTaskIds?: string[];
+  /**
+   * Only on a truth a report is written from: the drawings the report cites
+   * for this project's work areas, each as it is printed and as it is saved
+   * with the approved report (R8 item 2). IN version 2.0 of the report's
+   * fingerprint: a report that cites another drawing, revision or page, or
+   * none, is another report.
+   */
+  drawingCitations?: readonly DAVEReportDrawingCitation[];
   verificationQueue: DAVEVerificationRequest[];
   briefing: DAVEPMBriefing;
 };
+
+/**
+ * R8 item 2 (the coordinator's decision on review pass 2, P2-2). A drawing a
+ * report cites for a work area: what the report prints of it ("A-201 Site
+ * plan · Rev C · Page 1") and what Approve saves of it, and nothing else.
+ * Which drawing is cited, and as what, is decided by the drawing's number,
+ * revision and status and by the page index read out of its file
+ * (AuthoritativeDocumentSystem, selectAutomaticDrawingExcerpt); none of that
+ * is kept here, only what came of it. Where two devices hold another page
+ * index for the same drawing (a phone in the session that read the file, and
+ * the same phone after its next launch), they cite differently, their
+ * reports differ, and so do their fingerprints.
+ */
+export type DAVEReportDrawingCitation = Readonly<
+  Pick<ReferenceDocumentCitation, 'documentId' | 'documentName' | 'revision' | 'pageNumber' | 'sheetNumber' | 'regionId' | 'label'>
+  & { projectName: string; areaName: string }
+>;
 
 /**
  * R5 item 1 (the returning task, report side). An earlier row of a task
@@ -655,6 +681,8 @@ export function daveProjectTruthInStableOrder(
   asBuiltBefore: DAVEProjectTruth = truth,
   /** This build's report counts other field updates than the build before did for the same saved data (R7 item A). */
   countsOtherUpdatesThanBefore = false,
+  /** The drawings the report cites for this project, as printed and saved (R8 item 2). */
+  drawingCitations: readonly DAVEReportDrawingCitation[] = [],
 ): DAVEProjectTruth {
   if (truthAsBuilt.has(truth)) return truth;
   const schedule = scheduleTruthInStableOrder(truth.schedule);
@@ -679,6 +707,15 @@ export function daveProjectTruthInStableOrder(
     correlations,
     reasoning,
     schedule,
+    // What the report cites of the project's drawings, and only that (R8 item 2).
+    ...(drawingCitations.length > 0
+      ? {
+          drawingCitations: drawingCitations
+            .map(({ projectName, areaName, documentId, documentName, revision, pageNumber, sheetNumber, regionId, label }): DAVEReportDrawingCitation =>
+              ({ projectName, areaName, documentId, documentName, revision, pageNumber, sheetNumber, regionId, label }))
+            .sort((left, right) => plainOrder(left.projectName, right.projectName) || plainOrder(left.areaName, right.areaName) || plainOrder(left.documentId, right.documentId)),
+        }
+      : {}),
     verificationQueue,
     briefing: buildPMBriefing({
       projectName: truth.projectName,
