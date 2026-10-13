@@ -1992,22 +1992,21 @@ export async function runScheduleItemCloudSync(
   followUp = false,
 ): Promise<SyncUploadResult> {
   const queueItemId = scheduleItemQueueItemId(item.id);
-  let effectiveChangedFields = changedFields;
   let nothingWaited = false;
   if (followUp) {
     nothingWaited = !(await getOfflineQueue()).some(candidate => candidate.id === queueItemId);
   } else {
-    if (effectiveChangedFields === undefined) {
-      const existingQueue = await getOfflineQueue();
-      const existing = existingQueue.find(candidate => candidate.id === queueItemId);
-      const existingPayload = existing?.payload as
-        | Partial<ScheduleItemRecordPayload>
-        | undefined;
-      if (Array.isArray(existingPayload?.changedFields)) {
-        effectiveChangedFields = existingPayload.changedFields;
-      }
-    }
-    await queueScheduleItemRecord(item, false, effectiveChangedFields, before);
+    // Build 232, item 1 (the schedules reviewer's P3-1; Medium, older; the coordinator's decision, 13 Oct 2026). A save
+    // of the whole task (no list of fields: "Delete PDF + Items" putting a task back on its master's dates, Set
+    // Active's carry) that found an edit of the task still waiting used to take over that edit's list of fields. So
+    // only his owner went up: the dates, percent and lookahead note the delete had put back were in no write, and the
+    // next read from the cloud put the deleted lookahead's back on the phone, the iPad and the web, with no card.
+    // It now joins the waiting edit as what it is, a whole copy of the task, the way an approval's row always has
+    // (mergeScheduleItemQueueChangeScope): one record, so one write, made only if the cloud's row is still the one it
+    // was weighed against. It carries his edit and everything the save changed. Each field he edited keeps the copy
+    // his edit started from (scheduleItemEditBasesMerged), so it is still weighed as his edit and asked about when
+    // another device changed it too; the rest is weighed as the same save is with nothing waiting.
+    await queueScheduleItemRecord(item, false, changedFields, before);
   }
   let aggregateResult = await uploadPendingChanges();
   let remainingQueue = await getOfflineQueue();
