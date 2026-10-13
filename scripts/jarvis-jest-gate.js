@@ -51,9 +51,35 @@ function partCount(env = process.env) {
   return Number(raw);
 }
 
-/** The jest command line. `part` is null for the whole suite in one run. */
+/**
+ * Build 232: node's own flags for every jest this gate starts, the one run
+ * and each part.
+ *
+ * Node v24.17.0 on the Mac dies now and then (SIGSEGV) inside V8's garbage
+ * collector while it walks a frame set up by the function-entry code of V8's
+ * "Sparkplug" baseline compiler: Builtins_BaselineOutOfLinePrologue is on
+ * the crashed thread in 36 of 36 V8 crash reports from 5 to 13 Oct 2026. On
+ * 13 Oct it took this gate's 23-minute run down twice, after 19 and 22
+ * minutes, with no test failed. With --no-sparkplug that entry code is never
+ * run. Nobody has a stand-alone reproduction of the crash, so "the flag
+ * prevents it" rests on those stacks and not on a before-and-after run; what
+ * is measured (scripts/jest-no-sparkplug-test.js) is that the flag leaves no
+ * function in the baseline tier, in jest's process and in any worker process
+ * jest starts.
+ *
+ * Nothing the gate checks is given up: only a JIT tier of the test runner is
+ * off, and the app never runs on node. The flag is node's, so it goes before
+ * the jest script; node refuses it in NODE_OPTIONS.
+ */
+const JEST_NODE_FLAGS = ['--no-sparkplug'];
+
+/**
+ * The node command line for one jest: node's flags, the jest script, jest's
+ * own arguments. `part` is null for the whole suite in one run.
+ */
 function jestArguments(coverageDirectory, part = null) {
   return [
+    ...JEST_NODE_FLAGS,
     path.join(repoRoot, 'node_modules', 'jest', 'bin', 'jest.js'),
     '--runInBand',
     '--watchman=false',
@@ -210,6 +236,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  JEST_NODE_FLAGS,
   MAX_PARTS,
   PARTS_ENVIRONMENT_NAME,
   coverageFailures,
