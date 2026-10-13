@@ -236,7 +236,7 @@ const lastCopied = () => String(onCopyReport.mock.calls.at(-1)?.[0]?.body ?? '')
 const section = (body: string) => { const at = body.indexOf('WORK AREAS / PHOTO NOTES'); return at >= 0 ? body.slice(at) : '(none)'; };
 const ALREADY_SENT = (sentAt: string) => `Your other device already sent this report ${describeReportSendTime(sentAt)}. Approve it only if you want to send it a second time.`;
 
-/** The section as the phone that recorded all five wrote it BEFORE this change, to the letter, but for the last line's date. */
+/** The section as the phone that recorded all five wrote it BEFORE item 2, to the letter, but for the last line's date (and, since item 4, without the model's two lines). */
 const THE_SECTION = [
   'WORK AREAS / PHOTO NOTES',
   '• Tower — Level 1: West bay rebar failed inspection. Pour is on hold. See Images 1, 2, and 5.',
@@ -246,8 +246,11 @@ const THE_SECTION = [
   '• Tower — Level 2: Framing is complete on Level 2. Inspection passed.',
   '• Tower — Level 2: Framing complete.',
   '• Tower — Level 2: Dana – Please frame walls, status Complete.',
-  '• Tower — Tower: West bay rebar failed inspection. Pour is on hold. Paint lobby: Ready. Continue monitoring Paint lobby. West bay rebar failed inspection. Pour is on hold. can block inspection readiness, downstream work, and closeout.',
-  '• Tower — Tower: Resolve blocker for West bay rebar failed inspection. Pour is on hold.',
+  // Build 232 item 4 part A (the owner's answer to question 49): two lines stood here, made from the app's own model
+  // of the project, and are no longer part of the written report: "• Tower — Tower: West bay rebar failed inspection.
+  // Pour is on hold. Paint lobby: Ready. Continue monitoring Paint lobby. West bay rebar failed inspection. Pour is on
+  // hold. can block inspection readiness, downstream work, and closeout." and "• Tower — Tower: Resolve blocker for
+  // West bay rebar failed inspection. Pour is on hold."
   '• Tower — Tower: Latest update: West bay rebar failed inspection. Pour is on hold. Latest photo: West bay rebar Schedule focus: Pour slab (SCHEDULE_FOCUS).',
   '',
   'Please let me know if you have any questions.',

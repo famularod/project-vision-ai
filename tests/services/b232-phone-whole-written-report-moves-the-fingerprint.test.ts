@@ -14,6 +14,9 @@
  *   2. the same saved project read on another day, no task crossing a line: the same text;
  *      and on ANY day, a text that moved means a fingerprint that moved;
  *   3. one change at a time to everything the section reads: a text that moved means a fingerprint that moved.
+ *   4. (item 4 part A) the model of the project the app saves on a device does not change the written report:
+ *      the draft made as the app's provider makes it (buildRuntime, then the live Core), on a device that never
+ *      saw the project, on one that was open before today's records, and on one that held a record deleted since.
  * The other direction (the fingerprint moves and no word does) costs one more approval and is counted, not failed.
  *
  * What the guard found that is NOT settled is pinned by name under "KNOWN" below, so nothing joins it unseen and
@@ -23,17 +26,32 @@
  * first seed). B232_OUT names a file the findings are written to. Synthetic data. No network.
  */
 jest.mock('expo-file-system/legacy', () => ({ documentDirectory: null }));
-jest.mock('@react-native-async-storage/async-storage', () => ({
-  __esModule: true,
-  default: { getItem: jest.fn(async () => null), setItem: jest.fn(async () => undefined), removeItem: jest.fn(async () => undefined), getAllKeys: jest.fn(async () => []), multiGet: jest.fn(async () => []) },
-  getItem: jest.fn(async () => null), setItem: jest.fn(async () => undefined), removeItem: jest.fn(async () => undefined),
-}));
+// One app storage per device: the live Core saves its model of the project there (check 4).
+const mockDevices = new Map<string, Map<string, string>>();
+let mockDevice = 'none';
+const mockLocal = () => {
+  if (!mockDevices.has(mockDevice)) mockDevices.set(mockDevice, new Map());
+  return mockDevices.get(mockDevice) as Map<string, string>;
+};
+jest.mock('@react-native-async-storage/async-storage', () => {
+  const api = {
+    getItem: jest.fn(async (key: string) => mockLocal().get(key) ?? null),
+    setItem: jest.fn(async (key: string, value: string) => { mockLocal().set(key, value); }),
+    removeItem: jest.fn(async (key: string) => { mockLocal().delete(key); }),
+    getAllKeys: jest.fn(async () => Array.from(mockLocal().keys())),
+    multiGet: jest.fn(async (keys: string[]) => keys.map(key => [key, mockLocal().get(key) ?? null])),
+    multiSet: jest.fn(async (pairs: [string, string][]) => { pairs.forEach(([key, value]) => mockLocal().set(key, value)); }),
+    multiRemove: jest.fn(async (keys: string[]) => { keys.forEach(key => mockLocal().delete(key)); }),
+  };
+  return { __esModule: true, default: api, ...api };
+});
 
 import * as fs from 'fs';
-import { buildPIECoreIntelligence } from '../../services/PIECoreIntelligence';
+import { buildLivePIECoreIntelligence, buildPIECoreIntelligence } from '../../services/PIECoreIntelligence';
 import { scheduleTasksInReportOrder } from '../../services/PIEEvidenceFusion';
 import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, enhanceDAVEReportDraft } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
+import { buildRuntime } from '../../services/PIERuntime';
 import type { ContactBook, ProjectArea, ProjectUpdate, ReferenceDocument, ScheduleItem } from '../../types';
 
 jest.setTimeout(600_000);
@@ -180,6 +198,39 @@ function phone(world: World, now: string = at(0)): Read {
       .locationGroups.flatMap(group => group.workAreas.map(area => `${area.projectName} — ${area.title}`));
     return { fingerprint, text, section: from >= 0 ? projectManager.slice(from) : '', areas };
   } finally {
+    jest.useRealTimers();
+  }
+}
+
+/**
+ * The same, with the app's own draft made as providers/PIELiveAuthorityProvider makes it on a workspace that keeps
+ * its model on the device: the only road that SAVES a model (the plain Core above saves nothing).
+ */
+async function phoneLive(device: string, world: World, now: string = at(0)): Promise<{ fingerprint: string; text: string }> {
+  jest.useFakeTimers({ now: Date.parse(now), doNotFake: ['nextTick', 'setImmediate', 'setInterval', 'setTimeout', 'clearTimeout', 'clearInterval', 'queueMicrotask'] });
+  try {
+    mockDevice = device;
+    const truths = buildDAVEReportProjectTruths({
+      projects: [{ name: 'Tower', projectId: 'report:tower' }], projectRecords: [{ name: 'Tower' }] as never,
+      updates: world.updates, scheduleItems: world.items, knownScheduleItems: world.items, knownScheduleDocuments: world.documents,
+      projectAreas: world.areas, referenceDocuments: world.documents,
+    });
+    const fingerprint = buildDAVEReportSourceFingerprint(truths);
+    const briefing = buildDAVEReportBriefing({ truths, selectedProjectNames: ['Tower'], previousSnapshot: null, scheduleItems: world.items } as never);
+    const runtimeContext = {
+      projectName: 'Tower', projectNames: ['Tower'], reportType: 'daily_project_update',
+      updates: world.updates, scheduleItems: world.items, knownScheduleItems: world.items, currentUpdate: null,
+      projectAreas: world.areas, contacts: world.contacts, referenceDocuments: world.documents, surface: 'reports',
+    };
+    const core = await buildLivePIECoreIntelligence({
+      runtimeContext, authorityCore: null, reportType: 'daily_project_update', reportProjectNames: ['Tower'],
+      organizationId: 'local-unverified-anonymous', projectId: 'project-tower',
+      verifiedLearningEvents: [], identityTrusted: false, cloudAvailable: false, runtime: buildRuntime(runtimeContext as never),
+    } as never);
+    const text = (['project_manager', 'executive'] as const).map(format => String(enhanceDAVEReportDraft(core.reportDraft as never, briefing, format).body)).join('\n=====\n');
+    return { fingerprint, text };
+  } finally {
+    mockDevice = 'none';
     jest.useRealTimers();
   }
 }
@@ -505,6 +556,30 @@ describe('B232 item 2 part C: the phone\'s whole written report against the 2.0 
     // And on the twelve projects the list was found with (B232_SEEDS=12), every one is still there: one that is
     // settled comes off the list.
     if (SEEDS[0] === 1 && SEEDS.length >= 12) expect(KNOWN_BY_CHANGE.filter(name => !silent.has(name))).toEqual([]);
+  });
+
+  it('4. (item 4 part A) the saved model does not change the written report: three devices with three histories, one text', async () => {
+    for (const seed of SEEDS) {
+      const world = project(seed);
+      const byDate = newestFirst(world.updates);
+      const fresh = await phoneLive(`fresh-${seed}`, world);
+      // Open yesterday, before the two newest updates, when the first task stood 20 points lower.
+      const lower = world.items.map((item, index) => (index === 0 ? { ...item, percentComplete: Math.max(0, Number(item.percentComplete) - 20) } as ScheduleItem : item));
+      await phoneLive(`earlier-${seed}`, { ...world, updates: byDate.slice(2), items: lower }, at(-1));
+      const earlier = await phoneLive(`earlier-${seed}`, world);
+      // Held, yesterday, an update and a task that were deleted since.
+      const goneTask = task('gone-task', 'Temporary power', 'Trailer', 0, date(1), 'Luis', { status: 'Waiting' });
+      const goneUpdate = update('u9', goneTask, savedDay(-1), 'Temporary power is out at the trailer. Generator is on order.');
+      await phoneLive(`deleted-${seed}`, { ...world, updates: [goneUpdate, ...world.updates], items: [...world.items, goneTask] }, at(-1));
+      const afterADelete = await phoneLive(`deleted-${seed}`, world);
+      const later = await phoneLive(`deleted-${seed}`, world, at(31));
+      const freshLater = await phoneLive(`fresh-later-${seed}`, world, at(31));
+      for (const [name, other, against] of [['open before today\'s records', earlier, fresh], ['held a record deleted since', afterADelete, fresh], ['the same, 31 days later', later, freshLater]] as const) {
+        if (other.text !== against.text) say(`seed ${seed}, a device that ${name}: THE TEXT DIFFERS from a device that never saw the project\n${[...newLines(against.text, other.text).map(line => `    + ${line}`), ...newLines(other.text, against.text).map(line => `    - ${line}`)].join('\n')}`);
+        expect({ seed, device: name, text: other.text === against.text, fingerprint: other.fingerprint === against.fingerprint, quotesTheDeletedNote: other.text.includes('Temporary power') })
+          .toEqual({ seed, device: name, text: true, fingerprint: true, quotesTheDeletedNote: false });
+      }
+    }
   });
 });
 
