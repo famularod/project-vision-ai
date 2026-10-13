@@ -14,7 +14,6 @@ import {
   rememberReportSourceBeforeNotesFollowed,
   daveReportSnapshotScopeKey,
   reportPeriodWaitingForOtherDevice,
-  reportTaskActivityBeforeNotesFollowed,
   reportTaskEarlierRows,
   reportTasksAddedByLookahead,
   reportTasksLeftByLookahead,
@@ -323,8 +322,6 @@ export function buildDAVEReportBriefing({
     // How a task that is back last stood, and which tasks began as a lookahead's own row (R5 item 1).
     earlierRows: reportTaskEarlierRows(truths),
     lookaheadAddedTaskIds: reportTasksAddedByLookahead(truths),
-    // Which tasks' latest note followed them from an earlier row, and what the row's own latest is (R6 item 1).
-    activityBeforeNotesFollowed: reportTaskActivityBeforeNotesFollowed(truths),
   });
   const reportingPeriod = waitingForOtherDevice ? reportPeriodWaitingForOtherDevice(comparison) : comparison;
   const projectConditions = truths.map(projectConditionFromTruth);
