@@ -6130,3 +6130,34 @@ describe('Build 232 item 1c, part A: what the sync itself carried still goes up 
     });
   });
 });
+
+/**
+ * Part B (S3-2; Low, caused by item 1b). The list a whole copy keeps of "the fields of his edit" (item 1b) must hold
+ * his fields and nothing else. A PERCENT the sync itself had carried, still waiting when the delete's save joined it,
+ * put all its progress fields in the list. Nothing read them wrongly (dates and percent are never sent on), but the
+ * list was not what it says it is.
+ */
+describe('Build 232 item 1c, part B: the list of his fields holds his fields only', () => {
+  const { LOOK, NEW_ROW, waiting, carriedAndWaitingOnThePhone } = ITEM_1C;
+  const recordOfTheNewRow = async (phone: Device) => (await waiting(phone)).find(record => record.id === NEW_ROW)!;
+
+  it('a percent the sync carried waits, then the delete\'s save joins it: none of its fields is in the list', async () => {
+    const { phone } = await carriedAndWaitingOnThePhone('his percent');
+    expect(await recordOfTheNewRow(phone)).toMatchObject({ carriedProgress: true, changedFields: expect.arrayContaining(['percentComplete', 'status']) });
+    await deleteWithItems(phone, LOOK);
+    const record = await recordOfTheNewRow(phone);
+    // (It was: status, percentComplete, progressSource and eight more, none of them typed by him.)
+    expect([record.changedFields, record.joinedEditFields ?? []]).toEqual([undefined, []]);
+  });
+
+  it('an owner and a note the sync carried wait, he sets a next step on that row, then the delete: the list is the next step alone', async () => {
+    const { phone } = await carriedAndWaitingOnThePhone('his owner and note');
+    at('2026-09-12T12:30:00.000Z');
+    await edit(phone, NEW_ROW, { nextAction: 'Call the inspector' });
+    expect(await recordOfTheNewRow(phone)).toMatchObject({ carriedText: ['owner', 'notes'], changedFields: expect.arrayContaining(['owner', 'notes', 'nextAction']) });
+    at('2026-09-12T13:00:00.000Z');
+    await deleteWithItems(phone, LOOK);
+    const record = await recordOfTheNewRow(phone);
+    expect([record.changedFields, record.joinedEditFields]).toEqual([undefined, ['nextAction']]);
+  });
+});

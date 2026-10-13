@@ -1925,9 +1925,13 @@ function referenceDocumentQueueItemId(documentId: string): string {
   return `reference-document-${encodeURIComponent(documentId)}`;
 }
 
-/** The fields of a queued task edit that are his own: its list of fields, without the stamp and without what the sync itself carried. */
+/**
+ * The fields of a queued task edit that are his own: its list of fields, without the stamp and without what the sync
+ * itself carried. (Build 232, item 1c part B: a carried PERCENT's fields too, while the record's progress is still
+ * as the carry gave it; only the carried text was left out, so those fields stood in the list as if he had typed them.)
+ */
 function scheduleItemFieldsOfHisEdit(payload: Partial<ScheduleItemRecordPayload> | null | undefined): Array<keyof ScheduleItem> {
-  const carried: readonly string[] = payload?.carriedText ?? [];
+  const carried: readonly string[] = [...(payload?.carriedText ?? []), ...(payload?.carriedProgress === true ? SCHEDULE_CARRIED_PROGRESS_FIELDS : [])];
   return (Array.isArray(payload?.changedFields) ? payload.changedFields : []).filter(field => field !== 'updatedAt' && !carried.includes(field));
 }
 
