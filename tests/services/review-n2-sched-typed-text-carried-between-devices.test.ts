@@ -6161,3 +6161,233 @@ describe('Build 232 item 1c, part B: the list of his fields holds his fields onl
     expect([record.changedFields, record.joinedEditFields]).toEqual([undefined, ['nextAction']]);
   });
 });
+
+/**
+ * The owner's answer to question 47 (13 Oct 2026), "47 A"; the schedules reviewer's P1-8 (Medium, older). A newer
+ * master turns a task High (its file marks it Critical, or its finish comes within the week) also when it leaves the
+ * task on its dates, unless he set that task's priority himself. Here: two devices and the web with one cloud. A
+ * device that hears of the master from another device ends on the same priorities, and a priority the app itself
+ * raised is never asked about: his own stands over it, whichever device syncs first.
+ * (The rule on the records alone: owner-answer-q47-critical-raises-unmoved-task.)
+ */
+describe('Q47: a master turns a task it leaves on its dates High, between two devices', () => {
+  // N is approved five days before Survey's finish (10/14) and moves nothing: its file's Survey row reads High, its
+  // Framing row (10/25) Medium. P, a day later, moves Survey a month out: Medium.
+  const N = scheduleDoc('MASTER N', '2026-10-09T12:00:00.000Z');
+  const P = scheduleDoc('MASTER P', '2026-10-10T12:00:00.000Z');
+  const SURVEY_FAR = 'Survey,Alpha,Lot,11/12/2026,11/14/2026,';
+  const surveyOf = (items: readonly ScheduleItem[]) => items.filter(item => item.taskName === 'Survey');
+  const priorities = (items: readonly ScheduleItem[]) => [surveyOf(items).map(item => item.priority), framingOf(items).map(item => item.priority)];
+  const everywhere = async (phone: Device, ipad: Device) => {
+    await refresh(phone); await refresh(ipad);
+    return [priorities(deviceShown(phone)), priorities(deviceShown(ipad)), priorities(webShown())];
+  };
+  const ALL = (survey: string, framing = 'Medium') => Array(3).fill([[survey], [framing]]);
+  const nothingAskedOrWaiting = async (phone: Device, ipad: Device) =>
+    expect([await conflictsOf(phone), await conflictsOf(ipad), await queueOf(phone), await queueOf(ipad)]).toEqual([[], [], [], []]);
+  const started = async () => {
+    const { phone, ipad } = await start();
+    const surveyId = surveyOf(deviceShown(phone))[0].id;
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Medium'));
+    return { phone, ipad, surveyId };
+  };
+  const phoneApprovesN = async (phone: Device) => {
+    at(N.importedAt!);
+    await approve(phone, N, [F_ROW, SURVEY]);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+  };
+  const word = (item: ScheduleItem | undefined) => [item?.priority, item?.priorityAsImported, item?.prioritySetByHand?.priority ?? null];
+
+  it('the phone approves it; the iPad and the web hear of it: High in all three places on the same row, nothing asked, and more syncing writes nothing', async () => {
+    const { phone, ipad, surveyId } = await started();
+    await phoneApprovesN(phone);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('High'));
+    expect([surveyOf(deviceShown(phone))[0].id, surveyOf(deviceShown(ipad))[0].id, surveyOf(webShown())[0].id]).toEqual([surveyId, surveyId, surveyId]);
+    // The file's word, not his: no mark anywhere.
+    expect([word(cloudRow(surveyId)), word(surveyOf(deviceShown(phone))[0]), word(surveyOf(deviceShown(ipad))[0])]).toEqual(Array(3).fill(['High', 'High', null]));
+    await nothingAskedOrWaiting(phone, ipad);
+    const writes = cloudWrites();
+    await settle(phone, ipad);
+    await fullSync(phone);
+    await fullSync(ipad);
+    expect(cloudWrites()).toBe(writes);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('High'));
+  });
+
+  it.each(['the automatic upload', 'Sync Now'])('he had set it Low on the iPad, which had no signal and had not heard of the master: his Low in all three places, nothing asked (%s)', async (path) => {
+    const { phone, ipad, surveyId } = await started();
+    setOnline(ipad, false);
+    at('2026-10-09T09:00:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Low' });
+    await phoneApprovesN(phone);
+    expect(word(cloudRow(surveyId))).toEqual(['High', 'High', null]);
+    at('2026-10-09T15:00:00.000Z');
+    setOnline(ipad, true);
+    if (path === 'Sync Now') await fullSync(ipad); else { await backgroundUpload(ipad); await refresh(ipad); }
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Low'));
+    expect(word(cloudRow(surveyId))[2]).toBe('Low');
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('...and set after the phone approved, still not having heard: his Low all the same', async () => {
+    const { phone, ipad, surveyId } = await started();
+    setOnline(ipad, false);
+    await phoneApprovesN(phone);
+    at('2026-10-09T14:00:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Low' });
+    at('2026-10-09T15:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    await refresh(ipad);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Low'));
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('the other order: the phone, with no signal and not having heard of the Low he set on the iPad, approves the master: his Low in all three places, nothing asked', async () => {
+    const { phone, ipad, surveyId } = await started();
+    setOnline(phone, false);
+    at('2026-10-09T09:00:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Low' });
+    await backgroundUpload(ipad);
+    at(N.importedAt!);
+    await approve(phone, N, [F_ROW, SURVEY]);
+    // On the phone, which has not heard, the task reads High until it syncs.
+    expect(priorities(deviceShown(phone))).toEqual([['High'], ['Medium']]);
+    at('2026-10-09T15:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Low'));
+    expect(word(cloudRow(surveyId))[2]).toBe('Low');
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('...and when the Low was set on the web desktop meanwhile', async () => {
+    const { phone, ipad, surveyId } = await started();
+    setOnline(phone, false);
+    at('2026-10-09T09:00:00.000Z');
+    webWrite(webEdited(cloudRow(surveyId)!, { priority: 'Low' }));
+    at(N.importedAt!);
+    await approve(phone, N, [F_ROW, SURVEY]);
+    at('2026-10-09T15:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Low'));
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('a Low he set before, heard everywhere: the master leaves it Low in all three places', async () => {
+    const { phone, ipad, surveyId } = await started();
+    at('2026-10-08T09:00:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Low' });
+    await backgroundUpload(ipad);
+    await settle(phone, ipad);
+    await phoneApprovesN(phone);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Low'));
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('the desktop uploads the master and makes it current; the phone and the iPad hear of it: High in all three places, nothing asked', async () => {
+    const { phone, ipad, surveyId } = await started();
+    at(N.importedAt!);
+    webUploadsAndMakesCurrent('MASTER N', [F_ROW, SURVEY]);
+    expect(word(cloudRow(surveyId))).toEqual(['High', 'High', null]);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('High'));
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('...while the iPad, with no signal, had set it Low: his Low in all three places, nothing asked', async () => {
+    const { phone, ipad, surveyId } = await started();
+    setOnline(ipad, false);
+    at('2026-10-09T09:00:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Low' });
+    at(N.importedAt!);
+    webUploadsAndMakesCurrent('MASTER N', [F_ROW, SURVEY]);
+    at('2026-10-09T15:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    await refresh(ipad);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Low'));
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  // (The schedules reviewer's P2-4, as it would meet this rule: his priority reads as the row did before, so "nobody
+  // changed it"; the mark his edit left says it is his.)
+  it('he set it Low and then Medium again on the iPad, heard by the cloud; the phone, with no signal, approves the master: his Medium in all three places, nothing asked', async () => {
+    const { phone, ipad, surveyId } = await started();
+    setOnline(phone, false);
+    at('2026-10-09T09:00:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Low' });
+    at('2026-10-09T09:30:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Medium' });
+    await backgroundUpload(ipad);
+    expect(word(cloudRow(surveyId))).toEqual(['Medium', 'Medium', 'Medium']);
+    at(N.importedAt!);
+    await approve(phone, N, [F_ROW, SURVEY]);
+    at('2026-10-09T15:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Medium'));
+    expect(word(cloudRow(surveyId))[2]).toBe('Medium');
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('...and the other order: set Low and Medium again on the iPad with no signal, after which the phone approves: his Medium in all three places, nothing asked', async () => {
+    const { phone, ipad, surveyId } = await started();
+    setOnline(ipad, false);
+    at('2026-10-09T09:00:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Low' });
+    at('2026-10-09T09:30:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Medium' });
+    await phoneApprovesN(phone);
+    at('2026-10-09T15:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    await refresh(ipad);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Medium'));
+    expect(word(cloudRow(surveyId))[2]).toBe('Medium');
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('Set Active back to the older master and forward again, on the phone: High each way in all three places, and nothing asked', async () => {
+    const { phone, ipad } = await started();
+    await phoneApprovesN(phone);
+    await settle(phone, ipad);
+    at('2026-10-09T16:00:00.000Z');
+    await setActiveOn(phone, F);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('High'));
+    at('2026-10-09T17:00:00.000Z');
+    await setActiveOn(phone, N);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('High'));
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('the High is the file\'s word and not his: the next master, approved on the iPad that only heard of it, moves the task a month out and it reads Medium in all three places', async () => {
+    const { phone, ipad, surveyId } = await started();
+    await phoneApprovesN(phone);
+    await settle(phone, ipad);
+    at(P.importedAt!);
+    await approve(ipad, P, [F_ROW, SURVEY_FAR]);
+    shareDocuments(ipad);
+    await backgroundUpload(ipad);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Medium'));
+    expect(surveyOf(webShown())[0].id).not.toBe(surveyId);
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+});

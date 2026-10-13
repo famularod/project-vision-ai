@@ -1650,6 +1650,15 @@ export function mergeApprovedScheduleImportItems({
       const restated = movedByHand && !unchangedTask(noted, { ...noted, ...dates })
         ? { ...noted, ...dates, updatedAt: approvedAt }
         : noted;
+      // The owner's answer to question 47 (13 Oct 2026; the schedules reviewer's P1-8, older): a master turned a task
+      // High (its file marks it Critical, or its finish comes within the week) only when it also moved the task, since
+      // only a new row took the file's priority. The task it leaves on its dates now takes it too, by the rule of the
+      // moved task (withTextTakenNoted): never one he set himself, and the row's own priority is what the file reader
+      // gave the imported row. Only upward: nothing here lowers a priority. The row's word of what its import gave it
+      // goes with it, so the High reads as the file's and not as his (it does not follow the task as his would).
+      // A task he entered by hand keeps the priority he gave it, as it does when a master moves it.
+      const raised = owned && schedulePriorityAsRead(importedItem.priority) === 'High' && schedulePriorityAsRead(duplicate.priority) !== 'High' && !schedulePriorityIsHis(duplicate)
+        ? { priority: 'High' as const, priorityAsImported: 'High' as const } : null;
       if (!current && !owned) {
         // Not current yet: the row waits on the task until its schedule is made current (A5 pass 18 L3).
         if (fileProgress || restated !== duplicate) {
@@ -1657,11 +1666,12 @@ export function mergeApprovedScheduleImportItems({
         }
         return;
       }
-      if (rehome || fileProgress || restated !== next.find(item => item.id === duplicate.id)) {
+      if (rehome || fileProgress || raised || restated !== next.find(item => item.id === duplicate.id)) {
         next = next.map(item => item.id === duplicate.id
           ? {
               ...restated,
               ...(fileProgress || {}),
+              ...(raised || {}),
               // What this master's file states for the row, standing or not (Build 231, S4 item 3; fileProgressLast).
               // On a task an import owns: one he entered by hand is weighed against a master by its own rules.
               ...(owned && scheduleRowStatesPercent(importedItem) ? { fileProgressLast: { percentComplete: percentOf(importedItem), statedAt: approvedAt } } : {}),
