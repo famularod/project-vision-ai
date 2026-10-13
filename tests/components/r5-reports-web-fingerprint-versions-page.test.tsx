@@ -214,17 +214,23 @@ async function approveTheSameReportHere() {
   return view;
 }
 
+// R10 (the coordinator's decision on review pass 3, P3-2): NO EARLIER-VERSION NAME EVER STANDS. A report the build
+// before approved or saved is never taken for the report on the page, for the same facts too. Two tests here pinned
+// that it was (the first and the last); they now say what the page does. The two between them did not rest on it.
 describe('R5 item 2 (web page): a report made under the earlier fingerprint version, the same facts today', () => {
-  it('the approval stands on the period its own send starts: shared, it is recorded, stays the approved report, and a second share is not another send', async () => {
+  // (This began: "Nothing replaced the approval: it is still the one made before the update", and the send was recorded on that one.)
+  it('R10: approved here, it is this computer\'s approval under today\'s fingerprint, in place of the one made before the update; it stands on the period its own send starts: shared, it is recorded, stays the approved report, and a second share is not another send', async () => {
     const approval = approvalMadeBeforeTheUpdateWaits();
     await approveTheSameReportHere();
-    // Nothing replaced the approval: it is still the one made before the update.
-    expect(sharedSnapshot()).toMatchObject({ sourceFingerprint: approval.sourceFingerprint, deliveredAt: null });
+    const approvedHere = sharedSnapshot();
+    expect(String(approvedHere?.sourceFingerprint)).toMatch(/^dave-report-source\/2\.0:/);
+    expect(approvedHere?.sourceFingerprint).not.toBe(approval.sourceFingerprint);
+    expect(approvedHere).toMatchObject({ deliveredAt: null });
     fireEvent.press(screen.getByText('Share Approved Report'));
     await screen.findByText(RECORDED);
     await settle();
     expect(copied()).toHaveBeenCalledTimes(1);
-    expect(sharedSnapshot()).toMatchObject({ sourceFingerprint: approval.sourceFingerprint, deliveredAt: expect.any(String) });
+    expect(sharedSnapshot()).toMatchObject({ sourceFingerprint: approvedHere?.sourceFingerprint, deliveredAt: expect.any(String) });
     // Still the approved report on the page, known as sent from here.
     expect(screen.getByText(SENT_FROM_HERE)).toBeTruthy();
     expect(screen.getByText('Share Approved Report')).toBeTruthy();
@@ -268,7 +274,8 @@ describe('R5 item 2 (web page): a report made under the earlier fingerprint vers
     expect(screen.getByLabelText('Mark as Sent')).toBeTruthy();
   });
 
-  it('an approved report saved before the update, with no approval of it on record: shared from Report history, this computer takes it as its approval and records the send', async () => {
+  // (This said: "shared from Report history, this computer takes it as its approval and records the send".)
+  it('R10: an approved report saved before the update, opened from Report history: it is the build before\'s report, not the one today\'s facts make; the page says the facts changed since it was prepared, and sharing it records no send', async () => {
     // Approved on this computer (the page saves the report with its source).
     const first = await approveHereAt50();
     const saved = lastSaved();
@@ -277,7 +284,8 @@ describe('R5 item 2 (web page): a report made under the earlier fingerprint vers
     // cleared since, so no approval of it is kept here or in the shared record (the phone's 10:00 report is).
     const source = String(saved.report.sourceFingerprint);
     const [facts, ...rest] = source.split(':media-');
-    const [earlier] = legacyReportSourcesOf(facts);
+    expect(legacyReportSourcesOf(facts)).toEqual([]);
+    const earlier = buildDAVELegacyReportSourceFingerprint(buildDAVEWebReportTruths(AT_50(), null));
     expect(isLegacyReportSource(earlier)).toBe(true);
     const savedBefore = { ...saved, report: { ...saved.report, sourceFingerprint: [earlier, ...rest].join(':media-') } };
     forgetDAVEWebReportPeriods('owner-1');
@@ -291,14 +299,18 @@ describe('R5 item 2 (web page): a report made under the earlier fingerprint vers
     render(<DesktopReadOnlyShell page="reports" />);
     await settle();
     fireEvent.press(screen.getByText('Open'));
-    await screen.findByText('Share Approved Report');
+    expect(await screen.findByText('Project facts changed after this draft was prepared. Regenerate it before approval.')).toBeTruthy();
+    expect(screen.getByText('Regenerate from Current Facts')).toBeTruthy();
     await settle();
+    // Shared all the same, its saved text goes out, and this computer does not take it for its approval: no send is
+    // recorded for it, and the page says so, as for any saved report the facts have moved on from.
     fireEvent.press(screen.getByText('Share Approved Report'));
-    // (It read "This computer could not record that this report was sent ..." without the check.)
-    expect(await screen.findByText(RECORDED)).toBeTruthy();
+    expect(await screen.findByText(NOT_RECORDED)).toBeTruthy();
     await settle();
     expect(copied()).toHaveBeenCalledTimes(1);
-    expect(screen.queryByText(NOT_RECORDED)).toBeNull();
-    expect(sharedSnapshot()).toMatchObject({ deliveredAt: expect.any(String), supersedes: { deliveredAt: '2026-10-01T10:00:00.000Z' } });
+    expect(screen.queryByText(RECORDED)).toBeNull();
+    // The shared record is as it was: the phone's 10:00 report.
+    expect(sharedSnapshot()).toMatchObject({ deliveredAt: '2026-10-01T10:00:00.000Z' });
+    expect(sharedSnapshot()?.supersedes ?? null).toBeNull();
   });
 });

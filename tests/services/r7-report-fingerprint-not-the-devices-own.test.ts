@@ -368,7 +368,9 @@ describe('R7 item C: version 1.0 is still what Build 230 wrote, to the byte', ()
     const shown = selectAuthoritativeScheduleItems({ scheduleItems: ITEMS, scheduleDocuments: [PHONE_DOCUMENT] }) as ScheduleItem[];
     expect(buildDAVELegacyReportSourceFingerprint(truths)).toBe(buildDAVELegacyReportSourceFingerprint([asBuild230Built(shown, ITEMS, [PHONE_DOCUMENT], 'report:alpha')]));
     expect(buildDAVELegacyReportSourceFingerprint(truths)).toBe(BUILD_230.phone);
-    expect(sameReportSource(BUILD_230.phone, buildDAVEReportSourceFingerprint(truths))).toBe(true);
+    // R10 (the coordinator's decision on review pass 3, P3-2): worked out to the byte still, and no longer a name of
+    // today's facts. This line said the Build 230 report was known by it.
+    expect(sameReportSource(BUILD_230.phone, buildDAVEReportSourceFingerprint(truths))).toBe(false);
   });
 
   it('on the web: of the truth from the loader\'s own tasks and documents, the cloud\'s row times and the web\'s fields in it', async () => {
@@ -378,7 +380,8 @@ describe('R7 item C: version 1.0 is still what Build 230 wrote, to the byte', ()
       asBuild230Built(snapshot.scheduleItems, snapshot.knownScheduleItems ?? [], snapshot.referenceDocuments, 'project-alpha-id'),
     ]));
     expect(buildDAVELegacyReportSourceFingerprint(truths)).toBe(BUILD_230.web);
-    expect(sameReportSource(BUILD_230.web, buildDAVEReportSourceFingerprint(truths))).toBe(true);
+    // R10: to the byte still, and no longer a name of today's facts (as on the phone, above).
+    expect(sameReportSource(BUILD_230.web, buildDAVEReportSourceFingerprint(truths))).toBe(false);
     // The phone's and the web's 1.0 fingerprints never agreed, and still do not: a phone's 1.0 report is not known on the web (R4's own limit).
     expect(BUILD_230.web).not.toBe(BUILD_230.phone);
   });

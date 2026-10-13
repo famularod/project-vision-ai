@@ -157,8 +157,10 @@ describe('R4 item 4a with R3 item 1: an update on a task\'s hidden row is counte
     const reworded = buildDAVEReportSourceFingerprint(truthsWith([...UPDATES, { ...onHiddenRow, notes: 'Paint primer short by two pails.' } as ProjectUpdate]));
     expect(reworded).not.toBe(fingerprint);
     expect(sameReportSource(fromBuild230, reworded)).toBe(false);
-    // Without that update the report is the one Build 230 made, and is known.
-    expect(sameReportSource(fromBuild230, buildDAVEReportSourceFingerprint(truthsWith(UPDATES)))).toBe(true);
+    // R10 (the coordinator's decision on review pass 3, P3-2) reversed the line that stood here ("without that
+    // update the report is the one Build 230 made, and is known"). The facts are then the ones Build 230 reported,
+    // to the byte, and its report is still another report: no 1.0 name stands.
+    expect(sameReportSource(fromBuild230, buildDAVEReportSourceFingerprint(truthsWith(UPDATES)))).toBe(false);
   });
 
   it('guard: where the saved tasks change nothing, nothing is built twice (the truth as built is the report\'s own)', () => {
@@ -209,45 +211,55 @@ describe('R4 item 4a: what each version is made of', () => {
   });
 });
 
-describe('R4 item 4a: a report made under 1.0 is still known for the same facts', () => {
+// R10 (the coordinator's decision on review pass 3, P3-2): NO EARLIER-VERSION NAME EVER STANDS. This block pinned the
+// hand-over ("a report made under 1.0 is still known for the same facts"). The facts are the same to the byte, but
+// the words are written again by this build and do not always read as Build 230 sent them, so a 1.0 report is never
+// taken for the report on screen. Each test below now says that; none was removed.
+describe('R4 item 4a, reversed by R10: a report made under 1.0 is never taken for the same facts today', () => {
   const current = () => buildDAVEReportSourceFingerprint(phoneTruths(SAVED));
   const underOne = () => buildDAVELegacyReportSourceFingerprint(phoneTruths(SAVED));
   const approvedUnderOne = () => ({ ...snapshotOf(SAVED, underOne()), deliveredAt: null }) as DAVEReportSnapshot;
 
-  it('the two fingerprints of the same facts are known as the same, each way round', () => {
+  it('the two fingerprints of the same facts are not known as the same, either way round', () => {
     expect(isLegacyReportSource(underOne())).toBe(true);
     expect(isLegacyReportSource(current())).toBe(false);
-    expect(sameReportSource(underOne(), current())).toBe(true);
-    expect(sameReportSource(current(), underOne())).toBe(true);
+    expect(sameReportSource(underOne(), current())).toBe(false);
+    expect(sameReportSource(current(), underOne())).toBe(false);
   });
 
-  it('phone: approving again saves nothing over it, and it is not called another report\'s approval', () => {
+  it('phone: approving saves a new approval over it, and it is called another report\'s approval', () => {
     const fingerprint = current();
-    expect(reportSnapshotToSave(snapshotOf(SAVED, fingerprint), approvedUnderOne())).toBeNull();
-    expect(approvalReplacesUnsentApproval(approvedUnderOne(), fingerprint)).toBe(false);
+    expect(reportSnapshotToSave(snapshotOf(SAVED, fingerprint), approvedUnderOne())).toMatchObject({ sourceFingerprint: fingerprint, deliveredAt: null });
+    expect(approvalReplacesUnsentApproval(approvedUnderOne(), fingerprint)).toBe(true);
   });
 
-  it('phone: once sent it reads as it was sent, and no device waits for it', () => {
+  it('phone: once sent it is the report today\'s report counts from, and a device that has not downloaded since it was sent waits', () => {
     const fingerprint = current();
     const sent = markReportSnapshotDelivered(approvedUnderOne(), '2026-09-08T13:00:00.000Z', 'ipad-install');
-    expect(reportBaselineSnapshot(sent, fingerprint)).toBeNull();
-    expect(otherDeviceSendNotReceived({ period: sent, currentFingerprint: fingerprint, ownSends: new Set(), pulledAt: null })).toBeNull();
+    expect(reportBaselineSnapshot(sent, fingerprint)).toBe(sent);
+    // As for any report the other device sent that is not the one on screen: it waits until it has downloaded since.
+    expect(otherDeviceSendNotReceived({ period: sent, currentFingerprint: fingerprint, ownSends: new Set(), pulledAt: null })).toBe(sent);
+    expect(otherDeviceSendNotReceived({ period: sent, currentFingerprint: fingerprint, ownSends: new Set(), pulledAt: '2026-09-08T13:05:00.000Z' })).toBeNull();
   });
 
-  it('web: a report saved under 1.0 is still current', () => {
+  it('web: a report saved under 1.0 is out of date', () => {
     const source = buildDAVEWebReportSource(webSnapshot(SAVED), 'Alpha');
     const savedUnderOne = source.fingerprint.replace(/^dave-report-source\/2\.0:[0-9a-f]+/, buildDAVELegacyReportSourceFingerprint(buildDAVEWebReportTruths(webSnapshot(SAVED), 'Alpha')));
     expect(savedUnderOne).not.toBe(source.fingerprint);
-    expect(daveWebReportSourceIsCurrent(savedUnderOne, source)).toBe(true);
+    expect(daveWebReportSourceIsCurrent(savedUnderOne, source)).toBe(false);
+    expect(daveWebReportSourceIsCurrent(source.fingerprint, source)).toBe(true);
   });
 
-  it('web: a report this browser sent under 1.0 is still known as sent from here', () => {
+  it('web: a report this browser sent under 1.0 is not today\'s report sent from here', () => {
     const webTruths = buildDAVEWebReportTruths(webSnapshot(SAVED), 'Alpha');
     const fingerprint = buildDAVEReportSourceFingerprint(webTruths);
     const sentAt = '2026-09-08T13:00:00.000Z';
     const sentUnderOne = markReportSnapshotDelivered({ ...snapshotOf(SAVED, buildDAVELegacyReportSourceFingerprint(webTruths)), deliveredAt: null }, sentAt, 'this-browser');
     (daveWebOwnReportSends() as Set<string>).add(sentAt);
-    expect(daveWebReportSentHereAt(sentUnderOne, fingerprint)).toBe(sentAt);
+    expect(daveWebReportSentHereAt(sentUnderOne, fingerprint)).toBeNull();
+    // The same report sent from here on this build is.
+    const sentToday = markReportSnapshotDelivered({ ...snapshotOf(SAVED, fingerprint), deliveredAt: null }, sentAt, 'this-browser');
+    expect(daveWebReportSentHereAt(sentToday, fingerprint)).toBe(sentAt);
     // Not a report of other facts.
     expect(daveWebReportSentHereAt(sentUnderOne, buildDAVEReportSourceFingerprint(buildDAVEWebReportTruths(webSnapshot(MOVED), 'Alpha')))).toBeNull();
     (daveWebOwnReportSends() as Set<string>).delete(sentAt);
@@ -264,10 +276,10 @@ describe('R4 item 4a: a report made under 1.0 is still known for the same facts'
     expect(daveWebReportSourceIsCurrent(savedBefore, source)).toBe(false);
   });
 
-  it('a 1.0 report made when the tasks were saved in another order is still known once that order has been seen', () => {
+  it('nor is a 1.0 report made when the tasks were saved in another order, that order seen or not', () => {
     const inOtherOrder = buildDAVELegacyReportSourceFingerprint(phoneTruths(REORDERED));
     buildDAVEReportSourceFingerprint(phoneTruths(REORDERED));
-    expect(sameReportSource(inOtherOrder, current())).toBe(true);
+    expect(sameReportSource(inOtherOrder, current())).toBe(false);
   });
 
   it('guard: two 1.0 fingerprints, or two 2.0 ones, are the same only when they are equal; nothing is not a report', () => {
@@ -275,6 +287,7 @@ describe('R4 item 4a: a report made under 1.0 is still known for the same facts'
     expect(sameReportSource(current(), buildDAVEReportSourceFingerprint(phoneTruths(MOVED)))).toBe(false);
     expect(sameReportSource(null, current())).toBe(false);
     expect(sameReportSource(`${underOne()}:media-aa`, `${current()}:media-bb`)).toBe(false);
-    expect(sameReportSource(`${underOne()}:media-aa`, `${current()}:media-aa`)).toBe(true);
+    expect(sameReportSource(`${underOne()}:media-aa`, `${current()}:media-aa`)).toBe(false);
+    expect(sameReportSource(`${current()}:media-aa`, `${current()}:media-aa`)).toBe(true);
   });
 });

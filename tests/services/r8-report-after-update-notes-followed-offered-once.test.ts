@@ -132,11 +132,19 @@ describe('R8 item 1: after the update\'s first sync a report sent on the release
     expect(notesOnPaint(synced)).toEqual(['note-1']);
   });
 
-  it('before that sync nothing has changed: it is the report he sent, line for line', () => {
-    const { one, sent, asTheReleasedBuildLeftIt } = theUpdate(false);
+  // R10 (the coordinator's decision on review pass 3, P3-2) reversed this test, which said "it is the report he sent,
+  // line for line". The facts are the same; the words this build writes for them are not always the ones the released
+  // build sent, so its report is never taken for the one on screen: no 1.0 name stands.
+  it('before that sync nothing has changed, and still it is not taken for the report he sent: it is offered once, counted from that report, and then it is the saved report', () => {
+    const { sent, asTheReleasedBuildLeftIt } = theUpdate(false);
     const opened = screen(asTheReleasedBuildLeftIt, sent, '2026-09-10T22:20:00.000Z');
-    expect(opened.takenForTheSavedReport).toBe(true);
-    expect(opened.text).toEqual(one.text);
+    expect(opened.takenForTheSavedReport).toBe(false);
+    expect(opened.said).toEqual([]);
+    const approvedHere = opened.sent();
+    expect(approvedHere.sourceFingerprint).toMatch(/^dave-report-source\/2\.0:/);
+    const reopened = screen(asTheReleasedBuildLeftIt, approvedHere, '2026-09-10T22:25:00.000Z');
+    expect(reopened.takenForTheSavedReport).toBe(true);
+    expect(reopened.text).toEqual(opened.text);
   });
 
   it('a note no report had said (typed after report 0, before the master that moved the task): after the sync the report lists it, and is offered as another report', () => {
@@ -174,7 +182,8 @@ describe('R8 item 1: after the update\'s first sync a report sent on the release
     expect(next.said.filter(line => line.includes(NOTE.message))).toEqual([]);
   });
 
-  it('on the web: a report saved on the released build reads as changed once after that sync, and a report saved after it is current', () => {
+  // R10 reversed the first line of this test ("current before that sync"): no 1.0 name stands, before the sync or after.
+  it('on the web: a report saved on the released build reads as changed, before that sync and after it, and a report saved on this build is current', () => {
     const { asTheReleasedBuildLeftIt, synced } = theUpdate(false);
     const web = (state: State): DAVEWebReadOnlySnapshot => ({
       projects: [{ id: 'project-alpha-id', name: 'Alpha' }], scheduleItems: shown(state), knownScheduleItems: state.items,
@@ -182,7 +191,8 @@ describe('R8 item 1: after the update\'s first sync a report sent on the release
     }) as unknown as DAVEWebReadOnlySnapshot;
     const before = buildDAVEWebReportSource(web(asTheReleasedBuildLeftIt), 'Alpha');
     const savedOnTheReleasedBuild = String(before.fingerprint).replace(/^dave-report-source\/2\.0:[0-9a-f]+/, buildDAVELegacyReportSourceFingerprint(buildDAVEWebReportTruths(web(asTheReleasedBuildLeftIt), 'Alpha')));
-    expect(daveWebReportSourceIsCurrent(savedOnTheReleasedBuild, before)).toBe(true);
+    expect(daveWebReportSourceIsCurrent(savedOnTheReleasedBuild, before)).toBe(false);
+    expect(daveWebReportSourceIsCurrent(before.fingerprint, before)).toBe(true);
     const after = buildDAVEWebReportSource(web(synced), 'Alpha');
     expect(daveWebReportSourceIsCurrent(savedOnTheReleasedBuild, after)).toBe(false);
     expect(daveWebReportSourceIsCurrent(after.fingerprint, after)).toBe(true);

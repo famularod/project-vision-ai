@@ -172,9 +172,25 @@ export function buildDAVEReportSourceFingerprint(
   // happens to it: no 1.0 name stands, and a report made on Build 230 is another report.
   const countsWhatBuild230Counted = !truths.some(daveProjectTruthCountsOtherUpdatesThanBefore);
   // The 1.0 fingerprint of the same facts, so a report made under it is still known (R4 item 4a).
-  rememberLegacyReportSource(fingerprint, countsWhatBuild230Counted ? buildDAVELegacyReportSourceFingerprint(truths) : null);
+  // R10: no longer offered (EARLIER_VERSION_NAMES_STAND). This is the one place today's facts are given a 1.0 name.
+  rememberLegacyReportSource(fingerprint, EARLIER_VERSION_NAMES_STAND && countsWhatBuild230Counted ? buildDAVELegacyReportSourceFingerprint(truths) : null);
   return fingerprint;
 }
+
+/**
+ * R10 (the coordinator's decision on reports review pass 3, P3-2): NO EARLIER-VERSION NAME EVER STANDS. The 1.0
+ * fingerprint says the saved FACTS are the ones the released build reported, and they are, to the byte. But the
+ * words are written again by this build, which words and orders the same facts differently: at the hand-over, one
+ * report in four shown as "already sent" did not read as the report that build sent, and the phone keeps no text
+ * of a sent report to tell them apart. So a report approved, sent or saved under 1.0 is never taken for the report
+ * on screen: every asker (sameReportSource, and what is built on it) is told "not that report", and each
+ * project's current report is offered once after the update. "Since the last report" still counts from the last
+ * report sent, a 1.0 one included: its saved record and send time are read as before (reportBaselineSnapshot).
+ * Left in place and now without effect, to go in a later round: the 1.0 fingerprint of today's facts worked out
+ * here, R7 item A's rule above, the names kept in DAVEReportSnapshot (rememberLegacyReportSource,
+ * legacyReportSourcesOf, the 1.0 arm of sameReportSource), and R9's "read as an earlier version's report".
+ */
+const EARLIER_VERSION_NAMES_STAND: boolean = false;
 
 /**
  * The fingerprint as version 1.0 wrote it, unchanged: of the truths as they

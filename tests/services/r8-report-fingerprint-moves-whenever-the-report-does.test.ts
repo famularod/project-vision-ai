@@ -478,8 +478,12 @@ describe('R8 item 4: whenever one change to an input moves the written report or
     expect([...byFamily.keys()].sort()).toEqual(['activity notes', 'approvals', 'areas', 'comparisons', 'documents', 'drawings', 'earlier rows', 'field updates', 'lookaheads', 'photos', 'tasks']);
     expect([...byFamily].filter(([, counts]) => counts.movedTheReport === 0).map(([family]) => family)).toEqual(['areas']);
     expect(tally.movedTheReport).toBeGreaterThan(tally.projects * 20);
-    // R9: the 1.0 road was walked, and the report was still taken for the one Build 230 saved.
-    expect(road230.stillTheSavedReport).toBeGreaterThan(0);
+    // R9: the 1.0 road was walked. R10 (the coordinator's decision on review pass 3, P3-2) closed it: no 1.0 name
+    // stands, so today's report is never taken for one Build 230 saved and there is nothing on that road to move.
+    // (This said "and the report was still taken for the one Build 230 saved": greater than 0.) The walk stays: were a
+    // 1.0 name offered again, this count would rise and any report moved under it would be listed above.
+    expect(road230.tried).toBeGreaterThan(0);
+    expect(road230.stillTheSavedReport).toBe(0);
   });
 });
 

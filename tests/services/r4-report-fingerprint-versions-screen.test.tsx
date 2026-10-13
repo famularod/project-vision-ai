@@ -2,6 +2,10 @@
 // that only reorders the saved tasks, and an approval made before the update
 // (under fingerprint version 1.0, kept on the device) is still this report's
 // approval after it. Synthetic data, the real Reports screen.
+//
+// R10 (the coordinator's decision on review pass 3, P3-2) reversed the second half: NO EARLIER-VERSION NAME EVER
+// STANDS. An approval made before the update is another report's approval, for the same facts too: the words this
+// build writes for them are not always the ones the build before sent. The two tests of that half say so now.
 
 const mockStorage = new Map<string, string>();
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -151,14 +155,19 @@ describe('R4 item 4a on the Reports screen: a sync that only reorders the saved 
   });
 });
 
-describe('R4 item 4a on the Reports screen: an approval made before the update', () => {
-  /** Approved on the build before: the same approval, kept on the device under the 1.0 fingerprint of its facts. */
+describe('R4 item 4a on the Reports screen, reversed by R10: an approval made before the update is another report\'s', () => {
+  /**
+   * Approved on the build before: the same approval, kept on the device under a 1.0 fingerprint. (It was the 1.0
+   * fingerprint the app itself offered as a name of these facts; it offers none now, so any stands in: the app no
+   * longer reads which. The real one, worked out from the facts, is in r10-report-an-earlier-build-saved-is-offered-once.)
+   */
   const approvedBeforeTheUpdate = async () => {
     const first = render(screenFor(SAVED));
     await approve();
     await waitFor(() => expect(stored()).not.toBeNull(), SLOW);
     const [key, approval] = storedEntry()!;
-    const underOne = legacyReportSourcesOf(approval.sourceFingerprint)[0];
+    expect(legacyReportSourcesOf(approval.sourceFingerprint)).toEqual([]);
+    const underOne = 'dave-report-source/1.0:0badc0de';
     expect(isLegacyReportSource(underOne)).toBe(true);
     first.unmount();
     mockStorage.set(key, JSON.stringify({ ...approval, sourceFingerprint: underOne }));
@@ -167,18 +176,29 @@ describe('R4 item 4a on the Reports screen: an approval made before the update',
     return underOne;
   };
 
-  it('approving the same report again replaces nothing and warns of nothing; sending it records that approval as sent', async () => {
+  // (This said: "approving the same report again replaces nothing and warns of nothing; sending it records that approval as sent".)
+  it('with nothing changed since, approving warns that an approved report was never recorded as sent; approved anyway, it is this build\'s approval, and sending records that', async () => {
     const underOne = await approvedBeforeTheUpdate();
     const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
     const view = render(screenFor(SAVED));
-    await approve();
-    await settle();
-    expect(alert).not.toHaveBeenCalled();
+    await approvable();
+    fireEvent.press(screen.getByRole('button', { name: 'Approve Report' }));
+    await waitFor(() => expect(alert).toHaveBeenCalledTimes(1), SLOW);
+    const [title, , buttons] = alert.mock.calls[0] as unknown as [string, string, { text: string; onPress?: () => void }[]];
+    expect(title).toBe('An approved report is not recorded as sent');
+    expect(buttons.map(button => button.text)).toEqual(['Go Back', 'Approve Anyway']);
+    // Nothing is replaced until he answers.
     expect(stored()).toMatchObject({ sourceFingerprint: underOne, deliveredAt: null });
+    await act(async () => { buttons[1].onPress?.(); });
+    await shareable();
+    await waitFor(() => expect(stored()?.sourceFingerprint).toMatch(/^dave-report-source\/2\.0:/), SLOW);
+    const approvedHere = stored();
     await copy();
     expect(onCopyReport).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(stored()?.deliveredAt).toEqual(expect.any(String)), SLOW);
-    expect(stored()).toMatchObject({ sourceFingerprint: underOne, deliveredAt: expect.any(String) });
+    expect(stored()).toMatchObject({ sourceFingerprint: approvedHere?.sourceFingerprint, deliveredAt: expect.any(String) });
+    // It is asked once: the report approved on this build is this report's approval.
+    expect(screen.queryByRole('button', { name: 'Approve Report' })).toBeNull();
     alert.mockRestore();
     view.unmount();
   });

@@ -141,23 +141,28 @@ const WAS_ADDED = ['Paint was added to the project plan.'];
 const IS_BACK = ['Paint is back in the project plan.', 'Paint moved from 60% to 70% complete.', 'Paint finish changed from 09/25/2026 to 10/02/2026.'];
 const EARLIER_VERSION = /^dave-report-source\/1\.0:/;
 
+// R10 (the coordinator's decision on review pass 3, P3-2): NO EARLIER-VERSION NAME EVER STANDS. Five tests of this file
+// pinned what a report read UNDER a 1.0 name says ("today's report is the one already sent"). No report is read under
+// one any more, so the second half of R9's rule (today's report read as one an earlier version saved) has nothing
+// left to act on; it is left in the code. Each of the five now says what is true and is marked "R10". The first half
+// (counted from a report an earlier version saved, no live earlier row is read) stands and is still tested below.
 describe('R9: a report counted from, or read as, a report an earlier build saved reads no live earlier row', () => {
   it.each([
     ['every report so far was made on Build 230 (the device he updates)', [1, 2, 3, 4]],
     ['only report 4 was made on Build 230, counted from a report this build had saved (two devices on two builds)', [4]],
-  ])('report 4 saved under its 1.0 name, %s: today\'s report is the one already sent, says "was added", and says the same after the late edit', (_which, onBuild230) => {
+  ])('R10: report 4 saved under its 1.0 name, %s: today\'s report is NOT taken for it; counted from it, it says nothing of Paint, before and after the late edit', (_which, onBuild230) => {
     const { state, four } = paintIsBack(onBuild230);
     expect(four.sent.sourceFingerprint).toMatch(EARLIER_VERSION);
     for (const screen of [report, webPage]) {
       const today = screen(state, four.sent, AGAIN);
-      // No name is taken away: Build 230's report is known, and nothing asks to be approved again.
-      expect(today.readsAsAlreadySent).toBe(true);
-      // As Build 230 wrote it. Nothing of "moved from 60%": that would be read from a row its fingerprint does not hold.
-      expect(today.ofPaint).toEqual(WAS_ADDED);
+      // (This said "the one already sent ... says 'was added'".) It is another report, offered once.
+      expect(today.readsAsAlreadySent).toBe(false);
+      // Counted from Build 230's report 4, which has Paint as it is: nothing changed, and nothing read from a hidden row.
+      expect(today.ofPaint).toEqual([]);
       const late = lateEdit(state);
       expect(shown(late).map(item => [item.id, item.percentComplete])).toEqual(shown(state).map(item => [item.id, item.percentComplete]));
       const after = screen(late, four.sent, AGAIN);
-      expect(after.readsAsAlreadySent).toBe(true);
+      expect(after.readsAsAlreadySent).toBe(false);
       expect(after.changes).toEqual(today.changes);
     }
   });
@@ -199,9 +204,10 @@ describe('R9: a report counted from, or read as, a report an earlier build saved
     expect(webPage(state, six.sent, '2026-09-13T22:00:00.000Z').ofPaint).toEqual(seven.ofPaint);
   });
 
-  it('what is read from the SAVED report before is untouched: two reports on, a Build 230 report still says "is back ... moved from 60% to 70%", whatever the hidden row says now', () => {
+  it('R10: what is read from the SAVED report before is untouched: counted from Build 230\'s reports, the first report on this build says "is back ... moved from 60% to 70%", whatever the hidden row says now', () => {
     // Master 1 lists Paint (60%), report 1. Master 2 leaves it out, report 2. Master 3 lists it again (70%), report 3: the
     // report before the one it counts from still has Paint, and "how it last stood" is read there. All on Build 230.
+    // (This read report 3 again under its 1.0 name. Now: the update comes before report 3, which this build makes.)
     let state = approve({ items: [], documents: [] }, master('MASTER M1', '2026-09-07T16:00:00.000Z'), [PAINT('09/21/2026', '09/25/2026'), ...TASKS]);
     state = records(state, 'MASTER M1-1', 60, '2026-09-07T18:00:00.000Z');
     const one = asBuild230SavedIt(report(state, null, '2026-09-07T22:00:00.000Z'));
@@ -209,16 +215,18 @@ describe('R9: a report counted from, or read as, a report an earlier build saved
     const two = asBuild230SavedIt(report(state, one.sent, '2026-09-08T22:00:00.000Z'));
     state = approve(state, master('MASTER M3', '2026-09-09T16:00:00.000Z'), [PAINT('09/28/2026', '10/02/2026'), ...TASKS]);
     state = records(state, shown(state).find(item => item.taskName === 'Paint')!.id, 70, '2026-09-09T18:00:00.000Z');
-    const three = asBuild230SavedIt(report(state, two.sent, '2026-09-09T22:00:00.000Z'));
     for (const screen of [report, webPage]) {
-      const today = screen(state, three.sent, '2026-09-09T22:30:00.000Z');
-      expect([today.readsAsAlreadySent, today.ofPaint]).toEqual([true, IS_BACK]);
-      const after = screen(lateEdit(state), three.sent, '2026-09-09T22:30:00.000Z');
-      expect([after.readsAsAlreadySent, after.ofPaint]).toEqual([true, IS_BACK]);
+      const today = screen(state, two.sent, '2026-09-09T22:30:00.000Z');
+      expect([today.readsAsAlreadySent, today.ofPaint]).toEqual([false, IS_BACK]);
+      const after = screen(lateEdit(state), two.sent, '2026-09-09T22:30:00.000Z');
+      expect([after.readsAsAlreadySent, after.ofPaint]).toEqual([false, IS_BACK]);
     }
+    // And Build 230's own report 3, saved under its 1.0 name, is not taken for today's (it said "known ... is back").
+    const three = asBuild230SavedIt(report(state, two.sent, '2026-09-09T22:00:00.000Z'));
+    expect(report(state, three.sent, '2026-09-09T22:30:00.000Z').readsAsAlreadySent).toBe(false);
   });
 
-  it('a task a revised master only moved: Build 230\'s report is known to the byte and reads as it did (the hand-over is kept)', () => {
+  it('R10: a task a revised master only moved: Build 230\'s report is not taken for today\'s either (this said "known to the byte ... the hand-over is kept"); counted from it nothing is said of Paint', () => {
     let state = approve({ items: [], documents: [] }, master('MASTER M1', '2026-09-07T16:00:00.000Z'), [PAINT('09/21/2026', '09/25/2026'), ...TASKS]);
     state = records(state, 'MASTER M1-1', 60, '2026-09-07T18:00:00.000Z');
     const one = asBuild230SavedIt(report(state, null, '2026-09-07T22:00:00.000Z'));
@@ -227,10 +235,11 @@ describe('R9: a report counted from, or read as, a report an earlier build saved
     const two = asBuild230SavedIt(report(state, one.sent, '2026-09-08T22:00:00.000Z'));
     // The facts hold an earlier row for Paint, as for a task that is back; the report does not read it.
     expect(two.truths[0].earlierRows?.map(row => row.earlierTaskId)).toEqual(['MASTER M1-1']);
+    expect(two.ofPaint).toEqual(['Paint moved from 60% to 70% complete.', 'Paint finish changed from 09/25/2026 to 10/02/2026.']);
     for (const screen of [report, webPage]) {
       const today = screen(state, two.sent, '2026-09-08T22:30:00.000Z');
-      expect(today.readsAsAlreadySent).toBe(true);
-      expect(today.ofPaint).toEqual(['Paint moved from 60% to 70% complete.', 'Paint finish changed from 09/25/2026 to 10/02/2026.']);
+      expect(today.readsAsAlreadySent).toBe(false);
+      expect(today.ofPaint).toEqual([]);
     }
   });
 
@@ -248,17 +257,17 @@ describe('R9: a report counted from, or read as, a report an earlier build saved
     expect(says({ ...three.sent, sourceFingerprint: 'dave-report-source/1.0:abc:media-def' }, false)).toEqual(WAS_ADDED);
   });
 
-  it('"read as a report an earlier build saved": the saved fingerprint is a 1.0 one and a name of today\'s facts, and nothing else', () => {
+  it('R10: "read as a report an earlier build saved" is never so now: no 1.0 fingerprint is a name of today\'s facts (this said it was, for Build 230\'s report 4); the question is left in place', () => {
     const { state, three, four } = paintIsBack([4]);
     const today = buildDAVEReportSourceFingerprint(truthsOf(state, AGAIN));
-    expect(reportReadAsEarlierVersionReport(four.sent, today)).toBe(true);
+    expect(reportReadAsEarlierVersionReport(four.sent, today)).toBe(false);
     expect(reportReadAsEarlierVersionReport(three.sent, today)).toBe(false); // another report, and of this build
     expect(reportReadAsEarlierVersionReport({ ...four.sent, sourceFingerprint: today }, today)).toBe(false); // the same report saved by this build
     expect(reportReadAsEarlierVersionReport({ ...four.sent, sourceFingerprint: 'dave-report-source/1.0:other' }, today)).toBe(false); // a 1.0 report of other facts
     expect(reportReadAsEarlierVersionReport(null, today)).toBe(false);
     // The web's page is told the same by the period on its tab.
     const tab = (saved: DAVEReportSnapshot | null) => daveWebReportPeriodState({ read: { status: 'loaded', snapshot: saved, shared: 'checked', approvalSavedHere: false }, fingerprint: today, pulledAt: AGAIN }).readAsEarlierVersionReport;
-    expect([tab(four.sent), tab(three.sent), tab(null)]).toEqual([true, false, false]);
+    expect([tab(four.sent), tab(three.sent), tab(null)]).toEqual([false, false, false]);
     expect(daveWebReportPeriodState({ read: { status: 'loading' }, fingerprint: today, pulledAt: AGAIN }).readAsEarlierVersionReport).toBe(false);
   });
 

@@ -5,6 +5,11 @@
 // is pinned here with a report made by the build before (its fingerprint the earlier version's) meeting the same
 // facts today. The Reports screen is real; the cloud is an in-memory report_snapshots table (the harness of
 // review-n2-reports-phone-mark-sent). Synthetic data.
+//
+// R10 (the coordinator's decision on review pass 3, P3-2) reversed all of it: NO EARLIER-VERSION NAME EVER STANDS. A
+// report the build before approved, sent or saved is never taken for the report on screen, for the same facts too
+// (the words this build writes for them are not always the ones that build sent). At each of the four places the
+// report made by the build before is now another report, and each test says what the screen does then.
 
 const mockDevices = new Map<string, Map<string, string>>();
 let mockDevice = 'phone';
@@ -67,6 +72,7 @@ jest.mock('@react-native-community/datetimepicker', () => {
 });
 
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { Alert } from 'react-native';
 import { ReportsScreen } from '../../screens/ReportsScreen';
 import { describeReportSendTime, isLegacyReportSource, legacyReportSourcesOf, type DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
 import { forgetAllReportSessionState } from '../../services/ReportSessionState';
@@ -211,11 +217,28 @@ const markSent = async (when: 'now' | Date) => {
 };
 
 const MARK_AS_SENT = { name: 'Mark as Sent' } as const;
-/** The fingerprint the build before gave the facts of `snapshot`. */
+/**
+ * A fingerprint of the earlier version for the facts of `snapshot`. (It was the one the app itself offered as a name
+ * of those facts. It offers none now (R10), so any stands in: the app no longer reads which. The real one, worked out
+ * from the facts, is in r10-report-an-earlier-build-saved-is-offered-once.)
+ */
 const underTheEarlierVersion = (snapshot: DAVEReportSnapshot) => {
-  const [earlier] = legacyReportSourcesOf(snapshot.sourceFingerprint);
+  expect(legacyReportSourcesOf(snapshot.sourceFingerprint)).toEqual([]);
+  const earlier = 'dave-report-source/1.0:0badc0de';
   expect(isLegacyReportSource(earlier)).toBe(true);
   return earlier;
+};
+/** Approve pressed where an approval not recorded as sent would be replaced: he is asked, and answers "Approve Anyway". */
+const approveAnyway = async () => {
+  const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
+  fireEvent.press(screen.getByRole('button', { name: 'Approve Report' }));
+  await waitFor(() => expect(alert).toHaveBeenCalledTimes(1), SLOW);
+  const [title, , buttons] = alert.mock.calls[0] as unknown as [string, string, { text: string; onPress?: () => void }[]];
+  expect(title).toBe('An approved report is not recorded as sent');
+  expect(buttons.map(button => button.text)).toEqual(['Go Back', 'Approve Anyway']);
+  await act(async () => { buttons[1].onPress?.(); });
+  alert.mockRestore();
+  await screen.findByRole('button', { name: 'Share Report' }, SLOW);
 };
 /** The shared period's report, as the build before had saved it: the same report under the earlier fingerprint. */
 const sharedMadeByTheBuildBefore = () => {
@@ -243,13 +266,16 @@ const sentFromTheIpadBeforeTheUpdate = async () => {
 const ALREADY_SENT = (sentAt: string) => `Your other device already sent this report ${describeReportSendTime(sentAt)}. Approve it only if you want to send it a second time.`;
 const ALREADY_SENT_NOT_AGAIN = (sentAt: string) => `Your other device already sent this report ${describeReportSendTime(sentAt)}, so it was not sent again. Approve it only if you want to send it a second time.`;
 
-describe('R5 item 2 (phone): a report made under the earlier fingerprint version, the same facts today', () => {
-  it('the "already sent" notice: the report on screen is the one the other device sent before the update, and the screen says so', async () => {
+describe('R5 item 2 (phone), reversed by R10: a report made under the earlier fingerprint version is another report, the same facts today or not', () => {
+  // (This said: "the report on screen is the one the other device sent before the update, and the screen says so".)
+  it('the "already sent" notice: the report the other device sent before the update is not taken for the one on screen; the notice is not shown and Approve is offered', async () => {
     const sent = await sentFromTheIpadBeforeTheUpdate();
     onCopyReport.mockClear();
     visit('phone', tower(0));
-    expect(await screen.findByText(ALREADY_SENT(sent.deliveredAt as string), {}, SLOW)).toBeTruthy();
-    // Not approved here, and nothing waits to be marked sent.
+    await approvable();
+    await settle();
+    expect(screen.queryByText(ALREADY_SENT(sent.deliveredAt as string))).toBeNull();
+    expect(screen.queryByText(/already sent this report/)).toBeNull();
     expect(screen.getByRole('button', { name: 'Approve Report' })).toBeTruthy();
     expect(screen.queryByRole('button', MARK_AS_SENT)).toBeNull();
   });
@@ -262,7 +288,8 @@ describe('R5 item 2 (phone): a report made under the earlier fingerprint version
     expect(screen.queryByText(/already sent this report/)).toBeNull();
   });
 
-  it('at a send the other device overtook with the same report: it is not sent again, and is said already sent, not "now covers what changed"', async () => {
+  // (This said: "it is not sent again, and is said already sent, not 'now covers what changed'".)
+  it('at a send the other device, on the build before, overtook with the same facts: it is not sent, and is said to cover what changed since that send, not "already sent"', async () => {
     visit('phone', tower(0));
     await approve();
     await waitFor(() => expect(cloudRow()?.snapshot.deliveredAt).toBeNull(), SLOW);
@@ -274,20 +301,25 @@ describe('R5 item 2 (phone): a report made under the earlier fingerprint version
     });
     await share('Copy Report');
     expect(onCopyReport).not.toHaveBeenCalled();
-    expect(screen.getByText(ALREADY_SENT_NOT_AGAIN(sentAt))).toBeTruthy();
-    expect(screen.queryByText(/now covers what changed since then/)).toBeNull();
+    expect(screen.queryByText(ALREADY_SENT_NOT_AGAIN(sentAt))).toBeNull();
+    expect(screen.queryByText(/already sent this report/)).toBeNull();
+    expect(screen.getByText(`Your other device sent a report ${describeReportSendTime(sentAt)}, so this report was not sent. It now covers what changed since then. Review it, then approve.`)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Approve Report' })).toBeTruthy();
   });
 
-  it('Copy pressed before the phone has finished keeping an approval the other device made before the update: the send is what this phone ends up with', async () => {
+  // (This said the phone keeps the approval the other device made before the update, and the send is recorded on it.)
+  it('an approval the other device made before the update is another report\'s: this phone approves its own (nothing of this phone\'s is replaced, so nothing is asked); Copy pressed before the phone has finished keeping it: the send is what this phone ends up with', async () => {
     const approval = await approvedOnTheIpadBeforeTheUpdate();
     visit('phone', tower(0));
     await approvable();
     // The phone's storage is slow to take the approval it keeps.
     let finishWrite: () => void = () => undefined;
     mockSlowWrite = { key: KEY, until: new Promise<void>(resolve => { finishWrite = resolve; }) };
+    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
     fireEvent.press(screen.getByRole('button', { name: 'Approve Report' }));
     await screen.findByRole('button', { name: 'Share Report' }, SLOW);
+    expect(alert).not.toHaveBeenCalled();
+    alert.mockRestore();
     await share('Copy Report');
     expect(onCopyReport).toHaveBeenCalledTimes(1);
     expect(mockSlowWrite).toBeNull();
@@ -295,13 +327,16 @@ describe('R5 item 2 (phone): a report made under the earlier fingerprint version
     await waitFor(() => expect(local('phone')?.deliveredAt).toEqual(expect.any(String)), SLOW);
     await settle();
     await settle();
-    // The approval as the other device made it, recorded as sent; not that approval written over the send.
-    expect(local('phone')).toMatchObject({ sourceFingerprint: approval.sourceFingerprint, deliveredAt: expect.any(String) });
+    // This phone's own approval, under today's fingerprint, recorded as sent; not an approval written over the send.
+    expect(local('phone')?.sourceFingerprint).toMatch(/^dave-report-source\/2\.0:/);
+    expect(local('phone')?.sourceFingerprint).not.toBe(approval.sourceFingerprint);
+    expect(local('phone')).toMatchObject({ deliveredAt: expect.any(String) });
     await waitFor(() => expect(cloudRow()?.deliveredAt).toBe(local('phone')?.deliveredAt), SLOW);
     expect(screen.queryByRole('button', MARK_AS_SENT)).toBeNull();
   });
 
-  it('Mark as Sent on an approval this phone made before the update, approved again today: recorded, and the approval stands on the period that send starts', async () => {
+  // (This said approving the same report again replaces nothing, and Mark as Sent records the send on the earlier approval.)
+  it('an approval this phone made before the update, the same facts today: Approve asks first; approved anyway it is this build\'s approval, Mark as Sent records it, and it stands on the period that send starts', async () => {
     setClock('2026-10-05T14:00:00.000Z');
     // Approved on this phone by the build before, emailed (Mail said "Saved"), never recorded as sent.
     visit('phone', tower(0));
@@ -311,12 +346,15 @@ describe('R5 item 2 (phone): a report made under the earlier fingerprint version
     const approval = { ...(local('phone') as DAVEReportSnapshot), sourceFingerprint: underTheEarlierVersion(local('phone') as DAVEReportSnapshot) };
     mockDevices.get('phone')?.set(KEY, JSON.stringify(approval));
     sharedMadeByTheBuildBefore();
-    // The app is updated and opened again; he approves the same report (nothing is replaced) and records the send.
+    // The app is updated and opened again; he approves the report for the same facts (he is asked first) and records the send.
     setClock('2026-10-05T14:10:00.000Z');
     visit('phone', tower(0));
-    await approve();
+    await approvable();
+    await approveAnyway();
     await settle();
-    expect(local('phone')).toMatchObject({ sourceFingerprint: approval.sourceFingerprint, deliveredAt: null });
+    await waitFor(() => expect(local('phone')?.sourceFingerprint).toMatch(/^dave-report-source\/2\.0:/), SLOW);
+    expect(local('phone')?.sourceFingerprint).not.toBe(approval.sourceFingerprint);
+    expect(local('phone')).toMatchObject({ deliveredAt: null });
     setClock('2026-10-05T14:20:00.000Z');
     await markSent('now');
     await waitFor(() => expect(local('phone')?.deliveredAt).toBe('2026-10-05T14:20:00.000Z'), SLOW);

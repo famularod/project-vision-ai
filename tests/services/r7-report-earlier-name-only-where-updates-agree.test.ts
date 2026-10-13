@@ -203,29 +203,38 @@ describe('R7 item A: where this build\'s report counts a field update Build 230 
     expect(daveWebReportSourceIsCurrent(saved.onBuild230, web(STATE, [REWORDED]).source)).toBe(false);
   });
 
-  it('with that update deleted, today\'s report is, to the byte, the report Build 230 made (it never counted the update): it is that report', () => {
+  // R10 (the coordinator's decision on review pass 3, P3-2) reversed the end of this test, which said "it is that
+  // report". The facts are Build 230's to the byte, as before; its report is still another report: no 1.0 name stands.
+  it('with that update deleted, today\'s facts are, to the byte, the ones Build 230 reported (it never counted the update), and its report is still another report', () => {
     const approved = phone(STATE, [FIRST]);
     const deleted = phone(STATE, []);
     expect(deleted.counted).toEqual(deleted.countedByBuild230);
     expect(deleted.onBuild230).toBe(approved.onBuild230);
-    expect(sameReportSource(approved.onBuild230, deleted.fingerprint)).toBe(true);
+    expect(sameReportSource(approved.onBuild230, deleted.fingerprint)).toBe(false);
     // And never for two different sets of today's facts: not for the facts with the update in them.
     expect(sameReportSource(approved.onBuild230, approved.fingerprint)).toBe(false);
   });
 });
 
-describe('R7 item A: where both builds count the same field updates, the hand-over holds as before', () => {
-  it('an update filed with its parent project (as updates are today) is counted by both: the Build 230 report is still known, to the byte', () => {
+// R10 (the coordinator's decision on review pass 3, P3-2): NO EARLIER-VERSION NAME EVER STANDS. This block said "where
+// both builds count the same field updates, the hand-over holds as before". It no longer holds anywhere: item A's
+// rule is left in the code, overridden. The two tests that pinned the hand-over now say what is true; the guards stay.
+describe('R7 item A, reversed by R10: where both builds count the same field updates, a Build 230 report is another report too', () => {
+  it('an update filed with its parent project (as updates are today) is counted by both, and the Build 230 report is still not taken for today\'s', () => {
     const today = phone(STATE, [FILED_UNDER_THE_PROJECT]);
     expect(today.counted).toEqual(['u-1']);
     expect(today.countedByBuild230).toEqual(['u-1']);
-    expect(sameReportSource(today.onBuild230, today.fingerprint)).toBe(true);
-    expect(legacyReportSourcesOf(today.fingerprint)).toEqual([today.onBuild230]);
+    expect(sameReportSource(today.onBuild230, today.fingerprint)).toBe(false);
+    expect(legacyReportSourcesOf(today.fingerprint)).toEqual([]);
     const approvedOn230 = { ...snapshotOf(today, today.onBuild230), deliveredAt: null } as DAVEReportSnapshot;
-    expect(approvalReplacesUnsentApproval(approvedOn230, today.fingerprint)).toBe(false);
-    expect(reportSnapshotToSave(snapshotOf(today, today.fingerprint), approvedOn230)).toBeNull();
+    expect(approvalReplacesUnsentApproval(approvedOn230, today.fingerprint)).toBe(true);
+    // Offered once: approved on this build it is saved under today's fingerprint, and is then the saved report.
+    const savedNow = reportSnapshotToSave(snapshotOf(today, today.fingerprint), approvedOn230);
+    expect(savedNow).toMatchObject({ sourceFingerprint: today.fingerprint, deliveredAt: null });
+    expect(reportSnapshotToSave(snapshotOf(today, today.fingerprint), savedNow)).toBeNull();
     const saved = web(STATE, [FILED_UNDER_THE_PROJECT]);
-    expect(daveWebReportSourceIsCurrent(saved.onBuild230, saved.source)).toBe(true);
+    expect(daveWebReportSourceIsCurrent(saved.onBuild230, saved.source)).toBe(false);
+    expect(daveWebReportSourceIsCurrent(saved.source.fingerprint, saved.source)).toBe(true);
   });
 
   it('guard: and there the 1.0 name sees every change to it: reworded, deleted, a second one arrived', () => {
@@ -241,11 +250,11 @@ describe('R7 item A: where both builds count the same field updates, the hand-ov
     }
   });
 
-  it('guard: a project with no such update is untouched: the truth as Build 230 built it has the same records, and its Build 230 report is known', () => {
+  it('guard: a project with no such update: the truth as Build 230 built it has the same records; its Build 230 report is another report all the same (R10)', () => {
     const today = phone(STATE, []);
     const records = (truth: (typeof today.truths)[number]) => truth.evidence.records.map(record => record.id).sort();
     expect(records(daveProjectTruthAsBuilt(today.truths[0]))).toEqual(records(today.truths[0]));
-    expect(sameReportSource(today.onBuild230, today.fingerprint)).toBe(true);
+    expect(sameReportSource(today.onBuild230, today.fingerprint)).toBe(false);
   });
 
   it('guard: a 1.0 name worked out earlier for the same fingerprint is not left standing once the report counts more', () => {
