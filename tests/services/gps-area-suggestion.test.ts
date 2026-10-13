@@ -202,11 +202,22 @@ describe('what Add Photos says about the area', () => {
     expect(view.confidenceScore).toBeLessThan(60);
   });
 
-  it('uses the schedule reason with no GPS, and lowers confidence after corrections', () => {
+  // This pinned the schedule's reason under "Unassigned / Unknown Area" (no
+  // area, a name of null). "Unassigned" is not an area the schedule
+  // identified; the schedule's suggestion is the "Next Area to Visit" card
+  // below it. The coordinator's decision: say what is true there. A name of
+  // null is Unassigned that he picked himself, so it is his selection. The
+  // schedule's reason is still used for a named place that is not a saved
+  // area.
+  it('uses the schedule reason with no GPS only where an area is named, and lowers confidence after corrections', () => {
     const view = draftAreaPresentation({
       selectedArea: null, selectedAreaName: null, areaSuggestion: null, hasScheduleRecommendation: true,
     });
-    expect(view.reason).toBe('The imported schedule identifies this as the most urgent area.');
+    expect(view.areaName).toBe(UNASSIGNED_AREA_NAME);
+    expect(view.reason).toBe('This is your current confirmed selection.');
+    expect(draftAreaPresentation({
+      selectedArea: null, selectedAreaName: 'Building 3', areaSuggestion: null, hasScheduleRecommendation: true,
+    }).reason).toBe('The imported schedule identifies this as the most urgent area.');
     const corrected = draftAreaPresentation({
       ...base, selectedArea: lot, areaSuggestion: suggestion, correctionPenalty: 40,
     });

@@ -24,6 +24,20 @@ function liveAcceptanceEvidenceRequired(env = process.env) {
     .includes(target);
 }
 
+/**
+ * Why an evidence file is not good enough. Evidence that cannot be checked
+ * against the answering code (ECOS_RUNTIME_REPO not set, or naming an
+ * archived checkout) is a failure said in a sentence, not a crash
+ * (Build 231 E1 item 7).
+ */
+function evidenceFailures(result, definition, now) {
+  try {
+    return validateLiveAcceptanceResult(result, definition, now);
+  } catch (error) {
+    return [`The evidence could not be checked against the answering code: ${error.message}`];
+  }
+}
+
 function runGate(now = new Date(), env = process.env) {
   const definition = loadAcceptanceDefinition();
   if (!fs.existsSync(resultPath)) {
@@ -57,7 +71,7 @@ function runGate(now = new Date(), env = process.env) {
     console.error(`Ask ECOS live acceptance FAIL.\n- ${message}`);
     return { passed: false, failures: [message] };
   }
-  const failures = validateLiveAcceptanceResult(result, definition, now);
+  const failures = evidenceFailures(result, definition, now);
   if (failures.length > 0) {
     console.error('Ask ECOS live acceptance FAIL.');
     failures.forEach(failure => console.error(`- ${failure}`));
@@ -76,4 +90,4 @@ if (require.main === module) {
   if (!outcome.passed) process.exitCode = 1;
 }
 
-module.exports = { runGate };
+module.exports = { evidenceFailures, runGate };

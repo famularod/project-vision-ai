@@ -47,7 +47,10 @@ export function scheduleImportPairingRefusal(
   answerOf: (question: ScheduleImportPairingQuestion) => ScheduleImportPairingAnswer,
 ): string | null {
   const open = questions.find(question => !answerOf(question).confirmed);
-  return open ? `Confirm which ${open.taskName} is which in ${open.areaName || open.projectName} before saving.` : null;
+  if (!open) return null;
+  return open.returning
+    ? `Confirm whether ${open.taskName} in ${open.areaName || open.projectName} is the same task or new work before saving.`
+    : `Confirm which ${open.taskName} is which in ${open.areaName || open.projectName} before saving.`;
 }
 
 /** The batch with David's answers: each row of a check to the saved task he chose, or null (a new task). */
@@ -85,6 +88,33 @@ function savedLabel(item: ScheduleItem): string {
   return `${datesOf(item)} · ${item.percentComplete}%${note ? ` · “${note.length > 60 ? `${note.slice(0, 59)}…` : note}”` : ''}`;
 }
 
+/**
+ * The words of one check. For same-named tasks in his list: "pick its row in this file" (owner answer Q30). For a
+ * task that was on an earlier schedule and is no longer in his list (Build 231, S2 item 1): "the same task" or "new
+ * work", with the percent and note it had; nothing is carried unless he says the same task.
+ */
+export function scheduleImportPairingWording(question: ScheduleImportPairingQuestion): Readonly<{
+  intro: string;
+  savedTitle: (item: ScheduleItem, index: number) => string;
+  rowOption: (row: ScheduleItem) => string;
+  none: string;
+}> {
+  const earlier = new Set(question.returning ? question.saved.map(item => item.id) : question.earlierIds ?? []);
+  const savedTitle = (item: ScheduleItem, index: number) => (earlier.has(item.id)
+    ? `Earlier ${question.taskName}${question.saved.length > 1 ? ` ${index + 1}` : ''}${question.returning ? '' : ' (not in your list now)'}: ${savedLabel(item)}`
+    : `Saved ${question.taskName} ${index + 1}: ${savedLabel(item)}`);
+  if (question.returning) {
+    return {
+      intro: 'This task was on an earlier schedule and is not in your list now. If this file brings the same task back, its percent, notes and what you set on it come back with it. Nothing is carried unless you say it is the same task.',
+      savedTitle, rowOption: row => `The same task: ${rowLabel(row)}`, none: 'New work',
+    };
+  }
+  return {
+    intro: 'The dates alone do not say which is which. For each saved task, pick its row in this file. The best guess is selected; its percent, notes and field reports go with your choice.',
+    savedTitle, rowOption: row => `This file: ${rowLabel(row)}`, none: 'Not in this file',
+  };
+}
+
 export function ScheduleImportPairingCheck({
   question,
   answer,
@@ -98,19 +128,18 @@ export function ScheduleImportPairingCheck({
 }) {
   const taken = new Set(Object.values(answer.rowOfSaved).filter(Boolean));
   const added = question.rows.filter(row => !taken.has(row.id));
+  const wording = scheduleImportPairingWording(question);
   return (
     <View style={styles.card} accessibilityRole="radiogroup" accessibilityLabel={question.title}>
       <View style={styles.header}>
         <Ionicons name="git-compare-outline" size={22} color={colors.warning} />
         <Text style={styles.title}>{question.title}</Text>
       </View>
-      <Text style={styles.text}>
-        The dates alone do not say which is which. For each saved task, pick its row in this file. The best guess is selected; its percent, notes and field reports go with your choice.
-      </Text>
+      <Text style={styles.text}>{wording.intro}</Text>
       {question.saved.map((item, index) => (
         <View key={item.id} style={styles.saved}>
-          <Text style={styles.savedTitle}>{`Saved ${question.taskName} ${index + 1}: ${savedLabel(item)}`}</Text>
-          {[...question.rows.map(row => ({ id: row.id as string | null, label: `This file: ${rowLabel(row)}` })), { id: null, label: 'Not in this file' }]
+          <Text style={styles.savedTitle}>{wording.savedTitle(item, index)}</Text>
+          {[...question.rows.map(row => ({ id: row.id as string | null, label: wording.rowOption(row) })), { id: null, label: wording.none }]
             .map(option => {
               const selected = (answer.rowOfSaved[item.id] ?? null) === option.id;
               return (
@@ -120,7 +149,7 @@ export function ScheduleImportPairingCheck({
                   onPress={() => onChange(scheduleImportPairingChosen(answer, item.id, option.id))}
                   disabled={disabled}
                   accessibilityRole="radio"
-                  accessibilityLabel={`Saved ${question.taskName} ${index + 1}, ${savedLabel(item)}: ${option.label}`}
+                  accessibilityLabel={`${wording.savedTitle(item, index).replace(': ', ', ')}: ${option.label}`}
                   accessibilityState={{ checked: selected, disabled }}
                 >
                   <Ionicons name={selected ? 'radio-button-on' : 'radio-button-off'} size={20} color={colors.primary} />

@@ -137,6 +137,10 @@ const mockAuth = {
 jest.mock('../../components/web-shell/desktop-auth-provider', () => ({
   useDesktopAuth: () => mockAuth,
 }));
+// Make Current first asks the cloud what it would do to another project's schedule (WS2 item 3). Here it touches none.
+jest.mock('../../services/DAVEWebScheduleActivation', () => ({
+  daveWebScheduleRetirementCheck: jest.fn(async () => ({ ok: true, effects: [], message: '' })),
+}));
 
 describe('Make Current for a revised schedule (audit A5 pass 3 F5)', () => {
   beforeAll(() => {

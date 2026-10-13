@@ -53,6 +53,9 @@ jest.mock('../../services/SupabaseService', () => {
     getScheduleItem: async () => ({ ok: true, configured: true, stubbed: false, data: null }),
     getScheduleItemsByIds: async () => ({ ok: true, configured: true, stubbed: false, data: [] }),
     getProjectAreasByIds: async () => ({ ok: true, configured: true, stubbed: false, data: [] }),
+    // Sync batch Y1 (item 2): a record about to be sent as new is asked about once more in the deletion history.
+    // None of them was deleted.
+    listDAVESyncTombstonesForRecords: async () => ({ ok: true, configured: true, stubbed: false, data: [] }),
     getSupabaseConfigurationStatus: (...args: unknown[]) =>
       mockCloudConnection.configuration(...args),
     testSupabaseConnection: (...args: unknown[]) => mockCloudConnection.test(...args),
@@ -254,6 +257,8 @@ describe('downloadCloudChanges collection failure propagation', () => {
         projectName: null,
         projectNames: ['2375 Compliance Project', '2321 Compliance Project'],
       }),
+      // Review pass 1, sync G2: and the upload its file is to be sent with, begun as this sync's account.
+      expect.any(Function),
     );
     expect(mockWrites.document).toHaveBeenCalledWith(
       expect.objectContaining({

@@ -22,16 +22,34 @@ const mockLocal = () => {
   if (!mockDevices.has(mockDevice)) mockDevices.set(mockDevice, new Map());
   return mockDevices.get(mockDevice) as Map<string, string>;
 };
+/**
+ * R6 item 2 (the coordinator's decision): the storage and cloud calls the app has started and has had no answer to
+ * yet, and how many it has started in all. The rig waits until none is under way before another device is picked
+ * up (`screenAtRest`, below).
+ */
+let mockCallsUnderWay = 0;
+let mockCallsStarted = 0;
+function mockCounted<A extends unknown[], R>(call: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
+  return async (...args: A) => {
+    mockCallsStarted += 1;
+    mockCallsUnderWay += 1;
+    try {
+      return await call(...args);
+    } finally {
+      mockCallsUnderWay -= 1;
+    }
+  };
+}
 jest.mock('@react-native-async-storage/async-storage', () => ({
-  getItem: jest.fn(async (key: string) => mockLocal().get(key) ?? null),
-  setItem: jest.fn(async (key: string, value: string) => {
+  getItem: jest.fn(mockCounted(async (key: string) => mockLocal().get(key) ?? null)),
+  setItem: jest.fn(mockCounted(async (key: string, value: string) => {
     mockLocal().set(key, value);
-  }),
-  removeItem: jest.fn(async (key: string) => {
+  })),
+  removeItem: jest.fn(mockCounted(async (key: string) => {
     mockLocal().delete(key);
-  }),
-  getAllKeys: jest.fn(async () => Array.from(mockLocal().keys())),
-  multiGet: jest.fn(async (keys: string[]) => keys.map(key => [key, mockLocal().get(key) ?? null])),
+  })),
+  getAllKeys: jest.fn(mockCounted(async () => Array.from(mockLocal().keys()))),
+  multiGet: jest.fn(mockCounted(async (keys: string[]) => keys.map(key => [key, mockLocal().get(key) ?? null]))),
 }));
 
 type MockCloudRow = { snapshot: unknown; deliveredAt: string | null };
@@ -39,20 +57,22 @@ const mockCloud = new Map<string, MockCloudRow>();
 let mockCloudState: 'ok' | 'offline' | 'hanging' = 'ok';
 const mockOk = <T,>(data: T) => ({ ok: true, configured: true, data });
 jest.mock('../../services/SupabaseService', () => ({
-  loadReportSnapshotCloud: jest.fn(async (scopeKey: string, format: string) => {
-    if (mockCloudState === 'offline') throw new TypeError('Network request failed');
-    if (mockCloudState === 'hanging') return new Promise(() => undefined);
-    return mockOk({ ownerId: 'owner-1', snapshot: mockCloud.get(`${scopeKey}|${format}`)?.snapshot ?? null });
-  }),
+  // (A read that never answers is not one the rig waits for: the app itself gives up on it after four seconds.)
+  loadReportSnapshotCloud: jest.fn((scopeKey: string, format: string) => (mockCloudState === 'hanging'
+    ? new Promise(() => undefined)
+    : mockCounted(async () => {
+        if (mockCloudState === 'offline') throw new TypeError('Network request failed');
+        return mockOk({ ownerId: 'owner-1', snapshot: mockCloud.get(`${scopeKey}|${format}`)?.snapshot ?? null });
+      })())),
   // The table's rule: a row whose period started from a later send is kept.
-  saveReportSnapshotCloud: jest.fn(async (row: { scopeKey: string; format: string; snapshot: unknown; deliveredAt: string | null }) => {
+  saveReportSnapshotCloud: jest.fn(mockCounted(async (row: { scopeKey: string; format: string; snapshot: unknown; deliveredAt: string | null }) => {
     if (mockCloudState === 'offline') throw new TypeError('Network request failed');
     const key = `${row.scopeKey}|${row.format}`;
     const existing = mockCloud.get(key);
     if (existing?.deliveredAt && (!row.deliveredAt || row.deliveredAt < existing.deliveredAt)) return mockOk(null);
     mockCloud.set(key, { snapshot: JSON.parse(JSON.stringify(row.snapshot)), deliveredAt: row.deliveredAt });
     return mockOk(null);
-  }),
+  })),
 }));
 
 let mockAuthority: Record<string, unknown>;
@@ -163,7 +183,31 @@ const open = (device: string, scheduleItems: ScheduleItem[]) => {
  * test process, and the iPad's visit is a new app session there, so the
  * phone's memory (what it approved, edited and sent) is put back after it.
  */
+/**
+ * R6 item 2 (the coordinator's decision; a race in this rig, never in the app). One process plays both devices
+ * here: while the iPad is used the app's memory and the device's storage are the iPad's, and the phone's screen
+ * stays mounted. What the phone's last action started (Approve keeps the approval, then reads whether this device
+ * holds it) could still be finishing when the iPad was picked up: on a slow machine the phone's screen then drew
+ * itself once with the iPad's memory, took its own morning report for the other device's and dropped its approval,
+ * and "(c) pressing Copy on an edited report the iPad overtook" found no Share Report (seen once in a full run
+ * under load; reproduced on purpose by holding the phone's storage read until the visit had begun).
+ *
+ * Before another device is picked up, the screen that is mounted has finished: no storage or cloud call of the app
+ * is under way, the screen has drawn what came back, and drawing it started no further call. Nothing is waited for
+ * by the clock; a call that never answers (the cloud "hanging") is not counted.
+ */
+async function screenAtRest(): Promise<void> {
+  for (let round = 0; round < 100; round += 1) {
+    await waitFor(() => expect(mockCallsUnderWay).toBe(0), SLOW);
+    const started = mockCallsStarted;
+    await settle();
+    if (mockCallsUnderWay === 0 && mockCallsStarted === started) return;
+  }
+  throw new Error('The screen never came to rest: it kept starting storage or cloud calls.');
+}
+
 async function keepingPhoneMemory<T>(visit: () => Promise<T>): Promise<T> {
+  await screenAtRest();
   const memory = recallReportSessionState(SESSION_KEY);
   const sends = [...ownReportSendTimes()];
   const result = await visit();

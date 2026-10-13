@@ -8,6 +8,8 @@ const { createClient } = require('@supabase/supabase-js');
 const {
   LIVE_RESULT_SCHEMA_VERSION,
   acceptanceContractHash,
+  answeringPackageFailures,
+  answeringPackageOf,
   deployedRuntimePackageSha256,
   evaluateAcceptanceCase,
   loadAcceptanceDefinition,
@@ -56,6 +58,8 @@ async function main() {
   readiness.failures.forEach(failure => console.log(`- ${failure}`));
 
   const caseResults = [];
+  // What the live service itself said answered, one entry per distinct value (Build 231 E1 item 7).
+  const answeringPackages = new Set();
   if (readiness.passed) {
     for (let index = 0; index < definition.cases.length; index += 1) {
       const testCase = definition.cases[index];
@@ -69,6 +73,7 @@ async function main() {
           shadowValidation,
           serviceWorkerToken,
           clientSurface,
+          onAnswered: answered => answeringPackages.add(answeringPackageOf(answered)),
         });
         const evaluation = evaluateAcceptanceCase(testCase, response, {
           projectName: project.name,
@@ -112,11 +117,14 @@ async function main() {
 
   const passed = caseResults.filter(item => item.passed).length;
   const failed = caseResults.length - passed;
+  const runtimePackageSha256 = deployedRuntimePackageSha256();
+  const answeringPackageSha256s = [...answeringPackages].sort();
   const result = {
     schemaVersion: LIVE_RESULT_SCHEMA_VERSION,
     definitionSchemaVersion: definition.schemaVersion,
     acceptanceContractSha256: contractHash,
-    runtimePackageSha256: deployedRuntimePackageSha256(),
+    runtimePackageSha256,
+    answeringPackageSha256s,
     startedAt,
     completedAt: new Date().toISOString(),
     productionHost: new URL(supabaseUrl).host,
@@ -156,7 +164,10 @@ async function main() {
   console.log(`PASS ${passed}/${caseResults.length}`);
   console.log(`FAIL ${failed}/${caseResults.length}`);
   console.log(`Evidence: ${path.relative(repoRoot, resultPath)}`);
-  if (!readiness.passed || failed > 0 || passed < definition.minimumPassingCases) process.exitCode = 1;
+  // Only answers can say what answered; a run with none has already failed above.
+  const wrongBuild = answeringPackages.size > 0 ? answeringPackageFailures(answeringPackageSha256s, runtimePackageSha256) : [];
+  wrongBuild.forEach(failure => console.log(`FAIL: ${failure}`));
+  if (!readiness.passed || failed > 0 || passed < definition.minimumPassingCases || wrongBuild.length > 0) process.exitCode = 1;
 }
 
 function loadLocalEnvironment() {
@@ -557,6 +568,7 @@ async function askProductionECOS({
   shadowValidation = false,
   serviceWorkerToken = '',
   clientSurface = 'web',
+  onAnswered,
 }) {
   const clientRequestId = crypto.randomUUID();
   let lastError = null;
@@ -577,7 +589,10 @@ async function askProductionECOS({
           ...(shadowValidation ? { validationMode: 'shadow' } : {}),
         },
       });
-      if (!error) return data;
+      if (!error) {
+        onAnswered?.(response);
+        return data;
+      }
       const body = response
         ? await response.clone().json().catch(() => null)
         : null;

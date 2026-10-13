@@ -10,6 +10,7 @@ import { ReportDrawingReferencePreview } from '../../screens/ReportsScreen';
 import type { ReportDrawingReference } from '../../services/ReportDrawingReferences';
 import { renderNativeReportDrawingPreview } from '../../services/ReportWordMedia.native';
 import {
+  expectFakeDeviceLetGoOfEveryPicture,
   fakeImageBytes,
   fakeMedia,
   fakePictureIn,
@@ -48,6 +49,10 @@ const resolver = (item: ReportDrawingReference) => renderNativeReportDrawingPrev
 beforeEach(() => {
   fakeMedia.reset();
   fakeMedia.files.set(SHEET_URI, fakeImageBytes('jpeg', quadrantSheet(4000, 3000)));
+});
+afterEach(() => {
+  // Review pass 1, L6: the image tool holds a picture until it is released, as the real one does.
+  expectFakeDeviceLetGoOfEveryPicture();
 });
 
 it('shows the cited quarter of a picture drawing, not the whole sheet', async () => {

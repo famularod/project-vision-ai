@@ -119,6 +119,19 @@ export function schedulePredecessorOptions(
     .sort(compareScheduleItems);
 }
 
+/**
+ * The tasks that come after an item, through any number of links (review
+ * pass 1, web M1): making one of them its predecessor too would be a circle.
+ * The web's Schedule editor asks this of the whole schedule shown, so a
+ * circle through a task filed under another schedule name is found as well.
+ */
+export function scheduleSuccessorIds(
+  itemId: string,
+  sourceItems: readonly ScheduleItem[],
+): ReadonlySet<string> {
+  return dependencyDescendantIds(itemId, sourceItems);
+}
+
 export function planningDependenciesFromIds(
   predecessorItemIds: readonly string[],
   lagDays: number | string | null | undefined = 0,

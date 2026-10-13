@@ -46,7 +46,7 @@ import type { ReferenceDocument, ScheduleItem } from '../../types';
 import { buildDAVEProjectTruth, type DAVEProjectTruth } from '../../services/DAVEProjectTruth';
 import {
   buildDAVEReportBriefing,
-  buildDAVEReportSourceFingerprint,
+  buildDAVELegacyReportSourceFingerprint, buildDAVEReportSourceFingerprint,
   enhanceDAVEReportDraft,
 } from '../../services/DAVEReportIntelligence';
 import {
@@ -317,7 +317,9 @@ describe('A6 p14 L2: a note made on the other device before the report, received
     expect(snapshot.version).toBe('dave-report-snapshot/1.0');
     expect(snapshot.tasks.map(task => [task.taskName, task.contentKey]))
       .toEqual([['Framing', 'task-content/1:03e0aa72'], ['Pour slab', 'task-content/1:3cf9048f']]);
-    expect(buildDAVEReportSourceFingerprint([truthOf(received, NOW)])).toBe('dave-report-source/1.0:4678986f');
+    // R4 item 4a (deliberate): the 1.0 fingerprint is still worked out, to the same value, beside today's 2.0.
+    expect(buildDAVELegacyReportSourceFingerprint([truthOf(received, NOW)])).toBe('dave-report-source/1.0:4678986f');
+    expect(buildDAVEReportSourceFingerprint([truthOf(received, NOW)])).toMatch(/^dave-report-source\/2\.0:[0-9a-f]{8}$/);
   });
 });
 
@@ -523,7 +525,8 @@ describe('A6 p14 L4: Completed Work\'s "Last updated" date does not move on the 
     const web = fs.readFileSync(path.resolve(__dirname, '../../services/DAVEWebOperations.ts'), 'utf8');
     // Everyday item 3 (2 Oct 2026): the web report also passes the phone's shared period (previousSnapshot and
     // waitingForOtherDevice) before the comment line; pin widened deliberately to allow those two lines.
-    expect(web).toMatch(/return buildDAVEReportBriefing\(\{\n\s+truths,\n\s+selectedProjectNames: [^\n]+\n(?:[^\n]*\n){1,3}\s+scheduleItems: snapshot\.knownScheduleItems \?\? snapshot\.scheduleItems,/);
+    // R9 (12 Oct 2026): and whether the report is read as one an earlier version saved; widened by that one line.
+    expect(web).toMatch(/return buildDAVEReportBriefing\(\{\n\s+truths,\n\s+selectedProjectNames: [^\n]+\n(?:[^\n]*\n){1,4}\s+scheduleItems: snapshot\.knownScheduleItems \?\? snapshot\.scheduleItems,/);
     const { done } = completedCase();
     const truth = truthOf(done, NOW);
     expect(Object.keys(truth.schedule[0]).filter(key => /confirm/i.test(key))).toEqual([]);

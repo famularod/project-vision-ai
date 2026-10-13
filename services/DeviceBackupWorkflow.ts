@@ -587,6 +587,16 @@ export async function materializeCompleteBackupState(
       // failing the whole restore over a file the archive never claimed.
       if (!photo._backupAssetId) {
         photo.uri = '';
+        // What the device that made the backup found when it looked in the
+        // cloud is not this device's to keep. A backup made with no signal
+        // marks every photo it could not reach 'unavailable', and with that
+        // mark nothing on the restored device looked for the photo again
+        // (sync batch Y3, item 2). The storage path stays in the record, so
+        // this device looks for itself.
+        if (photo.cloudRecoveryStatus === 'unavailable' &&
+            typeof photo.cloudStoragePath === 'string' && photo.cloudStoragePath.trim()) {
+          photo.cloudRecoveryStatus = null;
+        }
         continue;
       }
       photo.uri = (await place(directory, photo._backupAssetId)).uri;

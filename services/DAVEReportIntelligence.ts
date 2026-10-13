@@ -1,4 +1,4 @@
-import type { DAVEProjectTruth } from './DAVEProjectTruth';
+import { daveProjectTruthAsBuilt, daveProjectTruthCountsOtherUpdatesThanBefore, type DAVEProjectTruth } from './DAVEProjectTruth';
 import type { PIEReportDraft } from './PIEReporter';
 import {
   buildScheduleTaskAccounting,
@@ -10,15 +10,25 @@ import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import {
   buildDAVEReportSnapshot,
   compareDAVEReportSnapshots,
+  rememberLegacyReportSource,
   daveReportSnapshotScopeKey,
   reportPeriodWaitingForOtherDevice,
+  reportTaskEarlierRows,
+  reportTasksAddedByLookahead,
   reportTasksLeftByLookahead,
   type DAVEReportPeriodComparison,
   type DAVEReportSnapshot,
 } from './DAVEReportSnapshot';
 
 export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/2.0' as const;
-export const DAVE_REPORT_SOURCE_VERSION = 'dave-report-source/1.0' as const;
+/**
+ * 2.0 (R4 item 4a): the fingerprint no longer follows the order the tasks
+ * were saved in, nor the id each device files the project under. 1.0 is
+ * still worked out beside it for reports made under it (DAVEReportSnapshot,
+ * sameReportSource).
+ */
+export const DAVE_REPORT_SOURCE_VERSION = 'dave-report-source/2.0' as const;
+const DAVE_LEGACY_REPORT_SOURCE_VERSION = 'dave-report-source/1.0' as const;
 
 export type DAVEReportAction = Readonly<{
   id: string;
@@ -151,24 +161,111 @@ export function buildDAVEReportSourceFingerprint(
     .map(truth => ({
       projectName: normalized(truth.projectName),
       fingerprint: stableHash(stableStringify(canonicalizeReportSourceValue(
+        withoutVolatileReportSourceFields(reportSourceFactsOf(truth), LEFT_OUT_OF_REPORT_SOURCE_2_0),
+      ))),
+    }))
+    .sort((left, right) => left.projectName.localeCompare(right.projectName));
+  const fingerprint = `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify(truthFingerprints))}`;
+  // R7 item A (the coordinator's decision on review pass 1, F0): a 1.0 fingerprint is a name of these facts only
+  // where this build's report counts the same field updates as Build 230's did for the same saved data. Where it
+  // counts even one that Build 230 left out, the 1.0 fingerprint is of a report without it, blind to whatever
+  // happens to it: no 1.0 name stands, and a report made on Build 230 is another report.
+  const countsWhatBuild230Counted = !truths.some(daveProjectTruthCountsOtherUpdatesThanBefore);
+  // The 1.0 fingerprint of the same facts, so a report made under it is still known (R4 item 4a).
+  // R10: no longer offered (EARLIER_VERSION_NAMES_STAND). This is the one place today's facts are given a 1.0 name.
+  rememberLegacyReportSource(fingerprint, EARLIER_VERSION_NAMES_STAND && countsWhatBuild230Counted ? buildDAVELegacyReportSourceFingerprint(truths) : null);
+  return fingerprint;
+}
+
+/**
+ * R10 (the coordinator's decision on reports review pass 3, P3-2): NO EARLIER-VERSION NAME EVER STANDS. The 1.0
+ * fingerprint says the saved FACTS are the ones the released build reported, and they are, to the byte. But the
+ * words are written again by this build, which words and orders the same facts differently: at the hand-over, one
+ * report in four shown as "already sent" did not read as the report that build sent, and the phone keeps no text
+ * of a sent report to tell them apart. So a report approved, sent or saved under 1.0 is never taken for the report
+ * on screen: every asker (sameReportSource, and what is built on it) is told "not that report", and each
+ * project's current report is offered once after the update. "Since the last report" still counts from the last
+ * report sent, a 1.0 one included: its saved record and send time are read as before (reportBaselineSnapshot).
+ * Left in place and now without effect, to go in a later round: the 1.0 fingerprint of today's facts worked out
+ * here, R7 item A's rule above, the names kept in DAVEReportSnapshot (rememberLegacyReportSource,
+ * legacyReportSourcesOf, the 1.0 arm of sameReportSource), and R9's "read as an earlier version's report".
+ */
+const EARLIER_VERSION_NAMES_STAND: boolean = false;
+
+/**
+ * The fingerprint as version 1.0 wrote it, unchanged: of the truths as they
+ * were built, in saved order, with the id each device files the project
+ * under. Only to know a report made under 1.0 for the same facts.
+ */
+export function buildDAVELegacyReportSourceFingerprint(
+  truths: readonly DAVEProjectTruth[],
+): string {
+  const truthFingerprints = truths
+    .map(daveProjectTruthAsBuilt)
+    .map(truth => ({
+      projectName: normalized(truth.projectName),
+      fingerprint: stableHash(stableStringify(canonicalizeReportSourceValue(
         withoutVolatileReportSourceFields(truth),
       ))),
     }))
     .sort((left, right) => left.projectName.localeCompare(right.projectName));
 
-  return `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify(truthFingerprints))}`;
+  return `${DAVE_LEGACY_REPORT_SOURCE_VERSION}:${stableHash(stableStringify(truthFingerprints))}`;
 }
+
+/**
+ * What version 2.0 hashes of a truth (R4 item 4a): every fact, without
+ *  - `briefing`, Project Truth's own summary lines. They are written from
+ *    the facts hashed beside them, and take "the first" of each list;
+ *  - `entityLinks`, the links from each record to the project, its tasks
+ *    and the work areas saved on the device. They too are worked out from
+ *    the facts hashed beside them, and from the phone's saved work areas,
+ *    which the web does not download: with them in, a project with GPS work
+ *    areas never had the same fingerprint on the phone and on the web; and
+ *  - the id the truth is filed under, wherever an id carries it
+ *    ("timeline:<project id>:…"). The phone files a report's truth under
+ *    "report:<name>" and the web under the cloud project's id, so the two
+ *    never agreed on the fingerprint of the same facts.
+ */
+function reportSourceFactsOf(truth: DAVEProjectTruth): unknown {
+  const { briefing: _briefing, entityLinks: _entityLinks, ...facts } = truth as DAVEProjectTruth & Record<string, unknown>;
+  const projectId = typeof truth.projectId === 'string' ? truth.projectId : '';
+  if (!projectId) return facts;
+  // As written, and as an id inside an id carries it: encoded once, twice ("report%253Aalpha") or three times.
+  const once = encodeURIComponent(projectId);
+  const twice = encodeURIComponent(once);
+  const forms = [encodeURIComponent(twice), twice, once, projectId].filter((form, index, all) => all.indexOf(form) === index);
+  const withoutProjectId = (text: string) => forms.reduce((value, form) => value.split(form).join(REPORT_SOURCE_PROJECT_ID), text);
+  const isIdKey = (key: string) => key === 'id' || /Ids?$/.test(key);
+  const walk = (value: unknown, inId: boolean): unknown => {
+    if (typeof value === 'string') return inId ? withoutProjectId(value) : value;
+    if (Array.isArray(value)) return value.map(item => walk(item, inId));
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) => [key, walk(child, isIdKey(key))]));
+    }
+    return value;
+  };
+  return walk(facts, false);
+}
+const REPORT_SOURCE_PROJECT_ID = '<project>';
 
 export function buildDAVEReportBriefing({
   truths,
   selectedProjectNames,
   previousSnapshot,
+  readAsEarlierVersionReport = false,
   waitingForOtherDevice = false,
   scheduleItems,
 }: {
   truths: readonly DAVEProjectTruth[];
   selectedProjectNames?: readonly string[];
   previousSnapshot?: DAVEReportSnapshot | null;
+  /**
+   * This report is read as the saved report an earlier version made
+   * (`reportReadAsEarlierVersionReport`, asked where `previousSnapshot` is
+   * chosen): no live earlier row is read for a task that is back (R9).
+   */
+  readAsEarlierVersionReport?: boolean;
   /**
    * The report this one counts from was sent by the other device after this
    * device last downloaded the tasks: "since the last report" is not counted
@@ -182,7 +279,7 @@ export function buildDAVEReportBriefing({
    * report's fingerprint. Without them, Completed Work's dates read as
    * before.
    */
-  scheduleItems?: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment'>[];
+  scheduleItems?: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>[];
 }): DAVEReportBriefing {
   const projectNames = unique(
     (selectedProjectNames?.length ? selectedProjectNames : truths.map(truth => truth.projectName))
@@ -202,6 +299,10 @@ export function buildDAVEReportBriefing({
     previous: previousSnapshot,
     // The detail tasks a replaced lookahead took with it are not said (owner answer 3 Oct 2026).
     tasksLeftByLookahead: reportTasksLeftByLookahead(truths),
+    // How a task that is back last stood, and which tasks began as a lookahead's own row (R5 item 1).
+    earlierRows: reportTaskEarlierRows(truths),
+    lookaheadAddedTaskIds: reportTasksAddedByLookahead(truths),
+    currentReadAsEarlierVersionReport: readAsEarlierVersionReport,
   });
   const reportingPeriod = waitingForOtherDevice ? reportPeriodWaitingForOtherDevice(comparison) : comparison;
   const projectConditions = truths.map(projectConditionFromTruth);
@@ -436,13 +537,29 @@ type CompletedTaskLastUpdatedAt = (task: DAVEProjectTruth['schedule'][number]) =
  * first 6). The confirmation is when the manager judged the percent
  * (scheduleProgressJudgedAt), read from the saved tasks; with none given,
  * the activity or the update time, whichever is later, as before.
+ *
+ * R5 item 3 (open item, small): a master schedule that states 100% for a
+ * task an import owns, with no percent of his on it, completes the task and
+ * records no confirmation time (the percent stands as the file's). With a
+ * note on the task from weeks before, Completed Work read "Last updated
+ * <the note's date>" for a task completed since. The day that master was
+ * approved counts as the confirmation does: the saved task keeps the highest
+ * percent a master's file has stated on its row that stood, and when
+ * (fileProgressPeak, Build 231). A task a master completed on an earlier
+ * build has no such record and reads as before.
  */
 function completedTaskLastUpdatedAt(
-  scheduleItems: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment'>[] | undefined,
+  scheduleItems: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>[] | undefined,
 ): CompletedTaskLastUpdatedAt {
   if (!scheduleItems) return task => latestDate([task.latestActivityAt, task.updatedAt]);
-  const confirmedAt = new Map(scheduleItems.map(item => [item.id, scheduleProgressJudgedAt(item)]));
+  const confirmedAt = new Map(scheduleItems.map(item => [item.id, latestDate([scheduleProgressJudgedAt(item), completedByMasterAt(item)])]));
   return task => latestDate([task.latestActivityAt, confirmedAt.get(task.taskId)]) || latestDate([task.updatedAt]);
+}
+
+/** When a master schedule's file completed the task on its row, if one did and that percent stood; else null. */
+function completedByMasterAt(item: Pick<ScheduleItem, 'fileProgressPeak'>): string | null {
+  const peak = item.fileProgressPeak;
+  return peak && boundedPercent(peak.percentComplete) >= 100 && typeof peak.statedAt === 'string' ? peak.statedAt : null;
 }
 
 function reportCompletedTaskFact(
@@ -470,14 +587,26 @@ function reportCompletedTaskRank(task: DAVEProjectTruth['schedule'][number], las
   return timestamp === null ? Number.MAX_SAFE_INTEGER : -timestamp;
 }
 
+/**
+ * The day of `value`, written out ("Oct 1, 2026").
+ *
+ * R7 item D (the coordinator's decision on review pass 1, F4): a moment (a
+ * date with a time of day: when a note was typed, a percent confirmed, a
+ * master schedule approved, a task last saved) is written as the day it was
+ * on this device. It was written as its day in UTC, so a task completed at
+ * 6:30 in the evening Pacific time read "Last updated" the next day. A date
+ * with no time is written exactly as before: it names a calendar day, which
+ * no time zone moves.
+ */
 function formatReportDate(value: string) {
   const timestamp = dateValue(value);
   if (timestamp === null) return value;
+  const isMoment = /\d{1,2}:\d{2}/.test(value);
   return new Date(timestamp).toLocaleDateString('en-US', {
     month: 'short',
     day: 'numeric',
     year: 'numeric',
-    timeZone: 'UTC',
+    ...(isMoment ? {} : { timeZone: 'UTC' }),
   });
 }
 
@@ -1021,7 +1150,8 @@ function buildRecentChanges({
  * 2026). Lines were kept once by name and text, so Pour slab in Lot and Pour
  * slab in Deck, both completed, read "+2 completed" with one "Pour slab was
  * completed." The same task reached twice still says it once. Different tasks
- * in different areas name the area ("Pour slab (Deck) was completed."); in
+ * in different areas name the area ("Pour slab (Deck) was completed.", and
+ * "Pour slab (unassigned area) was completed." for the one with none); in
  * one area they say it once with the count ("Pour slab was completed (2
  * tasks).").
  */
@@ -1039,7 +1169,10 @@ function sameLineOfSameNamedTasks(
     .map(change => {
       const tasks = tasksOn.get(lineKey(change))!;
       if (tasks.length === 1) return change;
-      const area = areasNamed(change) && clean(change.areaName) ? ` (${clean(change.areaName)})` : '';
+      // Open item (A6 pass 24, wording): beside "Pour slab (Deck) was completed.", the same-named task with no area
+      // read "Pour slab was completed.", as a line about Pour slab as a whole. It says it has no area, in the
+      // words the report already uses for one ("moved from Lot to unassigned area").
+      const area = areasNamed(change) ? ` (${clean(change.areaName) || 'unassigned area'})` : '';
       const inArea = tasks.filter(other => areaKey(other) === areaKey(change)).length;
       const prefix = `${change.projectName}: ${change.taskName}`;
       if (!change.summary.startsWith(prefix)) return change;
@@ -1286,15 +1419,45 @@ const VOLATILE_REPORT_SOURCE_FIELDS = new Set([
   // Owner answer 3 Oct 2026 (report wording after a lookahead is replaced): where a task's dates come from and
   // which detail tasks left with a lookahead. The dates and the tasks shown are in the fingerprint themselves.
   'onLookaheadDates', 'replacedLookaheadDates', 'lookaheadReplacement',
+  // R5 item 1 (the returning task): the earlier rows of the tasks shown, and which tasks' own rows a lookahead
+  // added.
+  'earlierRows', 'lookaheadAddedTaskIds',
+  // (All of the above are left out of version 1.0 so that it stays the released build's. Version 2.0 leaves out
+  // only `generatedAt`: R8 items 3 and 4, below.)
 ]);
 
-function withoutVolatileReportSourceFields(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(withoutVolatileReportSourceFields);
+/**
+ * R8 items 3 and 4 (the coordinator's decisions on review pass 2): what
+ * version 2.0 of the fingerprint leaves out, by name: only the time the
+ * truth was worked out. Version 1.0 leaves out the whole list above, as the
+ * released build did, and must go on doing so.
+ *
+ * The rule (the guard: r8-report-fingerprint-moves-whenever-the-report-does):
+ * whenever a change to what the report is made from moves the written report,
+ * or what is saved with an approval, version 2.0 moves. So it holds what the
+ * list above keeps out of 1.0:
+ *  - `earlierRows` (item 3, P2-3): "Paint is back in the project plan." is
+ *    followed by what changed since the task last stood ("moved from 60% to
+ *    70%"), read from the row it left on. That row was in neither version,
+ *    so a late edit to it from another device changed the sentence ("from
+ *    50%") while the app still called it the report already sent;
+ *  - `earlierTaskIds` and `notTaskIds`: which earlier report's task a task is
+ *    compared with, and saved with every approved report;
+ *  - `onLookaheadDates`, `replacedLookaheadDates`, `lookaheadReplacement`,
+ *    `lookaheadAddedTaskIds`: what the report says, and does not say, after
+ *    a lookahead is replaced, and of a task a lookahead had added.
+ * Each is worked out from the saved tasks and schedules alone, the same on
+ * the phone and on the web.
+ */
+const LEFT_OUT_OF_REPORT_SOURCE_2_0: ReadonlySet<string> = new Set(['generatedAt']);
+
+function withoutVolatileReportSourceFields(value: unknown, leftOut: ReadonlySet<string> = VOLATILE_REPORT_SOURCE_FIELDS): unknown {
+  if (Array.isArray(value)) return value.map(item => withoutVolatileReportSourceFields(item, leftOut));
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .filter(([key]) => !VOLATILE_REPORT_SOURCE_FIELDS.has(key))
-        .map(([key, child]) => [key, withoutVolatileReportSourceFields(child)]),
+        .filter(([key]) => !leftOut.has(key))
+        .map(([key, child]) => [key, withoutVolatileReportSourceFields(child, leftOut)]),
     );
   }
   return value;

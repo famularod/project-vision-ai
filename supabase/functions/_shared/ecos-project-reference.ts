@@ -573,7 +573,7 @@ function nameWordsAround(name: string, at: RegExpExecArray, before: string, afte
   const afterWords = /^[\s,-]+[a-z0-9]/i.test(after) ? wordsIn(after) : [];
   // The last 64 characters are enough to test the end and keep the match linear.
   const beforeWords = /[a-z0-9][\s#:.-]*$/i.test(before.slice(-64)) ? wordsIn(before).reverse() : [];
-  const nameAfter = wordsIn(name.slice(at.index + at[0].length));
+  const nameAfter = withStreetLetter(wordsIn(name.slice(at.index + at[0].length)));
   const nameBefore = wordsIn(name.slice(0, at.index)).reverse();
   const following = wordsInCommon(nameAfter, afterWords, true);
   const preceding = wordsInCommon(nameBefore, beforeWords);
@@ -587,6 +587,43 @@ function nameWordsAround(name: string, at: RegExpExecArray, before: string, afte
 function wordsIn(text: string): string[] {
   return text.match(/[a-z0-9]+/gi) ?? [];
 }
+
+/**
+ * Build 231 E1 item 9 (audit A9 pass 17 L2): a name typed with a lower-case
+ * street letter ("24117 - 450 a Street") is read as "450 A Street". Only the
+ * "a" straight after the number and before a street word is the letter;
+ * "2375 a new roof" keeps its article.
+ */
+function withStreetLetter(nameWordsAfterNumber: string[]) {
+  const [first, next] = nameWordsAfterNumber;
+  return first === 'a' && next && ECOS_STREET_LETTER_WORDS.has(next.toLowerCase())
+    ? ['A', ...nameWordsAfterNumber.slice(1)]
+    : nameWordsAfterNumber;
+}
+
+/**
+ * The words that make the "a" before them, straight after the number in a
+ * project NAME, the street's letter and not the article: "450 a Way" is
+ * 450 A Way (review pass 1, L5: only ten street words did, so "450 a Way",
+ * Circle, Terrace, Trail and Alley were still read with the article).
+ *
+ * The common street words of United States addresses, each written out and
+ * in its usual short form. The list follows the street suffixes of USPS
+ * Publication 28 (Appendix C1), written from memory: it was not looked up
+ * when this was written, and it is the common ones, not all of them.
+ *
+ * This list is used for that one reading only. It does not make a short
+ * form and its word the same word in a question; that is STREET_WORDS, which
+ * is kept to its ten on purpose ("CT" is also a cabinet, "CIR" a circuit).
+ */
+export const ECOS_STREET_LETTER_WORDS: ReadonlySet<string> = new Set([
+  'alley', 'aly', 'avenue', 'ave', 'bend', 'bnd', 'boulevard', 'blvd', 'circle', 'cir', 'court', 'ct',
+  'cove', 'cv', 'crescent', 'cres', 'crossing', 'xing', 'drive', 'dr', 'expressway', 'expy',
+  'freeway', 'fwy', 'glen', 'gln', 'heights', 'hts', 'highway', 'hwy', 'lane', 'ln', 'loop',
+  'parkway', 'pkwy', 'pass', 'path', 'pike', 'place', 'pl', 'plaza', 'plz', 'point', 'pt',
+  'ridge', 'rdg', 'road', 'rd', 'route', 'rte', 'row', 'run', 'square', 'sq', 'street', 'st',
+  'terrace', 'ter', 'trace', 'trce', 'trail', 'trl', 'turnpike', 'tpke', 'view', 'vw', 'walk', 'way',
+]);
 
 /**
  * How many name words the two lists share from the start, as name words

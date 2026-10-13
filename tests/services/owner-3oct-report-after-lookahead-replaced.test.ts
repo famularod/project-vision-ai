@@ -1,5 +1,5 @@
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
-import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, enhanceDAVEReportDraft } from '../../services/DAVEReportIntelligence';
+import { buildDAVELegacyReportSourceFingerprint, buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, enhanceDAVEReportDraft } from '../../services/DAVEReportIntelligence';
 import {
   buildDAVEReportSnapshot,
   daveReportSnapshotScopeKey,
@@ -103,6 +103,8 @@ function built(state: State, known: DAVEReportSnapshot | null, now: string, with
     all: briefing.reportingPeriod.changes.map(change => change.summary).sort(),
     deltas: [briefing.reportingPeriod.completeDelta, briefing.reportingPeriod.openDelta, briefing.reportingPeriod.overdueDelta],
     snapshot, fingerprint, body,
+    /** The fingerprint as an earlier build wrote it (version 1.0). */
+    earlierVersion: buildDAVELegacyReportSourceFingerprint([truth]),
   };
 }
 const send = (state: State, known: DAVEReportSnapshot | null, now: string) => {
@@ -252,9 +254,14 @@ describe('owner answer 3 Oct: the report after a newer lookahead replaces the ol
     ]);
   });
 
-  it('where and why a date comes from is not part of the fingerprint: an approval given before still stands', () => {
+  // R8 items 3 and 4 (the coordinator's decision on review pass 2): this test pinned the claim that where and why a date comes from "is not part of the fingerprint". It is
+  // saved with every approved report or read by the report's own sentences, so a change to it changes the report
+  // under one fingerprint: today's version (2.0) holds it now. What the test was for still holds where it matters:
+  // the version an earlier build wrote (1.0) is worked out without it, so that build's approval or send is known.
+  it('where and why a date comes from is not part of the fingerprint an earlier build wrote: an approval given then still stands; today\'s version holds it', () => {
     const week2 = approve(week1, L2, WEEK2);
-    expect(built(week2, null, '2026-09-15T14:00:00.000Z', true).fingerprint).toBe(built(week2, null, '2026-09-15T14:00:00.000Z', false).fingerprint);
+    expect(built(week2, null, '2026-09-15T14:00:00.000Z', true).earlierVersion).toBe(built(week2, null, '2026-09-15T14:00:00.000Z', false).earlierVersion);
+    expect(built(week2, null, '2026-09-15T14:00:00.000Z', true).fingerprint).not.toBe(built(week2, null, '2026-09-15T14:00:00.000Z', false).fingerprint);
     const saved = built(week2, null, '2026-09-15T14:00:00.000Z').snapshot;
     expect(saved.replacedLookaheads).toEqual(['batch-lookahead l1']);
     expect(built(week1, null, '2026-09-08T14:00:00.000Z').snapshot.replacedLookaheads).toEqual([]);

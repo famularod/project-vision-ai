@@ -15,6 +15,7 @@ import type {
   ReportWordMedia,
   ReportWordUnavailableMedia,
 } from './ReportWordDocument';
+import { reportPictureFit } from './ReportWordMediaLimits';
 import type { ReportDrawingReference } from './ReportDrawingReferences';
 
 type ArtifactUrlResolver = (
@@ -29,11 +30,18 @@ export type ResolvedReportWordMedia = Readonly<{
   unavailableMedia: readonly ReportWordUnavailableMedia[];
 }>;
 
+/** pdf.js, loaded only when a drawing turns out to be a PDF. */
+type PdfJsLoader = () => Promise<typeof import('pdfjs-dist/legacy/build/pdf.mjs')>;
+
+const loadBundledPdfJs: PdfJsLoader = () => import('pdfjs-dist/legacy/build/pdf.mjs');
+
 export async function resolveWebReportWordMedia(args: {
   updates: readonly ProjectUpdate[];
   reportPhotoIds: readonly string[];
   drawingReferences: readonly ReportDrawingReference[];
   getArtifactUrl: ArtifactUrlResolver;
+  /** The bundled pdf.js unless a test supplies a stand-in (jest cannot run its import). */
+  loadPdfJs?: PdfJsLoader;
 }): Promise<ResolvedReportWordMedia> {
   const media: ReportWordMedia[] = [];
   const unavailableMedia: ReportWordUnavailableMedia[] = [];
@@ -65,7 +73,7 @@ export async function resolveWebReportWordMedia(args: {
   }
 
   for (const reference of args.drawingReferences) {
-    const resolved = await resolveDrawing(reference, args.getArtifactUrl);
+    const resolved = await resolveDrawing(reference, args.getArtifactUrl, args.loadPdfJs ?? loadBundledPdfJs);
     if ('media' in resolved) media.push(resolved.media);
     else unavailableMedia.push(resolved.unavailable);
   }
@@ -130,6 +138,7 @@ async function resolvePhoto(
 async function resolveDrawing(
   reference: ReportDrawingReference,
   getArtifactUrl: ArtifactUrlResolver,
+  loadPdfJs: PdfJsLoader,
 ): Promise<{ media: ReportWordMedia } | { unavailable: ReportWordUnavailableMedia }> {
   const document = reference.excerpt.document;
   const label = `${reference.projectName} · ${reference.areaName} · ${reference.citation.label}`;
@@ -148,14 +157,11 @@ async function resolveDrawing(
     // Judged by the shared rule before anything is fetched. With no region
     // at all the whole sheet was embedded as the excerpt (review pass 2 W3).
     reportDrawingCropBounds(reference.excerpt.region);
-    const mimeType = normalizedDrawingMimeType(document);
     const raster = await resolveProtectedArtifactWithRetry({
       bucket: 'project-documents',
       path,
       getArtifactUrl,
-      render: url => mimeType.includes('pdf')
-        ? rasterizePdfExcerpt(url, reference.excerpt.pageNumber, reference.excerpt.region)
-        : rasterizeImageUrl(url, reference.excerpt.region),
+      render: url => rasterizeDrawingUrl(url, document, reference.excerpt.pageNumber, reference.excerpt.region, loadPdfJs),
     });
     return {
       media: {
@@ -234,20 +240,42 @@ export async function resolveProtectedArtifactWithRetry<T>(args: {
     : new Error('The protected project file could not be retrieved.');
 }
 
-async function rasterizePdfExcerpt(
+/**
+ * Whether a drawing file is a PDF or a picture is read from its first bytes,
+ * as on the phone (Build 231 E1 item 5: its stored type decided, so a PDF
+ * stored as a picture, or a picture stored as a PDF, was listed as left
+ * out). Its stored type and name are asked only when its bytes are none this
+ * app recognises.
+ */
+async function rasterizeDrawingUrl(
   url: string,
+  documentRecord: ReferenceDocument,
   pageNumber: number,
   region: ReferenceDocumentRegion,
+  loadPdfJs: PdfJsLoader,
 ) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Drawing download failed (${response.status}).`);
-  const bytes = await response.arrayBuffer();
-  const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  const format = detectReportImageSignature(bytes);
+  const isPdf = format === 'unknown' ? drawingIsStoredAsPdf(documentRecord) : format === 'pdf';
+  return isPdf
+    ? rasterizePdfExcerpt(bytes, pageNumber, region, loadPdfJs)
+    : rasterizeImageBytes(bytes, response.headers.get('content-type'), region);
+}
+
+async function rasterizePdfExcerpt(
+  bytes: Uint8Array,
+  pageNumber: number,
+  region: ReferenceDocumentRegion,
+  loadPdfJs: PdfJsLoader,
+) {
+  const pdfjs = await loadPdfJs();
   if (typeof window !== 'undefined') {
     pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
   }
   const pdf = await pdfjs.getDocument({
-    data: new Uint8Array(bytes),
+    data: bytes,
   }).promise;
   const safePageNumber = Math.max(1, Math.min(pageNumber, pdf.numPages));
   const page = await pdf.getPage(safePageNumber);
@@ -274,7 +302,14 @@ async function rasterizeImageUrl(
   const response = await fetch(url);
   if (!response.ok) throw new Error(`Image download failed (${response.status}).`);
   const bytes = new Uint8Array(await response.arrayBuffer());
-  const declaredMimeType = response.headers.get('content-type');
+  return rasterizeImageBytes(bytes, response.headers.get('content-type'), region);
+}
+
+async function rasterizeImageBytes(
+  bytes: Uint8Array,
+  declaredMimeType: string | null,
+  region?: ReferenceDocumentRegion,
+) {
   const format = detectReportImageFormat(bytes, declaredMimeType);
   const sourceBlob = new Blob(
     [bytes.slice().buffer],
@@ -384,10 +419,11 @@ function cropCanvas(
 }
 
 function resizeCanvas(sourceCanvas: HTMLCanvasElement) {
-  const scale = Math.min(1, 1600 / sourceCanvas.width, 1200 / sourceCanvas.height);
+  // The phone and iPad report makes a photo the same size (independent review F04).
+  const fit = reportPictureFit(sourceCanvas.width, sourceCanvas.height);
   const output = document.createElement('canvas');
-  output.width = Math.max(1, Math.round(sourceCanvas.width * scale));
-  output.height = Math.max(1, Math.round(sourceCanvas.height * scale));
+  output.width = fit.width;
+  output.height = fit.height;
   const outputContext = output.getContext('2d');
   if (!outputContext) throw new Error('Image resize renderer is unavailable.');
   fillWhite(outputContext, output);
@@ -436,12 +472,10 @@ function loadImage(blob: Blob) {
   });
 }
 
-function normalizedDrawingMimeType(documentRecord: ReferenceDocument) {
-  const declared = documentRecord.mimeType?.toLowerCase().trim();
-  if (declared) return declared;
-  return documentRecord.originalFileName.toLowerCase().endsWith('.pdf')
-    ? 'application/pdf'
-    : 'image/jpeg';
+/** What the record says, for a file whose bytes are none this app recognises; the phone asks the same two things. */
+function drawingIsStoredAsPdf(documentRecord: ReferenceDocument) {
+  return (documentRecord.mimeType || '').toLowerCase().includes('pdf') ||
+    (documentRecord.originalFileName || documentRecord.name || '').toLowerCase().endsWith('.pdf');
 }
 
 function errorMessage(error: unknown, fallback: string) {

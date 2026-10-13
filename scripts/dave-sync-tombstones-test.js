@@ -87,8 +87,32 @@ const mockedRequire = request => {
       },
     };
   }
+  if (request === './CloudOwnerBinding' || request === './OwnerStorageSandbox') {
+    // The account binding and the account boundary's read-only question, as the app has them: each is loaded
+    // from its own source (neither needs anything else at run time).
+    return loadAppModule(request);
+  }
   throw new Error(`Unexpected dependency: ${request}`);
 };
+const loadedAppModules = new Map();
+function loadAppModule(request) {
+  if (loadedAppModules.has(request)) return loadedAppModules.get(request);
+  const loaded = { exports: {} };
+  new Function('module', 'exports', 'require', ts.transpileModule(
+    fs.readFileSync(path.join(root, 'services', `${request.slice(2)}.ts`), 'utf8'),
+    {
+      compilerOptions: {
+        esModuleInterop: true,
+        module: ts.ModuleKind.CommonJS,
+        target: ts.ScriptTarget.ES2020,
+      },
+    },
+  ).outputText)(loaded, loaded.exports, dependency => {
+    throw new Error(`Unexpected dependency of ${request}: ${dependency}`);
+  });
+  loadedAppModules.set(request, loaded.exports);
+  return loaded.exports;
+}
 new Function('module', 'exports', 'require', compiled)(
   moduleUnderTest,
   moduleUnderTest.exports,

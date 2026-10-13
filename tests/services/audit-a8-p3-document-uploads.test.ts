@@ -24,7 +24,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   default: { getItem: jest.fn(async () => null), setItem: jest.fn(async () => undefined), removeItem: jest.fn(async () => undefined) },
 }));
 
-import { noteSignedInOwner } from '../../services/CloudOwnerBinding';
+import { cloudOwnerExpectedForThisCall, noteSignedInOwner } from '../../services/CloudOwnerBinding';
 import {
   bindProjectDocumentUploadToAccount,
   createProjectDocumentUploadRetryRunner,
@@ -247,5 +247,26 @@ describe('Retry on a document says why it failed (audit A8 pass 3)', () => {
     expect(app).toContain('onRetry={retryProjectDocumentUploadAsked}');
     expect(app.match(/onRetryDocumentUpload=\{retryProjectDocumentUploadAsked\}/g)).toHaveLength(2);
     expect(app).not.toMatch(/void retryProjectDocumentUpload\(documentId\);/);
+  });
+});
+
+/**
+ * Second review, sync N4 (left from pass 1's G1 / G2; owner answer Q45 (6 Oct)). The phone's own upload of a project
+ * document called the cloud layer with no account, so the look that keeps a file from leaving under the next
+ * sign-in (review pass 1, sync G1) did not reach it. App.tsx's own function, compiled from the source as above.
+ */
+describe('the phone\'s own upload of a document is made as the account it began under (second review, sync N4)', () => {
+  it('App.tsx retryProjectDocumentUpload: the cloud layer is told, as the call starts, which account the file is sent for', async () => {
+    const toldToBeMadeAs: Array<string | null> = [];
+    const h = phone([phoneDocument('permit')], async () => {
+      toldToBeMadeAs.push(cloudOwnerExpectedForThisCall());
+      return { ok: true };
+    });
+    await expect(h.retryProjectDocumentUpload('permit')).resolves.toBe(true);
+    // Before: [null]. Nothing named the account, so the file was sent as whoever was signed in when it left.
+    expect(toldToBeMadeAs).toEqual(['owner-a']);
+    expect(h.published).toEqual(['permit']);
+    // And only for that one call: nothing is left named for whatever starts next.
+    expect(cloudOwnerExpectedForThisCall()).toBeNull();
   });
 });

@@ -39,8 +39,23 @@ const transportCompiled = ts.transpileModule(fs.readFileSync(transportSourcePath
     target: ts.ScriptTarget.ES2020,
   },
 }).outputText;
+// The photo transport remembers which account a "nothing in the cloud" answer
+// was for through a helper (sync batch Y3, 6 Oct 2026).
+const ownerBindingSourcePath = path.join(root, 'services/CloudOwnerBinding.ts');
+const ownerBindingCompiled = ts.transpileModule(fs.readFileSync(ownerBindingSourcePath, 'utf8'), {
+  compilerOptions: {
+    module: ts.ModuleKind.CommonJS,
+    target: ts.ScriptTarget.ES2020,
+  },
+}).outputText;
+const ownerBindingModule = { exports: {} };
+new Function('module', 'exports', ownerBindingCompiled)(ownerBindingModule, ownerBindingModule.exports);
 const transportModule = { exports: {} };
-new Function('module', 'exports', transportCompiled)(transportModule, transportModule.exports);
+const transportRequire = specifier => {
+  if (specifier === './CloudOwnerBinding') return ownerBindingModule.exports;
+  return require(specifier);
+};
+new Function('module', 'exports', 'require', transportCompiled)(transportModule, transportModule.exports, transportRequire);
 
 // Shared document details are read with the phone normalizer's own name and
 // category rules (audit A7 pass 7 L1, 30 Sep 2026).

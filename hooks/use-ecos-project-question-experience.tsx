@@ -4,7 +4,7 @@ import { DAVETypedCaptureSheet } from '../components/DAVETypedCaptureSheet';
 import { DAVEVoiceCaptureSheet } from '../components/DAVEVoiceCaptureSheet';
 import { ECOSProjectAnswerSheet } from '../components/ECOSProjectAnswerSheet';
 import type { DAVEAskEvidence } from '../services/DAVEAsk';
-import { createECOSAskWait, isECOSAskStopped } from '../services/ECOSAskWait';
+import { createECOSAskWait, ecosAskConversationStands } from '../services/ECOSAskWait';
 import {
   askECOSProjectQuestion,
   ecosAskCanRetry,
@@ -140,9 +140,9 @@ export function useECOSProjectQuestionExperience({
         : current);
     } catch (error) {
       if (requestGeneration.current !== generation || !turn.isCurrent()) return;
-      // Stopped or timed out: nothing came back, so the conversation stands
-      // and Try Again repeats this same request.
-      if (!isECOSAskStopped(error)) turn.accept(null);
+      // Stopped or timed out, by the app or by the server: the conversation
+      // stands, and Try Again sends this question after the same earlier turn.
+      if (!ecosAskConversationStands(error)) turn.accept(null);
       setResult(current => current?.requestGeneration === generation
         ? { ...current, loading: false, error: error instanceof Error ? error.message : 'Ask ECOS could not complete the question.', canRetry: ecosAskCanRetry(error) }
         : current);
@@ -243,7 +243,9 @@ export function useECOSProjectQuestionExperience({
       }}
       onStop={() => askWait.cancel()}
       onRetry={result?.canRetry ? () => { void ask(result.question); } : undefined}
-      onClose={dismissResult}
+      // While ECOS is still working the X keeps the question, as Stop does;
+      // it closes once the wait is over (Build 231 E1 item 1).
+      onClose={result?.loading ? () => askWait.cancel() : dismissResult}
     />
   </>;
 

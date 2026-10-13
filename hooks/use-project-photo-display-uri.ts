@@ -62,7 +62,8 @@ type SignedPreview = Readonly<{ path: string; uri: string; usableUntil: number }
  * and the old URL stays up meanwhile. A failed load re-signs once per URL,
  * never in a loop. A result for an unmounted image or an earlier path is
  * dropped. A photo marked 'unavailable' is never signed: nothing was uploaded
- * for it (A4 pass 8 F4).
+ * for it (A4 pass 8 F4). Nor is one this account was told is not in the
+ * cloud, until it is uploaded or the account changes (sync batch Y3, item 1).
  */
 export function useProjectPhotoDisplayUri(
   photo: Partial<DisplayPhoto> | undefined,
@@ -121,6 +122,10 @@ export function useProjectPhotoDisplayUri(
     };
     void sign(false).then(result => {
       if (!current || result) return;
+      // The cloud answered that it holds nothing for this photo: no retry.
+      // Drawn again at once, so a card showing it passes on to its next
+      // photo (sync batch Y3, item 1).
+      if (!signableCloudPhotoPath({ cloudStoragePath: path })) return tryAgain(true);
       const wait = Math.min(PHOTO_SIGNING_RETRY_MAX_MS, PHOTO_SIGNING_RETRY_FIRST_MS * 2 ** failedSignings.current);
       failedSignings.current += 1;
       timer = setTimeout(() => tryAgain(false), wait);

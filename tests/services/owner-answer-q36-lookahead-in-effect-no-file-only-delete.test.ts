@@ -9,7 +9,7 @@
 import fs from 'fs';
 import path from 'path';
 import ts from 'typescript';
-import { scheduleDocumentIsScheduleLike, scheduleLookaheadInEffect } from '../../services/PIEScheduleReconciliation';
+import { currentScheduleDocumentWinners, scheduleDocumentIsScheduleLike, scheduleLookaheadInEffect } from '../../services/PIEScheduleReconciliation';
 import { scheduleItemsForExactImportBatch, scheduleItemsOfUnbatchedDocument, scheduleItemsOnlyInImportBatch } from '../../services/ScheduleImportProvenance';
 import { scheduleFileOnlyDeleteRefusal, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote } from '../../services/ScheduleLookahead';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
@@ -58,7 +58,7 @@ function phone(documents: ReferenceDocument[], overrides: Record<string, unknown
     ...overrides,
   };
   const source = `module.exports = (() => {
-    ${between('\n  /** The PDF of a lookahead in effect is never deleted on its own', '\n  function deleteReferenceDocument(')}
+    ${between('\n  /** The PDF of a lookahead in effect, or of the master in effect, is never deleted on its own', '\n  function deleteReferenceDocument(')}
     ${between('\n  function deleteScheduleDocument(', '\n  function addScheduleItem(')}
     return { deleteScheduleDocument, removeReferenceDocumentEverywhere };
   })();`;
@@ -70,20 +70,21 @@ function phone(documents: ReferenceDocument[], overrides: Record<string, unknown
 const settled = () => new Promise(resolve => setImmediate(resolve));
 
 describe('Owner answer Q36: on the phone, the PDF of a lookahead in effect is not deleted on its own', () => {
-  it('what "in effect" is here is what it is everywhere: the newest lookahead of its project; not a master, not a lookahead a newer one replaced', () => {
+  it('what "in effect" is here is what it is everywhere: the newest lookahead of its project; not a lookahead a newer one replaced', () => {
     expect([MASTER, OLDER, NEWER].map(document => scheduleLookaheadInEffect(document, ALL))).toEqual([false, false, true]);
-    expect([MASTER, OLDER, NEWER].map(document => scheduleFileOnlyDeleteRefusal(document, ALL))).toEqual([null, null,
+    // (The master here is the one in effect: refused too since owner answer Q38, with its own sentence; below.)
+    expect([MASTER, OLDER, NEWER].map(document => scheduleFileOnlyDeleteRefusal(document, ALL))).toEqual([expect.stringContaining('MASTER is the active schedule'), null,
       'LOOKAHEAD 2 is the lookahead in effect, so its PDF cannot be deleted on its own. Use Delete PDF + Items: that also puts the master schedule\'s dates back.']);
     // The older one is in effect again once the newer one is gone.
     expect(scheduleFileOnlyDeleteRefusal(OLDER, [MASTER, OLDER])).toContain('LOOKAHEAD 1 is the lookahead in effect');
     expect(scheduleFileOnlyDeleteRefusal(undefined, ALL)).toBeNull();
   });
 
-  it('(a) the dialog offers "Delete PDF Only" for a master and for a replaced lookahead, and not for the lookahead in effect; its words read true with one choice', () => {
+  it('(a) the dialog offers "Delete PDF Only" for a replaced lookahead, and not for the lookahead in effect; its words read true with one choice', () => {
     const app = phone(ALL);
     [MASTER, OLDER, NEWER].forEach(document => app.deleteScheduleDocument(document.id));
     expect(app.alerts.map(alert => alert.buttons.map(button => button.text))).toEqual([
-      ['Cancel', 'Delete PDF Only', 'Delete PDF + Items'],
+      ['Cancel', 'Delete PDF + Items'], // the master in effect: owner answer Q38, below
       ['Cancel', 'Delete PDF Only', 'Delete PDF + Items'],
       ['Cancel', 'Delete PDF + Items'],
     ]);
@@ -92,16 +93,13 @@ describe('Owner answer Q36: on the phone, the PDF of a lookahead in effect is no
     expect(app.alerts[2].message).not.toContain('You can also');
   });
 
-  it('(b) the delete underneath the button refuses for the lookahead in effect: he is told why and nothing changes; a master\'s file and a replaced lookahead\'s go as before', async () => {
+  it('(b) the delete underneath the button refuses for the lookahead in effect: he is told why and nothing changes; a replaced lookahead\'s file goes as before', async () => {
     const app = phone(ALL);
     expect(await app.removeReferenceDocumentEverywhere(NEWER.id)).toBe(false);
-    expect(app.alerts.map(alert => [alert.title, alert.message])).toEqual([['Lookahead in effect', scheduleFileOnlyDeleteRefusal(NEWER, ALL)]]);
+    expect(app.alerts.map(alert => [alert.title, alert.message])).toEqual([['PDF not deleted', scheduleFileOnlyDeleteRefusal(NEWER, ALL)]]);
     expect([app.did.tombstones, app.referenceDocumentsCurrentRef.current.map(document => document.id)]).toEqual([[], ['MASTER', 'LOOKAHEAD 1', 'LOOKAHEAD 2']]);
     expect(await app.removeReferenceDocumentEverywhere(OLDER.id)).toBe(true);
     expect([app.did.tombstones, app.referenceDocumentsCurrentRef.current.map(document => document.id), app.alerts.length]).toEqual([['LOOKAHEAD 1'], ['MASTER', 'LOOKAHEAD 2'], 1]);
-    const other = phone(ALL);
-    expect(await other.removeReferenceDocumentEverywhere(MASTER.id)).toBe(true);
-    expect(other.did.tombstones).toEqual(['MASTER']);
   });
 
   it('"Delete PDF Only" on a replaced lookahead still saves its tasks first, removes the record and then the stored file', async () => {
@@ -122,7 +120,7 @@ describe('Owner answer Q36: on the phone, the PDF of a lookahead in effect is no
     app.referenceDocumentsCurrentRef.current = [MASTER, OLDER];
     pdfOnly.onPress!();
     await settled();
-    expect(app.alerts.slice(1).map(alert => [alert.title, alert.message])).toEqual([['Lookahead in effect', scheduleFileOnlyDeleteRefusal(OLDER, [MASTER, OLDER])]]);
+    expect(app.alerts.slice(1).map(alert => [alert.title, alert.message])).toEqual([['PDF not deleted', scheduleFileOnlyDeleteRefusal(OLDER, [MASTER, OLDER])]]);
     expect(app.did).toEqual({ tombstones: [], saved: [], filesDeleted: [] });
     expect(app.referenceDocumentsCurrentRef.current.map(document => document.id)).toEqual(['MASTER', 'LOOKAHEAD 1']);
   });
@@ -131,5 +129,176 @@ describe('Owner answer Q36: on the phone, the PDF of a lookahead in effect is no
     expect(APP.split('.then(removed => { if (removed !== false) deleteStoredReferenceDocument(document.uri).catch(() => undefined); })')).toHaveLength(3);
     expect(APP).toContain('void removeReferenceDocumentEverywhere(sharedRecord.id)\n        .then(removed => (removed === false ? undefined : removeFromDevice()))');
     expect(APP.split('removeReferenceDocumentEverywhere(')).toHaveLength(5); // the function and its three callers
+  });
+});
+
+/*
+ * Owner answer Q38 (6 Oct 2026; the schedule reviewer's P7-1, Medium, the same on Build 229): the same for the MASTER
+ * schedule in effect. Its PDF deleted alone left no schedule in effect: the list was empty on every device, and Set
+ * Active on the older master then showed a task the deleted master had moved twice (the older master's row at 0%,
+ * blank, and the deleted master's row with his percent, note and owner) beside that master's own tasks.
+ */
+describe('Owner answer Q38: on the phone, the PDF of the master schedule in effect is not deleted on its own', () => {
+  const F = { ...schedule('MASTER F', '2026-09-07T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+  const G = schedule('MASTER G', '2026-09-14T12:00:00.000Z');
+  /** An older master, the master in effect, and a lookahead a newer one replaced. */
+  const SAVED = [F, G, OLDER, NEWER];
+  const REFUSED = 'MASTER G is the active schedule, so its PDF cannot be deleted on its own. Use Delete PDF + Items, or set another schedule active first.';
+
+  it('the master in effect is the one the list shows: the app\'s own test, not a second one; an older master is not refused', () => {
+    expect(currentScheduleDocumentWinners(SAVED).map(document => document.id)).toEqual(['MASTER G']);
+    expect([F, G, OLDER].map(document => scheduleFileOnlyDeleteRefusal(document, SAVED))).toEqual([null, REFUSED, null]);
+    // Two masters still marked current for one project (a device that has not reconciled them yet): only the one shown.
+    const bothMarked = [{ ...F, isCurrent: true } as ReferenceDocument, G];
+    expect(bothMarked.map(document => scheduleFileOnlyDeleteRefusal(document, bothMarked))).toEqual([null, REFUSED]);
+    // A combined master a newer one replaced for Alpha is still the one in effect for Beta.
+    const combined = { ...F, isCurrent: true, projectNames: ['Alpha', 'Beta'] } as ReferenceDocument;
+    expect(scheduleFileOnlyDeleteRefusal(combined, [combined, G])).toContain('MASTER F is the active schedule');
+    // After Set Active on the older master the newer one's PDF may go on its own.
+    const afterSetActive = [{ ...F, isCurrent: true } as ReferenceDocument, { ...G, isCurrent: false } as ReferenceDocument];
+    expect(afterSetActive.map(document => scheduleFileOnlyDeleteRefusal(document, afterSetActive))).toEqual([expect.stringContaining('MASTER F is the active schedule'), null]);
+  });
+
+  it('(a) the dialog offers "Delete PDF Only" for an older master and not for the master in effect; its words read true with one choice', () => {
+    const app = phone(SAVED);
+    [F, G].forEach(document => app.deleteScheduleDocument(document.id));
+    expect(app.alerts.map(alert => alert.buttons.map(button => button.text))).toEqual([
+      ['Cancel', 'Delete PDF Only', 'Delete PDF + Items'],
+      ['Cancel', 'Delete PDF + Items'],
+    ]);
+    expect(app.alerts[1].message).not.toContain('You can also');
+  });
+
+  it('(b) the delete underneath the button refuses for the master in effect: he is told why and nothing changes; the older master\'s file goes as before', async () => {
+    const app = phone(SAVED);
+    expect(await app.removeReferenceDocumentEverywhere(G.id)).toBe(false);
+    expect(app.alerts.map(alert => [alert.title, alert.message])).toEqual([['PDF not deleted', REFUSED]]);
+    expect([app.did.tombstones, app.referenceDocumentsCurrentRef.current.map(document => document.id)]).toEqual([[], SAVED.map(document => document.id)]);
+    expect(await app.removeReferenceDocumentEverywhere(F.id)).toBe(true);
+    expect(app.did.tombstones).toEqual(['MASTER F']);
+  });
+
+  it('(c) a dialog opened on an older master checks again at the tap: set active meanwhile, nothing is saved and nothing is removed', async () => {
+    const app = phone(SAVED, { scheduleItemsAfterScheduleDeleted: () => [TASKS[0]] });
+    app.deleteScheduleDocument(F.id);
+    const pdfOnly = app.alerts[0].buttons.find(button => button.text === 'Delete PDF Only')!;
+    // Set Active on master F, on this device or another, while the dialog is open.
+    app.referenceDocumentsCurrentRef.current = [{ ...F, isCurrent: true } as ReferenceDocument, { ...G, isCurrent: false } as ReferenceDocument, OLDER, NEWER];
+    pdfOnly.onPress!();
+    await settled();
+    expect(app.alerts.slice(1).map(alert => alert.message)).toEqual(['MASTER F is the active schedule, so its PDF cannot be deleted on its own. Use Delete PDF + Items, or set another schedule active first.']);
+    expect(app.did).toEqual({ tombstones: [], saved: [], filesDeleted: [] });
+  });
+});
+
+/*
+ * The delete question when the schedule has no task only it contains (Build 231, S1 item 4): it read "...will be
+ * removed, with the 0 schedule items only this PDF contains." Said plainly, with no count.
+ */
+describe('the delete question for a schedule with no tasks of its own', () => {
+  const BARE = schedule('LOOKAHEAD 3', '2026-09-11T12:00:00.000Z', 'lookahead'); // in effect; lists only the master's Framing
+  const OLD_MASTER = { ...schedule('MASTER 0', '2026-09-01T12:00:00.000Z'), isCurrent: false } as ReferenceDocument; // no task is only its own
+  const question = (document: ReferenceDocument, documents: ReferenceDocument[]) => {
+    const app = phone(documents);
+    app.deleteScheduleDocument(document.id);
+    return [app.alerts[0].message, app.alerts[0].buttons.map(button => button.text)];
+  };
+
+  it('a lookahead in effect, or the master in effect, that added none: no count, one choice', () => {
+    expect(question(BARE, [...ALL, BARE])).toEqual(['LOOKAHEAD 3 will be removed. It has no schedule items of its own.', ['Cancel', 'Delete PDF + Items']]);
+    const lone = { ...MASTER, id: 'MASTER 9', name: 'MASTER 9', importBatchId: 'batch-MASTER 9', importedAt: '2026-09-12T12:00:00.000Z' } as ReferenceDocument;
+    expect(question(lone, [...ALL, lone])).toEqual(['MASTER 9 will be removed. It has no schedule items of its own.', ['Cancel', 'Delete PDF + Items']]);
+  });
+
+  it('with both choices offered too (an older master none of whose tasks is only its own)', () => {
+    expect(question(OLD_MASTER, [OLD_MASTER, ...ALL])).toEqual(['MASTER 0 will be removed. It has no schedule items of its own.', ['Cancel', 'Delete PDF Only', 'Delete PDF + Items']]);
+  });
+
+  it('one or more: counted as before', () => {
+    expect(question(NEWER, ALL)[0]).toBe('LOOKAHEAD 2 will be removed, with the 1 schedule item only this PDF contains.');
+    expect(question(OLDER, ALL)[0]).toBe('LOOKAHEAD 1 will be removed. You can also remove the 1 schedule item only this PDF contains so outdated dates do not confuse Upcoming.');
+  });
+});
+
+/*
+ * Build 231, S2 item 5 (small): the delete question did not say that the items a master's delete removes include the
+ * earlier rows of tasks a newer schedule has moved, which he does not see in his list.
+ */
+describe('S2 item 5: the delete question says when the items removed include earlier rows of tasks a newer schedule moved', () => {
+  const F = { ...schedule('MASTER F', '2026-09-01T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+  const G = schedule('MASTER G', '2026-09-14T12:00:00.000Z');
+  const row = (id: string, name: string, document: ReferenceDocument, revisedFromTaskIds?: string[]) => ({ ...task(name, document), id, ...(revisedFromTaskIds ? { revisedFromTaskIds } : {}) }) as ScheduleItem;
+  /** F listed Framing, Paint and Roofing; G moved Framing and Paint (new rows that answer to F's) and left Roofing out. */
+  const SAVED = [row('F-1', 'Framing', F), row('F-2', 'Paint', F), row('F-3', 'Roofing', F), row('G-1', 'Framing', G, ['F-1']), row('G-2', 'Paint', G, ['F-2'])];
+  const question = (document: ReferenceDocument, items: ScheduleItem[]) => {
+    const app = phone([F, G], { scheduleItems: items, scheduleItemsCurrentRef: { current: items } });
+    app.deleteScheduleDocument(document.id);
+    return app.alerts[0].message;
+  };
+
+  it('the older master: two of its three items are earlier rows of tasks master G moved', () => {
+    expect(question(F, SAVED)).toBe('MASTER F will be removed. You can also remove the 3 schedule items only this PDF contains so outdated dates do not confuse Upcoming. 2 of those items are earlier rows of tasks a newer schedule has moved; those tasks stay in your list.');
+  });
+
+  it('one such row; none; and a lookahead\'s question is unchanged', () => {
+    const one = SAVED.filter(item => item.id !== 'G-2');
+    expect(question(F, one)).toContain('contains so outdated dates do not confuse Upcoming. 1 of those items is the earlier row of a task a newer schedule has moved; that task stays in your list.');
+    expect(question(G, SAVED)).toBe('MASTER G will be removed, with the 2 schedule items only this PDF contains.');
+    expect(scheduleLookaheadDeleteNote(SAVED, G, SAVED.filter(item => item.id.startsWith('G-')), [F, G])).toBe('');
+    // A row whose newer row is removed with it is not such a row: that task does not stay.
+    expect(scheduleLookaheadDeleteNote(SAVED, F, SAVED.filter(item => ['F-1', 'G-1', 'F-3'].includes(item.id)), [F, G])).toBe('');
+    expect(scheduleLookaheadDeleteNote(TASKS, NEWER, [TASKS[2]], ALL)).not.toContain('earlier row');
+  });
+});
+
+/*
+ * Review pass 1 of Build 231's schedule round, P1-5 (7 Oct 2026; Low, wording; caused by "S2 item 5"). The sentence
+ * above said "that task stays in your list" for every earlier row removed, shown or not. Two states where it does
+ * not: (a) the master being deleted is the one in effect (an older master made current again), so the list is empty
+ * afterwards; (b) the current master leaves the task out, so it was not in his list before either. The sentence is
+ * now true in each state: only a task whose newer row is shown after the delete "stays in your list".
+ */
+describe('Review pass 1, P1-5 (caused by S2 item 5): the delete question says a task "stays in your list" only when it does', () => {
+  const row = (id: string, name: string, document: ReferenceDocument, revisedFromTaskIds?: string[]) => ({ ...task(name, document), id, ...(revisedFromTaskIds ? { revisedFromTaskIds } : {}) }) as ScheduleItem;
+  const question = (document: ReferenceDocument, documents: ReferenceDocument[], items: ScheduleItem[]) => {
+    const app = phone(documents, { scheduleItems: items, scheduleItemsCurrentRef: { current: items } });
+    app.deleteScheduleDocument(document.id);
+    return [app.alerts[0].message, app.alerts[0].buttons.map(button => button.text)];
+  };
+  const NOT_SHOWN_ONE = 'that task will not be in your list afterwards: its newer row is kept, under a schedule that is not active.';
+  const NOT_SHOWN_TWO = 'those tasks will not be in your list afterwards: their newer rows are kept, under a schedule that is not active.';
+
+  it('(a) the master in effect is the older one (Set Active back) and a newer one moved its tasks: nothing stays in his list after the delete, and the question does not say it does', () => {
+    const F = schedule('MASTER F', '2026-09-01T12:00:00.000Z');
+    const G = { ...schedule('MASTER G', '2026-09-14T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+    const saved = [row('F-1', 'Framing', F), row('F-2', 'Paint', F), row('F-3', 'Roofing', F), row('G-1', 'Framing', G, ['F-1']), row('G-2', 'Paint', G, ['F-2'])];
+    // (It was: "...2 of those items are earlier rows of tasks a newer schedule has moved; those tasks stay in your list.")
+    expect(question(F, [F, G], saved)).toEqual([
+      `MASTER F will be removed, with the 3 schedule items only this PDF contains. 2 of those items are earlier rows of tasks a newer schedule has moved; ${NOT_SHOWN_TWO}`,
+      ['Cancel', 'Delete PDF + Items'],
+    ]);
+    const one = saved.filter(item => item.id !== 'G-2');
+    expect(question(F, [F, G], one)[0]).toBe(`MASTER F will be removed, with the 3 schedule items only this PDF contains. 1 of those items is the earlier row of a task a newer schedule has moved; ${NOT_SHOWN_ONE}`);
+  });
+
+  it('(b) the current master leaves one of those tasks out: the one it lists stays, the other is said not to be in his list', () => {
+    const F = { ...schedule('MASTER F', '2026-09-01T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+    const G = { ...schedule('MASTER G', '2026-09-14T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+    const H = schedule('MASTER H', '2026-09-21T12:00:00.000Z');
+    // G moved Framing and Paint; H moved Paint again and leaves Framing out.
+    const saved = [row('F-1', 'Framing', F), row('F-2', 'Paint', F), row('G-1', 'Framing', G, ['F-1']), row('G-2', 'Paint', G, ['F-2']), row('H-1', 'Paint', H, ['F-2', 'G-2'])];
+    expect(question(F, [F, G, H], saved)[0]).toBe('MASTER F will be removed. You can also remove the 2 schedule items only this PDF contains so outdated dates do not confuse Upcoming. ' +
+      '2 of those items are earlier rows of tasks a newer schedule has moved; 1 of those tasks stays in your list, and 1 will not be in your list afterwards: its newer row is kept, under a schedule that is not active.');
+    // Only the task H leaves out: nothing is said to stay.
+    const framingOnly = saved.filter(item => item.taskName === 'Framing');
+    expect(question(F, [F, G, H], [...framingOnly, row('H-9', 'Siding', H)])[0]).toContain(`1 of those items is the earlier row of a task a newer schedule has moved; ${NOT_SHOWN_ONE}`);
+  });
+
+  it('guard: without the schedules to work the list out from, the sentence is the one it was', () => {
+    const F = { ...schedule('MASTER F', '2026-09-01T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+    const G = schedule('MASTER G', '2026-09-14T12:00:00.000Z');
+    const saved = [row('F-1', 'Framing', F), row('G-1', 'Framing', G, ['F-1'])];
+    expect(scheduleLookaheadDeleteNote(saved, F, [saved[0]])).toBe(' 1 of those items is the earlier row of a task a newer schedule has moved; that task stays in your list.');
+    expect(scheduleLookaheadDeleteNote(saved, F, [saved[0]], [F, G])).toBe(' 1 of those items is the earlier row of a task a newer schedule has moved; that task stays in your list.');
   });
 });

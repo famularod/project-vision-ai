@@ -69,6 +69,7 @@ jest.mock('../../services/DAVECloudMaintenanceBudget', () => ({
 import * as notice from '../../components/field-update-document-change-notice';
 import { noteSignedInOwner } from '../../services/CloudOwnerBinding';
 import { fieldUpdateLifecycleLabel } from '../../services/FieldUpdateLifecycle';
+import { firstProjectPhotoToShow } from '../../services/ProjectPhotoTransport';
 import {
   clearResolvedConflict, getOfflineQueue, getSyncConflicts, queueProjectUpdateRecord, resolveProjectUpdateSyncConflict,
   runFieldUpdateCloudSync, uploadPendingChanges,
@@ -104,6 +105,7 @@ const UpdateHistoryCard = (() => {
   const deps: Record<string, unknown> = {
     ...notice, React, useState: React.useState, TouchableOpacity, View, Text, Image, fieldUpdateLifecycleLabel,
     useProjectPhotoDisplayUri: () => ({ uri: null, onError: undefined }), resolveProjectPhotoUri: () => null,
+    firstProjectPhotoToShow, // sync batch Y3, item 1 (landed after this test): the card's thumbnail is its first photo that can be shown. Dep added deliberately.
     countLabel: (count: number, word: string) => `${count} ${word}${count === 1 ? '' : 's'}`,
     Ionicons: () => null, UpdateOverflowMenu: () => null, relativeUpdateTimestamp: () => 'Today',
     styles: new Proxy({}, { get: () => ({}) }), colors: new Proxy({}, { get: () => '#000' }),

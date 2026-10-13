@@ -208,7 +208,8 @@ describe('P1: a lookahead delete falls back to dates only a master that is curre
       ...state,
       items: state.items.map(item => item.lookaheadOverlay ? {
         ...item,
-        lookaheadOverlay: { ...item.lookaheadOverlay, lookaheads: item.lookaheadOverlay.lookaheads.map(entry => ({ ...entry, datesReplacedByMaster: true })) },
+        // (Build 231, S3 item 3: a note saved then has no earlier master dates either; with them, F's dates, see audit-r2-a5p22.)
+        lookaheadOverlay: { ...item.lookaheadOverlay, masterDatesBefore: undefined, lookaheads: item.lookaheadOverlay.lookaheads.map(entry => ({ ...entry, datesReplacedByMaster: true })) },
       } : item),
     };
     expect(copies(deleteWithItems(state, L2, '2026-09-16T10:00:00.000Z'), 'Framing')).toEqual([G_DATES]);

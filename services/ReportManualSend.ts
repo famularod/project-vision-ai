@@ -1,6 +1,7 @@
 import {
   reportPeriodSentAt,
   type DAVEReportSnapshot,
+  sameReportSource,
 } from './DAVEReportSnapshot';
 
 /**
@@ -142,5 +143,5 @@ export function approvalReplacesUnsentApproval(
   unsent: Pick<DAVEReportSnapshot, 'sourceFingerprint'> | null | undefined,
   fingerprint: string,
 ): boolean {
-  return Boolean(unsent) && unsent!.sourceFingerprint !== fingerprint;
+  return Boolean(unsent) && !sameReportSource(unsent!.sourceFingerprint, fingerprint);
 }

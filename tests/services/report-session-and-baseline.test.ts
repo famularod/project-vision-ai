@@ -82,7 +82,8 @@ describe('the reporting period runs from the report the owner has', () => {
     expect(screen).toContain("if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod, startedStateKey);");
     // Everyday item 1 (2 Oct 2026): the mark now resolves whether it saved (Mark as Sent says so), so the
     // guard returns Promise.resolve(false); pin updated deliberately. Behaviour in everyday-1-report-mark-sent.
-    expect(screen).toContain("if (!saved || saved.sourceFingerprint !== sentFingerprint || saved.deliveredAt !== null) return Promise.resolve(false);");
+    // R4 item 4a (deliberate): the saved report is known by the same facts, also when it was approved under the earlier fingerprint version.
+    expect(screen).toContain("if (!saved || !sameReportSource(saved.sourceFingerprint, sentFingerprint) || saved.deliveredAt !== null) return Promise.resolve(false);");
     // Approval waits for the baseline to load and never replaces one that could not be read.
     // Whole-app audit A6 pass 8 M1 (30 Sep 2026): and edits must be of the "since" section on screen.
     // Whole-app audit A6 pass 9 M2 (30 Sep 2026): and this device must have the other device's latest
@@ -116,9 +117,12 @@ describe('edits, acknowledgements and approval survive leaving the Reports tab f
   });
 
   it('keeps only recent scopes', () => {
-    for (let index = 0; index < 20; index += 1) rememberReportApproval(`scope-${index}`, `t${index}`);
+    // R1 item 9 (8 Oct 2026): 200 of them, where it was 12.
+    for (let index = 0; index < 220; index += 1) rememberReportApproval(`scope-${index}`, `t${index}`);
     expect(recallReportSessionState('scope-0')).toBeNull();
-    expect(recallReportSessionState('scope-19')).not.toBeNull();
+    expect(recallReportSessionState('scope-19')).toBeNull();
+    expect(recallReportSessionState('scope-20')).not.toBeNull();
+    expect(recallReportSessionState('scope-219')).not.toBeNull();
   });
 
   it('is written only when the manager acts, and read on mount (pass 2: an effect had wiped it on remount)', () => {
@@ -132,6 +136,11 @@ describe('edits, acknowledgements and approval survive leaving the Reports tab f
     expect(screen).toMatch(/rememberReportApproval\(\n\s+reportStateIdentityKey,\n\s+approvalTextKey,\n\s+reportSourceFingerprint,\n\s+reportPeriodSentAt\(previousReportSnapshotRef\.current\),\n\s+\);/);
     // Edit, Discard, and (pass 3) Mark reviewed each ask for a fresh approval.
     expect(screen.match(/rememberReportApproval\(reportStateIdentityKey, null\);/g)?.length).toBe(3);
+    // R3 item 2b (deliberate): one write is not a tap. Something to review that he has not marked reviewed ends an
+    // approval that would otherwise come back when it leaves by itself. It is made once the period is loaded and
+    // decided from the store's own record, never the screen's state, so a remount cannot wipe an approval.
+    expect(screen.match(/forgetApprovalEndedByUnreviewedAdvisory\(reportStateIdentityKey, approvalTextKey, loadedPeriodSentAt, /g)?.length).toBe(1);
+    expect(screen).toMatch(/if \(!reviewAdvisoryKey \|\| !snapshotScopeLoaded \|\| loadedPeriodKeyRef\.current !== currentReportPeriodKey\) return;\n\s+forgetApprovalEndedByUnreviewedAdvisory\(/);
     expect(screen.match(/rememberReportEdits\(reportStateIdentityKey, next\);/g)?.length).toBe(2);
     expect(screen).toContain('rememberReportEdits(reportStateIdentityKey, null);');
     expect(screen).toContain('rememberReportAcknowledgement(reportStateIdentityKey, next);');

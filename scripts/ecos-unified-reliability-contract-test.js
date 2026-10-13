@@ -12,6 +12,10 @@ const client = read('services/ECOSProjectQuestion.ts');
 const app = read('App.tsx');
 const bottomTabs = read('components/app-bottom-tabs.tsx');
 const navigationRail = read('components/app-navigation-rail.tsx');
+// NOT THE LIVE SERVICE: this is the repository's archived copy of the Ask ECOS
+// function. The live function is deployed from the runtime repository
+// (independent review R03 / R04). Checks against `edge` below describe the
+// archived copy only, and the last line this script prints says so.
 const edge = read('supabase/functions/_archived-ecos-ask-project-not-live/index.ts');
 const observability = read('supabase/functions/_shared/ecos-question-observability.ts');
 const semanticRetrieval = read('supabase/functions/_shared/ecos-semantic-retrieval.ts');
@@ -429,3 +433,7 @@ assert.match(liveContract, /diagnostics\?\.persisted !== true/);
 assert.match(liveContract, /ecos-project-question\/2\.0/);
 
 console.log('Ask ECOS unified reliability contract PASS: steps 1-7 foundations are wired.');
+console.log(
+  'NOTE: every check of the Ask ECOS function above read supabase/functions/_archived-ecos-ask-project-not-live/index.ts, ' +
+  "this repository's archived copy, which is not deployed. Those checks say nothing about the live Ask ECOS service.",
+);

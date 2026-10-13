@@ -189,7 +189,8 @@ describe('A6 p15 L1: going back to an older master does not repeat an old note a
     const mPour = named(shown(onM), 'Pour slab')[0];
     expect(mPour.id).not.toBe(fPour.id);
     expect(mPour.revisedFromTaskIds).toEqual([fPour.id]);
-    expect(mPour.activity ?? []).toEqual([]);
+    // (Schedule batch S5, item 1: the task's notes go with it to M's row. This line pinned that they stayed behind.)
+    expect((mPour.activity ?? []).map(entry => entry.id)).toEqual(['n1']);
     // The Sep 26 report: the finish change, and not the note again.
     expect(pourLines(sinceLines(onM, first, SECOND_SENT))).toEqual(['• Alpha: Pour slab finish changed from 10/05/2026 to 10/06/2026.']);
     const second = snapshotOf(onM, SECOND_SENT);
@@ -229,7 +230,9 @@ describe('A6 p15 L1: going back to an older master does not repeat an old note a
     const backOnF = setActive(onM, F);
     const period = compareDAVEReportSnapshots({ current: snapshotOf(backOnF, NOW), previous: second });
     expect(period.newActivityTaskIds).not.toContain(fPour.id);
-    expect(period.sameActivityTaskIds).not.toContain(fPour.id);
+    // (Schedule batch S5, item 1: the note went with the task to M's row, so the earlier report's row for the task
+    // holds the very note F's row shows. It is listed as the same now; it was in neither list. Not said, either way.)
+    expect(period.sameActivityTaskIds).toContain(fPour.id);
     const framing = named(shown(backOnF), 'Framing')[0];
     expect(second.tasks.map(task => task.taskId)).toContain(framing.id);
     expect(period.sameActivityTaskIds).toContain(framing.id);

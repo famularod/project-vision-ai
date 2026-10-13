@@ -84,9 +84,12 @@ export function analyzeVitruviusCriticalPath(
     });
     network.nodes.forEach(node => {
       node.unresolvedPredecessors.forEach(predecessorId => {
-        issues.push(
-          `${projectName}: ${node.taskName} references missing predecessor ${predecessorId}.`,
-        );
+        // Review pass 1, web L4 (6 Oct 2026): a phase is left out of the critical path (above), so a task that
+        // starts after one read "references missing predecessor <the phase's id>". The phase is not missing.
+        const phase = sourceItemsById.get(predecessorId);
+        issues.push(phase?.isSummary === true
+          ? `${projectName}: ${node.taskName} starts after the phase ${phase.taskName}, and the critical path counts tasks and milestones only.`
+          : `${projectName}: ${node.taskName} references missing predecessor ${predecessorId}.`);
       });
     });
     if (network.cycles.length > 0 || network.nodes.some(

@@ -36,6 +36,10 @@ const visual = read('workers/ecos-indexer/ecos_indexer/visual.py');
 const drawingAnalysis = read('supabase/functions/ecos-analyze-drawing-page/index.ts');
 const client = read('services/ECOSHostedIndexer.ts');
 const cloudIndex = read('services/ECOSDocumentCloudIndex.ts');
+// NOT THE LIVE SERVICE: this is the repository's archived copy of the Ask ECOS
+// function. The live function is deployed from the runtime repository
+// (independent review R03 / R04). Checks against `ask` below describe the
+// archived copy only, and the last line this script prints says so.
 const ask = read('supabase/functions/_archived-ecos-ask-project-not-live/index.ts');
 const currentHostedPageContext = read('supabase/functions/_shared/ecos-current-hosted-page-context.ts');
 const driveGateway = read('services/DAVEWebSupabaseClient.ts');
@@ -474,3 +478,7 @@ for (const secret of ['SUPABASE_SERVICE_ROLE_KEY', 'ECOS_VISUAL_PROVIDER_TOKEN',
 }
 
 console.log('ECOS hosted indexer contract: PASS');
+console.log(
+  'NOTE: every check of the Ask ECOS function above read supabase/functions/_archived-ecos-ask-project-not-live/index.ts, ' +
+  "this repository's archived copy, which is not deployed. Those checks say nothing about the live Ask ECOS service.",
+);

@@ -738,6 +738,18 @@ export type ScheduleLookaheadOverlay = {
   /** The task's dates and percent before the first lookahead changed it. */
   masterStartDate: string;
   masterFinishDate: string;
+  /**
+   * The master dates this note held before each master that restated the
+   * task replaced them, oldest first, each with the import of the master
+   * that replaced it (Build 231, S3 item 3). The note kept one master's
+   * dates only: after master G listed the task on a lookahead's dates, the
+   * dates master F gives it were kept nowhere, so with F current again (or G
+   * deleted) deleting the lookahead left the task on G's dates. Read with
+   * the schedules saved: a master not in effect, or no longer saved,
+   * replaced nothing (scheduleNotedMasterDates). Missing on a note saved
+   * before, which reads as before.
+   */
+  masterDatesBefore?: Array<{ startDate: string; finishDate: string; replacedByMaster: string | true }>;
   masterPercentComplete: number;
   /**
    * Who stated masterPercentComplete (whole-app audit A5 pass 6 M2, 30 Sep
@@ -894,7 +906,63 @@ export type ScheduleItem = {
    * percent, and stops counting once the percent changes. Kept in the task's
    * JSON record.
    */
-  progressCarriedFrom?: { taskId: string; judgedAt: string | null } | null;
+  // besideAnotherRow (review pass 1, P1-12): the carry gave it to this row as one of two or more rows that answer to
+  // that row (two schedules each moved the task; Build 231, S4 item 2 a). Such a percent does not outrank a lookahead's
+  // later, higher statement on this row when two copies of the row meet.
+  progressCarriedFrom?: { taskId: string; judgedAt: string | null; besideAnotherRow?: true } | null;
+  /**
+   * When the schedule that shows this row was last made current (Set Active,
+   * Make Current) with this row's percent LEFT STANDING against a percent
+   * stated later on the row it hid, and the percent that stood (Build 231,
+   * S3 item 1; the independent review's F02): a file's higher percent over
+   * the percent David entered since under another master, or David's own
+   * percent after a newer master's file had taken it over. Only the sync's
+   * carry reads it (DAVEScheduleRecovery): what was stated before that time
+   * on the rows set aside did not take this percent over, and this percent
+   * stands over what he entered before it. It goes with the percent and
+   * stops counting once the percent changes. Kept in the task's JSON record;
+   * missing on a task saved before, which is weighed as before.
+   */
+  progressStandsSince?: { at: string; percentComplete: number } | null;
+  /**
+   * The highest percent a master schedule's file has stated on this row, and
+   * when it was approved (Build 231, S3 item 1; owner answer Q32, option b,
+   * on a task the masters keep on its dates). A file that states more than
+   * the percent David entered takes the task over, and a newer master's
+   * percent then replaces that file's, below his too; the row itself kept
+   * only the last percent, so a copy of the row still holding his older
+   * percent could not tell "G's 60% over his 40%, then H's 30%" from "H's 30%
+   * straight over his 40%" (which he keeps). Read where two copies of one
+   * row meet (the sync's merge, and an offline percent edit against the
+   * cloud's row). Kept in the task's JSON record; missing on a task saved
+   * before, which is weighed as before.
+   */
+  fileProgressPeak?: { percentComplete: number; statedAt: string } | null;
+  /**
+   * The percent the LAST master schedule's file stated on this row and when
+   * it was approved, whether or not that percent stood (Build 231, S4 item
+   * 3; owner answer Q32, option b, when two masters are approved apart on
+   * two devices and both restate the row). A file's percent below the one
+   * David holds stands for nothing on that device and left no trace; the
+   * other device's file had meanwhile taken his percent over, and one device
+   * would end on the newest master's percent. With fileProgressPeak it lets
+   * the sync's merge replay the two statements in order. Kept in the task's
+   * JSON record; missing on a task saved before, which is merged as before.
+   */
+  fileProgressLast?: { percentComplete: number; statedAt: string } | null;
+  /**
+   * The dates each master that shares this row gives it, kept with the row
+   * once its lookahead note is gone (Build 231, S4 item 1): the newest
+   * master's dates, and the dates held before each master replaced them
+   * with that master's import (the note's masterStartDate / masterFinishDate
+   * and masterDatesBefore, as they were). Master F 10/15, a lookahead 10/18,
+   * master G on the lookahead's dates; back on F with the lookahead deleted
+   * the task is on 10/15 and the note is gone; making G current again left
+   * 10/15, though G lists 10/18. Set Active and Make Current read it
+   * (scheduleNotedMasterDates): the dates of the master in effect, either
+   * way. Missing on a row saved before, which keeps its dates as before.
+   */
+  masterDatesOfRow?: { startDate: string; finishDate: string; before: Array<{ startDate: string; finishDate: string; replacedByMaster: string | true }> } | null;
   /**
    * The percent Talk wrote on this task that its Undo took back, and when
    * Talk confirmed it (whole-app audit A5 pass 26 L1, 2 Oct 2026): another
@@ -904,6 +972,35 @@ export type ScheduleItem = {
    */
   progressUndone?: { percentComplete: number; confirmedAt: string | null } | null;
   priority: SchedulePriority;
+  /**
+   * The priority this row's own import gave it (schedule batch S6, item 1, 7
+   * Oct 2026): High when the file marks the row critical or its finish was
+   * within a week of the import, else Medium. Written once, on every row an
+   * import adds, and never changed: a priority that reads otherwise is one
+   * David set, and only that follows the task to the row a newer master
+   * moves it to. Kept in the task's JSON record. Missing on a row saved
+   * before, where only a Low is known to be his (no import gives one), until
+   * he changes its priority: that edit writes what the row held before it
+   * (scheduleEditWithPriorityNoted), so what he sets from then on is known.
+   */
+  priorityAsImported?: SchedulePriority | null;
+  /**
+   * The priority David set on this task by hand, and when (review pass 1 of
+   * Build 231's schedule round, P1-1, P1-2 and P1-9; the coordinator's
+   * decision, 7 Oct 2026). Comparing a priority with priorityAsImported
+   * cannot tell his from the file's where the two coincide: a High he set on
+   * a task whose newer row the file also marks High, or a priority set back
+   * to what the file gave. Every edit of his that changes the priority, on
+   * the phone, the iPad or the web, leaves this mark, whatever the value;
+   * it goes wherever the priority goes (to the row a newer master moves the
+   * task to, at Set Active and Make Current, with an edit sent on from a
+   * replaced row, through Review Conflicts). The priority is his while the
+   * row still holds the priority the mark names; of two rows of a task that
+   * both hold one of his, the later mark is his latest word. Kept in the
+   * task's JSON record. Missing on a row he has not edited since this build,
+   * where the comparison with priorityAsImported decides as before.
+   */
+  prioritySetByHand?: { priority: SchedulePriority; at: string } | null;
   status: ScheduleStatus;
   notes: string;
   /** Smallest accountable step expected next. */
@@ -972,9 +1069,14 @@ export type ScheduleItem = {
    * cloud's row of that task says what he did to the field last
    * (SyncService). Only fields taken from the task: none the file stated.
    * Kept in the task's JSON record. Missing on a row saved before.
+   * priority (schedule batch S5, item 1; put right in S6, item 1): the
+   * priority the row took with them, only when it was one David had set on
+   * the task (schedulePriorityIsHis). A task whose priority he never set
+   * gets no entry: its new row keeps what its own import gave it.
    */
   textFromTask?: {
     taskId: string; owner?: string; contractor?: string; notes?: string; nextAction?: string; milestone?: string;
+    priority?: SchedulePriority;
     /** Review P5-2: the hand links the row was made with (taken from that task's row, none included), when its file stated none. */
     dependencies?: ScheduleDependency[];
   } | null;

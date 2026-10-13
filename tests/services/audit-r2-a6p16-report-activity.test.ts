@@ -256,46 +256,54 @@ describe('A6 p16 L1 (b): a note made while a row was shown, its master switched 
     const afterFirst = noteOnF ? noted(state, fPour.id, 'f-1', 'Rebar inspection passed.', F_NOTE_AT) : state;
     const onM = approve(afterFirst, M, rows(M, M_ROWS));
     const mPour = shownNamed(onM, 'Pour slab');
-    expect(mPour.activity ?? []).toEqual([]);
-    // R2 cannot say F's note: M's new row has no notes.
+    // (Schedule batch S5, item 1: the task's notes go with it to M's row. This pinned that they stayed behind, so
+    // that R2 could not say F's note; R2 says it now, and no later report says it again.)
+    expect((mPour.activity ?? []).map(entry => entry.id)).toEqual(noteOnF ? ['f-1'] : []);
     const second = approveAndSend(first.sent, onM, SECOND_SENT);
-    expect(linesAbout(second.lines, 'Pour slab')).toEqual([TO_M]);
+    expect(linesAbout(second.lines, 'Pour slab')).toEqual(noteOnF ? [TO_M, '• Alpha: Pour slab — Rebar inspection passed.'] : [TO_M]);
     return { onM, fPour, mPour, second };
   }
 
-  it('the reviewer\'s case: a note on F\'s row after R1, M approved and R2 sent, Set Active F: R3 says it', () => {
+  // (Schedule batch S5, item 1: the note now goes with the task to M's row, so R2 says it, the first report after it
+  // was made, and R3 does not say it again. These two tests expected it in R3, when F's row was back; no report in
+  // between could say it then.)
+  it('the reviewer\'s case: a note on F\'s row after R1, M approved and R2 sent (which says it), Set Active F: R3 does not say it again', () => {
     const { onM, fPour, second } = switchCase(true);
     const backOnF = setActive(onM, F, BACK_TO_F_AT);
     expect(shownNamed(backOnF, 'Pour slab').id).toBe(fPour.id);
-    expect(linesAbout(approveAndSend(second.sent, backOnF, THIRD_SENT).lines, 'Pour slab')).toEqual([
-      TO_F,
-      '• Alpha: Pour slab — Rebar inspection passed.',
-    ]);
+    expect(linesAbout(approveAndSend(second.sent, backOnF, THIRD_SENT).lines, 'Pour slab')).toEqual([TO_F]);
   });
 
   it('Delete PDF + Items on M, then Set Active F: the same', () => {
     const { onM, fPour, second } = switchCase(true);
     const backOnF = setActive(deleteWithItems(onM, M, BACK_TO_F_AT), F, BACK_TO_F_AT);
     expect(shownNamed(backOnF, 'Pour slab').id).toBe(fPour.id);
-    expect(linesAbout(approveAndSend(second.sent, backOnF, THIRD_SENT).lines, 'Pour slab')).toEqual([
-      TO_F,
-      '• Alpha: Pour slab — Rebar inspection passed.',
-    ]);
+    expect(linesAbout(approveAndSend(second.sent, backOnF, THIRD_SENT).lines, 'Pour slab')).toEqual([TO_F]);
   });
 
-  it('the reverse: a note on M\'s row after R2, Set Active F and R3, Set Active M: R4 says it', () => {
+  it('the reverse: a note on M\'s row after R2, Set Active F and R3 (which says it), Set Active M: R4 does not say it again', () => {
     const { onM, mPour, second } = switchCase(false);
     const withNote = noted(onM, mPour.id, 'm-1', 'Pump booked.', M_NOTE_AT);
     const backOnF = setActive(withNote, F, BACK_TO_F_AT);
     const third = approveAndSend(second.sent, backOnF, THIRD_SENT);
-    // M's row is hidden: R3 cannot say it.
-    expect(linesAbout(third.lines, 'Pour slab')).toEqual([TO_F]);
+    // (Schedule batch S5, item 1: the note follows the task to F's row at Set Active, so R3 says it. It expected the
+    // note only in R4, with M's row back: "M's row is hidden: R3 cannot say it.")
+    expect(linesAbout(third.lines, 'Pour slab')).toEqual([TO_F, '• Alpha: Pour slab — Pump booked.']);
     const backOnM = setActive(backOnF, M, BACK_TO_M_AT);
     expect(shownNamed(backOnM, 'Pour slab').id).toBe(mPour.id);
-    expect(linesAbout(approveAndSend(third.sent, backOnM, FOURTH_SENT).lines, 'Pour slab')).toEqual([
-      TO_M,
-      '• Alpha: Pour slab — Pump booked.',
-    ]);
+    expect(linesAbout(approveAndSend(third.sent, backOnM, FOURTH_SENT).lines, 'Pour slab')).toEqual([TO_M]);
+  });
+
+  it('S5 item 1: a note a report has said goes with the task to the row a master moves it to, and the next report does not say it again', () => {
+    const { state, baseline, fPour } = onF();
+    const early = noted(state, fPour.id, 'f-0', 'Forms set.', '2026-09-20T10:00:00.000Z');
+    const first = approveAndSend(baseline, early, FIRST_SENT);
+    expect(linesAbout(first.lines, 'Pour slab')).toEqual(['• Alpha: Pour slab — Forms set.']);
+    const onM = approve(early, M, rows(M, M_ROWS));
+    expect((shownNamed(onM, 'Pour slab').activity ?? []).map(entry => entry.id)).toEqual(['f-0']);
+    // (The note is newer than the report before the earlier one: the rule for a row paired across a master change
+    // alone would call it new.)
+    expect(linesAbout(approveAndSend(first.sent, onM, SECOND_SENT).lines, 'Pour slab')).toEqual([TO_M]);
   });
 
   it('a note said before the switch is not said again when the row comes back (p15 L1 still holds through the chain)', () => {

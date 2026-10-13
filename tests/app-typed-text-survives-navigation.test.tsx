@@ -11,6 +11,7 @@ import { Dimensions } from 'react-native';
 import { NativeRoot } from '../entry';
 import { getCurrentSessionUser, subscribeToAuthStateChange } from '../services/SupabaseService';
 import { forgetFieldNoteDraft } from '../hooks/use-field-note-draft';
+import { createReportedCompletionVerification } from '../services/DAVECompletionVerification';
 
 jest.mock('@react-native-async-storage/async-storage', () => {
   const values = new Map<string, string>();
@@ -398,6 +399,56 @@ describe('closing a task keeps the Project controls text being typed (audit A2 p
     type(tree, 'RFI, submittal, inspection, or decision number', 'RFI-042');
     await act(async () => { fireEvent.press(tree.getByLabelText('Close schedule task')); });
     await waitFor(async () => expect((await stored())?.projectControls?.referenceNumber).toBe('RFI-042'), COLD);
+    tree.unmount();
+  });
+});
+
+// Open item W1-7 (6 Oct 2026): the optional verification note was left out when the text typed on a
+// task was made to survive the task closing. It lived in the task row, so anything that took the row
+// away dropped it with nothing said: a tab switch, or the Capture Verification Photo button right
+// under it. It is now kept by task id until Confirm Completed or Not Complete uses it.
+describe('leaving a task keeps the optional verification note being typed (open item W1-7)', () => {
+  const KEY = 'projectPhotoUpdate.scheduleItems.v1';
+  const TYPED = 'Walked level 2 with the foreman; every frame is plumb';
+  type Stored = { id: string; status: string; completionVerification?: { status: string; verificationNote?: string | null } };
+  const stored = async () => (JSON.parse(await AsyncStorage.getItem(KEY) || '[]') as Stored[])
+    .find(item => item.id === 'task-verify');
+  const bootPhoneTasks = async () => {
+    act(() => { Dimensions.set({ window: PHONE, screen: PHONE }); });
+    await AsyncStorage.setItem('projectPhotoUpdate.projects.v2', JSON.stringify(['2375 Compliance Project']));
+    await AsyncStorage.setItem(KEY, JSON.stringify([{
+      id: 'task-verify', taskName: 'Task Verify', projectName: '2375 Compliance Project', status: 'In Progress',
+      percentComplete: 60, priority: 'Medium', startDate: '09/28/2026', finishDate: '10/02/2026', owner: '',
+      contractor: '', locationName: '', notes: '',
+      // A field update said the work is complete; the manager has not confirmed it yet.
+      completionVerification: createReportedCompletionVerification({
+        sourceName: 'Field update', sourceRecordId: 'update-verify-1', summary: 'Framing reported complete.',
+        reportedAt: '2026-10-01T15:00:00.000Z', priorScheduleStatus: 'In Progress', priorPercentComplete: 60,
+      }),
+    }]));
+    const tree = render(<NativeRoot />);
+    await waitFor(() => expect(tree.getByTestId('app-bottom-tabs')).toBeTruthy(), COLD);
+    await act(async () => { fireEvent.press(within(tree.getByTestId('app-bottom-tabs')).getByLabelText('Tasks')); });
+    return tree;
+  };
+  const noteField = (tree: ReturnType<typeof render>) => tree.findByPlaceholderText('Optional verification note', {}, COLD);
+
+  it('phone: typed, then away to another tab and back: it is still there, and Confirm Completed saves it and clears the field', async () => {
+    const tree = await bootPhoneTasks();
+    const tabs = () => within(tree.getByTestId('app-bottom-tabs'));
+    await act(async () => { fireEvent.press(await tree.findByLabelText('Open Task Verify', {}, COLD)); });
+    const field = await noteField(tree);
+    fireEvent(field, 'focus');
+    await act(async () => { fireEvent.changeText(field, TYPED); });
+
+    await act(async () => { fireEvent.press(tabs().getByLabelText('Overview')); });
+    await act(async () => { fireEvent.press(tabs().getByLabelText('Tasks')); });
+    await act(async () => { fireEvent.press(await tree.findByLabelText('Open Task Verify', {}, COLD)); });
+
+    expect((await noteField(tree)).props.value).toBe(TYPED);
+    await act(async () => { fireEvent.press(tree.getByText('Confirm Completed')); });
+    await waitFor(async () => expect((await stored())?.completionVerification?.verificationNote).toBe(TYPED), COLD);
+    expect((await stored())?.completionVerification?.status).toBe('pm_verified');
     tree.unmount();
   });
 });

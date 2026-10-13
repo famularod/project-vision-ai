@@ -123,21 +123,27 @@ describe('Set Active carries progress recorded since the import to the task now 
     expect(shown(v2State, 'Pour footings').percentComplete).toBe(100);
     expect(shown(rolledBack, 'Frame walls').id).toBe(shown(v1State, 'Frame walls').id);
     // Rolling back carried nothing: the v1 tasks hold what v2 copied from them.
+    // (Build 231, S3 item 1, the owner's rule that the task keeps when its schedule was made current: Pour footings is
+    // saved with that time, his 40% left standing after v2's file had stated 100%; no percent changes.)
     expect(scheduleProgressCarriedOnActivation({
-      items: v2State.items, documentsBefore: v2State.documents, documentsAfter: rolledBack.documents,
-    })).toEqual([]);
+      items: v2State.items, documentsBefore: v2State.documents, documentsAfter: rolledBack.documents, now: '2026-09-05T09:00:00.000Z',
+    }).map(item => [item.taskName, item.percentComplete, item.progressConfirmedAt, item.progressStandsSince])).toEqual([
+      ['Pour footings', 40, shown(v1State, 'Pour footings').progressConfirmedAt, { at: '2026-09-05T09:00:00.000Z', percentComplete: 40 }],
+    ]);
 
     const carried = scheduleProgressCarriedOnActivation({
       items: onV1.items, documentsBefore: onV1.documents, documentsAfter: reactivated, now: '2026-09-11T09:00:00.000Z',
     });
-    expect(carried.map(item => [item.taskName, item.percentComplete, item.progressConfirmedAt]).sort()).toEqual([
+    expect(carried.filter(item => !item.progressStandsSince).map(item => [item.taskName, item.percentComplete, item.progressConfirmedAt]).sort()).toEqual([
       ['Frame walls', 80, '2026-09-10T15:00:00.000Z'],
       ['Paint', 10, '2026-09-10T15:00:00.000Z'],
     ]);
     // The v2 tasks keep their own dates and ids.
     expect(byName(carried, 'Frame walls')).toMatchObject({ id: shown(v2State, 'Frame walls').id, finishDate: '09/01/2026' });
     // Pour footings: the file said 100% (A5 pass 4 #1); the manager's later 60% on the hidden v1 task does not lower it.
-    expect(byName(carried, 'Pour footings')).toBeUndefined();
+    // (S3 item 1: it is saved with when v2 was made current, its file's 100% left standing; the percent is not touched.)
+    expect([byName(carried, 'Pour footings')?.percentComplete, byName(carried, 'Pour footings')?.progressStandsSince])
+      .toEqual([100, { at: '2026-09-11T09:00:00.000Z', percentComplete: 100 }]);
   });
 
   it('is what App.tsx activateReferenceDocument does, compiled: the carried tasks are saved and synced', async () => {
@@ -178,7 +184,10 @@ describe('Set Active carries progress recorded since the import to the task now 
     expect(await (mod.exports as (documentId: string) => Promise<boolean>)(v2Doc.id)).toBe(true);
     const frame = shown({ items: scheduleItemsCurrentRef.current, documents: reactivated }, 'Frame walls');
     expect(frame).toMatchObject({ id: shown(v2State, 'Frame walls').id, percentComplete: 80, finishDate: '09/01/2026' });
-    expect(syncScheduleItemRevision).toHaveBeenCalledTimes(2);
+    // (Three since S3 item 1: Frame walls and Paint carried, and Pour footings saved with when v2 was made current, at its 100%.)
+    expect(syncScheduleItemRevision).toHaveBeenCalledTimes(3);
+    expect(syncScheduleItemRevision).toHaveBeenCalledWith(expect.objectContaining({ taskName: 'Pour footings', percentComplete: 100, progressStandsSince: expect.objectContaining({ percentComplete: 100 }) }), 1, undefined,
+      expect.objectContaining({ taskName: 'Pour footings', percentComplete: 100 }));
     // Pin changed for owner answer Q28 (2 Oct 2026): each carried task goes with the copy it started from (40%).
     expect(syncScheduleItemRevision).toHaveBeenCalledWith(expect.objectContaining({ id: frame.id, percentComplete: 80 }), 1, undefined,
       expect.objectContaining({ id: frame.id, percentComplete: 40 }));

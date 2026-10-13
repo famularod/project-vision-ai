@@ -123,3 +123,63 @@ describe('owner answer Q30: the import review asks which same-named task is whic
     expect(view.onApprove.mock.calls[0][0].pairingChoices).toBeUndefined();
   });
 });
+
+/*
+ * Build 231, S2 item 1 (b): a task that was on an earlier schedule and is no longer in his list, listed again by the
+ * file under review. The same step asks: the percent and note it had, "The same task" or "New work".
+ */
+describe('S2 item 1: the import review asks about a task that was on an earlier schedule', () => {
+  const older = { ...document('older', '2026-09-10T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+  // The older master's Paint, with his 60% and note; the current master left it out.
+  const left = row('o-9', 'Paint', '11/02/2026', '11/06/2026', 'batch-older', { percentComplete: 60, status: 'In Progress', notes: 'Primer on', progressSource: 'project_manager' });
+  // The file under review: the master's tasks on their days, and Paint again on other days.
+  const incoming = batch([
+    row('n-1', 'Pour slab', '10/05/2026', '10/09/2026', 'batch-new'),
+    row('n-2', 'Pour slab', '10/12/2026', '10/16/2026', 'batch-new'),
+    row('n-3', 'Framing', '10/26/2026', '10/30/2026', 'batch-new'),
+    row('n-9', 'Paint', '11/09/2026', '11/13/2026', 'batch-new', { percentCompleteStated: false } as Partial<ScheduleItem>),
+  ]);
+  const TITLE_BACK = 'Paint in Lot was on an earlier schedule: the same task, or new work?';
+  function renderBack() {
+    const onApprove = jest.fn(async (_batch: PIEScheduleImportBatch) => undefined);
+    const view = render(
+      <ScheduleImportFlow
+        screenshotImportAvailable={false}
+        onImportFile={jest.fn(async () => null)}
+        onImportScreenshots={jest.fn(async () => null)}
+        onAddManually={jest.fn()}
+        onApprove={onApprove}
+        onCancel={jest.fn()}
+        incomingBatch={incoming}
+        onIncomingBatchConsumed={jest.fn()}
+        roleContext={{ documents: [older, master], items: saved }}
+        savedItems={[...saved, left]}
+      />,
+    );
+    return { ...view, onApprove };
+  }
+
+  it('shows the task with the percent and note it had, "New work" selected; Accept waits; "The same task" is what the approval then gets', async () => {
+    const view = renderBack();
+    expect(await view.findByText(TITLE_BACK)).toBeTruthy();
+    expect(view.getByText('Earlier Paint: 11/2–11/6 · 60% · “Primer on”')).toBeTruthy();
+    expect(view.getByLabelText('Earlier Paint, 11/2–11/6 · 60% · “Primer on”: New work').props.accessibilityState.checked).toBe(true);
+    await press(view as never, 'Accept All (4)');
+    expect(view.onApprove).not.toHaveBeenCalled();
+    expect(view.getByText('Confirm whether Paint in Lot is the same task or new work before saving.')).toBeTruthy();
+    await act(async () => {
+      fireEvent.press(view.getByLabelText('Earlier Paint, 11/2–11/6 · 60% · “Primer on”: The same task: 11/9–11/13 · no %'));
+      await Promise.resolve();
+    });
+    await press(view as never, 'Accept All (4)');
+    expect(view.onApprove.mock.calls[0][0].pairingChoices).toEqual({ 'n-9': 'o-9' });
+  });
+
+  it('confirmed as "New work", the approval is told so', async () => {
+    const view = renderBack();
+    await view.findByText(TITLE_BACK);
+    await press(view as never, 'Confirm');
+    await press(view as never, 'Accept All (4)');
+    expect(view.onApprove.mock.calls[0][0].pairingChoices).toEqual({ 'n-9': null });
+  });
+});

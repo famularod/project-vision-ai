@@ -7,6 +7,21 @@ export type DAVEWebDocumentGroups = Readonly<{
   otherDocuments: readonly DAVEWebReferenceDocument[];
 }>;
 
+/**
+ * The documents the web lists (owner answer Q44, 6 Oct 2026): a document the
+ * cloud marks archived is hidden on every device and kept in the cloud, so it
+ * is left out. `archivedDocumentIds` is the snapshot's; with none (before the
+ * owner's database change) every document is listed, as before.
+ */
+export function daveWebListedDocuments<T extends Readonly<{ id: string }>>(
+  documents: readonly T[],
+  archivedDocumentIds: readonly string[] | null | undefined,
+): readonly T[] {
+  if (!archivedDocumentIds?.length) return documents;
+  const archived = new Set(archivedDocumentIds);
+  return documents.filter(document => !archived.has(document.id));
+}
+
 export function groupDAVEWebDocuments(
   documents: readonly DAVEWebReferenceDocument[],
 ): DAVEWebDocumentGroups {

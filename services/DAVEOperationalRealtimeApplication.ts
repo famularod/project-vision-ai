@@ -6,7 +6,7 @@ import type {
 } from './DAVEOperationalRefresh';
 import { projectRecordFromCloud, type ProjectRecord } from './ProjectCoverPhotoService';
 import { deletedDAVERecordIds, mergeDAVESyncTombstones } from './DAVESyncTombstones';
-import { scheduleItemsAfterCloudDeletion } from './DAVEScheduleRecovery';
+import { scheduleItemsAfterCloudDeletion, scheduleItemsAfterCloudRowHeard } from './DAVEScheduleRecovery';
 import { mergeDAVEProjectAreaRecoveryRecords } from './DAVEProjectAreaRecovery';
 import { mergeDAVEReferenceDocumentRecoveryRecords } from './DAVECloudRecovery';
 import { carryECOSHostedIndexStatus } from './ECOSHostedIndexer';
@@ -284,11 +284,12 @@ export function createDAVEOperationalRealtimeApplier(options: Options) {
       const authoritative = localItem
         ? scheduleItemRevisionForCloudRefresh(localItem, cloudItem, pendingQueue)
         : cloudItem;
-      options.commitSchedule(replaceOperationalRecord(
+      // A row that answers to a row deleted just before it was heard takes what that row held (Build 231, S3 item 1).
+      options.commitSchedule(scheduleItemsAfterCloudRowHeard(replaceOperationalRecord(
         state.scheduleItems,
         authoritative,
         item => item.id,
-      ));
+      ), authoritative.id));
       return true;
     }
 

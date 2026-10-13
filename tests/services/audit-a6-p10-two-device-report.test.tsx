@@ -35,43 +35,61 @@ const mockStore = (stores: Map<string, Map<string, string>>) => {
   if (!stores.has(mockDevice)) stores.set(mockDevice, new Map());
   return stores.get(mockDevice) as Map<string, string>;
 };
+/**
+ * R6 item 2 (the coordinator's decision): the storage, Keychain and cloud calls the app has started and has had no
+ * answer to yet, and how many it has started in all. The rig waits until none is under way before another device
+ * is picked up (`screenAtRest`, below).
+ */
+let mockCallsUnderWay = 0;
+let mockCallsStarted = 0;
+function mockCounted<A extends unknown[], R>(call: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
+  return async (...args: A) => {
+    mockCallsStarted += 1;
+    mockCallsUnderWay += 1;
+    try {
+      return await call(...args);
+    } finally {
+      mockCallsUnderWay -= 1;
+    }
+  };
+}
 jest.mock('@react-native-async-storage/async-storage', () => ({
-  getItem: jest.fn(async (key: string) => mockStore(mockDevices).get(key) ?? null),
-  setItem: jest.fn(async (key: string, value: string) => {
+  getItem: jest.fn(mockCounted(async (key: string) => mockStore(mockDevices).get(key) ?? null)),
+  setItem: jest.fn(mockCounted(async (key: string, value: string) => {
     mockStore(mockDevices).set(key, value);
-  }),
-  removeItem: jest.fn(async (key: string) => {
+  })),
+  removeItem: jest.fn(mockCounted(async (key: string) => {
     mockStore(mockDevices).delete(key);
-  }),
-  getAllKeys: jest.fn(async () => Array.from(mockStore(mockDevices).keys())),
-  multiGet: jest.fn(async (keys: string[]) => keys.map(key => [key, mockStore(mockDevices).get(key) ?? null])),
+  })),
+  getAllKeys: jest.fn(mockCounted(async () => Array.from(mockStore(mockDevices).keys()))),
+  multiGet: jest.fn(mockCounted(async (keys: string[]) => keys.map(key => [key, mockStore(mockDevices).get(key) ?? null]))),
 }));
 jest.mock('expo-secure-store', () => ({
   WHEN_UNLOCKED_THIS_DEVICE_ONLY: 6,
   isAvailableAsync: jest.fn(async () => true),
-  getItemAsync: jest.fn(async (key: string) => mockStore(mockKeychains).get(key) ?? null),
-  setItemAsync: jest.fn(async (key: string, value: string) => {
+  getItemAsync: jest.fn(mockCounted(async (key: string) => mockStore(mockKeychains).get(key) ?? null)),
+  setItemAsync: jest.fn(mockCounted(async (key: string, value: string) => {
     mockStore(mockKeychains).set(key, value);
-  }),
-  deleteItemAsync: jest.fn(async (key: string) => {
+  })),
+  deleteItemAsync: jest.fn(mockCounted(async (key: string) => {
     mockStore(mockKeychains).delete(key);
-  }),
+  })),
 }));
 
 type MockCloudRow = { snapshot: unknown; deliveredAt: string | null };
 const mockCloud = new Map<string, MockCloudRow>();
 const mockOk = <T,>(data: T) => ({ ok: true, configured: true, data });
 jest.mock('../../services/SupabaseService', () => ({
-  loadReportSnapshotCloud: jest.fn(async (scopeKey: string, format: string) =>
-    mockOk({ ownerId: 'owner-1', snapshot: mockCloud.get(`${scopeKey}|${format}`)?.snapshot ?? null })),
+  loadReportSnapshotCloud: jest.fn(mockCounted(async (scopeKey: string, format: string) =>
+    mockOk({ ownerId: 'owner-1', snapshot: mockCloud.get(`${scopeKey}|${format}`)?.snapshot ?? null }))),
   // The table's rule: a row whose period started from a later send is kept.
-  saveReportSnapshotCloud: jest.fn(async (row: { scopeKey: string; format: string; snapshot: unknown; deliveredAt: string | null }) => {
+  saveReportSnapshotCloud: jest.fn(mockCounted(async (row: { scopeKey: string; format: string; snapshot: unknown; deliveredAt: string | null }) => {
     const key = `${row.scopeKey}|${row.format}`;
     const existing = mockCloud.get(key);
     if (existing?.deliveredAt && (!row.deliveredAt || row.deliveredAt < existing.deliveredAt)) return mockOk(null);
     mockCloud.set(key, { snapshot: JSON.parse(JSON.stringify(row.snapshot)), deliveredAt: row.deliveredAt });
     return mockOk(null);
-  }),
+  })),
   // What Settings reads, for Sync Now (A6 pass 11 L1; as in audit-a8-p2-admin-sync).
   getCurrentSessionAccessToken: jest.fn(async () => null),
   getSupabaseConfigurationStatus: () => ({ configured: true }),
@@ -227,7 +245,29 @@ const syncNow = async (scheduleItems: ScheduleItem[], cloud: ScheduleItem[]) => 
   return phone.scheduleItems;
 };
 
+/**
+ * R6 item 2 (the coordinator's decision; a race in this rig, never in the app; the same rig as
+ * audit-a6-p8-period-bound-approval, where it was seen and reproduced). One process plays both devices: while the
+ * iPad is used the app's memory and the device's storage are the iPad's, and the phone's screen stays mounted. What
+ * the phone's last action started could still be finishing when the iPad was picked up, and the phone's screen then
+ * drew itself with the iPad's memory.
+ *
+ * Before another device is picked up, the screen that is mounted has finished: no storage, Keychain or cloud call
+ * of the app is under way, the screen has drawn what came back, and drawing it started no further call. Nothing is
+ * waited for by the clock.
+ */
+async function screenAtRest(): Promise<void> {
+  for (let round = 0; round < 100; round += 1) {
+    await waitFor(() => expect(mockCallsUnderWay).toBe(0), SLOW);
+    const started = mockCallsStarted;
+    await settle();
+    if (mockCallsUnderWay === 0 && mockCallsStarted === started) return;
+  }
+  throw new Error('The screen never came to rest: it kept starting storage, Keychain or cloud calls.');
+}
+
 async function keepingPhoneMemory<T>(visit: () => Promise<T>): Promise<T> {
+  await screenAtRest();
   const memory = recallReportSessionState(SESSION_KEY);
   const sends = [...ownReportSendTimes()];
   const result = await visit();

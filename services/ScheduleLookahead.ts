@@ -2,6 +2,7 @@ import type { ReferenceDocument, ScheduleDependency, ScheduleItem, ScheduleLooka
 import { parseFlexibleDate } from '../utils/date';
 import {
   currentScheduleDocumentsByProject,
+  currentScheduleDocumentWinners,
   scheduleDocumentAddsToMaster,
   scheduleDocumentDayLabel,
   scheduleFullCopyLeftUnshown,
@@ -127,7 +128,24 @@ function overlayOf(item: ScheduleItem): ScheduleLookaheadOverlay | null {
 
 function withOverlay(item: ScheduleItem, overlay: ScheduleLookaheadOverlay | null): ScheduleItem {
   const { lookaheadOverlay: _previous, ...rest } = item;
-  return overlay && overlay.lookaheads.length > 0 ? { ...rest, lookaheadOverlay: overlay } : rest;
+  if (overlay && overlay.lookaheads.length > 0) return { ...rest, lookaheadOverlay: overlay };
+  // The note goes with its last lookahead; what it knew of each master's dates stays with the row (Build 231, S4 item 1).
+  const kept = overlay && Array.isArray(overlay.masterDatesBefore) && overlay.masterDatesBefore.length > 0
+    ? { masterDatesOfRow: { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate, before: overlay.masterDatesBefore } } : {};
+  return { ...rest, ...kept };
+}
+
+/** A row's own record of each master's dates (masterDatesOfRow), read as a note's: for scheduleNotedMasterDates. */
+function rowMasterDatesAsNote(task: ScheduleItem): ScheduleLookaheadOverlay | null {
+  const chain = task.masterDatesOfRow;
+  if (!chain || !Array.isArray(chain.before) || chain.before.length === 0) return null;
+  return { masterStartDate: chain.startDate, masterFinishDate: chain.finishDate, masterDatesBefore: chain.before, masterPercentComplete: 0, lookaheads: [] } as unknown as ScheduleLookaheadOverlay;
+}
+
+/** Whether the row is on dates its own record holds (not dates he moved by hand). */
+function onRowMasterDates(task: ScheduleItem): boolean {
+  const chain = task.masterDatesOfRow;
+  return Boolean(chain) && (sameDates(task, chain!) || chain!.before.some(entry => sameDates(task, entry)));
 }
 
 /**
@@ -308,6 +326,9 @@ export function scheduleTaskRestatedByLookahead(
     ...(previous || {
       masterStartDate: task.startDate,
       masterFinishDate: task.finishDate,
+      // A row that kept each master's dates from an earlier note gives them to the new one (Build 231, S4 item 1).
+      ...(rowMasterDatesAsNote(task) && onRowMasterDates(task)
+        ? { masterStartDate: task.masterDatesOfRow!.startDate, masterFinishDate: task.masterDatesOfRow!.finishDate, masterDatesBefore: task.masterDatesOfRow!.before } : {}),
       ...managersStatement(task),
       // The master file's own percent, unless the manager's stands over it.
       masterFilePercentComplete: scheduleProgressIsManagers(task) || !owned ? null : percentOf(task),
@@ -410,7 +431,14 @@ export function scheduleTaskMasterRestated(
   olderThanMaster: (entry: LookaheadEntry) => boolean = () => true,
 ): ScheduleItem {
   const overlay = overlayOf(task);
-  if (!overlay) return task;
+  if (!overlay) {
+    // No note, but the row keeps each master's dates (Build 231, S4 item 1): this master's are the newest now.
+    const chain = task.masterDatesOfRow;
+    const by = typeof row.importBatchId === 'string' ? row.importBatchId.trim() : '';
+    if (!chain || !by || !key(row.startDate) || !key(row.finishDate) || sameDates(chain, row)) return task;
+    return { ...task, masterDatesOfRow: { startDate: row.startDate, finishDate: row.finishDate,
+      before: [...chain.before, { startDate: chain.startDate, finishDate: chain.finishDate, replacedByMaster: by }].slice(-MASTER_DATES_KEPT) } };
+  }
   // Whole-app audit A5 pass 18 L2 (1 Oct 2026): a master row with blank dates
   // noted blank master dates, so deleting the lookahead gave the task none. A
   // date the row leaves blank says nothing: the note keeps the master's.
@@ -435,6 +463,11 @@ export function scheduleTaskMasterRestated(
     masterFinishDate: days.finishDate,
     ...percent,
     ...(stated !== null && overlay.masterFilePercentComplete !== undefined ? { masterFilePercentComplete: stated } : {}),
+    // The master dates it replaces stay known, with which master replaced them (Build 231, S3 item 3).
+    ...(datesChanged ? {
+      masterDatesBefore: [...(overlay.masterDatesBefore ?? []), { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate, replacedByMaster: replacedBy as string | true }]
+        .slice(-MASTER_DATES_KEPT),
+    } : {}),
     // The lookaheads' dates this master replaced (A6 pass 19 M1).
     ...(datesChanged ? {
       lookaheads: overlay.lookaheads.map(entry => entry.datesReplacedByMaster || !olderThanMaster(entry)
@@ -450,6 +483,42 @@ export function scheduleTaskMasterRestated(
     next.masterFilePercentComplete === overlay.masterFilePercentComplete
   ) return task;
   return withOverlay(task, next);
+}
+
+/** How many earlier master dates a note keeps (the latest). */
+const MASTER_DATES_KEPT = 8;
+
+/**
+ * Build 231, S3 item 3: the master's dates a task's lookahead note gives
+ * while `shown` is the master current for its project. The note's own
+ * (the newest master's that restated the task), unless the master that put
+ * them there is not in effect: not saved any more, or newer than the master
+ * current and not it. Then the dates the note held before that master, and
+ * so on back. Master F 10/15, lookahead L1 10/18, master G on L1's dates;
+ * with F current again (Set Active, the web's Make Current) or G deleted
+ * with its items, deleting L1 gives F's 10/15, not G's 10/18. The same for
+ * a task he entered by hand that L1 moved and G then listed. With the
+ * schedules unknown, or a note saved before (no earlier dates kept), the
+ * note's own dates, as before.
+ */
+export function scheduleNotedMasterDates(
+  overlay: ScheduleLookaheadOverlay,
+  documents: readonly ReferenceDocument[] | undefined,
+  shown: ReferenceDocument | undefined,
+): Pick<ScheduleItem, 'startDate' | 'finishDate'> {
+  let dates = { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
+  const before = overlay.masterDatesBefore;
+  if (!documents || !Array.isArray(before)) return dates;
+  for (let index = before.length - 1; index >= 0; index -= 1) {
+    const by = before[index]?.replacedByMaster;
+    if (typeof by !== 'string') break;
+    const master = documents.find(saved => key(saved.importBatchId) === key(by));
+    const inEffect = Boolean(master) && (!shown || shown.id === master!.id || !timeOf(shown.importedAt) || !timeOf(master!.importedAt) ||
+      timeOf(shown.importedAt) >= timeOf(master!.importedAt));
+    if (inEffect) break;
+    dates = { startDate: before[index].startDate, finishDate: before[index].finishDate };
+  }
+  return dates;
 }
 
 type LookaheadDeleted = Readonly<{ item: ScheduleItem; datesBack: boolean; percentBack: boolean }>;
@@ -517,6 +586,9 @@ function tasksAfterLookaheadDeleted(
   const batchId = key(document.importBatchId);
   if (!batchId) return [];
   const replaced = datesReplacedAtDelete(items, documents);
+  // The master current for each project once this lookahead is gone: whose dates the note gives (Build 231, S3 item 3).
+  const after = documents?.filter(saved => saved.id !== document.id);
+  const current = after ? currentScheduleDocumentsByProject(after) : null;
   return items.flatMap(item => {
     const overlay = overlayOf(item);
     const index = overlay ? overlay.lookaheads.findIndex(entry => key(entry.batchId) === batchId) : -1;
@@ -531,7 +603,7 @@ function tasksAfterLookaheadDeleted(
     // Nor a lookahead's the task had left for the master's dates before the deleted one moved it (review N2 F2), nor
     // one whose file is gone unless its dates were kept when it was deleted alone while in effect (fileGoneUnkept).
     const back = entriesGivingDatesBack(remaining).reverse().find(entry => !replaced(entry, item) && !fileGoneUnkept(entry, documents)) ||
-      { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
+      scheduleNotedMasterDates(overlay, after, current?.get(scheduleProjectScopeKey(item.projectName || item.scheduleProjectName || '')));
     const datesBack = top && !sameDates(item, back);
     // The percent it gave, when no later lookahead gave one, the task still has it, and it is not the manager's own (H1).
     // A later lookahead that states the same percent still gives it (A5 pass 6 M1): the task keeps it.
@@ -653,7 +725,7 @@ function notedDatesWhileCurrent(
   return [...overlay.lookaheads].reverse().find(entry => {
     const by = entry.datesReplacedByMaster;
     return !by || (by !== true && (!documents.some(saved => key(saved.importBatchId) === key(by)) || !markedMasterInEffect(by, documents, shown)));
-  }) || { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate };
+  }) || scheduleNotedMasterDates(overlay, documents, shown);
 }
 
 /**
@@ -710,6 +782,16 @@ export function scheduleTasksOnNotedDatesWhenCurrent({
   return after.flatMap(task => {
     const overlay = overlayOf(task);
     const owned = key(task.importBatchId) || key(task.sourceDocumentId) || key(task.importedFrom);
+    // Build 231, S4 item 1 (S3 item 3's way back): a row with no note left that keeps each master's dates takes the
+    // dates of the master made current, in either direction, unless he moved its dates by hand since.
+    const kept = !overlay && owned ? rowMasterDatesAsNote(task) : null;
+    if (kept) {
+      const scope = scheduleProjectScopeKey(task.projectName || task.scheduleProjectName || '');
+      const made = currentAfter.get(scope);
+      if (!made || currentBefore.get(scope)?.id === made.id || !onRowMasterDates(task)) return [];
+      const dates = scheduleNotedMasterDates(kept, documentsAfter, made);
+      return sameDates(task, dates) || !key(dates.startDate) || !key(dates.finishDate) ? [] : [{ ...task, startDate: dates.startDate, finishDate: dates.finishDate, updatedAt: now }];
+    }
     if (!overlay || !owned || !overlay.lookaheads.some(entry => typeof entry.datesReplacedByMaster === 'string')) return [];
     const project = scheduleProjectScopeKey(task.projectName || task.scheduleProjectName || '');
     const was = currentBefore.get(project);
@@ -717,6 +799,7 @@ export function scheduleTasksOnNotedDatesWhenCurrent({
     if (!is || was?.id === is.id) return [];
     // On dates the note holds, not dates David moved by hand.
     const onNoted = sameDates(task, { startDate: overlay.masterStartDate, finishDate: overlay.masterFinishDate }) ||
+      (overlay.masterDatesBefore ?? []).some(entry => sameDates(task, entry)) ||
       overlay.lookaheads.some(entry => sameDates(task, entry));
     const to = notedDatesWhileCurrent(overlay, documentsAfter, is);
     if (!onNoted || sameDates(task, to) || !key(to.startDate) || !key(to.finishDate)) return [];
@@ -725,7 +808,8 @@ export function scheduleTasksOnNotedDatesWhenCurrent({
     if (to.batchId === undefined) {
       const imports = scheduleItemImportBatchIds(task).map(key);
       const listsTask = imports.includes(key(is.importBatchId));
-      const newerMaster = documentsAfter.some(master => imports.includes(key(master.importBatchId)) &&
+      // (A note that kept its earlier master dates gives the dates under the master made current itself: Build 231, S3 item 3.)
+      const newerMaster = !Array.isArray(overlay.masterDatesBefore) && documentsAfter.some(master => imports.includes(key(master.importBatchId)) &&
         !scheduleDocumentAddsToMaster(master) && timeOf(master.importedAt) > timeOf(is.importedAt));
       if (!listsTask || newerMaster) return [];
     }
@@ -736,6 +820,63 @@ export function scheduleTasksOnNotedDatesWhenCurrent({
     }
     return [{ ...task, startDate: to.startDate, finishDate: to.finishDate, updatedAt: now }];
   });
+}
+
+/**
+ * Schedule batch S5, item 2 (7 Oct 2026; uncovered by S4 item 1, the
+ * reviewer's generator seed 5178): what this device has seen of the tasks'
+ * lookahead notes and of the lookahead files, kept between two looks
+ * (scheduleTasksOnMasterDatesOnceLookaheadGone). In memory only.
+ */
+export type ScheduleLookaheadNotesSeen = { current: { noted: Map<string, readonly string[]>; waiting: Map<string, readonly string[]> } | null };
+
+/**
+ * Schedule batch S5, item 2. The iPad deleted a lookahead with its items
+ * while master J was in effect there, so Survey went back to J's 10/14. The
+ * phone had made master H current BEFORE it heard of that delete: on the
+ * phone the lookahead still held Survey on 10/14 then, so Set Active had
+ * nothing to move. When the delete arrived, Survey's row came with J's 10/14
+ * and no note, under master H, which gives 10/12: every device ended on
+ * 10/14, where one device doing the same steps in order ends on 10/12
+ * (delete, then Set Active, whose recompute gives H's dates).
+ *
+ * A lookahead's deletion that is heard now runs the recompute Set Active
+ * uses (scheduleTasksOnNotedDatesWhenCurrent), for the tasks it took the
+ * note from: a task shown whose note is gone since the last look, once every
+ * lookahead that note named is no longer saved on this device (so the
+ * documents have been heard too: a refresh brings the tasks first, then the
+ * documents, with any master made current elsewhere). Such a row keeps each
+ * master's dates (masterDatesOfRow) and takes the dates of the master in
+ * effect here, unless its dates were moved by hand. Returns each task to
+ * save with the row as it was heard (the copy the change starts from).
+ * Looked at once per deletion: the device that deleted the lookahead itself
+ * finds its tasks already on those dates.
+ *
+ * Not covered, recorded: a task whose note still names another lookahead
+ * (the delete's own rules decide its dates, and Set Active's differ there);
+ * a deletion heard while the app was closed between the tasks and the
+ * documents arriving (nothing is kept on disk).
+ */
+export function scheduleTasksOnMasterDatesOnceLookaheadGone(
+  items: readonly ScheduleItem[],
+  documents: readonly ReferenceDocument[],
+  seen: ScheduleLookaheadNotesSeen,
+  now: string = new Date().toISOString(),
+): Array<Readonly<{ item: ScheduleItem; before: ScheduleItem }>> {
+  const noted = new Map(items.flatMap(item => { const overlay = overlayOf(item); return overlay ? [[item.id, overlay.lookaheads.map(entry => key(entry.batchId))] as const] : []; }));
+  const before = seen.current;
+  const byId = new Map(items.map(item => [item.id, item] as const));
+  // Still waiting from an earlier look, and the tasks whose note is gone since then.
+  const waiting = new Map([...(before?.waiting ?? []), ...[...(before?.noted ?? [])].filter(([id]) => !noted.has(id))].filter(([id]) => byId.has(id) && !noted.has(id)));
+  seen.current = { noted, waiting };
+  if (waiting.size === 0) return [];
+  const saved = new Set(documents.filter(scheduleDocumentAddsToMaster).map(document => key(document.importBatchId)));
+  const ready = [...waiting].filter(([, lookaheads]) => lookaheads.every(batchId => !saved.has(batchId))).map(([id]) => id);
+  if (ready.length === 0) return [];
+  ready.forEach(id => waiting.delete(id));
+  const shown = new Set(selectAuthoritativeScheduleItems({ scheduleItems: [...items], scheduleDocuments: [...documents] }).map(item => item.id));
+  return ready.filter(id => shown.has(id)).flatMap(id => scheduleTasksOnNotedDatesWhenCurrent({ after: [byId.get(id)!], documentsBefore: [], documentsAfter: documents, now })
+    .map(item => ({ item, before: byId.get(id)! })));
 }
 
 /**
@@ -1097,8 +1238,9 @@ export function scheduleDatesShownUnderReplacedLookahead(
 }
 
 /**
- * Owner answer Q36 (6 Oct 2026): on the phone and the iPad, the file of a
- * lookahead that is in effect is never deleted alone. "Delete PDF Only" is
+ * Owner answers Q36 and Q38 (6 Oct 2026): on the phone and the iPad, the
+ * file of a lookahead that is in effect, and of the master schedule in
+ * effect, is never deleted alone. "Delete PDF Only" is
  * not offered for it, and the delete underneath refuses: the lookahead's
  * dates would stay on its tasks with no lookahead left to say where they
  * came from, or to put the master's dates back. "Delete PDF + Items" stays;
@@ -1112,8 +1254,21 @@ export function scheduleFileOnlyDeleteRefusal(
   document: ReferenceDocument | null | undefined,
   documents: readonly ReferenceDocument[],
 ): string | null {
-  if (!document || !scheduleLookaheadInEffect(document, documents)) return null;
-  return `${document.name} is the lookahead in effect, so its PDF cannot be deleted on its own. Use Delete PDF + Items: that also puts the master schedule's dates back.`;
+  if (!document) return null;
+  if (scheduleLookaheadInEffect(document, documents)) {
+    return `${document.name} is the lookahead in effect, so its PDF cannot be deleted on its own. Use Delete PDF + Items: that also puts the master schedule's dates back.`;
+  }
+  // Owner answer Q38 (6 Oct 2026; the schedule reviewer's P7-1, the same on Build 229): nor the PDF of the master
+  // schedule in effect. Deleted alone, it left no schedule in effect: the list was empty on every device, and Set
+  // Active on the older master then showed a task the deleted master had moved twice (that master's row with his
+  // percent, note and owner beside the older master's at 0%), with the deleted master's own tasks. In effect as the
+  // list itself has it: the newest schedule marked current for one of its projects (currentScheduleDocumentWinners).
+  // An older master keeps both choices.
+  const listed = documents.some(candidate => candidate.id === document.id) ? documents : [...documents, document];
+  if (currentScheduleDocumentWinners(listed).some(winner => winner.id === document.id)) {
+    return `${document.name} is the active schedule, so its PDF cannot be deleted on its own. Use Delete PDF + Items, or set another schedule active first.`;
+  }
+  return null;
 }
 
 /**
@@ -1137,7 +1292,30 @@ export function scheduleLookaheadDeleteNote(
   /** The button that does it: the phone's, or the web's "Delete Document + N Tasks" (review N2 W1). */
   button = 'Delete PDF + Items',
 ): string {
-  if (!scheduleDocumentAddsToMaster(document)) return '';
+  if (!scheduleDocumentAddsToMaster(document)) {
+    // Build 231, S2 item 5: a master's delete with its items also removes the earlier rows of tasks a newer schedule
+    // has moved, which he does not see in his list (the task shows on the newer row, and stays). Said, in the count's
+    // own terms.
+    const gone = new Set(removed.map(item => item.id));
+    const kept = items.filter(item => !gone.has(item.id));
+    const answering = (item: ScheduleItem) => kept.filter(other => scheduleTaskEarlierIds(other).includes(item.id));
+    const earlierRows = removed.filter(item => answering(item).length > 0);
+    const earlier = earlierRows.length;
+    if (earlier === 0) return '';
+    // Review pass 1, P1-5 (wording; caused by S2 item 5): "that task stays in your list" was said of every such row,
+    // shown or not. It does not stay when the master being deleted is the one in effect (the list is empty afterwards),
+    // nor when the current master leaves the task out (it was not in his list before either). Only a task whose newer
+    // row is shown after the delete is said to stay; of the others, that the newer row is kept and is not in his list.
+    const after = documents?.filter(saved => saved.id !== document.id);
+    const shownAfter = after ? new Set(selectAuthoritativeScheduleItems({ scheduleItems: kept, scheduleDocuments: after }).map(item => item.id)) : null;
+    const staying = shownAfter ? earlierRows.filter(item => answering(item).some(other => shownAfter.has(other.id))).length : earlier;
+    const away = earlier - staying;
+    const lead = ` ${earlier} of those items ${earlier === 1 ? 'is the earlier row of a task' : 'are earlier rows of tasks'} a newer schedule has moved; `;
+    const notInList = (count: number) => `will not be in your list afterwards: ${count === 1 ? 'its newer row is' : 'their newer rows are'} kept, under a schedule that is not active.`;
+    if (away === 0) return `${lead}${earlier === 1 ? 'that task stays' : 'those tasks stay'} in your list.`;
+    if (staying === 0) return `${lead}${earlier === 1 ? 'that task' : 'those tasks'} ${notInList(earlier)}`;
+    return `${lead}${staying} of those tasks ${staying === 1 ? 'stays' : 'stay'} in your list, and ${away} ${notInList(away)}`;
+  }
   const removedIds = new Set(removed.map(item => item.id));
   const kept = items.filter(item => !removedIds.has(item.id));
   const after = documents?.filter(saved => saved.id !== document.id);

@@ -132,6 +132,9 @@ it('does not reopen a dismissed answer when its request finishes', async () => {
     candidateProjects: ['Project One'], onOpenEvidence: jest.fn(),
   }));
   await start(result);
+  // Build 231 E1 item 1: the first X stops the wait and keeps the question; the second closes.
+  await act(async () => { sheet(result, 2).onClose(); });
+  expect(sheet(result, 2)).toMatchObject({ visible: true, loading: false, question, answer: null });
   await act(async () => { sheet(result, 2).onClose(); });
   await act(async () => { pending.resolve({ answer: 'Late answer' } as never); });
   expect(sheet(result, 2)).toMatchObject({ visible: false, answer: null });

@@ -1,5 +1,6 @@
 import type { ScheduleItem } from '../types';
 import { parseFlexibleDate } from '../utils/date';
+import { scheduleDatesToCheck } from './ScheduleInputLimits';
 
 /**
  * A deliberately non-project value used only inside the import review flow.
@@ -36,7 +37,9 @@ export type ScheduleImportScopeWarningCode =
   | 'area_ambiguous'
   | 'invalid_start_date'
   | 'invalid_finish_date'
-  | 'start_after_finish';
+  | 'start_after_finish'
+  | 'start_date_out_of_range'
+  | 'finish_date_out_of_range';
 
 export type ScheduleImportScopeWarning = Readonly<{
   itemId: string;
@@ -291,6 +294,24 @@ export function scheduleImportDateWarnings(item: ScheduleItem) {
   return warnings;
 }
 
+/**
+ * The dates of a row that are real days outside 2000 through 2100, each as a
+ * warning that names the task (review pass 1, L3). These are things to look
+ * at, not faults: unlike scheduleImportDateWarnings they do not stop the
+ * import, and the date stays exactly as the file has it.
+ */
+export function scheduleImportDatesToCheck(item: ScheduleItem): ScheduleImportScopeWarning[] {
+  const taskName = item.taskName.trim();
+  // One day written for both the start and the finish is said once.
+  return scheduleDatesToCheck(item).map(check => warning(
+    item,
+    check.which === 'finish' ? 'finish_date_out_of_range' : 'start_date_out_of_range',
+    check.which === 'both' ? 'date_range' : check.which === 'start' ? 'start_date' : 'finish_date',
+    check.value,
+    `${taskName ? `${taskName}. ` : ''}${check.text} It is kept as written.`,
+  ));
+}
+
 function guardScheduleParent({
   item,
   selectedProjects,
@@ -383,7 +404,13 @@ export function validateScheduleImportScope({
       selectedProjects,
       unavailableProjects,
     });
-    const warnings = [...parent.warnings, ...scheduleImportDateWarnings(item)];
+    const dateFaults = scheduleImportDateWarnings(item);
+    const warnings = [
+      ...parent.warnings,
+      ...dateFaults,
+      // A date already reported as unreadable is not reported a second time.
+      ...scheduleImportDatesToCheck(item).filter(check => !dateFaults.some(fault => fault.field === check.field)),
+    ];
     const projectSource = originalProjectName.trim();
     let selectedProject: ScheduleImportSelectedProject | null = null;
 

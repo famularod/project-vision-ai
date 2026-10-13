@@ -201,6 +201,18 @@ export const DESKTOP_WORKSPACE_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000]
  */
 export const DESKTOP_SIGN_IN_ENDING_WAIT_MS = 10_000;
 
+/**
+ * On the sign-in page after a Sign Out of This Computer that the cloud did
+ * not confirm (second review of the web area, F5, 7 Oct 2026). Since review
+ * pass 1, L3, that sign-out always signs this tab out, also with no
+ * connection, where the build before refused and said so. Nothing said that
+ * the sign-in is then still good on the server. True in each case it is
+ * shown in: no connection, the server "unavailable" or saying "too many
+ * requests", an error of its own, or no answer in five seconds.
+ */
+export const DESKTOP_SIGN_OUT_NOT_CONFIRMED_MESSAGE =
+  'This tab is signed out, but the cloud did not confirm it: the same sign-in may still be open in a Vitruvius tab that was closed or asleep. To end it everywhere, use Sign Out of All Devices on a device where you are signed in.';
+
 const SIGN_IN_FAILED_MESSAGE =
   'Sign-in could not be completed. Check your email and password, then try again.';
 /** This tab cannot store a sign-in: the browser blocks site data (A12 pass 11 L2). */
@@ -267,6 +279,12 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
    * 10 L1).
    */
   const signInsAwaitingAnswerRef = useRef(0);
+  /**
+   * Set by a Sign Out of This Computer made here that the cloud did not
+   * confirm, until a sign-in is made in this tab: the sign-in page says so
+   * meanwhile, whatever else it hears (second review, web F5).
+   */
+  const signOutNotConfirmedRef = useRef(false);
 
   const clearSessionView = useCallback((nextPhase: DesktopAuthPhase = 'signed_out') => {
     if (!mountedRef.current) return;
@@ -286,7 +304,9 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     // the browser's own sign-out going through (SIGNED_OUT, now or on a
     // quiet retry) does not turn it into a plain sign-in page (A12 pass 4 L3).
     const notOwner = notOwnerRef.current;
-    setMessage(notOwner ? notOwner.message : null);
+    setMessage(notOwner
+      ? notOwner.message
+      : signOutNotConfirmedRef.current ? DESKTOP_SIGN_OUT_NOT_CONFIRMED_MESSAGE : null);
     setPhase(notOwner ? 'unauthorized' : nextPhase);
   }, []);
 
@@ -581,6 +601,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
 
   const signInWithPassword = useCallback(async (email: string, password: string) => {
     forgetNotOwner();
+    signOutNotConfirmedRef.current = false;
     if (mountedRef.current) {
       setPhase('signing_in');
       setMessage(null);
@@ -638,6 +659,12 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   const signOutOfDesktop = useCallback(async (scope: DAVEWebSignOutScope = 'local') => {
     const userId = daveWebSupabaseGateway.storedSignInUserId();
     await daveWebSupabaseGateway.signOut(scope);
+    // Second review, web F5: This Computer signs this tab out whatever the cloud answers. When the cloud did
+    // not confirm it, the sign-in page says so (All Devices is refused instead, and says so in Settings).
+    // Nothing is said of a tab that still holds a sign-in (one made here while it was signing out is kept).
+    signOutNotConfirmedRef.current = scope === 'local' &&
+      daveWebSupabaseGateway.signedOutWithoutCloudConfirmation?.() === true &&
+      daveWebSupabaseGateway.storedSignInUserId() === null;
     clearSessionView();
     // The other tabs of this account open in this browser sign out too, so
     // "This Computer" is this computer's browser, not this one tab: the
@@ -1085,7 +1112,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     // approval does (audit A5 pass 3 F5): unchanged tasks keep their
     // progress, changed tasks carry it.
     const plan = importsTasks
-      ? planDAVEWebScheduleImport({ snapshot: snapshot!, importedScheduleItems: prepared.scheduleItems, pairingChoices: prepared.pairingChoices }) // his answers at the review (Q30)
+      ? planDAVEWebScheduleImport({ snapshot: snapshot!, importedScheduleItems: prepared.scheduleItems, pairingChoices: prepared.pairingChoices, document: prepared.document }) // his answers at the review (Q30); the file's role: a lookahead's rows (WS2)
       : null;
     try {
       await daveWebSupabaseGateway.uploadAuthorizedReferenceDocument({

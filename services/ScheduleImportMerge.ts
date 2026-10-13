@@ -11,6 +11,9 @@ import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { reconcileScheduleProgress } from './ScheduleProgressInvariant';
 import { sameScheduleCalendarDay, scheduleCalendarDay, scheduleCalendarDayKey } from './ScheduleCalendarDay';
 import {
+  schedulePriorityAsRead,
+  schedulePriorityHeSet,
+  schedulePriorityIsHis,
   scheduleTaskEarlierIds,
   scheduleTaskLinksFollowingShownTasks,
   scheduleTaskLinkTargets,
@@ -22,6 +25,9 @@ import {
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressCarriedFrom,
+  scheduleManagersOwnPercent,
+  scheduleProgressFlooredAtManagers,
+  scheduleProgressLeftStanding,
   scheduleProgressIsManagers,
   scheduleProgressJudgedAt,
   scheduleRowAsTask,
@@ -35,7 +41,7 @@ import {
   scheduleTaskRestatedByLookahead,
   scheduleTasksOnNotedDatesWhenCurrent,
 } from './ScheduleLookahead';
-import { scheduleItemAsLastSetOnItsOtherRow } from './ScheduleItemEditBase';
+import { scheduleItemActivityWithOtherRows, scheduleItemAsLastSetOnItsOtherRow, scheduleItemFieldAsRead, scheduleTaskOfRowId } from './ScheduleItemEditBase';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 
 /**
@@ -181,6 +187,13 @@ export type ScheduleImportMergeResult = Readonly<{
 
 export { SCHEDULE_UPDATE_PROGRESS_CONFIRMER, scheduleProgressIsManagers };
 
+/** The highest percent a master's file has stated on a row, after one more that stands on it (fileProgressPeak). */
+function scheduleFileProgressPeakAfter(saved: ScheduleItem, stands: Partial<ScheduleItem>, approvedAt: string): NonNullable<ScheduleItem['fileProgressPeak']> {
+  const stated = percentOf({ percentComplete: stands.percentComplete } as ScheduleItem);
+  const before = saved.fileProgressPeak;
+  return before && typeof before.statedAt === 'string' && Number(before.percentComplete) > stated ? before : { percentComplete: stated, statedAt: approvedAt };
+}
+
 function percentOf(item: ScheduleItem): number {
   const value = Number(item.percentComplete);
   return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : 0;
@@ -298,7 +311,14 @@ function withBlanksFilledFrom<T extends ScheduleItem>(row: T, task: Pick<Schedul
  */
 function withTextTakenNoted(row: ScheduleItem, filled: ScheduleItem, task: ScheduleItem): ScheduleItem {
   const unset = TYPED_TEXT_FIELDS.filter(field => !key(row[field]));
-  return { ...filled, textFromTask: { taskId: task.id, ...Object.fromEntries(unset.map(field => [field, task[field] ?? ''])) } };
+  // Schedule batch S5, item 1 (Medium; older, the same on Build 229): and the task's priority, when it is one he set
+  // (schedule batch S6, item 1: schedulePriorityIsHis). The row then says it took it, so it is weighed like the rest
+  // wherever rows meet. A task whose priority he never set gets the row's own, as before S5: the file's Critical
+  // column, or High when the finish is within a week of the import.
+  const his = schedulePriorityIsHis(task) ? { priority: scheduleItemFieldAsRead('priority', task.priority) as ScheduleItem['priority'] } : {};
+  // (With the mark his edit of it left, when the task's row has one: the priority he set, and when. Review pass 1, P1-1 / P1-2.)
+  const mark = schedulePriorityHeSet(task);
+  return { ...filled, ...his, ...(mark ? { prioritySetByHand: mark } : {}), textFromTask: { taskId: task.id, ...Object.fromEntries(unset.map(field => [field, task[field] ?? ''])), ...his } };
 }
 
 type TypedText = Partial<Pick<ScheduleItem, typeof TYPED_TEXT_FIELDS[number]>>;
@@ -772,7 +792,40 @@ function pairTaskRevisions(
   return pairs;
 }
 
-type RevisionGroup = Readonly<{ rows: readonly ScheduleItem[]; saved: readonly ScheduleItem[] }>;
+type RevisionGroup = Readonly<{
+  rows: readonly ScheduleItem[];
+  saved: readonly ScheduleItem[];
+  /** The tasks of that name no longer shown that a row may be (scheduleTasksNoLongerShown): only by his answer or the same Unique ID. */
+  returning?: readonly ScheduleItem[];
+}>;
+
+/**
+ * Build 231, S2 item 1 (older Medium; the coordinator's decisions of 6 Oct
+ * 2026): the tasks a master's row may be that are NO LONGER SHOWN. A master
+ * left the task out; its last row is hidden, with his percent, note, owner,
+ * controls and links on it. Listed again by a later master on other dates,
+ * it came back as a new task at 0%.
+ *
+ * One row per such task: a row not shown, that no row answers to, whose
+ * task shows on no other row (a task Set Active hid behind an older row is
+ * shown), not a task only lookaheads listed (those return by their own rule,
+ * review N1 M2), and not one he has said a row is not (owner answer Q30's
+ * "new task", and "new work" here: the answer sticks).
+ *
+ * A row is paired with one only by its Unique ID or by his answer at the
+ * import review (pairGroup); never by name and dates alone.
+ */
+function scheduleTasksNoLongerShown(existing: readonly ScheduleItem[], isCurrent: (item: ScheduleItem) => boolean): ScheduleItem[] {
+  const taskOf = scheduleTaskOfRowId(existing);
+  const shownTasks = new Set(existing.filter(isCurrent).map(item => taskOf(item.id)));
+  const answered = new Set(existing.flatMap(scheduleTaskEarlierIds));
+  const saidNot = new Set(existing.flatMap(item => item.notRevisionOfTaskIds || []));
+  const last = new Map<string, ScheduleItem>();
+  existing.filter(item => !isCurrent(item) && ownedByImport(item) && item.importedAsLookahead !== true && !statedOnlyByLookaheads(existing)(item) &&
+    !answered.has(item.id) && !saidNot.has(item.id) && !shownTasks.has(taskOf(item.id)))
+    .forEach(item => { const known = last.get(taskOf(item.id)); if (!known || timeOf(item.importedAt) > timeOf(known.importedAt)) last.set(taskOf(item.id), item); });
+  return [...last.values()];
+}
 type TwinRule = Parameters<typeof pairSameNamedTasks>[2];
 
 /** The rows of one task name, project and area, with the saved tasks they may revise (pairTaskRevisions). */
@@ -792,8 +845,11 @@ function revisionGroups(
     const group = [item.taskName, projectKey(item), item.locationName, ...(inFile ? [item.importBatchId] : [])].map(key).join('|');
     groups.set(group, [...(groups.get(group) || []), item]);
   });
+  // The tasks no longer shown that a master's row may be (S2 item 1): by his answer or its Unique ID only.
+  const noLongerShown = inFile && !lookahead ? scheduleTasksNoLongerShown(existing, isCurrent) : [];
   const candidates = [...groups.values()].map(rows => {
     const eligible = existing.filter(item => isCurrent(item) || inImport(item, rows[0].importBatchId));
+    const returningTasks = noLongerShown.filter(item => !inImport(item, rows[0].importBatchId) && sameTask(item, rows[0]));
     const strict = eligible.filter(item => sameTask(item, rows[0]));
     const saved = lookahead ? eligible.filter(item => sameTask(item, rows[0], true)) : strict;
     // Review N1 M2 (3 Oct 2026, caused by ada8ef6): a task only lookaheads listed leaves the list when a newer
@@ -803,17 +859,17 @@ function revisionGroups(
     if (inFile && saved.length === 0) {
       const returning = existing.filter(item => item.importedAsLookahead === true && sameTask(item, rows[0], lookahead));
       const returningStrict = returning.filter(item => sameTask(item, rows[0]));
-      return { rows, saved: returning, vague: returning.length !== returningStrict.length };
+      if (returning.length > 0 || returningTasks.length === 0) return { rows, saved: returning, vague: returning.length !== returningStrict.length };
     }
     // A lookahead row matched only loosely pairs with the one task it can be, never with either of two.
-    return { rows, saved, vague: saved.length !== strict.length };
+    return { rows, saved, vague: saved.length !== strict.length, returning: returningTasks };
   });
   const groupCount = new Map<string, number>();
   candidates.forEach(({ saved }) => saved.forEach(item => groupCount.set(item.id, (groupCount.get(item.id) || 0) + 1)));
   return candidates
     .filter(({ rows, saved, vague }) => (!vague || (rows.length === 1 && saved.length === 1)) &&
       saved.every(item => groupCount.get(item.id) === 1))
-    .map(({ rows, saved }) => ({ rows, saved }));
+    .map(({ rows, saved, returning }) => ({ rows, saved, ...(returning && returning.length > 0 ? { returning } : {}) }));
 }
 
 /**
@@ -828,7 +884,7 @@ function revisionGroups(
  * twins (pairSameNamedTasks).
  */
 function pairGroup(
-  { rows, saved }: RevisionGroup,
+  { rows, saved, returning = [] }: RevisionGroup,
   rule: TwinRule,
   choices?: ReadonlyMap<string, string | null>,
 ): Map<ScheduleItem, ScheduleItem> {
@@ -841,7 +897,8 @@ function pairGroup(
       if (!choices.has(row.id)) return;
       answered.add(row);
       const chosen = choices.get(row.id);
-      const item = chosen ? saved.find(candidate => candidate.id === chosen && !taken.has(candidate)) : undefined;
+      // (His answer may name a task no longer shown: "the same task", S2 item 1.)
+      const item = chosen ? [...saved, ...returning].find(candidate => candidate.id === chosen && !taken.has(candidate)) : undefined;
       if (item) take(row, item);
     });
   }
@@ -853,6 +910,12 @@ function pairGroup(
       if (same.length === 1) take(row, same[0]);
     });
   }
+  // S2 item 1 (a): the same Unique ID as a task no longer shown is that task, come back, whatever its dates. (After
+  // the twins shown: a row is one of those first.)
+  rows.filter(row => !answered.has(row) && !known.has(row) && uniqueId(row)).forEach(row => {
+    const same = returning.filter(item => !taken.has(item) && uniqueId(item) === uniqueId(row));
+    if (same.length === 1) take(row, same[0]);
+  });
   if (!rule.inFile) {
     rows.filter(row => !answered.has(row) && !known.has(row)).forEach(row => {
       const own = new Set([row.id, ...scheduleTaskEarlierIds(row)]);
@@ -957,6 +1020,13 @@ export type ScheduleImportPairingQuestion = Readonly<{
   rows: readonly ScheduleItem[];
   /** The app's best guess: each row's saved task, or null for a new task. */
   guess: Readonly<Record<string, string | null>>;
+  /**
+   * S2 item 1 (b): no task of this name is in his list; `saved` are tasks of the name that were on an earlier
+   * schedule and are no longer shown. "The same task, or new work?" Nothing is carried unless he says the same task.
+   */
+  returning?: true;
+  /** In a same-named question: the saved tasks among the choices that are no longer shown (S2 item 1). */
+  earlierIds?: readonly string[];
 }>;
 
 /**
@@ -992,34 +1062,55 @@ export function scheduleImportPairingQuestions({
   alsoAsk?: ReadonlySet<string>;
 }): ScheduleImportPairingQuestion[] {
   const rule: TwinRule = { lookahead: overlay, inFile: true, addedByLookahead: statedOnlyByLookaheads(existing) };
-  return revisionGroups(existing, imported, isCurrent, overlay, true).flatMap(group => {
+  return revisionGroups(existing, imported, isCurrent, overlay, true).flatMap((group): ScheduleImportPairingQuestion[] => {
     const { rows, saved } = group;
+    // S2 item 1 (b): a task of this name that is no longer shown, and a row of the file it may be. Asked, never
+    // guessed: what its Unique ID settles (the same: that task; another: not that task) is not asked about.
+    const settled = pairGroup(group, rule);
+    const earlier = (group.returning ?? []).filter(item => ![...settled.values()].includes(item) &&
+      rows.some(row => !settled.has(row) && !differentUniqueIds(row, item) && !saidNotRevision(row, item)));
+    const first = rows[0];
+    const groupKey = [first.taskName, projectKey(first), first.locationName].map(key).join('|');
+    const areaName = ([...saved, ...earlier].find(item => key(item.locationName))?.locationName || first.locationName || '').trim();
+    const projectName = (first.projectName || first.scheduleProjectName || '').trim();
+    const byStart = (items: readonly ScheduleItem[], inFile: boolean) => inStableOrder(items, inFile);
+    if (earlier.length > 0 && saved.length === 0) {
+      const open = rows.filter(row => !settled.has(row));
+      // (A row on exactly the days the task had is the best guess for it: what the import took unasked before.)
+      const onItsDays = (row: ScheduleItem) => earlier.filter(item => unchangedTask(item, row));
+      return [{
+        key: groupKey, taskName: first.taskName.trim(), projectName, areaName, returning: true as const,
+        title: `${first.taskName.trim()} in ${areaName || projectName} was on an earlier schedule: the same task, or new work?`,
+        saved: byStart(earlier, false),
+        rows: byStart(open, true),
+        guess: Object.fromEntries(open.map(row => [row.id, onItsDays(row).length === 1 ? onItsDays(row)[0].id : null])),
+      }];
+    }
+    // More rows than tasks of the name shown, and one no longer shown: the same-named question, with it among the choices.
+    const withEarlier = earlier.length > 0 && rows.length > saved.length;
     if (rows.length === 0 || saved.length === 0 || (rows.length < 2 && saved.length < 2)) return [];
-    if ([...rows, ...saved].every(item => key(item.sourceUniqueId))) return [];
+    if (!withEarlier && [...rows, ...saved].every(item => key(item.sourceUniqueId))) return [];
     // Two rows of one task (one answers to the other) shown at once are not twins: nothing to ask about them.
     const savedIds = new Set(saved.map(item => item.id));
     if (saved.some(item => scheduleTaskEarlierIds(item).some(id => savedIds.has(id)))) return [];
-    const guess = pairGroup(group, rule);
+    const guess = settled;
     const sameDays = pairOnSameDays(rows, saved, true);
     const readings = [sameDays, ...withRestPaired(sameDays, rows, saved), ...uniformSlipReadings(rows, saved)];
     // A reading that pairs a row with another saved task than the guess, or with one the guess leaves new.
     const disagrees = readings.some(reading => [...reading].some(([row, item]) => guess.get(row) !== item));
-    const first = rows[0];
-    const groupKey = [first.taskName, projectKey(first), first.locationName].map(key).join('|');
-    if (!disagrees && !tiedBetweenTwins(rows, saved, guess) && !alsoAsk?.has(groupKey)) return [];
-    const areaName = (saved.find(item => key(item.locationName))?.locationName || first.locationName || '').trim();
-    const projectName = (first.projectName || first.scheduleProjectName || '').trim();
-    const count = Math.max(saved.length, rows.length);
-    const byStart = (items: readonly ScheduleItem[], inFile: boolean) => inStableOrder(items, inFile);
+    if (!withEarlier && !disagrees && !tiedBetweenTwins(rows, saved, guess) && !alsoAsk?.has(groupKey)) return [];
+    const offered = withEarlier ? [...saved, ...earlier] : saved;
+    const count = Math.max(offered.length, rows.length);
     return [{
       key: groupKey,
       taskName: first.taskName.trim(),
       projectName,
       areaName,
       title: `${count} tasks named ${first.taskName.trim()} in ${areaName || projectName} — confirm which is which`,
-      saved: byStart(saved, false),
+      saved: byStart(offered, false),
       rows: byStart(rows, true),
       guess: Object.fromEntries(rows.map(row => [row.id, guess.get(row)?.id ?? null])),
+      ...(withEarlier ? { earlierIds: earlier.map(item => item.id) } : {}),
     }];
   });
 }
@@ -1314,6 +1405,26 @@ function scheduleTextCarriedToShownTask(
   return scheduleItemAsLastSetOnItsOtherRow(hidden, shown, row, now, known);
 }
 
+/**
+ * Build 231, S3 item 1 (the A5 recorded Low; the independent review's F02):
+ * G uploaded at 40%, David's 60% entered after it, H approved at 70% (above
+ * his, so H's row shows the file's 70% with his 60% kept under it), then G
+ * made current again showed G's 40%: the activation weighed only the row it
+ * hides, and H's row holds a file's percent. The percent David entered
+ * himself that the hidden row keeps under its file's (owner answer Q22's
+ * floor) is his latest word on the task: a row made current whose own file
+ * stated less, before he entered it, is floored at it, as a lookahead is.
+ * Read from the hidden row alone, never by following the task's earlier
+ * rows, which two devices can link differently.
+ */
+function scheduleProgressUnderHiddenFileCarried(hidden: ScheduleItem, shown: ScheduleItem, now: string): ScheduleItem | null {
+  if (scheduleProgressIsManagers(hidden) || scheduleProgressIsManagers(shown)) return null;
+  const his = scheduleManagersOwnPercent(hidden);
+  if (!his || !his.judgedAt || timeOf(his.judgedAt) <= Math.max(timeOf(shown.progressConfirmedAt), timeOf(shown.importedAt || shown.createdAt))) return null;
+  const floored = scheduleProgressFlooredAtManagers(shown, his.percent, his.judgedAt);
+  return floored ? { ...shown, ...floored, updatedAt: now } : null;
+}
+
 function progressCarried(
   before: readonly ScheduleItem[],
   after: readonly ScheduleItem[],
@@ -1329,7 +1440,9 @@ function progressCarried(
     pairs,
     carried: nowShown.flatMap(shown => {
       const hidden = pairs.get(shown);
-      const carried = hidden ? scheduleProgressCarriedFrom(hidden, shown, now) : null;
+      if (!hidden) return [];
+      const carried = scheduleProgressCarriedFrom(hidden, shown, now) ?? scheduleProgressUnderHiddenFileCarried(hidden, shown, now) ??
+        scheduleProgressLeftStanding(hidden, shown, now);
       return carried ? [carried] : [];
     }),
   };
@@ -1417,8 +1530,10 @@ export function mergeApprovedScheduleImportItems({
   // A row David answered is a new task never pairs by the import identity either (owner answer Q30), and is never
   // paired with those saved tasks later (notRevisionOfTaskIds, Set Active and Make Current).
   const answeredNew = (row: ScheduleItem) => Boolean(choices?.has(row.id) && !choices.get(row.id));
+  // (And the tasks no longer shown he was asked about: "new work" sticks, S2 item 1.)
+  const noLongerShown = overlay ? [] : scheduleTasksNoLongerShown(existing, isCurrent);
   const twinsSaidNotOf = (row: ScheduleItem): Partial<ScheduleItem> => {
-    const ids = answeredNew(row) ? existing.filter(item => isCurrent(item) && sameTask(item, row, overlay)).map(item => item.id) : [];
+    const ids = answeredNew(row) ? [...existing.filter(item => isCurrent(item) && sameTask(item, row, overlay)), ...noLongerShown.filter(item => sameTask(item, row))].map(item => item.id) : [];
     return ids.length > 0 ? { notRevisionOfTaskIds: ids } : {};
   };
   const lookaheadsOnly = statedOnlyByLookaheads(existing);
@@ -1478,7 +1593,13 @@ export function mergeApprovedScheduleImportItems({
     // M1 (sweep): lookahead L3 added Cleanup on 12/21 and L5 moved it to 12/22; master M6 then listed it on 12/21,
     // read as a repeat, and kept L5's older dates. A task only lookaheads stated has no master's word to repeat:
     // the master's row is the newer file, as for any task it moves.
-    const repeated = paired && !lookaheadsOnly(paired)
+    // Review pass 1 of Build 231's schedule round, P1-13 (Low, rare; caused by S2 item 1, the returning task): nor a
+    // task that was not in his list, which he called the same task. A lookahead moved Survey; a master left Survey out;
+    // that lookahead was deleted with its items on a device whose copy of Survey had never heard of it, so nothing gave
+    // the dates back; the next master listed Survey again on the days the master had it before, and it came back on the
+    // deleted lookahead's dates. The repeat rule is for a task he sees on a lookahead's dates. One that is not shown is
+    // held by no lookahead (it would be shown): the master's row is the newer word, as for any task it moves.
+    const repeated = paired && !lookaheadsOnly(paired) && isCurrent(pairedSaved!)
       ? scheduleRowRepeatsMasterBeforeLookahead(paired, importedItem)
       : { dates: false, percent: false };
     // A task entered by hand, on new dates: restated in place on the master's dates (A5 pass 17 M1).
@@ -1500,7 +1621,9 @@ export function mergeApprovedScheduleImportItems({
     const revision = (row: ScheduleItem): ScheduleItem => {
       if (!paired || paired.id === row.id) return row;
       const moved = withLinksOf(scheduleTaskRevisedFrom(withManagersPercentUnderFile(note ? { ...row, lookaheadOverlay: note } : row, paired), paired), paired);
-      const withHis = withControlsOf(moved, paired, true);
+      // And its activity notes, each once (schedule batch S5, item 1): no file states any.
+      const notes = scheduleItemActivityWithOtherRows(moved.activity, paired.activity);
+      const withHis = withControlsOf(notes ? { ...moved, activity: notes } : moved, paired, true);
       return withHis === moved || withHis.textFromTask ? withHis : { ...withHis, textFromTask: { taskId: paired.id } };
     };
     if (duplicate) {
@@ -1513,8 +1636,11 @@ export function mergeApprovedScheduleImportItems({
       // A file the task already belongs to, approved again, changes nothing (A5 pass 4 #1).
       if (newBatchId && batches.includes(key(newBatchId))) return;
       const rehome = owned && Boolean(newBatchId);
-      const fileProgress = repeated.percent ? null
+      const stands = repeated.percent ? null
         : scheduleFileProgressAboveManagers(duplicate, fileProgressFor(duplicate, importedItem, approvedAt), approvedAt);
+      // A master's percent that stands on the row it restates: the row keeps the highest one stated on it, and when
+      // (Build 231, S3 item 1; fileProgressPeak). A lookahead restates a task by its own rule, above, and writes none.
+      const fileProgress = stands ? { ...stands, fileProgressPeak: scheduleFileProgressPeakAfter(duplicate, stands, approvedAt) } : stands;
       const noted = scheduleTaskMasterRestated(duplicate, importedItem, approvedAt);
       // On the master's dates, as a lookahead restates a task (A5 pass 17 M1); a date the row leaves blank stays.
       const dates = {
@@ -1536,6 +1662,9 @@ export function mergeApprovedScheduleImportItems({
           ? {
               ...restated,
               ...(fileProgress || {}),
+              // What this master's file states for the row, standing or not (Build 231, S4 item 3; fileProgressLast).
+              // On a task an import owns: one he entered by hand is weighed against a master by its own rules.
+              ...(owned && scheduleRowStatesPercent(importedItem) ? { fileProgressLast: { percentComplete: percentOf(importedItem), statedAt: approvedAt } } : {}),
               ...(rehome ? {
                 locationName: key(restated.locationName) ? restated.locationName : importedItem.locationName,
                 alsoImportedInBatchIds: [...(restated.alsoImportedInBatchIds || []), newBatchId],
@@ -1644,10 +1773,15 @@ export function mergeApprovedScheduleImportItems({
   const withLinksTakenNoted = (item: ScheduleItem): ScheduleItem => (item.textFromTask && !fileStatesLinks.has(item.id)
     ? { ...item, textFromTask: { ...item.textFromTask, dependencies: scheduleTaskLinksOf(item) } } : item);
 
+  // Schedule batch S6, item 1: every row an import adds keeps the priority its own import gave it (priorityAsImported),
+  // also the row that took one he had set: what reads otherwise later is his, and the file's word is not lost.
+  const asImported = new Map(imported.map(item => [item.id, schedulePriorityAsRead(item.priority)]));
+  const withPriorityAsImported = (item: ScheduleItem): ScheduleItem => ({ ...item, priorityAsImported: asImported.get(item.id) ?? schedulePriorityAsRead(item.priority) });
+
   // A task changed here from a copy as shown is saved on its saved dates unless its dates changed (owner answer Q25).
   const unchanged = new Set(existing);
   return {
     next: next.map(item => (unchanged.has(item) ? item : scheduleItemAsSaved(item))),
-    additions: additions.map(withLinksTakenNoted).map(scheduleRowAsTask), rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds,
+    additions: additions.map(withLinksTakenNoted).map(withPriorityAsImported).map(scheduleRowAsTask), rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds,
   };
 }

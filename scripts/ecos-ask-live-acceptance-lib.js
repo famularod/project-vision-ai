@@ -37,10 +37,13 @@ const REQUIRED_VISUAL_TILE_BOUNDS = Object.freeze({
   '667:500:333:500': Object.freeze({ x: 2 / 3, y: 0.5, width: 1 / 3, height: 0.5 }),
 });
 const REQUIRED_VISUAL_TILE_KEYS = Object.freeze(Object.keys(REQUIRED_VISUAL_TILE_BOUNDS));
+// Build 231 E1 item 7: this repository's archived copy of the Ask ECOS
+// function (the folder under supabase/functions marked "not live") is no
+// longer in this list. It answers nobody, so evidence is not stamped against
+// it. The answering code is the runtime checkout, RUNTIME_CONTRACT_FILES.
 const CONTRACT_FILES = Object.freeze([
   'validation/ecos/ask-ecos-real-world-cases.json',
   'services/ECOSProjectQuestion.ts',
-  'supabase/functions/_archived-ecos-ask-project-not-live/index.ts',
   'supabase/functions/_shared/ecos-project-answer-policy.ts',
   'supabase/functions/_shared/ecos-drawing-evidence.ts',
   'supabase/migrations/20260804000000_ecos_document_search_index.sql',
@@ -492,16 +495,107 @@ const RUNTIME_CONTRACT_FILES = Object.freeze([
 ]);
 const RUNTIME_SHARED_DIR = 'supabase/functions/_shared';
 
+/**
+ * The checkout of the code that answers Ask ECOS questions. Build 231 E1
+ * item 7: there is no default. With ECOS_RUNTIME_REPO not set, the folder
+ * next to this repository (../runtime) was used. That is the archived
+ * runtime, pinned to a build that no longer answers, so evidence made with
+ * the defaults named the wrong server build. A checkout that says it is
+ * archived (a CANONICAL.md at its root) is refused for the same reason.
+ */
 function runtimeRepoRoot() {
   const configured = text(process.env.ECOS_RUNTIME_REPO);
-  const resolved = configured ? path.resolve(repoRoot, configured) : path.resolve(repoRoot, '..', 'runtime');
+  if (!configured) {
+    throw new Error(
+      'ECOS_RUNTIME_REPO is not set. Set it to the checkout of the code that answers Ask ECOS questions ' +
+      '(the canonical runtime repository). Release evidence is stamped against that code, never against a default folder.',
+    );
+  }
+  const resolved = path.resolve(repoRoot, configured);
   if (!fs.existsSync(path.join(resolved, RUNTIME_CONTRACT_FILES[1]))) {
     throw new Error(
       `The Ask ECOS runtime repository was not found at ${resolved}. ` +
       'Set ECOS_RUNTIME_REPO to the runtime checkout; release evidence must bind to the answering code.',
     );
   }
+  const refusal = runtimeCheckoutRefusal(resolved);
+  if (refusal) {
+    throw new Error(
+      `The repository at ${resolved} cannot be used for release evidence: ${refusal}. ` +
+      'Set ECOS_RUNTIME_REPO to the canonical runtime checkout; release evidence must bind to the answering code.',
+    );
+  }
   return resolved;
+}
+
+/** Why a checkout must not be used, from its CANONICAL.md; '' when it may be. A checkout with no such file may be. */
+function runtimeCheckoutRefusal(root) {
+  const noticePath = path.join(root, 'CANONICAL.md');
+  if (!fs.existsSync(noticePath)) return '';
+  let notice;
+  try {
+    notice = fs.readFileSync(noticePath, 'utf8');
+  } catch {
+    // Fails closed: a notice that is there and cannot be read is not a notice that says "canonical".
+    return 'its CANONICAL.md could not be read';
+  }
+  const verdict = canonicalNoticeVerdict(notice);
+  return verdict.use ? '' : verdict.because;
+}
+
+const NOT_IN_USE = '(?:archived|retired|deprecated|superseded|obsolete|decommissioned|frozen|read[- ]only)';
+const THIS_CHECKOUT = '(?:this|the)\\s+(?:repository|repo|checkout|copy|folder|directory|runtime|tree|code)';
+
+/**
+ * What a checkout's CANONICAL.md says about the checkout itself (review
+ * pass 1, L12). Only the first non-blank line used to be read, for the word
+ * "archived": a title with ARCHIVED on the next line, "RETIRED", or a
+ * comment first was taken for a checkout in use, and a canonical checkout
+ * that mentioned where the archived copy is was refused.
+ *
+ * The whole notice is read, comments and markdown marks aside, and it fails
+ * closed. A checkout is used only when the notice says plainly that this
+ * checkout is the canonical one, and nothing in it says it is archived,
+ * retired or the like. Anything else is refused with the reason: it says it
+ * is archived; it says the canonical runtime is somewhere else; or it does
+ * not say.
+ */
+function canonicalNoticeVerdict(notice) {
+  const lines = String(notice)
+    .replace(/<!--[\s\S]*?-->/g, '\n')
+    .replace(/<!--[\s\S]*$/, '')
+    .split(/\r?\n/)
+    // Markdown marks say nothing: headings, quotes, list marks, emphasis, code marks.
+    .map(line => line.replace(/[*_`]/g, '').replace(/^[\s#>-]+/, '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  const quoted = line => `"${line.slice(0, 160)}"`;
+  const saysNotInUse = line =>
+    // "ARCHIVED", "Retired on ...", "Status: archived"
+    new RegExp(`^(?:status\\s*[:=]\\s*)?${NOT_IN_USE}\\b`, 'i').test(line) ||
+    // "This repository is ARCHIVED", "The runtime in this folder is superseded", "This repo has been retired"
+    (new RegExp(`\\b${THIS_CHECKOUT}\\b[^.!?]{0,80}?\\b(?:is|was|has been)\\s+(?:now\\s+)?${NOT_IN_USE}\\b`, 'i').test(line) &&
+      !new RegExp(`\\b(?:is|was|has been)\\s+not\\s+${NOT_IN_USE}\\b`, 'i').test(line)) ||
+    // "This checkout is no longer the canonical runtime", "This repository is not canonical"
+    new RegExp(`\\b${THIS_CHECKOUT}\\b[^.!?]{0,80}?\\bis\\s+(?:no longer|not)\\s+(?:the\\s+)?(?:canonical|current|live|used|maintained)\\b`, 'i').test(line);
+  const saysCanonical = line =>
+    /^status\s*[:=]\s*canonical\b/i.test(line) ||
+    // "This repository is the canonical runtime", "This is the canonical Ask ECOS runtime"
+    new RegExp(`\\b(?:this|${THIS_CHECKOUT})\\s+is\\s+(?:the\\s+)?canonical\\b`, 'i').test(line) ||
+    // A title that names it and points nowhere: "Canonical Ask ECOS runtime"
+    /^canonical\b[^:=]*$/i.test(line);
+  // "Canonical Ask ECOS runtime: /somewhere", "Canonical: elsewhere", "The canonical runtime is at ..."
+  const saysCanonicalIsElsewhere = line =>
+    /\bcanonical\b[^.!?]*[:=]\s*\S/i.test(line) || /\bcanonical\b[^.!?]*\b(?:is|lives|moved)\s+(?:at|in|to|elsewhere)\b/i.test(line);
+
+  const notInUse = lines.find(saysNotInUse);
+  if (notInUse) return { use: false, because: `its CANONICAL.md says it is archived or retired (${quoted(notInUse)})` };
+  if (lines.some(saysCanonical)) return { use: true, because: 'its CANONICAL.md says it is the canonical checkout' };
+  const elsewhere = lines.find(saysCanonicalIsElsewhere);
+  if (elsewhere) return { use: false, because: `its CANONICAL.md says the canonical runtime is somewhere else (${quoted(elsewhere)})` };
+  return {
+    use: false,
+    because: 'its CANONICAL.md does not say plainly that this checkout is the canonical one. If it is, add the line "Status: canonical" to that file',
+  };
 }
 
 function runtimeContractFiles(root = runtimeRepoRoot()) {
@@ -518,6 +612,35 @@ function deployedRuntimePackageSha256(root = runtimeRepoRoot()) {
   const match = /expectedPackageSha256:\s*["']([a-f0-9]{64})["']/i.exec(shim);
   if (!match) throw new Error('The runtime ecos-ask-project shim does not pin an expectedPackageSha256.');
   return match[1];
+}
+
+/**
+ * Build 231 E1 item 7: the live gateway says which engine package answered
+ * each question (this response header; it refuses any package but the one
+ * it pins). Evidence names the answering code only when every answer came
+ * from the package the ECOS_RUNTIME_REPO checkout pins.
+ */
+const ANSWERING_PACKAGE_HEADER = 'x-ecos-agent-packaged-source-sha256';
+const ANSWERING_PACKAGE_UNREPORTED = 'unreported';
+
+/** What one live answer said about the package that produced it. */
+function answeringPackageOf(response) {
+  const reported = typeof response?.headers?.get === 'function' ? response.headers.get(ANSWERING_PACKAGE_HEADER) : '';
+  return canonicalSha256(reported) || ANSWERING_PACKAGE_UNREPORTED;
+}
+
+function answeringPackageFailures(reported, pinnedPackageSha256) {
+  const packages = Array.isArray(reported) ? [...new Set(reported.map(item => text(item)))] : [];
+  if (packages.length === 0 || packages.some(item => !canonicalSha256(item))) {
+    return ['The live service did not say which Ask ECOS package answered, so this evidence does not name the answering code.'];
+  }
+  const others = packages.filter(item => item.toLowerCase() !== pinnedPackageSha256);
+  return others.length > 0
+    ? [
+      `The live service answered with package ${others.join(', ')}, not the package the ECOS_RUNTIME_REPO checkout pins ` +
+      `(${pinnedPackageSha256}). This evidence does not name the answering code.`,
+    ]
+    : [];
 }
 
 function acceptanceContractHash(selectedDefinitionPath = definitionPath) {
@@ -554,9 +677,11 @@ function validateLiveAcceptanceResult(result, definition, now = new Date()) {
   if (result?.definitionSchemaVersion !== definition.schemaVersion) failures.push('Definition schema changed after the live run.');
   if (normalize(result?.projectName) !== normalize(definition.projectName)) failures.push('Live result is for the wrong project.');
   if (result?.acceptanceContractSha256 !== acceptanceContractHash()) failures.push('Ask ECOS code or acceptance cases changed after the live run.');
-  if (result?.runtimePackageSha256 !== deployedRuntimePackageSha256()) {
+  const pinnedPackageSha256 = deployedRuntimePackageSha256();
+  if (result?.runtimePackageSha256 !== pinnedPackageSha256) {
     failures.push('The deployed Ask ECOS runtime package changed after the live run.');
   }
+  failures.push(...answeringPackageFailures(result?.answeringPackageSha256s, pinnedPackageSha256));
   const completedAt = Date.parse(result?.completedAt || '');
   const maximumAgeMs = Number(definition.evidenceMaximumAgeHours) * 60 * 60 * 1000;
   if (!Number.isFinite(completedAt)) failures.push('Live result has no valid completion time.');
@@ -646,8 +771,12 @@ function configuredRepositoryPath(environmentName, fallbackPath) {
 }
 
 module.exports = {
+  ANSWERING_PACKAGE_HEADER,
   CONTRACT_FILES,
   RUNTIME_CONTRACT_FILES,
+  answeringPackageFailures,
+  answeringPackageOf,
+  canonicalNoticeVerdict,
   deployedRuntimePackageSha256,
   runtimeContractFiles,
   runtimeRepoRoot,

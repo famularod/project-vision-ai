@@ -117,16 +117,14 @@ describe('Review N2 L7: Keep Phone does not come back as a new question about hi
     expect(await queueOf(phone)).toEqual([]);
   });
 
-  it('Keep Phone whose own write lands with its answer lost says it was not resolved; Keep Phone again ends with his latest copy and no second card', async () => {
+  // Sync batch Y1 (item 5): Settings said "Conflict not resolved. Neither copy was changed." here, with his copy in
+  // the cloud, and he had to choose Keep Phone a second time. The cloud's copy is now read once after a write that
+  // was not confirmed: it is his copy, the upload finds it there (the cloud receipt), and the choice is made.
+  it('Keep Phone whose own write lands with its answer lost is found in the cloud and made at once; it ends with his latest copy and no second card', async () => {
     const { phone, ipad } = await cardWaits();
     await savesTwiceMoreWhileItWaits(phone);
     rig.mockCloud.lostAnswers = 1; // weak signal at the choice: its write lands, the answer does not come back
-    const conflict = (await conflictsOf(phone)).find(item => item.entity === 'project_update')!;
-    await expect(chooseInSettings(phone, conflict.id, 'keep_local')).rejects.toThrow(); // Settings: "Conflict not resolved"
-    expect(shows(cloudUpdate())).toEqual({ notes: PHONE_NOTE, area: 'Area 0', task: '' }); // his copy is in the cloud all the same
-    expect(await conflictsOf(phone)).toHaveLength(1);
-    at('2026-09-08T10:05:00.000Z');
-    await keepPhone(phone); // found in the cloud this time (the cloud receipt)
+    await keepPhone(phone); // chooseInSettings fails on any alert: none is shown
     await refresh(ipad);
 
     expect(await cardsSay(phone)).toEqual([]);

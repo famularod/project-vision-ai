@@ -33,7 +33,10 @@ const layers = [
   layer('Android production signing readiness', 'check:android-production-signing', 2),
   layer('App-shell architecture', 'test:architecture', 5),
   layer('Service boundaries', 'test:service-architecture', 5),
-  layer('Behavior and regression suite', 'test:behavior', 20),
+  // The strict in-band jest run with coverage took 6 minutes on 30 Sep 2026, 11 on 2 Oct and 17.5 on 6 Oct
+  // (7,812 tests): 20 minutes would soon stop a green run as a hang. 30 is the most any layer may have
+  // (MAX_LAYER_TIMEOUT_MS); when this run nears 25 minutes, split the step rather than raise the maximum.
+  layer('Behavior and regression suite', 'test:behavior', 30),
   layer('User-interface contracts', 'test:ui', 10),
   layer('Report truth and accounting', 'test:reporter', 5),
   layer('Core workflow source strings (greps App.tsx and screens; runs nothing)', 'test:e2e-core-flow', 5),

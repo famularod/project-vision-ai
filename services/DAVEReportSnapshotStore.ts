@@ -78,6 +78,11 @@ export type SenderIdKeychain = Readonly<{
   /** The app-storage id this install had before the move, kept here by the move (A6 pass 11 L4). */
   readFormer?: () => Promise<string | null>;
   writeFormer?: (id: string) => Promise<void>;
+  /**
+   * Where there is no Keychain (the web): the id this browser's sends carried before it took another (R2 item 2,
+   * 9 Oct 2026). The phone's Keychain objects do not define it, so nothing changes on the phone.
+   */
+  readFormerWithoutKeychain?: () => Promise<string | null>;
 }>;
 
 /**
@@ -287,7 +292,7 @@ async function savedReportSenderId(storage: SnapshotStorage, keychain: SenderIdK
 
 /** The id pass 9 kept in app storage, if this install had one: there until the move, then in the Keychain (A6 pass 11 L4). */
 async function formerReportSenderId(storage: SnapshotStorage, keychain: SenderIdKeychain): Promise<string | null> {
-  if (!await keychain.available().catch(() => false)) return null;
+  if (!await keychain.available().catch(() => false)) return (await keychain.readFormerWithoutKeychain?.().catch(() => null)) ?? null;
   return (await keychain.readFormer?.().catch(() => null)) || storage.getItem(SENDER_ID_KEY);
 }
 

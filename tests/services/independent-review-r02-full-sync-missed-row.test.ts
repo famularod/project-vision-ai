@@ -64,6 +64,13 @@ const mockCloud = {
   leftOutOfLists: new Set<string>(),
   /** Reads by id fail. */
   readsByIdFail: false,
+  /** The cloud's projects: the open ones, and the ones closed there (sync batch Y1). */
+  openProjects: [{ id: MOCK_PROJECT_ID, name: 'Alpha' }] as Array<{ id: string; name: string }>,
+  closedProjects: [] as Array<{ id: string; name: string }>,
+  /** The list of closed projects cannot be read. */
+  closedProjectsFail: false,
+  /** The deletion history cannot be asked about named records. */
+  deletionChecksFail: false,
 };
 const mockCopy = <T,>(value: T): T => (value === undefined ? value : JSON.parse(JSON.stringify(value)));
 const mockOk = <T,>(data: T) => ({ ok: true, configured: true, stubbed: false, data });
@@ -152,12 +159,24 @@ jest.mock('../../services/SupabaseService', () => {
     countCloudProjects: async () => mockOk(1),
     verifyDAVEAppOwner: async () => mockOk(true),
     getCurrentSessionAccessToken: async () => ({ ok: true, data: { status: 'token_present' } }),
-    listProjects: async () => { await mockRequest('projects:list'); return mockOk([{ id: MOCK_PROJECT_ID, name: 'Alpha' }]); },
-    listArchivedProjects: async () => mockOk([]),
-    createProject: async (input: { name: string }) => mockOk({ id: MOCK_PROJECT_ID, name: input.name }),
+    listProjects: async () => { await mockRequest('projects:list'); return mockOk(mockCopy(mockCloud.openProjects)); },
+    listArchivedProjects: async () => (mockCloud.closedProjectsFail ? mockDown() : mockOk(mockCopy(mockCloud.closedProjects))),
+    createProject: async (input: { name: string }) => {
+      const created = { id: `project-made-${mockCloud.openProjects.length}`, name: input.name };
+      mockCloud.openProjects.push(created);
+      mockCloud.writes.push(`${mockDevice}:project:${input.name}`);
+      return mockOk(mockCopy(created));
+    },
     listReferenceDocuments: async () => mockOk([]),
     upsertReferenceDocument: async (document: unknown) => mockOk(document),
     listDAVESyncTombstones: async () => { await mockRequest('tombstones:list'); return mockOk(mockCopy(mockCloud.tombstones)); },
+    // The deletion records the cloud holds now for these records of one kind (sync batch Y1, item 2).
+    listDAVESyncTombstonesForRecords: async (entityType: string, ids: string[]) => {
+      await mockRequest(`tombstones:ids:${ids.length}`);
+      if (mockCloud.deletionChecksFail) return mockDown();
+      const wanted = new Set(ids.map(id => id.trim().toLowerCase()));
+      return mockOk(mockCopy(mockCloud.tombstones.filter(tombstone => tombstone.entityType === entityType && wanted.has(tombstone.recordId.trim().toLowerCase()))));
+    },
     upsertDAVESyncTombstone: async (tombstone: { entityType: string; recordId: string; deletedAt: string }) => { addTombstones([tombstone]); return mockOk(tombstone); },
     upsertDAVESyncTombstones: async (list: Array<{ entityType: string; recordId: string; deletedAt: string }>) => { addTombstones(list); return mockOk(list); },
 
@@ -221,7 +240,7 @@ import { scheduleItemConflictFields } from '../../services/ScheduleItemEditBase'
 import { withProjectControlsEditMerged } from '../../services/VitruviusProjectControls';
 import { SUPABASE_COLLECTION_ANSWER_CAPPED, SUPABASE_COLLECTION_CHANGED_WHILE_READ, SUPABASE_COLLECTION_KEY_OUT_OF_ORDER } from '../../services/SupabaseCollectionPagination';
 import {
-  cloudProjectsMissedByLists, getOfflineQueue, getSyncConflicts, noteFieldUpdateEditOpened, queueProjectAreaRecord, queueProjectUpdateRecord,
+  cloudProjectsMissedByLists, getOfflineQueue, getSyncConflicts, noteFieldUpdateEditOpened, queueProjectAreaRecord, queueProjectCreate, queueProjectUpdateRecord,
   queueScheduleItemRecord, refreshFieldUpdateConflictCloudCopies, runScheduleItemCloudSync, sanitizeUserFacingSyncMessage, synchronizeLocalData,
   uploadPendingChanges,
 } from '../../services/SyncService';
@@ -298,10 +317,10 @@ async function edit(device: Device, itemId: string, change: Partial<ScheduleItem
 
 type SyncResult = Awaited<ReturnType<typeof synchronizeLocalData>>;
 /** Full Sync from Settings: synchronizeLocalData, then App.tsx's own apply of what it downloaded. */
-async function fullSync(device: Device, more: { areas?: ProjectArea[]; updates?: ProjectUpdate[] } = {}): Promise<SyncResult> {
+async function fullSync(device: Device, more: { areas?: ProjectArea[]; updates?: ProjectUpdate[]; projects?: string[] } = {}): Promise<SyncResult> {
   on(device);
   const result = await synchronizeLocalData({
-    projects: ['Alpha'], savedUpdates: more.updates ?? [], projectAreas: more.areas ?? [], scheduleItems: device.state, referenceDocuments: [],
+    projects: more.projects ?? ['Alpha'], savedUpdates: more.updates ?? [], projectAreas: more.areas ?? [], scheduleItems: device.state, referenceDocuments: [],
   });
   const apply = compiled<(recovered: unknown) => void>(`module.exports = (recovered) => { const failed = recovered.collectionErrors; ${FULL_SYNC_APPLY_SOURCE} };`, {
     normalizeScheduleItems: listCopy, isDAVESafeCloudScheduleRecord, migrateLegacyScheduleItem: identity,
@@ -373,6 +392,8 @@ beforeEach(() => {
   mockCloud.tombstones.length = 0; mockCloud.log.length = 0; mockCloud.writes.length = 0;
   mockCloud.stamp = 0; mockCloud.before = null; mockCloud.listsReadAsBuild229 = false;
   mockCloud.leftOutOfLists.clear(); mockCloud.readsByIdFail = false;
+  mockCloud.openProjects = [{ id: MOCK_PROJECT_ID, name: 'Alpha' }]; mockCloud.closedProjects = []; mockCloud.closedProjectsFail = false;
+  mockCloud.deletionChecksFail = false;
   mockDevice = 'phone';
 });
 afterEach(() => { jest.useRealTimers(); });
@@ -574,6 +595,8 @@ describe('independent review R02: the reads by id are batched', () => {
     expect(result.errors).toEqual([]);
     expect(requests('task:id:')).toEqual([]);
     expect(requests('tasks:ids:')).toEqual([]);
+    // Nothing is about to be created, so the deletion history is not asked a second time (sync batch Y1, item 2).
+    expect(requests('tombstones:ids:')).toEqual([]);
     expect(mockCloud.writes).toEqual([]);
     // Each read of the list is its four pages, once, and the empty page that ends a list whose last page was full.
     expect(requests('tasks:page:').length).toBe(5 * requests('tasks:page:0').length);
@@ -592,6 +615,8 @@ describe('independent review R02: the reads by id are batched', () => {
     // The confirmation asks for all 2,000 at once (20 requests of a hundred at the cloud: see the cloud-reads test);
     // each hundred is then read once more just before it is written.
     expect(requests('tasks:ids:')).toEqual(['tasks:ids:2000', ...Array.from({ length: 20 }, () => 'tasks:ids:100')]);
+    // And each hundred about to be created is asked about once in the deletion history (sync batch Y1, item 2).
+    expect(requests('tombstones:ids:')).toEqual(Array.from({ length: 20 }, () => 'tombstones:ids:100'));
   });
 
   it('250 queued rows of an approved schedule the cloud does not have: read by id together, not 250 times', async () => {
@@ -1114,6 +1139,210 @@ describe('independent review R02: a project neither cloud list returned', () => 
     expect(refresh).toContain("if (!missed) throw new Error('project_refresh_incomplete');");
     expect(refresh).toContain('[...activeProjectsResult.data, ...missed.active]');
     expect(refresh).toContain('[...archivedProjectsResult.data, ...missed.archived]');
+  });
+});
+
+/* Sync batch Y1 --------------------------------------------------------------------- */
+
+/**
+ * Left open by R02 (its notes, item 3): Full Sync creates a project whose name is not in the cloud's OPEN list. One
+ * that is CLOSED in the cloud under that name (closed on another device, which this one has not heard yet) was made
+ * again as a second, open project; everything of the project then stopped uploading with "project identity
+ * ambiguous". The queue's own create has asked both lists since audit A3 pass 2. Full Sync asks the same function.
+ */
+describe('sync batch Y1 (item 1): Full Sync does not make a second copy of a project that is closed in the cloud', () => {
+  const projectWrites = () => mockCloud.writes.filter(write => write.includes(':project:'));
+
+  it('a project closed in the cloud and still open on this device is not created again', async () => {
+    const phone = newDevice('phone');
+    mockCloud.closedProjects = [{ id: 'p-bravo', name: 'Bravo Tower' }];
+
+    const result = await fullSync(phone, { projects: ['Alpha', 'Bravo Tower'] });
+
+    // It was created: the cloud then held "Bravo Tower" twice, one closed and one open.
+    expect(projectWrites()).toEqual([]);
+    expect(mockCloud.openProjects.map(project => project.name)).toEqual(['Alpha']);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('the name is matched as the queue matches it: letter case and outer spaces aside', async () => {
+    const phone = newDevice('phone');
+    mockCloud.closedProjects = [{ id: 'p-bravo', name: 'bravo tower ' }];
+
+    await fullSync(phone, { projects: ['Alpha', ' Bravo Tower'] });
+
+    expect(projectWrites()).toEqual([]);
+  });
+
+  it('a project the cloud has in neither list is created, once, as before', async () => {
+    const phone = newDevice('phone');
+
+    const result = await fullSync(phone, { projects: ['Alpha', 'Bravo Tower'] });
+
+    expect(projectWrites()).toEqual(['phone:project:Bravo Tower']);
+    expect(result.errors).toEqual([]);
+    expect(result.details.projectsUploaded).toBe(1);
+  });
+
+  it('when the list of closed projects cannot be read the project is not created, and the sync says so', async () => {
+    const phone = newDevice('phone');
+    mockCloud.closedProjects = [{ id: 'p-bravo', name: 'Bravo Tower' }];
+    mockCloud.closedProjectsFail = true;
+
+    const result = await fullSync(phone, { projects: ['Alpha', 'Bravo Tower'] });
+
+    expect(projectWrites()).toEqual([]);
+    expect(result.errors).toEqual(['Project “Bravo Tower” could not sync. Network request failed']);
+
+    // The list answers again: still not created, and nothing more to say.
+    mockCloud.closedProjectsFail = false;
+    const next = await fullSync(phone, { projects: ['Alpha', 'Bravo Tower'] });
+    expect(projectWrites()).toEqual([]);
+    expect(next.errors).toEqual([]);
+  });
+
+  it('the queue\'s own create gives the same answer (a guard: one question, asked the same way by both)', async () => {
+    newDevice('phone');
+    mockCloud.closedProjects = [{ id: 'p-bravo', name: 'Bravo Tower' }];
+    await queueProjectCreate('Bravo Tower');
+
+    const result = await uploadPendingChanges();
+
+    expect(projectWrites()).toEqual([]);
+    expect(result.errors).toEqual([]);
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
+  it('Full Sync asks that question through the queue\'s function, not a second copy of it', () => {
+    const SYNC = fs.readFileSync(path.resolve(__dirname, '../../services/SyncService.ts'), 'utf8');
+    const fullSyncSource = SYNC.slice(SYNC.indexOf('export async function synchronizeLocalData('), SYNC.indexOf('\nexport ', SYNC.indexOf('export async function synchronizeLocalData(') + 10));
+    expect(fullSyncSource).toContain('await cloudProjectNameExists(normalizedName)');
+    expect(fullSyncSource).not.toContain('listArchivedProjects(');
+    // Three known places ask the cloud for closed projects: the name check, a field update's closed project, and
+    // (sync batch Y4, item 3) what to tell him when the project his new task belongs to was closed elsewhere while
+    // this phone's create waited. A fourth would be a copy: use one of these.
+    expect(SYNC.split('listArchivedProjects()').length - 1).toBe(3);
+  });
+});
+
+/**
+ * Left open by R02 (its notes, item 5): the deletion history is read once, when a sync starts. A task deleted on
+ * another device in the seconds after that read has no row any more and no deletion record this device has heard
+ * of, so it read as new to the cloud and was sent back; the next sync took it away again. The history is now asked
+ * once more for just the ids about to be created.
+ */
+describe('sync batch Y1 (item 2): a record deleted on another device after this sync read the deletion history is not sent back', () => {
+  const captured = { id: 'area-1', projectName: 'Alpha', name: 'North Lot', latitude: 33.9, longitude: -118.2, radiusFeet: 100,
+    locationCapturedAt: '2026-09-09T12:00:00.000Z', updatedAt: '2026-09-09T12:00:00.000Z' } as unknown as ProjectArea;
+  /** The iPad deletes the task just after the phone has read the deletion history: before the phone lists the cloud's tasks. */
+  function ipadDeletesAfterTheHistoryWasRead(id: string) {
+    beforeRequest('tasks:page:0', 1, () => {
+      mockCloud.tasks.delete(id);
+      mockCloud.tombstones.push({ entityType: 'schedule_item', recordId: id, deletedAt: new Date().toISOString() });
+      mockCloud.writes.push(`ipad:delete:${id}`);
+    });
+  }
+
+  it('the task is not written back, nothing is reported, and the next sync takes it off this device', async () => {
+    seedTasks(3);
+    const phone = newDevice('phone');
+    synced(phone);
+    const doomed = taskId(2);
+    ipadDeletesAfterTheHistoryWasRead(doomed);
+    mockCloud.log.length = 0;
+
+    const result = await fullSync(phone);
+
+    // It was sent back as a new task: the cloud had it again, on every device, until the next sync.
+    expect(cloudTask(doomed)).toBeUndefined();
+    expect(writesBy(phone)).toEqual([]);
+    expect(result.errors).toEqual([]);
+    // One question, about the one task that was about to be created.
+    expect(requests('tombstones:ids:')).toEqual(['tombstones:ids:1']);
+
+    mockCloud.before = null;
+    await fullSync(phone);
+    expect(onDevice(phone, doomed)).toBeUndefined();
+    expect(cloudTask(doomed)).toBeUndefined();
+    expect(writesBy(phone)).toEqual([]);
+  });
+
+  it('a deletion record that keeps the id in another letter case is still found', async () => {
+    seedTasks(1);
+    const phone = newDevice('phone');
+    synced(phone);
+    const made = task(900, { id: 'MASTER F-9' });
+    setter(phone)([...phone.state, made]);
+    mockCloud.tombstones.push({ entityType: 'project_area', recordId: 'MASTER F-9', deletedAt: T0 }); // another kind of record: not this task
+    beforeRequest('tasks:page:0', 1, () => { mockCloud.tombstones.push({ entityType: 'schedule_item', recordId: 'master f-9', deletedAt: new Date().toISOString() }); });
+
+    await fullSync(phone);
+
+    expect(cloudTask('MASTER F-9')).toBeUndefined();
+    expect(writesBy(phone)).toEqual([]);
+  });
+
+  it('a task that really is new still goes up, after one question for it', async () => {
+    seedTasks(3);
+    const phone = newDevice('phone');
+    synced(phone);
+    setter(phone)([...phone.state, task(900, { notes: 'Made on the phone' })]);
+    mockCloud.log.length = 0;
+
+    const result = await fullSync(phone);
+
+    expect(result.errors).toEqual([]);
+    expect(shows(cloudTask(taskId(900)))).toEqual([0, 'Made on the phone', '']);
+    expect(writesBy(phone)).toEqual([`phone:task:${taskId(900)}`]);
+    expect(requests('tombstones:ids:')).toEqual(['tombstones:ids:1']);
+  });
+
+  it('when the deletion history cannot be asked the task is not sent, the sync says so, and the next sync sends it', async () => {
+    seedTasks(3);
+    const phone = newDevice('phone');
+    synced(phone);
+    setter(phone)([...phone.state, task(900, { notes: 'Made on the phone' })]);
+    mockCloud.deletionChecksFail = true;
+
+    const result = await fullSync(phone);
+
+    const NOT_SENT = 'Schedule task “Task 900” was not sent. Whether it was deleted on another device could not be checked just before sending, so this device\'s copy was kept here and will be checked again at the next sync. Network request failed';
+    expect(writesBy(phone)).toEqual([]);
+    expect(result.errors).toEqual([NOT_SENT]);
+    expect(onDevice(phone, taskId(900))).toMatchObject({ notes: 'Made on the phone' });
+
+    mockCloud.deletionChecksFail = false;
+    const next = await fullSync(phone);
+    expect(next.errors).toEqual([]);
+    expect(writesBy(phone)).toEqual([`phone:task:${taskId(900)}`]);
+  });
+
+  it('a GPS area deleted on another device in that moment is not sent back either', async () => {
+    const phone = newDevice('phone');
+    beforeRequest('areas:page:0', 1, () => { mockCloud.tombstones.push({ entityType: 'project_area', recordId: 'area-1', deletedAt: new Date().toISOString() }); });
+    mockCloud.log.length = 0;
+
+    const result = await fullSync(phone, { areas: [captured] });
+
+    expect(mockCloud.areas.has('area-1')).toBe(false);
+    expect(writesBy(phone)).toEqual([]);
+    expect(result.errors).toEqual([]);
+    expect(requests('tombstones:ids:')).toEqual(['tombstones:ids:1']);
+  });
+
+  it('a task whose row another device changed is weighed as before: the deletion history is not asked about it', async () => {
+    seedTasks(3);
+    const phone = newDevice('phone');
+    synced(phone);
+    const id = taskId(1);
+    setter(phone)(phone.state.map(item => item.id !== id ? item : { ...item, owner: 'Mike', updatedAt: '2026-09-10T07:59:00.000Z' }));
+    mockCloud.log.length = 0;
+
+    const result = await fullSync(phone);
+
+    expect(result.errors).toEqual([]);
+    expect(writesBy(phone)).toEqual([`phone:task:${id}`]);
+    expect(requests('tombstones:ids:')).toEqual([]);
   });
 });
 

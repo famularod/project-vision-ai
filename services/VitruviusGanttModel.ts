@@ -1,5 +1,6 @@
 import type { ScheduleItem } from '../types';
 import { plainDateAtInstant, projectTimeZoneOrDefault } from './ProjectDateTime';
+import { scheduleDayIsSupported } from './ScheduleInputLimits';
 import { buildVitruviusScheduleHierarchy } from './VitruviusScheduleWorkspace';
 
 export type VitruviusGanttZoom = 'day' | 'week' | 'month';
@@ -45,6 +46,15 @@ export type VitruviusGanttRow = Readonly<{
   milestone: boolean;
   summary: boolean;
   datesDerivedFromChildren: boolean;
+  /**
+   * The task's own start or finish is a real day outside the years the
+   * schedule takes (2000 through 2100): an old file, or a year mistyped as
+   * 0202 or 9999 (review pass 1, L3). The row is still listed with its dates
+   * as stored, but it has no bar (left and width are null) and its dates do
+   * not stretch the timeline: one such task made it build a column for every
+   * week back to the year 202. Nothing about the task is changed.
+   */
+  outsideSupportedYears: boolean;
 }>;
 
 export type VitruviusGanttModel = Readonly<{
@@ -104,8 +114,9 @@ export function buildVitruviusGanttModel({
       : spanDays
         ? Math.max(dayWidth, spanDays * dayWidth)
         : null;
-    const baselineStart = parseVitruviusScheduleDate(row.item.baselineStartDate);
-    const baselineFinish = parseVitruviusScheduleDate(row.item.baselineFinishDate);
+    // A baseline with a year the schedule does not take is not drawn either.
+    const baselineStart = supportedDay(parseVitruviusScheduleDate(row.item.baselineStartDate));
+    const baselineFinish = supportedDay(parseVitruviusScheduleDate(row.item.baselineFinishDate));
     const baselineLeft = baselineStart
       ? calendarDayDifference(rangeStartDate, baselineStart) * dayWidth
       : null;
@@ -117,8 +128,8 @@ export function buildVitruviusGanttModel({
       projectName: row.projectName,
       depth: row.depth,
       childCount: row.childCount,
-      startDate: start ? formatIsoDate(start) : null,
-      finishDate: finish ? formatIsoDate(finish) : null,
+      startDate: shown(start, dates?.outsideStart),
+      finishDate: shown(finish, dates?.outsideFinish),
       left,
       width,
       progressWidth: width === null
@@ -131,6 +142,7 @@ export function buildVitruviusGanttModel({
       milestone: row.item.isMilestone === true,
       summary: row.item.isSummary === true || row.childCount > 0,
       datesDerivedFromChildren: Boolean(dates?.derived),
+      outsideSupportedYears: Boolean(dates?.outsideStart || dates?.outsideFinish),
     });
   });
   const todayOffset = calendarDayDifference(rangeStartDate, todayDate);
@@ -212,11 +224,32 @@ export function parseVitruviusScheduleDate(value: string | null | undefined): Da
     : null;
 }
 
+/** The day, when it is in the years the schedule takes; otherwise nothing to place. */
+function supportedDay(day: Date | null) {
+  return day && scheduleDayIsSupported(day) ? day : null;
+}
+
+/** A row's date as listed: where it is placed, or the stored day that has no place on the timeline. */
+function shown(placed: Date | null, outside: Date | null | undefined) {
+  const day = outside || placed;
+  return day ? formatIsoDate(day) : null;
+}
+
+/**
+ * Where each item sits: its own dates, or for a phase the span of its tasks.
+ * `start` and `finish` are only ever days the schedule takes (2000 through
+ * 2100), so nothing built from them can be centuries wide. An item whose own
+ * start or finish is outside those years is not placed at all; the stored
+ * days are kept in `outsideStart` and `outsideFinish` so the row can still
+ * show them (review pass 1, L3).
+ */
 function derivedScheduleDates(items: readonly ScheduleItem[]) {
   type DerivedDateRange = {
     start: Date | null;
     finish: Date | null;
     derived: boolean;
+    outsideStart?: Date | null;
+    outsideFinish?: Date | null;
   };
   const childrenByParent = new Map<string, ScheduleItem[]>();
   items.forEach(item => {
@@ -235,8 +268,22 @@ function derivedScheduleDates(items: readonly ScheduleItem[]) {
       return { start: null, finish: null, derived: false };
     }
     visiting.add(item.id);
-    const ownStart = parseVitruviusScheduleDate(item.startDate);
-    const ownFinish = parseVitruviusScheduleDate(item.finishDate);
+    const storedStart = parseVitruviusScheduleDate(item.startDate);
+    const storedFinish = parseVitruviusScheduleDate(item.finishDate);
+    if ((storedStart && !supportedDay(storedStart)) || (storedFinish && !supportedDay(storedFinish))) {
+      const unplaced: DerivedDateRange = {
+        start: null,
+        finish: null,
+        derived: false,
+        outsideStart: storedStart,
+        outsideFinish: storedFinish || storedStart,
+      };
+      visiting.delete(item.id);
+      result.set(item.id, unplaced);
+      return unplaced;
+    }
+    const ownStart = storedStart;
+    const ownFinish = storedFinish;
     const childRanges: DerivedDateRange[] = (childrenByParent.get(item.id) || []).map(calculate);
     const childStarts = childRanges
       .map(range => range.start)
@@ -385,7 +432,8 @@ function calendarDayDifference(left: Date, right: Date) {
 }
 
 function formatIsoDate(value: Date) {
-  return `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, '0')}-${String(value.getUTCDate()).padStart(2, '0')}`;
+  // Four digits for the year, so a stored year such as 202 reads 0202 and not 202.
+  return `${String(value.getUTCFullYear()).padStart(4, '0')}-${String(value.getUTCMonth() + 1).padStart(2, '0')}-${String(value.getUTCDate()).padStart(2, '0')}`;
 }
 
 const MONTHS = [

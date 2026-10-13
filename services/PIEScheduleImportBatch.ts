@@ -4,6 +4,7 @@ import {
   SCHEDULE_IMPORT_NEEDS_PROJECT,
   scheduleImportDateWarnings,
 } from './ScheduleImportScopeGuard';
+import { scheduleDatesToCheck } from './ScheduleInputLimits';
 import {
   bindScheduleImportBatch,
   scheduleItemsForExactImportBatch,
@@ -61,11 +62,18 @@ export type PIEScheduleProjectGroup = {
   items: ScheduleItem[];
 };
 
+/**
+ * 'date check': the row has its dates, but one names a real day outside 2000
+ * through 2100, nearly always a mistyped year (review pass 1, L3). Like a
+ * missing area or owner it marks the row for a look and does not stop the
+ * import (scheduleImportItemHasCoreFacts does not ask about it).
+ */
 export type PIEScheduleImportReviewField =
   | 'task'
   | 'project'
   | 'area'
   | 'date'
+  | 'date check'
   | 'owner';
 
 export function scheduleImportReviewFields(
@@ -73,16 +81,15 @@ export function scheduleImportReviewFields(
 ): PIEScheduleImportReviewField[] {
   const completionVerification = scheduleItemNeedsCompletionVerification(item);
   const hasDateDefect = scheduleImportDateWarnings(item).length > 0;
+  const needsDate = hasDateDefect || (!completionVerification && !item.finishDate.trim());
 
   return [
     !item.taskName.trim() ? 'task' : null,
     !item.projectName.trim() ||
       item.projectName.trim() === SCHEDULE_IMPORT_NEEDS_PROJECT ? 'project' : null,
     !item.locationName.trim() ? 'area' : null,
-    hasDateDefect ||
-      (!completionVerification && !item.finishDate.trim())
-      ? 'date'
-      : null,
+    needsDate ? 'date' : null,
+    !needsDate && scheduleDatesToCheck(item).length > 0 ? 'date check' : null,
     !item.owner.trim() ? 'owner' : null,
   ].filter(Boolean) as PIEScheduleImportReviewField[];
 }

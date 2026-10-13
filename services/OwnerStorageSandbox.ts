@@ -228,6 +228,75 @@ export function createOwnerStorageSandbox({
   });
 }
 
+/**
+ * Review pass 1, sync G5 (owner answer Q45, 6 Oct 2026). Whether this phone's account boundary has a record that
+ * names an account other than `ownerId`. Reads only.
+ *
+ * Asked once per account by the deletion history, about the records an earlier build left on the phone: those
+ * carry nothing that says whose they are, and that build could save one account's records into another's list
+ * when the account changed in the middle of a sync. With one account only on the phone nothing can have been
+ * mixed. The boundary's own record of accounts counts as "yes" when it cannot be read.
+ *
+ * Second review, sync N2 (caused by the G5 fix; the coordinator's decision). "Yes" needs a trace that NAMES
+ * another account: the boundary's record of accounts, another account's stored data, or a set-aside record that
+ * says it was most likely another account's. This also answered "yes" for ANY record of data set aside while
+ * nobody was signed in. One account signing out and in again, with something of its own still finishing, leaves
+ * such a record, so a phone that had only ever had one account was taken for a phone that had had two: a
+ * deletion it made with no signal on the last build, not yet uploaded, was then marked "account not known",
+ * never uploaded and in no answer, and what it deleted came back. A set-aside record that names this account,
+ * names nobody or cannot be read is not another account: such a phone is treated as the last build treated it.
+ */
+export async function anotherAccountHasUsedThisPhone(
+  storage: Pick<OwnerScopedStorage, 'getItem'> & Readonly<{ getAllKeys?: () => Promise<readonly string[]> }>,
+  ownerId: string,
+): Promise<boolean> {
+  try {
+    const metadata = parseMetadata(await storage.getItem(OWNER_STORAGE_SANDBOX_METADATA_KEY), '');
+    if ([metadata.activeOwnerId, metadata.legacyAssignedOwnerId, metadata.lastOwnerId]
+      .some(known => known !== null && known !== ownerId)) return true;
+    if (typeof storage.getAllKeys !== 'function') return false;
+    const own = `${OWNER_STORAGE_NAMESPACE_PREFIX}${encodeURIComponent(ownerId)}/`;
+    const keys = await storage.getAllKeys();
+    if (keys.some(key => key.startsWith(OWNER_STORAGE_NAMESPACE_PREFIX) && !key.startsWith(own))) return true;
+    for (const key of keys) {
+      if (key.startsWith(OWNER_STORAGE_QUARANTINE_PREFIX) &&
+        setAsideRecordNamesAnotherAccount(await storage.getItem(key), ownerId)) return true;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** Whether a set-aside record says it was most likely the data of an account other than `ownerId` (see above). */
+function setAsideRecordNamesAnotherAccount(raw: string | null, ownerId: string): boolean {
+  try {
+    const suspected: unknown = (JSON.parse(raw ?? 'null') as { suspectedOwnerId?: unknown } | null)?.suspectedOwnerId;
+    return typeof suspected === 'string' && suspected.trim().length > 0 && suspected.trim() !== ownerId;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Second review, sync N3 (owner answer Q45, 6 Oct 2026). The account whose stored data is in front on this phone
+ * right now, by the boundary's own record: null when nobody's is, while a switch of storage is half done, or when
+ * the record cannot be read. Reads only.
+ *
+ * The app is told of a sign-in before the storage has been switched to that account, so "who is signed in" alone
+ * does not say whose data is in front. Asked before something kept in memory for one account is saved again.
+ */
+export async function ownerWhoseStorageIsInFront(
+  storage: Pick<OwnerScopedStorage, 'getItem'>,
+): Promise<string | null> {
+  try {
+    if (await storage.getItem(OWNER_STORAGE_SANDBOX_JOURNAL_KEY)) return null;
+    return parseMetadata(await storage.getItem(OWNER_STORAGE_SANDBOX_METADATA_KEY), '').activeOwnerId;
+  } catch {
+    return null;
+  }
+}
+
 export function isOwnerSensitiveCanonicalStorageKey(key: string): boolean {
   return (
     key.startsWith('projectPhotoUpdate.') ||

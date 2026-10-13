@@ -18,6 +18,7 @@ import { resolveWebReportWordMedia } from '../../services/ReportWordMedia.web';
 import type { ProjectUpdate } from '../../types';
 import {
   FAKE_TRANSPARENT,
+  expectFakeDeviceLetGoOfEveryPicture,
   fakeFormatOf,
   fakeImageBytes,
   fakeImageGetSize,
@@ -86,6 +87,8 @@ beforeEach(() => {
 afterEach(() => {
   restoreBrowser();
   jest.restoreAllMocks();
+  // Review pass 1, L6: the image tool holds a picture until it is released, as the real one does.
+  expectFakeDeviceLetGoOfEveryPicture();
 });
 
 describe('a picture with a transparent background, in the desktop Word report', () => {

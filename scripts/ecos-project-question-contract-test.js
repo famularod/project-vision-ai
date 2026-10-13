@@ -3,6 +3,10 @@ const path = require('path');
 
 const root = path.resolve(__dirname, '..');
 const read = relative => fs.readFileSync(path.join(root, relative), 'utf8');
+// NOT THE LIVE SERVICE: this is the repository's archived copy of the Ask ECOS
+// function. The live function is deployed from the runtime repository
+// (independent review R03 / R04). Checks against `edge` below describe the
+// archived copy only, and the last line this script prints says so.
 const edge = read('supabase/functions/_archived-ecos-ask-project-not-live/index.ts');
 const migration = read('supabase/migrations/20260804010000_ecos_project_question_controls.sql');
 const app = read('App.tsx');
@@ -318,3 +322,7 @@ if (failures.length) {
   process.exit(1);
 }
 checks.forEach(([label]) => console.log(`PASS: ${label}`));
+console.log(
+  'NOTE: every check of the Ask ECOS function above read supabase/functions/_archived-ecos-ask-project-not-live/index.ts, ' +
+  "this repository's archived copy, which is not deployed. Those checks say nothing about the live Ask ECOS service.",
+);
