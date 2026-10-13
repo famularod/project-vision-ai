@@ -1667,24 +1667,22 @@ function scheduleStatusSummary(fusedEvidence: PIEFusedEvidence) {
   return 'No urgent schedule concern is detected from imported items.';
 }
 
+/**
+ * The runtime's own "what changed" sentence (intelligentSummary.whatChanged:
+ * its briefings' "what changed", and what memory recall, pattern matching
+ * and evidence quality are handed as the new evidence).
+ *
+ * Build 232 item 3 part 3 (the coordinator's decision): it took the FIRST
+ * update in the list this device holds as the latest, so the device that
+ * recorded an update and the device that received it by sync were handed
+ * two different "latest" updates. It now takes the newest by the update's
+ * own date, by the one rule the written report reads them by
+ * (`fieldUpdatesNewestFirst`), and the task in focus the same way
+ * (`taskInScheduleFocus`). Its count of days stays ("Due in 4 days"): it is
+ * read on the day, not sent.
+ */
 function whatChangedSummary(fusedEvidence: PIEFusedEvidence) {
-  const latestUpdate = fusedEvidence.userUpdateEvidence[0];
-  const latestPhoto = fusedEvidence.photoEvidence[0];
-  const nextSchedule = fusedEvidence.scheduleEvidence.find(
-    item => item.isOverdue || item.isUpcoming7 || item.isUpcoming14,
-  );
-
-  return uniqueText([
-    latestUpdate?.notes
-      ? `Latest update: ${truncate(latestUpdate.notes, 140)}`
-      : null,
-    latestPhoto?.caption
-      ? `Latest photo: ${truncate(latestPhoto.caption, 100)}`
-      : null,
-    nextSchedule
-      ? `Schedule focus: ${nextSchedule.taskName} (${nextSchedule.dueLabel}).`
-      : null,
-  ]).join(' ') || 'No recent change is visible from current evidence.';
+  return whatChangedSentence(fusedEvidence, task => task.dueLabel);
 }
 
 /**
@@ -1800,13 +1798,14 @@ function taskInScheduleFocus(scheduleEvidence: readonly PIEScheduleEvidence[]) {
 /**
  * The "what changed" sentence as the WRITTEN report prints it, in its WORK
  * AREAS / PHOTO NOTES section (Build 232 item 2 part A). The same three parts
- * as `whatChangedSummary`, which the app's own screens read, with one
- * difference, so that two devices write the same words: the latest update
- * and the latest photo are the newest by the update's own date
- * (`fieldUpdatesNewestFirst`), not the first in this device's list.
+ * as `whatChangedSummary`, the runtime's own, and since Build 232 item 3
+ * part 3 the same latest update and latest photo: the newest by the
+ * update's own date (`fieldUpdatesNewestFirst`), not the first in this
+ * device's list.
  *
- * Part B (the coordinator's decision): and a second, so that two days write
- * the same words. The task in focus is given its DATE, as the rest of the
+ * Part B (the coordinator's decision): one difference from the runtime's
+ * own, so that two days write the same words. The task in focus is given
+ * its DATE, as the rest of the
  * written report gives a task's date ("due 10/17/2026", the date as the
  * schedule holds it), not a count of days from today ("Due in 4 days", "Due
  * tomorrow", "Due today", "3 days overdue"): that read differently every
@@ -1825,6 +1824,14 @@ export function whatChangedForWrittenReport(
   }>,
   { taskDate = true }: Readonly<{ taskDate?: boolean }> = {},
 ) {
+  return whatChangedSentence(fusedEvidence, task => (taskDate ? `${task.isOverdue ? 'was due' : 'due'} ${task.dueDate}` : null));
+}
+
+/** "Latest update: ... Latest photo: ... Schedule focus: <task> (<what the reader is told of its date>)." */
+function whatChangedSentence(
+  fusedEvidence: Parameters<typeof whatChangedForWrittenReport>[0],
+  taskInBrackets: (task: PIEScheduleEvidence) => string | null,
+) {
   const updates = fieldUpdatesNewestFirst(fusedEvidence.userUpdateEvidence);
   const placeOfUpdate = new Map(updates.map((update, index) => [update.id, index] as const));
   const latestUpdate = updates[0];
@@ -1833,6 +1840,7 @@ export function whatChangedForWrittenReport(
     .map((photo, index) => ({ photo, index, place: placeOfUpdate.get(photo.updateId) ?? Number.MAX_SAFE_INTEGER }))
     .sort((left, right) => left.place - right.place || left.index - right.index)[0]?.photo;
   const nextSchedule = taskInScheduleFocus(fusedEvidence.scheduleEvidence);
+  const inBrackets = nextSchedule ? taskInBrackets(nextSchedule) : null;
 
   return uniqueText([
     latestUpdate?.notes
@@ -1842,7 +1850,7 @@ export function whatChangedForWrittenReport(
       ? `Latest photo: ${truncate(latestPhoto.caption, 100)}`
       : null,
     nextSchedule
-      ? `Schedule focus: ${nextSchedule.taskName}${taskDate ? ` (${nextSchedule.isOverdue ? 'was due' : 'due'} ${nextSchedule.dueDate})` : ''}.`
+      ? `Schedule focus: ${nextSchedule.taskName}${inBrackets ? ` (${inBrackets})` : ''}.`
       : null,
   ]).join(' ') || 'No recent change is visible from current evidence.';
 }
