@@ -13,6 +13,7 @@ import {
   SCHEDULE_MAX_DURATION_WORKING_DAYS,
   scheduleDayIsSupported,
 } from './ScheduleInputLimits';
+import { isScheduleWorkingDay, scheduleTaskLengthInWorkingDays } from './ScheduleWorkingDays';
 
 export type VitruviusScheduleIssueCode =
   | 'dependency_cycle'
@@ -164,7 +165,16 @@ export function previewVitruviusFinishToStartSchedule(
         return;
       }
 
-      const durationDays = scheduleDurationDays(item, currentStart);
+      // The task's length by the one rule the critical path uses too (the
+      // owner's answer to question 41, 13 Oct 2026): what he typed, or the
+      // working days its dates span. Worked out, never counted out. (A
+      // record with no finish at all was only ever read when no length was
+      // typed; it still is not read as text here.)
+      const durationDays = scheduleTaskLengthInWorkingDays(
+        item,
+        currentStart,
+        typeof item.finishDate === 'string' ? parseScheduleDate(item.finishDate) : null,
+      );
       // Checked before the duration is walked day by day (independent review
       // R08: a stored or imported duration of a billion days did not finish).
       // It is a note about this one task, which is left as it is; he did not
@@ -328,61 +338,22 @@ function topologicalScheduleOrder(
   return result;
 }
 
-function scheduleDurationDays(item: ScheduleItem, parsedStart: Date | null) {
-  if (item.isMilestone) return 0;
-  if (
-    typeof item.durationDays === 'number' &&
-    Number.isFinite(item.durationDays) &&
-    item.durationDays > 0
-  ) {
-    return Math.max(1, Math.round(item.durationDays));
-  }
-  const finish = parseScheduleDate(item.finishDate);
-  if (parsedStart && finish && finish.getTime() >= parsedStart.getTime()) {
-    // More calendar days than the longest supported duration covers are not
-    // counted out one by one; the caller refuses the task (review R08).
-    if (finish.getTime() - parsedStart.getTime() > LONGEST_SUPPORTED_SPAN_MS) {
-      return SCHEDULE_MAX_DURATION_WORKING_DAYS + 1;
-    }
-    return Math.max(1, workingDaySpan(parsedStart, finish));
-  }
-  return 1;
-}
-
-/** The calendar time the longest supported duration can cover: seven days for every five worked, and a week over. */
-const LONGEST_SUPPORTED_SPAN_MS = (Math.ceil(SCHEDULE_MAX_DURATION_WORKING_DAYS / 5) * 7 + 7) * 86_400_000;
-
-function workingDaySpan(start: Date, finish: Date) {
-  let count = 0;
-  const cursor = new Date(start.getTime());
-  while (cursor.getTime() <= finish.getTime()) {
-    if (isWorkingDay(cursor)) count += 1;
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  return count;
-}
-
 function nextWorkingDay(value: Date) {
   const next = new Date(value.getTime());
   next.setUTCDate(next.getUTCDate() + 1);
-  while (!isWorkingDay(next)) next.setUTCDate(next.getUTCDate() + 1);
+  while (!isScheduleWorkingDay(next)) next.setUTCDate(next.getUTCDate() + 1);
   return next;
 }
 
 function addWorkingDays(value: Date, days: number) {
   const result = new Date(value.getTime());
-  while (!isWorkingDay(result)) result.setUTCDate(result.getUTCDate() + 1);
+  while (!isScheduleWorkingDay(result)) result.setUTCDate(result.getUTCDate() + 1);
   let remaining = Math.max(0, Math.trunc(days));
   while (remaining > 0) {
     result.setUTCDate(result.getUTCDate() + 1);
-    if (isWorkingDay(result)) remaining -= 1;
+    if (isScheduleWorkingDay(result)) remaining -= 1;
   }
   return result;
-}
-
-function isWorkingDay(value: Date) {
-  const day = value.getUTCDay();
-  return day !== 0 && day !== 6;
 }
 
 function parseScheduleDate(value: string) {

@@ -1,6 +1,7 @@
 import type { ScheduleItem } from '../types';
 import { buildPIEScheduleDependencyNetwork } from './PIEScheduleDependencyNetwork';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { scheduleTaskLengthInWorkingDays } from './ScheduleWorkingDays';
 import { parseVitruviusScheduleDate } from './VitruviusGanttModel';
 import {
   normalizeScheduleDependencies,
@@ -8,6 +9,7 @@ import {
   type VitruviusSchedulePreview,
 } from './VitruviusScheduleEngine';
 
+/** Every number here is in working days (Monday to Friday), as a typed duration and a lag are. */
 export type VitruviusCriticalPathItem = Readonly<{
   itemId: string;
   projectName: string;
@@ -271,22 +273,21 @@ function groupProjectTasks(items: readonly ScheduleItem[]) {
   return groups;
 }
 
+/**
+ * A task's length on the critical path, in working days, by the one rule
+ * rescheduling uses too (the owner's answer to question 41, 13 Oct 2026).
+ * This counted every calendar day, so a task from a Friday to the Monday
+ * with no length typed in was 4 days here and 2 when it was rescheduled.
+ */
 function criticalPathDuration(item: ScheduleItem) {
-  if (item.isMilestone) return 0;
-  if (
-    typeof item.durationDays === 'number' &&
-    Number.isFinite(item.durationDays) &&
-    item.durationDays > 0
-  ) {
-    return Math.max(1, Math.round(item.durationDays));
-  }
-  const start = parseVitruviusScheduleDate(item.startDate);
-  const finish = parseVitruviusScheduleDate(item.finishDate);
-  return start && finish && finish.getTime() >= start.getTime()
-    ? Math.max(1, calendarDaysBetween(start, finish) + 1)
-    : 1;
+  return scheduleTaskLengthInWorkingDays(
+    item,
+    parseVitruviusScheduleDate(item.startDate),
+    parseVitruviusScheduleDate(item.finishDate),
+  );
 }
 
+/** The days between two dates (how far a date is from its baseline): calendar days. Not a task's length. */
 function calendarDaysBetween(left: Date, right: Date) {
   return Math.round((right.getTime() - left.getTime()) / 86_400_000);
 }
