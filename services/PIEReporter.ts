@@ -578,7 +578,7 @@ export function collectReportEvidence(
   const evidence: PIEReportSourceEvidence[] = [];
 
   updates.forEach(update => {
-    const context = reportContextForUpdate(update, scheduleItems);
+    const context = reportContextForUpdate(update, scheduleItems, selectedProjects.length > 1);
     const suggestedNote = update.pieSuggestedNote?.trim() || '';
     const noteWasGeneratedFromPhotoAnalysis = Boolean(
       update.pieSuggestedNoteAccepted &&
@@ -724,7 +724,7 @@ function recentConfirmedPhotoNote(
   const reportAt = (input.generatedAt || new Date()).getTime();
   if (!Number.isFinite(seenAt)) return null;
   if (reportAt - seenAt > REPORT_CURRENT_PHOTO_NOTE_DAYS * 24 * 60 * 60 * 1000) return null;
-  const context = reportContextForUpdate(source, reportScheduleItems(input));
+  const context = reportContextForUpdate(source, reportScheduleItems(input), selectedProjectsFromInput(input).length > 1);
   return {
     id: `runtime-photo-progress-${confirmed.currentPhotoId}`,
     source: 'photo',
@@ -2489,6 +2489,8 @@ function selectedUpdates(
 function reportContextForUpdate(
   update: ProjectUpdate,
   scheduleItems: ScheduleItem[],
+  /** The report covers more than one project (a combined report). */
+  severalProjects = false,
 ) {
   const updateNames = [
     update.projectName,
@@ -2497,8 +2499,26 @@ function reportContextForUpdate(
   ]
     .filter((value): value is string => Boolean(value?.trim()))
     .map(normalizeName);
+  // Build 232 item 4 part C (the coordinator's decision): IN A REPORT OF
+  // SEVERAL PROJECTS A FIELD UPDATE BELONGS TO ITS OWN PROJECT. An update
+  // that names no schedule project took the first matching task's, and a
+  // task matches by its project name or by its AREA name: two projects that
+  // each have a "Site" printed both projects' notes under one of them, the
+  // other's own note could be cut by the three-line limit, and its photos
+  // were left out. A task that names another schedule project than the one
+  // the update was recorded in, and has only an area name in common with
+  // it, claims nothing; the update is then the project it was recorded in.
+  // A report of one project is handed that project's tasks and is read as
+  // before, to the word.
+  const recordedIn = normalizeName(update.projectName);
+  const ofAnotherProject = (item: ScheduleItem) => {
+    const scheduleProject = normalizeName(item.scheduleProjectName);
+    return Boolean(scheduleProject) && scheduleProject !== recordedIn &&
+      ![item.projectName, item.locationName].some(name => normalizeName(name) === recordedIn);
+  };
   const scheduleMatch = scheduleItems.find(item =>
-    [item.projectName, item.locationName].some(name => updateNames.includes(normalizeName(name))),
+    [item.projectName, item.locationName].some(name => updateNames.includes(normalizeName(name))) &&
+    !(severalProjects && ofAnotherProject(item)),
   );
   const projectName =
     update.scheduleProjectName?.trim() ||
