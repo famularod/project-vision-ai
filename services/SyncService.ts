@@ -794,20 +794,6 @@ type ScheduleItemRecordPayload = {
   /** The fields of an edit typed on a row a newer master has replaced, as sent on to the task's row (review N3 R3): the sync's write there, not an edit typed on that row. */
   sentOn?: Array<keyof ScheduleItem>;
   /**
-   * On a whole copy (Build 232, item 1b): the fields of his edit that was still waiting when a save of the whole task
-   * joined it (wholeTaskSaveJoiningHisEdit), and of any edit of his that joins the record after. The upload still
-   * sends those on to the row the task lives on now, as it does when the edit waits alone; the rest of the copy is
-   * this row's own and is not sent on.
-   */
-  joinedEditFields?: Array<keyof ScheduleItem>;
-  /**
-   * On a whole copy (Build 232, item 1c part A): the fields the sync itself had carried to the task (carriedText) in
-   * the record that was waiting when a save of the whole task joined it. They still go up by the carry's own rule
-   * (each only fills a blank in the cloud's row), in the whole copy's one write. A field he edits afterwards leaves
-   * this list: it is his then.
-   */
-  joinedCarriedText?: Array<keyof ScheduleItem>;
-  /**
    * The copy the edit started from (owner answer Q28, 2 Oct 2026): each
    * changed field's value before the edit, and that copy's stamp. The upload
    * weighs each field against it (ScheduleItemEditBase). Missing on an edit
@@ -1746,20 +1732,11 @@ function mergeScheduleItemQueueChangeScope(
     // (A whole copy saved over a row this device made and that still waits: the row as made, review P7-4.)
     const wholeBase = scheduleItemEditBasesMerged(existingPayload, incomingPayload) ??
       (Array.isArray(incomingPayload.changedFields) ? undefined : scheduleItemWholeCopyBaseSinceMade(existingPayload.sinceMade, incomingPayload.base, existingPayload));
-    // Build 232, item 1b: the list of his edit's fields that a whole-task save joined stays with the record while more
-    // joins it, and a later edit of his adds its own fields (never the sync's own carries).
-    const joinedEditFields = Array.isArray(existingPayload.joinedEditFields)
-      ? [...new Set([...existingPayload.joinedEditFields, ...(incomingPayload.joinedEditFields ?? []), ...scheduleItemFieldsOfHisEdit(incomingPayload)])]
-      : incomingPayload.joinedEditFields;
-    // Build 232, item 1c part A: so does the list of what the sync had carried, less a field an edit of his now names.
-    const joinedCarriedText = Array.isArray(existingPayload.joinedCarriedText)
-      ? [...new Set([...existingPayload.joinedCarriedText.filter(field => !(incomingPayload.changedFields ?? []).includes(field)), ...(incomingPayload.joinedCarriedText ?? [])])]
-      : incomingPayload.joinedCarriedText;
     return {
       ...incoming,
       // (An edit of his joining a master's new row that still waits whole: what he has changed on the row since it was
       // made, review P6-2. None after anything else joins it.)
-      payload: { ...fullRecordPayload, ...(joinedEditFields ? { joinedEditFields } : {}), ...(joinedCarriedText ? { joinedCarriedText } : {}), ...(wholeBase ? { base: wholeBase } : {}), sinceMade: scheduleItemChangedSinceMade(existingPayload, incomingPayload) },
+      payload: { ...fullRecordPayload, ...(wholeBase ? { base: wholeBase } : {}), sinceMade: scheduleItemChangedSinceMade(existingPayload, incomingPayload) },
     };
   }
 
@@ -1925,42 +1902,6 @@ function referenceDocumentQueueItemId(documentId: string): string {
   return `reference-document-${encodeURIComponent(documentId)}`;
 }
 
-/**
- * The fields of a queued task edit that are his own: its list of fields, without the stamp and without what the sync
- * itself carried. (Build 232, item 1c part B: a carried PERCENT's fields too, while the record's progress is still
- * as the carry gave it; only the carried text was left out, so those fields stood in the list as if he had typed them.)
- */
-function scheduleItemFieldsOfHisEdit(payload: Partial<ScheduleItemRecordPayload> | null | undefined): Array<keyof ScheduleItem> {
-  const carried: readonly string[] = [...(payload?.carriedText ?? []), ...(payload?.carriedProgress === true ? SCHEDULE_CARRIED_PROGRESS_FIELDS : [])];
-  return (Array.isArray(payload?.changedFields) ? payload.changedFields : []).filter(field => field !== 'updatedAt' && !carried.includes(field));
-}
-
-/**
- * Build 232, item 1b (review pass 2's M1; Medium, caused by item 1; the coordinator's decision, 13 Oct 2026). A save
- * of the whole task ("Delete PDF + Items" putting a task back, Set Active's carry) that joins an edit of his still
- * waiting makes one whole copy of the two (item 1). An edit that waits as a list of fields is sent on to the row the
- * task lives on now when a newer master has replaced its row; a whole copy is written to its own row only. So a note
- * typed with no signal, then the lookahead deleted with no signal, while another device made another master current:
- * the note was on the replaced master's row alone, on no device's screen, and nothing asked him.
- * The whole copy now keeps the list of his edit's fields (taken inside the queue's own change, from what waits
- * there), and the upload sends those on exactly as when the edit waits alone. What the save itself put back (the
- * master's dates, the percent, the lookahead's note taken off) is not in the list: it belongs to this row.
- *
- * Build 232, item 1c part A (review pass 3's S3-1; Medium, caused by item 1; the coordinator's decision). When what
- * waits is, or holds, the SYNC'S OWN CARRY of his owner and note to the task's row (carriedText), the whole copy read
- * the carried values as part of the copy it started from, so its write left the cloud's blank and the next refresh
- * blanked them on every device, for good. It now also keeps the list of the carried fields (joinedCarriedText), and
- * the upload sends them by the carry's own rule in the same write.
- */
-function wholeTaskSaveJoiningHisEdit(existing: SyncQueueItem | undefined, queued: SyncQueueItem): SyncQueueItem {
-  const waiting = existing?.entity === 'schedule_item' && existing.operation === 'update' ? existing.payload as Partial<ScheduleItemRecordPayload> : null;
-  const his = Array.isArray(waiting?.changedFields) ? scheduleItemFieldsOfHisEdit(waiting) : waiting?.joinedEditFields ?? [];
-  const carried = (Array.isArray(waiting?.changedFields) ? waiting.carriedText : waiting?.joinedCarriedText) ?? [];
-  return his.length > 0 || carried.length > 0
-    ? { ...queued, payload: { ...(queued.payload as ScheduleItemRecordPayload), ...(his.length > 0 ? { joinedEditFields: [...his] } : {}), ...(carried.length > 0 ? { joinedCarriedText: [...carried] } : {}) } }
-    : queued;
-}
-
 export async function queueScheduleItemRecord(
   item: ScheduleItem,
   autoUpload = true,
@@ -1982,7 +1923,6 @@ export async function queueScheduleItemRecord(
     },
     changedAt,
     autoUpload,
-    ...(changedFields ? {} : { withExisting: wholeTaskSaveJoiningHisEdit }),
   });
 }
 
@@ -2052,21 +1992,22 @@ export async function runScheduleItemCloudSync(
   followUp = false,
 ): Promise<SyncUploadResult> {
   const queueItemId = scheduleItemQueueItemId(item.id);
+  let effectiveChangedFields = changedFields;
   let nothingWaited = false;
   if (followUp) {
     nothingWaited = !(await getOfflineQueue()).some(candidate => candidate.id === queueItemId);
   } else {
-    // Build 232, item 1 (the schedules reviewer's P3-1; Medium, older; the coordinator's decision, 13 Oct 2026). A save
-    // of the whole task (no list of fields: "Delete PDF + Items" putting a task back on its master's dates, Set
-    // Active's carry) that found an edit of the task still waiting used to take over that edit's list of fields. So
-    // only his owner went up: the dates, percent and lookahead note the delete had put back were in no write, and the
-    // next read from the cloud put the deleted lookahead's back on the phone, the iPad and the web, with no card.
-    // It now joins the waiting edit as what it is, a whole copy of the task, the way an approval's row always has
-    // (mergeScheduleItemQueueChangeScope): one record, so one write, made only if the cloud's row is still the one it
-    // was weighed against. It carries his edit and everything the save changed. Each field he edited keeps the copy
-    // his edit started from (scheduleItemEditBasesMerged), so it is still weighed as his edit and asked about when
-    // another device changed it too; the rest is weighed as the same save is with nothing waiting.
-    await queueScheduleItemRecord(item, false, changedFields, before);
+    if (effectiveChangedFields === undefined) {
+      const existingQueue = await getOfflineQueue();
+      const existing = existingQueue.find(candidate => candidate.id === queueItemId);
+      const existingPayload = existing?.payload as
+        | Partial<ScheduleItemRecordPayload>
+        | undefined;
+      if (Array.isArray(existingPayload?.changedFields)) {
+        effectiveChangedFields = existingPayload.changedFields;
+      }
+    }
+    await queueScheduleItemRecord(item, false, effectiveChangedFields, before);
   }
   let aggregateResult = await uploadPendingChanges();
   let remainingQueue = await getOfflineQueue();
@@ -8066,15 +8007,12 @@ async function uploadQueueItem(
     // schedule uploaded on the web and not made current yet (seed 1281: only the later imported of the two got it).
     // Not to a row in between (he missed two masters): it is hidden, and a card about it would ask the same twice.
     // What those rows hold tells a value that came down untouched from one typed on the way.
-    // Build 232, item 1b: and the fields of his edit that a whole-task save joined (a whole copy now), by this same
-    // rule; nothing else of that copy.
-    const fieldsSentOn = changedFields ?? (!payload.forceLocal && Array.isArray(payload.joinedEditFields) ? payload.joinedEditFields : null);
-    if (remote && fieldsSentOn) {
+    if (remote && changedFields) {
       const answering = [...context.scheduleItemsById.values()].filter(row => row.id !== payload.id && scheduleTaskEarlierIds(row).includes(payload.id));
       const rowsNow = answering.filter(row => !answering.some(other => other !== row && scheduleTaskEarlierIds(other).includes(row.id)));
-      const askedHere = rowsNow.length > 0 ? scheduleItemEditAgainstCloud(payload.itemData, fieldsSentOn, payload.base, remote, taskOfRow).asked : [];
+      const askedHere = rowsNow.length > 0 ? scheduleItemEditAgainstCloud(payload.itemData, changedFields, payload.base, remote, taskOfRow).asked : [];
       for (const rowNow of rowsNow) {
-        const onRowNow = scheduleItemTextEditOnRow(payload, fieldsSentOn.filter(field => !askedHere.includes(field)), rowNow,
+        const onRowNow = scheduleItemTextEditOnRow(payload, changedFields.filter(field => !askedHere.includes(field)), rowNow,
           answering.filter(row => row !== rowNow && scheduleTaskEarlierIds(rowNow).includes(row.id)), taskOfRow);
         if (!onRowNow) continue;
         const followed = await uploadQueueItem({ ...item, payload: onRowNow as unknown as ScheduleItemRecordPayload }, context);
@@ -8122,26 +8060,9 @@ async function uploadQueueItem(
     // field changed on both is asked about. (Without that copy, or where the sync merge alone has a rule: the merge.)
     const byField = merged && remote ? scheduleItemWholeCopyFieldByField(payload.itemData, payload.base, remote, merged) : null;
     const recovered = remote && !changedFields && !payload.forceLocal ? restUnchanged ? payload.itemData : byField?.itemData ?? merged : null;
-    const wholeWeighedAsItStarted = recovered && remote && isEditBase(payload.base)
+    const wholeWeighed = recovered && remote && isEditBase(payload.base)
       ? scheduleItemWholeCopyAgainstCloud(recovered, payload.itemData, payload.base, remote, taskOfRow)
       : null;
-    // Build 232, item 1c part A: what the sync had carried into the record this whole copy took the place of. The
-    // copy reads those fields as "as it started", so the cloud's row would keep its blank. They go into this same
-    // write by the carry's own rule (scheduleItemCarriedFieldsToSend: his text only fills a blank; over another
-    // device's value the cloud's stands and nothing is asked), as the carry's own upload writes them.
-    const carriedInWhole = wholeWeighedAsItStarted && remote && Array.isArray(payload.joinedCarriedText)
-      ? scheduleItemCarriedFieldsToSend(payload.joinedCarriedText.map(String), payload.itemData, remote) : [];
-    const wholeWeighed = wholeWeighedAsItStarted && remote && carriedInWhole.length > 0
-      ? {
-          ...wholeWeighedAsItStarted,
-          itemData: {
-            ...carriedInWhole.reduce<ScheduleItem>((row, field) => (field === 'activity'
-              ? { ...row, activity: scheduleItemActivityWithOtherRows(remote.activity, payload.itemData.activity) ?? remote.activity }
-              : { ...row, [field]: payload.itemData[field as keyof ScheduleItem] }), wholeWeighedAsItStarted.itemData),
-            ...scheduleItemRecordAfterTheSyncWrote(remote, payload.itemData, carriedInWhole),
-          },
-        }
-      : wholeWeighedAsItStarted;
     const asked = weighed?.asked ?? (wholeWeighed ? [...(byField?.asked ?? []), ...wholeWeighed.asked] : null) ?? firstSent?.asked ?? [];
     // What this upload decides for the task's open conflicts: the fields an edit sends of this device's own (owner
     // answer Q28). A whole copy decides none of a card's fields (review N1): null.

@@ -5511,48 +5511,38 @@ describe('S5 item 2: a lookahead deleted on the iPad, heard by the phone after i
 
 /* ------------------------------------------------------------------------------------------------------------- */
 /**
- * Build 232, item 1 (13 Oct 2026; the schedules reviewer's P3-1: Medium, older, the same on Build 230). He edits a
- * task and, before the cloud has confirmed that edit, deletes on the same device the lookahead that moved the task,
- * with "Delete PDF + Items". The task stayed on the deleted lookahead's dates (and on its percent, where the lookahead
- * stated one) on the phone, the iPad and the web, still carrying the lookahead's note, with no card. A task he had not
- * edited went back correctly.
+ * GUARDS ON WHAT BUILD 231 DOES RIGHT, kept from the Build 232 round's items 1, 1b and 1c (13 Oct 2026).
  *
- * Why: the delete saves each task it puts back as the whole task. That save, finding an edit of the task still
- * waiting, took over the waiting edit's list of fields (runScheduleItemCloudSync), so only his owner was sent. The
- * dates, percent and note the delete had put back were on the device alone, and the next read from the cloud put the
- * lookahead's back.
+ * Those items changed how a save of the whole task ("Delete PDF + Items" putting a task back, Set Active's carry)
+ * joins an edit of that task still waiting to go up, to cure the schedules reviewer's P3-1. Each fix caused a rarer
+ * fault beside it (review pass 2's M1, review pass 3's S3-1, then the fixer's own finding "2.1e"), every one of them
+ * beside the sync's carry of a value from a task's earlier row, which goes by the ROW's last-changed time. The
+ * coordinator's decision on the design note (notes/sync-design/NOTE.txt): the four commits are taken back out, and
+ * services/SyncService.ts is Build 231's again.
  *
- * The coordinator's decision: when a save of the whole task meets an edit of that task still waiting, what goes up
- * carries both, his edit and everything the whole-task save changed, as one write the cloud can refuse when its row
- * has changed since it was read. The save now joins the waiting edit as a whole copy of the task, the way a
- * lookahead's approval after a waiting edit always has: each field he edited keeps the copy his edit started from, so
- * it is still weighed as his edit, and the rest is weighed as the delete's own save is with nothing waiting.
+ * SO P3-1 IS OPEN AGAIN, EXACTLY AS ON BUILD 231. He edits a task and, before the cloud has confirmed that edit,
+ * deletes on the same device the lookahead that moved it, with "Delete PDF + Items". The task stays on the deleted
+ * lookahead's dates (and on its percent, where the lookahead stated one) on the phone, the iPad and the web, with no
+ * card. No test here says that is right. The tests that state its cure (15 of item 1's, and the three of items 1b
+ * and 1c that look at what the delete put back) left with the fix, and so did the two that read the list item 1b
+ * kept in the queue. They are the acceptance tests of the round that brings the cure back.
  *
- * "Not yet confirmed", four ways: made with no signal and the delete with no signal too; made with no signal, signal
- * back, the delete before the automatic send; its write never reached the cloud; its write reached the cloud and the
- * answer was lost.
+ * What stays below passes on Build 231's sync, and nothing stated it before that round:
+ *  - item 1's two controls: nothing waits for the task when it is saved whole (2 tests);
+ *  - what he typed with no signal still follows the task when he then deletes the lookahead with no signal and
+ *    another device changes the master: the shapes of M1 (13 tests);
+ *  - what the sync itself had carried to the task still goes up when he then deletes the lookahead: the shapes of
+ *    S3-1 (6 tests);
+ *  - what another device set on the task's earlier row still reaches the task, whichever device syncs first: the
+ *    hand probe that found 2.1e (10 tests).
  */
-describe('Build 232 item 1: an edit of a task not yet confirmed by the cloud, then the lookahead that moved the task is deleted with its items', () => {
+describe('Kept from Build 232 item 1, as Build 231 does it: nothing waits for the task when "Delete PDF + Items" or Set Active saves it whole', () => {
   const LOOK = scheduleDoc('LOOKAHEAD B232', '2026-09-09T12:00:00.000Z', 'lookahead');
   /** The lookahead moves Framing, stating 70% for it, and Survey. */
   const BOTH_TASKS = ['Framing,Alpha,Lot,10/18/2026,10/28/2026,70', 'Survey,Alpha,Lot,10/13/2026,10/16/2026,'];
-  /** A lookahead that moves Framing alone and states no percent. */
-  const FRAMING_ONLY = ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'];
   const ON_THE_LOOKAHEAD = '10/18/2026 - 10/28/2026';
   const ON_THE_MASTER = '10/15/2026 - 10/25/2026';
-  type Waiting = 'confirmed' | 'made with no signal, and the delete with no signal too' | 'made with no signal, signal back, the delete before the automatic send'
-    | 'sent, and the write never reached the cloud' | 'sent and written in the cloud, and the answer was lost';
-  const NOT_CONFIRMED: Waiting[] = ['made with no signal, and the delete with no signal too', 'made with no signal, signal back, the delete before the automatic send',
-    'sent, and the write never reached the cloud', 'sent and written in the cloud, and the answer was lost'];
   const taskIn = (items: readonly ScheduleItem[], name: string) => items.filter(item => item.taskName === name);
-  const EDITS = {
-    'an owner': () => ({ owner: 'Mike' }),
-    'a priority': () => ({ priority: 'Low' }),
-    'a percent': () => ({ percentComplete: 30 }),
-    'a hand link': (phone: Device) => ({ dependencies: [{ predecessorItemId: taskIn(deviceShown(phone), 'Survey')[0].id, type: 'FS', lagDays: 0 }] }),
-  } as unknown as Record<'an owner' | 'a priority' | 'a percent' | 'a hand link', (phone: Device) => Partial<ScheduleItem>>;
-  type Edit = keyof typeof EDITS;
-  type Options = { rows?: string[]; webMaster?: boolean; stopAfterTheDelete?: boolean };
 
   /** What a place shows of a task: its dates, percent, owner, priority and hand links, and whether a lookahead's note is on it. */
   const shownIn = (items: readonly ScheduleItem[], name: string) => taskIn(items, name).map(item => ({
@@ -5573,216 +5563,83 @@ describe('Build 232 item 1: an edit of a task not yet confirmed by the cloud, th
     await refresh(phone); await refresh(ipad);
   };
 
-  /**
-   * The lookahead is approved on the phone and heard everywhere. He edits Framing on the phone (`how` says whether the
-   * cloud has confirmed that edit), then deletes the lookahead with its items on the phone. Then everything syncs.
-   */
-  async function editedThenDeleted(how: Waiting, change: (phone: Device) => Partial<ScheduleItem>, options: Options = {}) {
+  it('the control: with his owner confirmed before the delete, Framing is back on the master\'s dates and percent in all three places, with his owner', async () => {
     const { phone, ipad } = await start();
-    if (options.webMaster) {
-      // A newer master uploaded on the web and not made current: every task has a second row waiting in the cloud.
-      at('2026-09-08T12:00:00.000Z');
-      webUploads('MASTER W', ['Framing,Alpha,Lot,10/14/2026,10/24/2026,', SURVEY]);
-      await settle(phone, ipad);
-    }
     at(LOOK.importedAt!);
-    await approve(phone, LOOK, options.rows ?? BOTH_TASKS, true);
+    await approve(phone, LOOK, BOTH_TASKS, true);
     shareDocuments(phone);
     await backgroundUpload(phone);
     await settle(phone, ipad);
     expect(places(phone, ipad, 'Framing').map(place => [place[0]?.dates, place[0]?.lookaheadNote])).toEqual(Array(3).fill([ON_THE_LOOKAHEAD, true]));
     const id = theRow(phone).id;
     at('2026-09-10T09:00:00.000Z');
-    const edited = change(phone);
-    if (how === 'confirmed') { await edit(phone, id, edited); await backgroundUpload(phone); }
-    else if (how === 'sent and written in the cloud, and the answer was lost') { mockCloud.lostAnswers = 1; await edit(phone, id, edited); mockCloud.lostAnswers = 0; }
-    else if (how === 'sent, and the write never reached the cloud') { mockCloud.failNextWriteOf = id; await edit(phone, id, edited); mockCloud.failNextWriteOf = null; }
-    else {
-      setOnline(phone, false);
-      await edit(phone, id, edited);
-      if (how === 'made with no signal, signal back, the delete before the automatic send') setOnline(phone, true);
-    }
-    // But for the control, his edit is still waiting on the phone when he deletes the lookahead.
-    expect((await queueOf(phone)).map(waiting => waiting.entity)).toEqual(how === 'confirmed' ? [] : ['schedule_item']);
+    await edit(phone, id, { owner: 'Mike' });
+    await backgroundUpload(phone);
+    // His edit is confirmed: nothing of the task waits on the phone when he deletes the lookahead.
+    expect((await queueOf(phone)).map(waiting => waiting.entity)).toEqual([]);
     at('2026-09-10T12:00:00.000Z');
     await deleteWithItems(phone, LOOK);
-    if (options.stopAfterTheDelete) return { phone, ipad, id };
-    if (isOnline(phone)) { shareDocuments(phone); await backgroundUpload(phone); }
+    shareDocuments(phone);
+    await backgroundUpload(phone);
     at('2026-09-10T15:00:00.000Z');
     await everythingSynced(phone, ipad);
-    return { phone, ipad, id };
-  }
-  /** How the same steps end with the edit confirmed before the delete. */
-  const controls = new Map<string, Awaited<ReturnType<typeof ending>>>();
-  async function control(kind: Edit, options: Options = {}) {
-    const key = JSON.stringify([kind, options]);
-    if (!controls.has(key)) {
-      const { phone, ipad } = await editedThenDeleted('confirmed', EDITS[kind], options);
-      controls.set(key, await ending(phone, ipad));
-    }
-    return controls.get(key)!;
-  }
-  /** Framing on the master's dates at the master's percent with his owner, Survey on the master's dates, no note of the lookahead, no card, nothing waiting. */
-  const BACK_ON_THE_MASTER = {
-    framing: Array(3).fill([{ dates: ON_THE_MASTER, percent: 0, owner: 'Mike', lookaheadNote: false }]),
-    survey: Array(3).fill([{ dates: '10/12/2026 - 10/14/2026', lookaheadNote: false }]),
-    cards: [0, 0], waiting: [0, 0],
-  };
-
-  it('the control: with his owner confirmed before the delete, Framing is back on the master\'s dates and percent in all three places, with his owner', async () => {
-    expect(await control('an owner')).toMatchObject(BACK_ON_THE_MASTER);
-  });
-
-  it.each(NOT_CONFIRMED)('his owner %s: Framing is back on the master\'s dates and percent in all three places, with his owner, no card and no note of the lookahead', async how => {
-    const confirmed = await control('an owner');
-    const { phone, ipad } = await editedThenDeleted(how, EDITS['an owner']);
-    const end = await ending(phone, ipad);
-    // (It was: 10/18 - 10/28 at 70% in all three places, the lookahead's note still on the task.)
-    expect(end).toMatchObject(BACK_ON_THE_MASTER);
-    expect(end).toEqual(confirmed);
-  });
-
-  it.each([
-    ['a priority', 'sent and written in the cloud, and the answer was lost'], ['a priority', 'made with no signal, and the delete with no signal too'],
-    ['a percent', 'sent and written in the cloud, and the answer was lost'], ['a percent', 'made with no signal, and the delete with no signal too'],
-    ['a hand link', 'sent and written in the cloud, and the answer was lost'], ['a hand link', 'made with no signal, and the delete with no signal too'],
-  ] as Array<[Edit, Waiting]>)('%s, %s: Framing ends as it does with that edit confirmed first, on the master\'s dates', async (kind, how) => {
-    const confirmed = await control(kind);
-    const { phone, ipad } = await editedThenDeleted(how, EDITS[kind]);
-    const end = await ending(phone, ipad);
-    expect(end).toMatchObject({ framing: Array(3).fill([{ dates: ON_THE_MASTER, lookaheadNote: false }]), cards: [0, 0], waiting: [0, 0] });
-    expect(end).toEqual(confirmed);
-  });
-
-  it('with a newer master uploaded on the web and not made current (each task has a second row in the cloud): the same', async () => {
-    const confirmed = await control('an owner', { webMaster: true });
-    const { phone, ipad } = await editedThenDeleted('sent and written in the cloud, and the answer was lost', EDITS['an owner'], { webMaster: true });
-    const end = await ending(phone, ipad);
-    expect(end).toMatchObject(BACK_ON_THE_MASTER);
-    expect(end).toEqual(confirmed);
-  });
-
-  describe('it goes up as one write, which the cloud refuses when its row has changed since the phone read it', () => {
-    const asked = async (device: Device) => (await conflictsOf(device)).map(conflict => {
-      const mine = conflict.localPayload as { askedFields?: string[]; itemData?: Record<string, unknown> };
-      const fields = mine.askedFields ?? [];
-      return { row: conflict.localId, fields, here: fields.map(field => mine.itemData?.[field]), cloud: fields.map(field => (conflict.remotePayload as Record<string, unknown>)[field]) };
-    });
-    /** His owner and the delete both made with no signal; the phone has signal again and has sent nothing yet. */
-    async function bothWaitingToGoUp() {
-      const rig = await editedThenDeleted('made with no signal, and the delete with no signal too', EDITS['an owner'], { rows: FRAMING_ONLY, stopAfterTheDelete: true });
-      at('2026-09-10T15:00:00.000Z');
-      setOnline(rig.phone, true);
-      shareDocuments(rig.phone);
-      mockCloud.versioned = true;
-      return rig;
-    }
-
-    it('nobody else writing: his owner and what the delete put back are in ONE write of the task, and nothing is refused', async () => {
-      const { phone, id } = await bothWaitingToGoUp();
-      const writes = cloudWrites();
-      await backgroundUpload(phone);
-      expect([mockCloud.refused, mockCloud.writes.slice(writes)]).toEqual([[], [`phone:${id}`]]);
-      // (It was: one write with his owner alone, the row left on 10/18 - 10/28 with the lookahead's note.)
-      expect(cloudRow(id)).toMatchObject({ owner: 'Mike', startDate: '10/15/2026', finishDate: '10/25/2026' });
-      expect(Boolean(cloudRow(id)!.lookaheadOverlay)).toBe(false);
-    });
-
-    it('another device sets the owner in the moment before the write: refused, nothing written over it; weighed again he is asked about the owner as for any edit, and what the delete put back goes up', async () => {
-      const { phone, ipad, id } = await bothWaitingToGoUp();
-      mockCloud.beforeNextTaskWrite = () => webWrite(webEdited(cloudRow(id)!, { owner: 'Ana' }));
-      await backgroundUpload(phone);
-      expect(mockCloud.refused).toEqual([`phone:${id}`]);
-      expect(cloudRow(id)).toMatchObject({ owner: 'Ana' });
-      expect(await asked(phone)).toEqual([{ row: id, fields: ['owner'], here: ['Mike'], cloud: ['Ana'] }]);
-      await everythingSynced(phone, ipad);
-      const end = await ending(phone, ipad);
-      // The other device's owner stays in the cloud until he chooses; the dates are the master's everywhere.
-      expect(end.framing).toMatchObject(Array(3).fill([{ dates: ON_THE_MASTER, lookaheadNote: false }]));
-      expect([cloudRow(id)!.owner, end.framing[1][0].owner, end.framing[2][0].owner, end.cards]).toEqual(['Ana', 'Ana', 'Ana', [1, 0]]);
-      expect(await asked(phone)).toEqual([{ row: id, fields: ['owner'], here: ['Mike'], cloud: ['Ana'] }]);
-      expect(mockCloud.refused).toEqual([`phone:${id}`]);
-    });
-
-    it('another device types a note in that moment: refused; weighed again the note stays, his owner and what the delete put back go up, and nothing is asked', async () => {
-      const { phone, ipad, id } = await bothWaitingToGoUp();
-      mockCloud.beforeNextTaskWrite = () => webWrite(webEdited(cloudRow(id)!, { notes: IPAD_NOTE }));
-      await backgroundUpload(phone);
-      expect(mockCloud.refused).toEqual([`phone:${id}`]);
-      expect(cloudRow(id)).toMatchObject({ notes: IPAD_NOTE, owner: 'Mike', startDate: '10/15/2026', finishDate: '10/25/2026' });
-      await everythingSynced(phone, ipad);
-      const end = await ending(phone, ipad);
-      expect(end).toMatchObject({ framing: Array(3).fill([{ dates: ON_THE_MASTER, owner: 'Mike', lookaheadNote: false }]), cards: [0, 0], waiting: [0, 0] });
-      expect([deviceShown(phone), deviceShown(ipad), webShown()].map(items => taskIn(items, 'Framing')[0].notes)).toEqual(Array(3).fill(IPAD_NOTE));
+    // Framing on the master's dates at the master's percent with his owner, Survey on the master's dates, no note of the lookahead, no card, nothing waiting.
+    expect(await ending(phone, ipad)).toMatchObject({
+      framing: Array(3).fill([{ dates: ON_THE_MASTER, percent: 0, owner: 'Mike', lookaheadNote: false }]),
+      survey: Array(3).fill([{ dates: '10/12/2026 - 10/14/2026', lookaheadNote: false }]),
+      cards: [0, 0], waiting: [0, 0],
     });
   });
 
   /**
-   * The other save of a whole task that passed through the same lines: Set Active's carry of his percent to the row
-   * now shown. For it to meet an edit still waiting on that very row, the edit's write must fail at every send in
-   * between (Set Active needs signal, and every send tries all that waits). Then Set Active's save sent his owner
-   * alone, and the cloud's row kept the older percent (40%, on the iPad and the web) until the phone synced again and
-   * its sync carried the percent once more: where it ends was the same, what the other devices showed meanwhile was
-   * not. Its save now carries both as well.
+   * The other save of a whole task through the same lines: Set Active's carry of his percent to the row now shown.
+   * Here his owner edit on that row has gone up before Set Active saves it, so nothing waits.
    */
-  it.each([['fails at each send until then (the edit still waits on the row Set Active saves)', true], ['goes up at once (the control)', false]] as const)(
-    'Set Active\'s carry onto a row whose owner edit %s: his percent and his owner are on the row shown in all three places', async (_label, fails) => {
-      const { phone, ipad } = await start();
-      at(G.importedAt!);
-      await approve(phone, G, [G_ROW, SURVEY]);
-      shareDocuments(phone);
-      await backgroundUpload(phone);
-      await settle(phone, ipad);
-      const newId = theRow(phone).id;
-      at('2026-09-11T08:00:00.000Z');
-      await edit(phone, newId, { percentComplete: 40 });
-      await settle(phone, ipad);
-      const weakSignal = () => { mockCloud.failNextWriteOf = fails ? newId : null; };
-      at('2026-09-11T09:00:00.000Z');
-      weakSignal();
-      await edit(phone, newId, { owner: 'Mike' });
-      at('2026-09-11T10:00:00.000Z');
-      weakSignal();
-      await setActiveOn(phone, F);
-      const oldId = theRow(phone).id;
-      expect(oldId).not.toBe(newId);
-      at('2026-09-11T11:00:00.000Z');
-      weakSignal();
-      await edit(phone, oldId, { percentComplete: 55 });
-      expect((await queueOf(phone)).map(waiting => (waiting.payload as { id?: string }).id)).toEqual(fails ? [newId] : []);
-      at('2026-09-11T12:00:00.000Z');
-      mockCloud.failNextWriteOf = null;
-      await setActiveOn(phone, G);
-      // Set Active's own save, before anything else syncs: the cloud's row has his percent and his owner.
-      expect(cloudRow(newId)).toMatchObject({ percentComplete: 55, owner: 'Mike' });
-      at('2026-09-11T15:00:00.000Z');
-      await everythingSynced(phone, ipad);
-      const end = await ending(phone, ipad);
-      expect(end).toMatchObject({ framing: Array(3).fill([{ dates: '10/20/2026 - 10/30/2026', percent: 55, owner: 'Mike' }]), cards: [0, 0], waiting: [0, 0] });
-    });
+  it('Set Active\'s carry onto a row whose owner edit goes up at once (the control): his percent and his owner are on the row shown in all three places', async () => {
+    const { phone, ipad } = await start();
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    await settle(phone, ipad);
+    const newId = theRow(phone).id;
+    at('2026-09-11T08:00:00.000Z');
+    await edit(phone, newId, { percentComplete: 40 });
+    await settle(phone, ipad);
+    at('2026-09-11T09:00:00.000Z');
+    await edit(phone, newId, { owner: 'Mike' });
+    at('2026-09-11T10:00:00.000Z');
+    await setActiveOn(phone, F);
+    const oldId = theRow(phone).id;
+    expect(oldId).not.toBe(newId);
+    at('2026-09-11T11:00:00.000Z');
+    await edit(phone, oldId, { percentComplete: 55 });
+    expect((await queueOf(phone)).map(waiting => (waiting.payload as { id?: string }).id)).toEqual([]);
+    at('2026-09-11T12:00:00.000Z');
+    await setActiveOn(phone, G);
+    // Set Active's own save, before anything else syncs: the cloud's row has his percent and his owner.
+    expect(cloudRow(newId)).toMatchObject({ percentComplete: 55, owner: 'Mike' });
+    at('2026-09-11T15:00:00.000Z');
+    await everythingSynced(phone, ipad);
+    const end = await ending(phone, ipad);
+    expect(end).toMatchObject({ framing: Array(3).fill([{ dates: '10/20/2026 - 10/30/2026', percent: 55, owner: 'Mike' }]), cards: [0, 0], waiting: [0, 0] });
+  });
 });
 
 /* ------------------------------------------------------------------------------------------------------------- */
 /**
- * Build 232, item 1b (13 Oct 2026; review pass 2's M1: Medium, caused by item 1; Build 231 does not have it). The
- * iPad has no signal. On it he types a note on a task (or makes a hand link, sets an owner or a priority). Still with
- * no signal he deletes, on the iPad, the lookahead that holds that task, with "Delete PDF + Items". Meanwhile another
- * device approves a new master, or makes another one current, so the task has a new row. Once everything had synced
- * his note was on the replaced master's row alone, which nobody is shown, and nothing asked him.
+ * Kept from Build 232 item 1b (the shapes of review pass 2's M1). The iPad has no signal. On it he types a note on a
+ * task (or makes a hand link, sets an owner, a priority or a percent). Still with no signal he deletes, on the iPad,
+ * the lookahead that holds that task, with "Delete PDF + Items". Meanwhile another device approves a new master, or
+ * makes another one current, so the task has a new row.
  *
- * Why: an edit that waits as a list of fields is sent on to the row the task lives on now (review N3 R3). Item 1 made
- * the delete's save of the whole task join his waiting edit as one whole copy of the task, and a whole copy is
- * written to its own row only. (Where the new row was made after his edit and is still blank there, the sync's own
- * carry fills it from the old row, so a note still arrived; not a link, not over a row the same delete had also put
- * back, and with nothing asked when another device had typed there.)
- *
- * The coordinator's decision: what he typed follows the task. The whole copy keeps the list of the fields of his
- * edit, and those are sent on to the task's new row exactly as when the edit waits alone: the same rule, the same
- * card when another device changed the same field there, the same write the cloud can refuse. What the delete itself
- * put back (the master's dates, the percent, the lookahead's note taken off) belongs to the old row and is not sent
- * on: the new master states its own.
+ * As Build 231 does it: the delete's save of the whole task takes over the waiting edit's list of fields, so what
+ * waits is still a list, and a list is sent on to the row the task lives on now (review N3 R3) exactly as when the
+ * edit waits alone: the same rule, the same card when another device changed the same field there, the same write
+ * the cloud can refuse. What he typed follows the task. (What the delete itself put back is then in no write: that
+ * is P3-1, open, and no test here looks at it.)
  */
-describe('Build 232 item 1b: an edit made with no signal, then the lookahead deleted with no signal too, while another device changes the master', () => {
+describe('Kept from Build 232 item 1b, as Build 231 does it: an edit made with no signal, then the lookahead deleted with no signal too, while another device changes the master', () => {
   const LOOK = scheduleDoc('LOOKAHEAD B232B', '2026-09-09T12:00:00.000Z', 'lookahead');
   const OLD_ROW = 'MASTER F-1';
   const NEW_ROW = 'MASTER G-1';
@@ -5877,23 +5734,9 @@ describe('Build 232 item 1b: an edit made with no signal, then the lookahead del
   it('a hand link he makes after the delete, still with no signal, joins the same record (seed 5311 links again after its delete): his note and his link are both on the row every place shows', async () => {
     const { phone, ipad } = await editedWithNoSignal('a note', true, 'approves a new master', EDIT['a hand link']);
     await everythingSyncs(phone, ipad);
-    // (It was: the note, and no link, in all three places.)
+    // (With the whole task queued as one whole copy and no list of his fields kept, item 1 without 1b: the note, and no link.)
     expect(places(phone, ipad).map(place => [place[0]?.row, place[0]?.['a note'], place[0]?.['a hand link']])).toEqual(Array(3).fill([NEW_ROW, NOTE, ['Survey']]));
     await nothingWaitsOrIsAsked(phone, ipad);
-  });
-
-  it('what the delete itself put back stays on the old row: that row is on its master\'s dates with no lookahead note, and the new row keeps the new master\'s own dates', async () => {
-    const { phone, ipad } = await editedWithNoSignal('a note', true);
-    await everythingSyncs(phone, ipad);
-    // The old row, which nobody is shown: item 1's result stands on it, with his note.
-    expect(cloudRow(OLD_ROW)).toMatchObject({ startDate: '10/15/2026', finishDate: '10/25/2026', notes: NOTE });
-    expect(Boolean(cloudRow(OLD_ROW)!.lookaheadOverlay)).toBe(false);
-    // The new row: the new master's dates, and his note.
-    expect(places(phone, ipad).map(place => [place[0]?.row, place[0]?.dates, place[0]?.['a note']])).toEqual(Array(3).fill([NEW_ROW, '10/20/2026 - 10/30/2026', NOTE]));
-    // More syncing writes nothing more.
-    const writes = cloudWrites();
-    await settle(phone, ipad);
-    expect(cloudWrites()).toBe(writes);
   });
 
   it('another device typed a note on the new row meanwhile: he is asked as for any edit of his, and that note is not written over', async () => {
@@ -5902,7 +5745,7 @@ describe('Build 232 item 1b: an edit made with no signal, then the lookahead del
     await backgroundUpload(phone);
     at('2026-09-13T12:00:00.000Z');
     await everythingSyncs(phone, ipad);
-    // (It was: no card. His note was on the hidden row alone, and there was nothing to choose.)
+    // (Item 1 without 1b: no card. His note was on the hidden row alone, and there was nothing to choose.)
     expect(await asked(ipad)).toEqual([{ row: NEW_ROW, fields: ['notes'], here: [NOTE], cloud: [IPAD_NOTE] }]);
     expect([cloudRow(NEW_ROW)!.notes, await conflictsOf(phone)]).toEqual([IPAD_NOTE, []]);
   });
@@ -5921,29 +5764,21 @@ describe('Build 232 item 1b: an edit made with no signal, then the lookahead del
       const { phone, ipad } = await aboutToSend();
       mockCloud.beforeNextTaskWrite = () => webWrite(webEdited(cloudRow(NEW_ROW)!, { notes: IPAD_NOTE }));
       await backgroundUpload(ipad);
-      // (It was: nothing written to the new row at all, so nothing refused and nothing asked.)
+      // (Item 1 without 1b: nothing written to the new row at all, so nothing refused and nothing asked.)
       expect(mockCloud.refused).toEqual([`ipad:${NEW_ROW}`]);
       expect(cloudRow(NEW_ROW)).toMatchObject({ notes: IPAD_NOTE });
       expect(await asked(ipad)).toEqual([{ row: NEW_ROW, fields: ['notes'], here: [NOTE], cloud: [IPAD_NOTE] }]);
       await settle(phone, ipad);
       expect([cloudRow(NEW_ROW)!.notes, mockCloud.refused]).toEqual([IPAD_NOTE, [`ipad:${NEW_ROW}`]]);
     });
-
-    it('nobody else writing: one write on the new row (his note alone) and one on the old row (the whole task), neither refused', async () => {
-      const { ipad } = await aboutToSend();
-      const writes = cloudWrites();
-      await backgroundUpload(ipad);
-      expect([mockCloud.refused, mockCloud.writes.slice(writes)]).toEqual([[], [`ipad:${NEW_ROW}`, `ipad:${OLD_ROW}`]]);
-      expect([cloudRow(NEW_ROW)!.notes, cloudRow(NEW_ROW)!.startDate, cloudRow(OLD_ROW)!.notes, cloudRow(OLD_ROW)!.startDate]).toEqual([NOTE, '10/20/2026', NOTE, '10/15/2026']);
-    });
   });
 });
 
 /* ------------------------------------------------------------------------------------------------------------- */
 /**
- * Build 232, item 1c (13 Oct 2026; review pass 3's S3-1 and S3-2). Two small things in the lines of items 1 and 1b:
- * what a whole-task save ("Delete PDF + Items") does with the record that waits for the task when it comes.
- * The steps both parts share, and what the tests read.
+ * Kept from Build 232 item 1c (the shapes of review pass 3's S3-1), and the fixture the hand probe below shares:
+ * what "Delete PDF + Items" does with the record that waits for the task when it comes. The steps and what the
+ * tests read. ('his percent' is the shape of the tests that left with the fix; nothing kept uses it.)
  */
 const ITEM_1C = (() => {
   const LOOK = scheduleDoc('LOOKAHEAD B232C', '2026-09-09T12:00:00.000Z', 'lookahead');
@@ -5962,7 +5797,7 @@ const ITEM_1C = (() => {
     const fields = mine.askedFields ?? [];
     return { row: conflict.localId, fields, here: fields.map(field => mine.itemData?.[field]), cloud: fields.map(field => (conflict.remotePayload as Record<string, unknown>)[field]) };
   });
-  type Waiting = { id?: string; changedFields?: string[]; carriedText?: string[]; carriedProgress?: boolean; joinedEditFields?: string[]; joinedCarriedText?: string[] };
+  type Waiting = { id?: string; changedFields?: string[]; carriedText?: string[]; carriedProgress?: boolean };
   /** What waits to go up on a device, record by record. */
   const waiting = async (device: Device) => (await queueOf(device)).map(item => item.payload as Waiting);
   const nothingWaitsOrIsAsked = async (phone: Device, ipad: Device) =>
@@ -6029,17 +5864,15 @@ const ITEM_1C = (() => {
 })();
 
 /**
- * Part A (S3-1; Medium by the coordinator's grading, caused by item 1; Build 231 does not have it). The record that
- * waits is the SYNC'S OWN CARRY of his owner and note to a row a Build 229 master made. He then deletes the lookahead
- * with its items, with no signal. Item 1 made the delete's save of the whole task take the carry's place as one whole
- * copy, which read the carried owner and note as part of the copy it started from: its write left the cloud's blank,
- * and the next refresh blanked them on every device, for good.
+ * The record that waits is the SYNC'S OWN CARRY of his owner and note to a row a Build 229 master made (such a row
+ * keeps no record of what it took, so the sync itself brings his owner and note forward to it later). He then
+ * deletes the lookahead with its items, with no signal.
  *
- * The coordinator's decision: the carried fields still go up by the carry's own rule (each only fills a blank in the
- * cloud's row; over another device's value the cloud's stands and nothing is asked), in the same one write the cloud
- * can refuse.
+ * As Build 231 does it: the delete's save takes over the carry's list of fields, so the carried fields still go up by
+ * the carry's own rule (each only fills a blank in the cloud's row; over another device's value the cloud's stands
+ * and nothing is asked), in a write the cloud can refuse.
  */
-describe('Build 232 item 1c, part A: what the sync itself carried still goes up when a lookahead is then deleted with no signal', () => {
+describe('Kept from Build 232 item 1c part A, as Build 231 does it: what the sync itself carried still goes up when a lookahead is then deleted with no signal', () => {
   const { LOOK, OLD_ROW, NEW_ROW, places, asked, waiting, nothingWaitsOrIsAsked, carriedAndWaitingOnThePhone, thePhoneSends, everythingSyncsAndFullSync } = ITEM_1C;
   const shown = (phone: Device, ipad: Device) => places(phone, ipad).map(place => [place[0]?.row, place[0]?.note, place[0]?.owner]);
 
@@ -6054,20 +5887,11 @@ describe('Build 232 item 1c, part A: what the sync itself carried still goes up 
     const { phone, ipad } = await carriedAndWaitingOnThePhone('his owner and note');
     await deleteWithItems(phone, LOOK);
     await thePhoneSends(phone);
-    // (It was: the cloud's row left blank by that upload; at the phone's next refresh no note and no owner on any device.)
+    // (With the whole task queued as one whole copy, item 1 without 1c: the cloud's row left blank by that upload, and at the phone's next refresh no note and no owner on any device.)
     expect(cloudRow(NEW_ROW)).toMatchObject({ notes: NOTE, owner: 'Mike' });
     await everythingSyncsAndFullSync(phone, ipad);
     expect(shown(phone, ipad)).toEqual(whenAlone);
     await nothingWaitsOrIsAsked(phone, ipad);
-  });
-
-  it('the delete\'s own work stands beside them (item 1): the task\'s row is on the new master\'s dates without the lookahead\'s note, and the old row on its master\'s dates', async () => {
-    const { phone, ipad } = await carriedAndWaitingOnThePhone('his owner and note');
-    await deleteWithItems(phone, LOOK);
-    await thePhoneSends(phone);
-    await everythingSyncsAndFullSync(phone, ipad);
-    expect([places(phone, ipad).map(place => place[0]?.dates), Boolean(cloudRow(NEW_ROW)!.lookaheadOverlay), cloudRow(OLD_ROW)!.startDate])
-      .toEqual([Array(3).fill('10/20/2026 - 10/30/2026'), false, '10/15/2026']);
   });
 
   it('he sets a next step on that row after the delete, still with no signal: his carried owner and note still go up, and the next step with them', async () => {
@@ -6109,7 +5933,7 @@ describe('Build 232 item 1c, part A: what the sync itself carried still goes up 
   });
 
   describe('with a cloud that refuses a write made against a row changed since it was read', () => {
-    it('nobody else writing: the task\'s row is written once, with what the delete put back and his carried owner and note together', async () => {
+    it('nobody else writing: the task\'s row and the old row are each written once, nothing is refused, and his carried owner and note are on the task\'s row', async () => {
       const { phone } = await carriedAndWaitingOnThePhone('his owner and note');
       await deleteWithItems(phone, LOOK);
       mockCloud.versioned = true;
@@ -6132,33 +5956,61 @@ describe('Build 232 item 1c, part A: what the sync itself carried still goes up 
 });
 
 /**
- * Part B (S3-2; Low, caused by item 1b). The list a whole copy keeps of "the fields of his edit" (item 1b) must hold
- * his fields and nothing else. A PERCENT the sync itself had carried, still waiting when the delete's save joined it,
- * put all its progress fields in the list. Nothing read them wrongly (dates and percent are never sent on), but the
- * list was not what it says it is.
+ * The hand probe that found "2.1e" (notes/impl-b232/runs-1c/probe-and-seed-6389/; the generator's seed 6389 by hand),
+ * kept as a guard. An owner that ANOTHER device set on the task's earlier row must still reach the task once the
+ * master has changed, whichever device syncs first and whatever he did to the task meanwhile with no signal.
+ *
+ * With items 1 and 1b in, "an edit, then Delete PDF + Items" ended with NO owner on the phone, the iPad and the web
+ * when the device holding his edit synced first, and nothing asked: the write that sent his edit on had stamped the
+ * task's new row later than its old row, and the sync's carry only fills from a row changed after the new row last
+ * was. On Build 231's sync, and so here, every line below ends with that owner on the task.
+ *
+ * One line is not stated in full. "The delete, THEN a priority" with the phone syncing first ends with the web's
+ * owner and WITHOUT his priority, on Build 231 as with the fix in: an older loss of the same family as review pass
+ * 3's S3-O1, recorded in the design note. Only its owner is looked at.
  */
-describe('Build 232 item 1c, part B: the list of his fields holds his fields only', () => {
-  const { LOOK, NEW_ROW, waiting, carriedAndWaitingOnThePhone } = ITEM_1C;
-  const recordOfTheNewRow = async (phone: Device) => (await waiting(phone)).find(record => record.id === NEW_ROW)!;
+describe('Kept as a guard, the hand probe that found 2.1e: what another device set on the task\'s earlier row still reaches the task, whichever device syncs first', () => {
+  const { LOOK, OLD_ROW, NEW_ROW, places, heardEverywhere, underTheLookahead, later } = ITEM_1C;
+  type Step = 'delete' | Partial<ScheduleItem>;
+  const LOW: Partial<ScheduleItem> = { priority: 'Low' };
+  /**
+   * Master G is approved and heard, then master F made current again; the lookahead moves Framing under F, heard
+   * everywhere. With no signal, on the iPad: `steps`, in order (an edit of the task; "Delete PDF + Items" on the
+   * lookahead). Meanwhile the web sets the task's owner on the row it still shows, the old one, and the phone makes
+   * master G current, so the task has a new row. The iPad gets signal; with `ipadFirst` it syncs before the phone
+   * has refreshed. Then everything syncs.
+   */
+  async function run(steps: Step[], ipadFirst: boolean) {
+    const { phone, ipad } = await underTheLookahead();
+    at(G.importedAt!); await approve(phone, G, [G_ROW, SURVEY]); await heardEverywhere(phone, ipad);
+    at('2026-09-11T08:00:00.000Z'); await setActiveOn(phone, F); await heardEverywhere(phone, ipad);
+    setOnline(ipad, false);
+    at('2026-09-12T09:00:00.000Z');
+    for (const step of steps) { if (step === 'delete') await deleteWithItems(ipad, LOOK); else await edit(ipad, OLD_ROW, step); later(30); }
+    at('2026-09-12T12:00:00.000Z'); webWrite(webEdited(cloudRow(OLD_ROW)!, { owner: 'Ana' }));
+    at('2026-09-12T18:00:00.000Z'); await setActiveOn(phone, G); shareDocuments(phone); await backgroundUpload(phone);
+    at('2026-09-13T08:00:00.000Z');
+    setOnline(ipad, true); shareDocuments(ipad);
+    if (ipadFirst) { await backgroundUpload(ipad); await refresh(ipad); }
+    await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+    return places(phone, ipad);
+  }
+  /** What he does on the iPad with no signal, the priority Framing then has, and whether that priority is lost when the phone syncs first (the older loss above). */
+  const CASES: Array<[string, Step[], ScheduleItem['priority'], boolean]> = [
+    ['nothing of his at all (the web\'s owner alone)', [], 'Medium', false],
+    ['a priority alone, no delete (an edit waiting alone)', [LOW], 'Low', false],
+    ['a priority, THEN the delete (the order of 2.1e)', [LOW, 'delete'], 'Low', false],
+    ['the delete, THEN a priority', ['delete', LOW], 'Low', true],
+    ['the delete alone', ['delete'], 'Medium', false],
+  ];
 
-  it('a percent the sync carried waits, then the delete\'s save joins it: none of its fields is in the list', async () => {
-    const { phone } = await carriedAndWaitingOnThePhone('his percent');
-    expect(await recordOfTheNewRow(phone)).toMatchObject({ carriedProgress: true, changedFields: expect.arrayContaining(['percentComplete', 'status']) });
-    await deleteWithItems(phone, LOOK);
-    const record = await recordOfTheNewRow(phone);
-    // (It was: status, percentComplete, progressSource and eight more, none of them typed by him.)
-    expect([record.changedFields, record.joinedEditFields ?? []]).toEqual([undefined, []]);
-  });
-
-  it('an owner and a note the sync carried wait, he sets a next step on that row, then the delete: the list is the next step alone', async () => {
-    const { phone } = await carriedAndWaitingOnThePhone('his owner and note');
-    at('2026-09-12T12:30:00.000Z');
-    await edit(phone, NEW_ROW, { nextAction: 'Call the inspector' });
-    expect(await recordOfTheNewRow(phone)).toMatchObject({ carriedText: ['owner', 'notes'], changedFields: expect.arrayContaining(['owner', 'notes', 'nextAction']) });
-    at('2026-09-12T13:00:00.000Z');
-    await deleteWithItems(phone, LOOK);
-    const record = await recordOfTheNewRow(phone);
-    expect([record.changedFields, record.joinedEditFields]).toEqual([undefined, ['nextAction']]);
+  describe.each([['the iPad, which holds what he did,', true], ['the phone', false]] as const)('%s syncs first', (_who, ipadFirst) => {
+    it.each(CASES)('%s: Framing is on its new row with the web\'s owner in all three places', async (_label, steps, priority, lostWhenThePhoneIsFirst) => {
+      const shown = await run(steps, ipadFirst);
+      const priorityStated = ipadFirst || !lostWhenThePhoneIsFirst;
+      expect(shown.map(place => place.map(framing => [framing.row, framing.owner, ...(priorityStated ? [framing.priority] : [])])))
+        .toEqual(Array(3).fill([[NEW_ROW, 'Ana', ...(priorityStated ? [priority] : [])]]));
+    });
   });
 });
 
