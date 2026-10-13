@@ -86,6 +86,7 @@ import {
   markReportSnapshotDelivered,
   otherDeviceSendNotReceived,
   reportBaselineSnapshot,
+  reportReadAsEarlierVersionReport,
   reportPeriodKey,
   reportPeriodSend,
   reportPeriodSentAfter,
@@ -444,6 +445,7 @@ export function ReportsScreen({
     previousSnapshot: snapshotScopeLoaded
       ? reportBaselineSnapshot(previousReportSnapshot, reportSourceFingerprint)
       : null,
+    readAsEarlierVersionReport: reportReadAsEarlierVersionReport(previousReportSnapshot, reportSourceFingerprint),
     waitingForOtherDevice: reportDeviceBehind,
     // When each task's progress was confirmed, for Completed Work's dates (A6 pass 14 L4).
     scheduleItems,

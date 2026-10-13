@@ -295,6 +295,23 @@ export function reportBaselineSnapshot(
 }
 
 /**
+ * R9 (the coordinator's decision, 12 Oct 2026). Whether a report with
+ * `currentFingerprint` is read as the saved report `previous` that an
+ * earlier version made: the saved fingerprint is a 1.0 one and a name of
+ * today's facts. Such a report says only what that version's facts can say
+ * (compareDAVEReportSnapshots, `currentReadAsEarlierVersionReport`). Asked
+ * where a screen chooses what its report counts from, beside
+ * `reportBaselineSnapshot`.
+ */
+export function reportReadAsEarlierVersionReport(
+  previous: DAVEReportSnapshot | null | undefined,
+  currentFingerprint: string,
+): boolean {
+  return Boolean(previous) && isLegacyReportSource(previous!.sourceFingerprint) &&
+    sameReportSource(previous!.sourceFingerprint, currentFingerprint);
+}
+
+/**
  * What approving `current` saves: nothing when the same content is already
  * the saved snapshot; otherwise `current`, not yet sent, remembering the
  * report the owner has (the previous snapshot, or, when that approval was
@@ -730,9 +747,16 @@ export function compareDAVEReportSnapshots({
   tasksLeftByLookahead = [],
   earlierRows = [],
   lookaheadAddedTaskIds = [],
+  currentReadAsEarlierVersionReport = false,
 }: {
   current: DAVEReportSnapshot;
   previous?: DAVEReportSnapshot | null;
+  /**
+   * Today's report is read as the saved report an earlier version made
+   * (`reportReadAsEarlierVersionReport`): it is known by a 1.0 fingerprint,
+   * which holds no earlier row (R9).
+   */
+  currentReadAsEarlierVersionReport?: boolean;
   /**
    * The saved earlier rows of the tasks shown (R5 item 1, the returning
    * task): how a task that is back last stood when no report kept has it,
@@ -876,11 +900,22 @@ export function compareDAVEReportSnapshots({
     !previousById.has(task.taskId) && !linked.pairs.has(task) && !revisions.has(task) && !linked.current.has(task)));
   const linkedBefore = reportBefore ? linkTasksById(reportBefore.tasks, [...noPriorNow]) : null;
   const earlierReportMade = Date.parse(previous.capturedAt);
+  // R9 (the coordinator's decision, 12 Oct 2026; closes what R8 item 3 left for a report Build 230 saved). The row
+  // read below is a LIVE row: as it is saved now, not as it was when a report was made. Today's fingerprint
+  // (2.0) holds it; the one Build 230 wrote (1.0) does not, and a report Build 230 saved is still known by it.
+  // Read under a 1.0 name the report said "Paint is back ... moved from 60% to 70%" where Build 230 had written
+  // "Paint was added", and an edit to the hidden row arriving late from another device made it "from 50%" while
+  // the report still read as already sent. So a live earlier row is read only when the report this one counts
+  // from carries today's version, and never where today's report is itself read as one an earlier version saved
+  // (a Build 230 report that counted from a report of this build: two devices on two builds). Otherwise the task
+  // reads as Build 230 wrote it, "was added". What is read from the SAVED report before, above, is untouched:
+  // saved data cannot change under him. From the first report sent on this build it reads as before.
+  const liveEarlierRowsMayBeRead = !currentReadAsEarlierVersionReport && !isLegacyReportSource(previous.sourceFingerprint);
   const returnedFrom = (task: DAVEReportSnapshotTask): DAVEReportSnapshotTask | null => {
     if (!noPriorNow.has(task)) return null;
     const before = reportBeforeById.get(task.taskId) ?? linkedBefore?.pairs.get(task);
     if (before) return isLookaheadDetail(before) ? null : before;
-    if (!reportBefore) return null;
+    if (!reportBefore || !liveEarlierRowsMayBeRead) return null;
     const rows = (earlierRowsOf.get(task.taskId) || []).filter(row => {
       const saved = Date.parse(row.savedAt ?? '');
       const shownSaved = Date.parse(row.taskSavedAt ?? '');

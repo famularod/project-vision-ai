@@ -5824,13 +5824,15 @@ function ReportWorkspace({
     void refreshSnapshot().catch(() => false);
   }, [behindKey, refreshSnapshot]);
   const periodBaseline = period.previousSnapshot;
+  const periodReadAsEarlierVersionReport = period.readAsEarlierVersionReport;
   const periodWaiting = Boolean(period.behindSend);
   const briefing = useMemo(
     () => buildDAVEWebReportDraft(snapshot, selectedProject, {
       previousSnapshot: periodBaseline,
+      readAsEarlierVersionReport: periodReadAsEarlierVersionReport,
       waitingForOtherDevice: periodWaiting,
     }),
-    [periodBaseline, periodWaiting, selectedProject, snapshot],
+    [periodBaseline, periodReadAsEarlierVersionReport, periodWaiting, selectedProject, snapshot],
   );
   const periodChecked = currentPeriodRead.status === 'loaded';
   const sinceSection = useMemo(() => {

@@ -237,12 +237,19 @@ export function buildDAVEReportBriefing({
   truths,
   selectedProjectNames,
   previousSnapshot,
+  readAsEarlierVersionReport = false,
   waitingForOtherDevice = false,
   scheduleItems,
 }: {
   truths: readonly DAVEProjectTruth[];
   selectedProjectNames?: readonly string[];
   previousSnapshot?: DAVEReportSnapshot | null;
+  /**
+   * This report is read as the saved report an earlier version made
+   * (`reportReadAsEarlierVersionReport`, asked where `previousSnapshot` is
+   * chosen): no live earlier row is read for a task that is back (R9).
+   */
+  readAsEarlierVersionReport?: boolean;
   /**
    * The report this one counts from was sent by the other device after this
    * device last downloaded the tasks: "since the last report" is not counted
@@ -279,6 +286,7 @@ export function buildDAVEReportBriefing({
     // How a task that is back last stood, and which tasks began as a lookahead's own row (R5 item 1).
     earlierRows: reportTaskEarlierRows(truths),
     lookaheadAddedTaskIds: reportTasksAddedByLookahead(truths),
+    currentReadAsEarlierVersionReport: readAsEarlierVersionReport,
   });
   const reportingPeriod = waitingForOtherDevice ? reportPeriodWaitingForOtherDevice(comparison) : comparison;
   const projectConditions = truths.map(projectConditionFromTruth);

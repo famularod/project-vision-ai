@@ -847,13 +847,14 @@ export function buildDAVEWebReportDraft(
   snapshot: DAVEWebReadOnlySnapshot,
   selectedProject: string | null,
   /** The phone's shared period, as the web counts it (everyday item 3); none: no "since" period. */
-  period?: Readonly<{ previousSnapshot: DAVEReportSnapshot | null; waitingForOtherDevice: boolean }>,
+  period?: Readonly<{ previousSnapshot: DAVEReportSnapshot | null; waitingForOtherDevice: boolean; readAsEarlierVersionReport?: boolean }>,
 ): DAVEReportBriefing {
   const truths = buildDAVEWebProjectTruths(snapshot, selectedProject);
   return buildDAVEReportBriefing({
     truths,
     selectedProjectNames: truths.map(truth => truth.projectName),
     previousSnapshot: period?.previousSnapshot ?? null,
+    readAsEarlierVersionReport: period?.readAsEarlierVersionReport ?? false,
     waitingForOtherDevice: period?.waitingForOtherDevice ?? false,
     // When each task's progress was confirmed, for Completed Work's dates (A6 pass 14 L4).
     scheduleItems: snapshot.knownScheduleItems ?? snapshot.scheduleItems,

@@ -2,6 +2,7 @@ import {
   describeReportSendTime,
   otherDeviceSendNotReceived,
   reportBaselineSnapshot,
+  reportReadAsEarlierVersionReport,
   sameReportSource,
   reportPeriodSend,
   reportPeriodSentAt,
@@ -72,6 +73,8 @@ export async function readDAVEWebReportPeriod(
 export type DAVEWebReportPeriodState = Readonly<{
   /** The report the "since" section is compared with, for the briefing; null for none. */
   previousSnapshot: DAVEReportSnapshot | null;
+  /** The report on this tab is read as the period's report, saved by an earlier version: for the briefing (R9). */
+  readAsEarlierVersionReport: boolean;
   /** The other device's send this tab may not have the changes behind; null when it has them. */
   behindSend: DAVEReportSnapshot | null;
   /**
@@ -98,8 +101,8 @@ export function daveWebReportPeriodState({
   pulledAt: string | null;
   ownSends?: ReadonlySet<string>;
 }): DAVEWebReportPeriodState {
-  if (read.status === 'loading') return { previousSnapshot: null, behindSend: null, periodKey: 'loading' };
-  if (!read.snapshot) return { previousSnapshot: null, behindSend: null, periodKey: 'none' };
+  if (read.status === 'loading') return { previousSnapshot: null, readAsEarlierVersionReport: false, behindSend: null, periodKey: 'loading' };
+  if (!read.snapshot) return { previousSnapshot: null, readAsEarlierVersionReport: false, behindSend: null, periodKey: 'none' };
   const period = read.snapshot;
   const send = reportPeriodSend(period);
   const sendKey = typeof send?.deliveredAt === 'string' ? `${send.sentBy ?? ''}|${send.deliveredAt}` : null;
@@ -113,6 +116,7 @@ export function daveWebReportPeriodState({
   const sentAt = reportPeriodSentAt(period);
   return {
     previousSnapshot: reportBaselineSnapshot(period, fingerprint),
+    readAsEarlierVersionReport: reportReadAsEarlierVersionReport(period, fingerprint),
     behindSend,
     periodKey: sentAt ? `sent:${sentAt}` : 'none',
   };

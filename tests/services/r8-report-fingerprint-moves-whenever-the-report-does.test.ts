@@ -24,6 +24,10 @@
  * The other direction (the fingerprint moves and no word of the report does)
  * costs one more approval and is counted, not failed.
  *
+ * R9 (the coordinator's decision): the same guard on the 1.0 road, for the earlier rows. A report Build 230 saved
+ * is known by the 1.0 fingerprint of its facts, which holds no earlier row: read as that report (counted from a
+ * report of this build, and from one of Build 230's), no change to an earlier row may move a word of it.
+ *
  * R8_SEEDS sets how many projects (default 5, for the release gate's time; R8_FIRST the first seed). Each project is
  * some ninety reports written twice over, so the tests are given time.
  */
@@ -33,7 +37,8 @@ import {
 } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
 import {
-  buildDAVEReportSnapshot, daveReportSnapshotScopeKey, markReportSnapshotDelivered, reportBaselineSnapshot, reportSnapshotToSave, type DAVEReportSnapshot,
+  buildDAVEReportSnapshot, daveReportSnapshotScopeKey, markReportSnapshotDelivered, reportBaselineSnapshot, reportReadAsEarlierVersionReport, reportSnapshotToSave,
+  sameReportSource, type DAVEReportSnapshot,
 } from '../../services/DAVEReportSnapshot';
 import { reconcileDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
 import { buildDAVEWebReportDraft, buildDAVEWebReportTruths, formatDAVEWebReport } from '../../services/DAVEWebOperations';
@@ -146,7 +151,10 @@ function phoneScreen(world: World, period: DAVEReportSnapshot | null, now: strin
     projectAreas: scope.projectAreas, referenceDocuments: scope.referenceDocuments, now,
   });
   const fingerprint = buildDAVEReportSourceFingerprint(truths);
-  const briefing = buildDAVEReportBriefing({ truths, selectedProjectNames: ['Alpha'], previousSnapshot: reportBaselineSnapshot(period, fingerprint), scheduleItems: scope.scheduleItems });
+  const briefing = buildDAVEReportBriefing({
+    truths, selectedProjectNames: ['Alpha'], previousSnapshot: reportBaselineSnapshot(period, fingerprint),
+    readAsEarlierVersionReport: reportReadAsEarlierVersionReport(period, fingerprint), scheduleItems: scope.scheduleItems,
+  });
   const cited = buildAutomaticReportDrawingReferences({ documents: [...scope.referenceDocuments], scheduleItems: [...scope.scheduleItems], selectedProjectNames: ['Alpha'] });
   const snapshot = buildDAVEReportSnapshot({
     truths, scopeKey: SCOPE, sourceFingerprint: fingerprint, capturedAt: now, reportFormat: 'project_manager',
@@ -164,7 +172,9 @@ function webPage(world: World, period: DAVEReportSnapshot | null, now: string) {
     referenceDocuments: world.documents, refreshedAt: now,
   } as unknown as DAVEWebReadOnlySnapshot;
   const fingerprint = buildDAVEReportSourceFingerprint(buildDAVEWebReportTruths(snapshot, 'Alpha'));
-  const briefing = buildDAVEWebReportDraft(snapshot, 'Alpha', { previousSnapshot: reportBaselineSnapshot(period, fingerprint), waitingForOtherDevice: false });
+  const briefing = buildDAVEWebReportDraft(snapshot, 'Alpha', {
+    previousSnapshot: reportBaselineSnapshot(period, fingerprint), readAsEarlierVersionReport: reportReadAsEarlierVersionReport(period, fingerprint), waitingForOtherDevice: false,
+  });
   const cited = buildAutomaticReportDrawingReferences({ documents: [...snapshot.referenceDocuments], scheduleItems: [...snapshot.scheduleItems], selectedProjectNames: ['Alpha'] });
   return { fingerprint, report: `${written(briefing)}\n=====CITES\n${cited.map(reference => `${reference.areaName}: ${reference.citation.label}`).join('\n')}` };
 }
@@ -203,7 +213,14 @@ function project(seed: number) {
   if (rand() < 0.5) world = { ...world, areas: AREAS.map((name, index) => ({ id: `area-${name.toLowerCase()}`, projectName: 'Alpha', name, latitude: 37.1 + index / 100, longitude: -122.1 - index / 100, radiusFeet: 150 })) as unknown as ProjectArea[] };
   world = hisDay(world, 1);
   let period: DAVEReportSnapshot | null = null;
-  const send = (at: number) => { const screen = phoneScreen(world, period, day(at)); period = markReportSnapshotDelivered((reportSnapshotToSave(screen.snapshot, period) ?? screen.snapshot) as DAVEReportSnapshot, day(at), 'phone'); };
+  // R9: the same reports as Build 230 saved them, each under the 1.0 fingerprint of its facts.
+  let period230: DAVEReportSnapshot | null = null;
+  const send = (at: number) => {
+    const screen = phoneScreen(world, period, day(at));
+    period = markReportSnapshotDelivered((reportSnapshotToSave(screen.snapshot, period) ?? screen.snapshot) as DAVEReportSnapshot, day(at), 'phone');
+    const on230 = { ...screen.snapshot, sourceFingerprint: buildDAVELegacyReportSourceFingerprint(screen.truths) } as DAVEReportSnapshot;
+    period230 = markReportSnapshotDelivered((reportSnapshotToSave(on230, period230) ?? on230) as DAVEReportSnapshot, day(at), 'phone');
+  };
   send(2);
   // A revised master: some tasks move, one is left out.
   const dropped = pick(rand, tasks);
@@ -223,7 +240,7 @@ function project(seed: number) {
   if (rand() < 0.75) world = approve(world, scheduleFile('MASTER M3', day(10)), tasks.map(task => line(task, task === dropped ? 6 : 0)));
   world = hisDay(world, 11);
   world = hisDay(world, 12);
-  return { world, period: period as DAVEReportSnapshot | null, now: day(13) };
+  return { world, period: period as DAVEReportSnapshot | null, period230: period230 as DAVEReportSnapshot | null, now: day(13) };
 }
 
 // ---- one change to one input ----
@@ -390,10 +407,19 @@ describe('R8 item 4: whenever one change to an input moves the written report or
   const byFamily = new Map<string, { tried: number; movedTheReport: number }>();
   const onlyTheFingerprint = new Map<string, number>();
   const falseMatches: string[] = [];
+  const road230 = { tried: 0, stillTheSavedReport: 0 };
 
   it.each(Array.from({ length: SEEDS }, (_, index) => FIRST + index))('project %i', seed => {
-    const { world, period, now } = project(seed);
+    const { world, period, period230, now } = project(seed);
     const before = { phone: phoneScreen(world, period, now), web: webPage(world, period, now) };
+    // R9, the 1.0 road: today's report as Build 230 saved it, counted from a report this build sent, and from one Build 230 sent.
+    const today230 = { ...before.phone.snapshot, sourceFingerprint: buildDAVELegacyReportSourceFingerprint(before.phone.truths) } as DAVEReportSnapshot;
+    const savedOn230 = [period, period230].map(countedFrom => markReportSnapshotDelivered((reportSnapshotToSave(today230, countedFrom) ?? today230) as DAVEReportSnapshot, now, 'phone'));
+    const before230 = savedOn230.map(saved => ({
+      phone: phoneScreen(world, saved, now).report, web: webPage(world, saved, now).report,
+      // Not where today's report counts other field updates than Build 230's did: no 1.0 name stands there (R7 item A).
+      taken: sameReportSource(saved.sourceFingerprint, before.phone.fingerprint),
+    }));
     // (the rig) The project has a report to count from, and the phone and the web have one fingerprint for it.
     expect(period).not.toBeNull();
     expect(before.web.fingerprint).toBe(before.phone.fingerprint);
@@ -417,6 +443,20 @@ describe('R8 item 4: whenever one change to an input moves the written report or
           falseMatches.push(`project ${seed}, ${side}: ${family}: ${what}  =>  ${line.slice(0, 200)}`);
         }
       }
+      if (family === 'earlier rows') {
+        savedOn230.forEach((saved, road) => (['phone', 'web'] as const).forEach(side => {
+          const is = (side === 'phone' ? phoneScreen : webPage)(changed, saved, now);
+          road230.tried += 1;
+          // Taken for the report Build 230 saved, before the change and after it (the 1.0 name does not hold the row):
+          // then not a word may differ.
+          if (!before230[road].taken || !sameReportSource(saved.sourceFingerprint, is.fingerprint)) return;
+          road230.stillTheSavedReport += 1;
+          if (is.report !== before230[road][side]) {
+            const was = before230[road][side].split('\n'); const lines = is.report.split('\n');
+            falseMatches.push(`project ${seed}, ${side}, read as the report Build 230 saved (${road === 0 ? 'counted from a report of this build' : 'counted from one of Build 230\'s'}): ${family}: ${what}  =>  ${(lines.find(text => !was.includes(text)) ?? was.find(text => !lines.includes(text)) ?? '').slice(0, 200)}`);
+          }
+        }));
+      }
       if (reportMoved) { tally.movedTheReport += 1; counts.movedTheReport += 1; }
       else if (fingerprintMoved) { tally.movedOnlyTheFingerprint += 1; onlyTheFingerprint.set(`${family}: ${what}`, (onlyTheFingerprint.get(`${family}: ${what}`) ?? 0) + 1); }
       else tally.movedNothing += 1;
@@ -427,7 +467,7 @@ describe('R8 item 4: whenever one change to an input moves the written report or
   it('no change moved the report under one fingerprint, and every kind of input was put to the test', () => {
     if (process.env.R8_OUT) {
       require('fs').writeFileSync(process.env.R8_OUT, JSON.stringify({
-        ...tally, changesOfAKind: CHANGES.length, byFamily: Object.fromEntries(byFamily),
+        ...tally, changesOfAKind: CHANGES.length, byFamily: Object.fromEntries(byFamily), road230,
         movedOnlyTheFingerprint_byChange: Object.fromEntries([...onlyTheFingerprint].sort((left, right) => right[1] - left[1])), falseMatches,
       }, null, 1));
     }
@@ -438,6 +478,8 @@ describe('R8 item 4: whenever one change to an input moves the written report or
     expect([...byFamily.keys()].sort()).toEqual(['activity notes', 'approvals', 'areas', 'comparisons', 'documents', 'drawings', 'earlier rows', 'field updates', 'lookaheads', 'photos', 'tasks']);
     expect([...byFamily].filter(([, counts]) => counts.movedTheReport === 0).map(([family]) => family)).toEqual(['areas']);
     expect(tally.movedTheReport).toBeGreaterThan(tally.projects * 20);
+    // R9: the 1.0 road was walked, and the report was still taken for the one Build 230 saved.
+    expect(road230.stillTheSavedReport).toBeGreaterThan(0);
   });
 });
 
