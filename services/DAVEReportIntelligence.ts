@@ -161,7 +161,7 @@ export function buildDAVEReportSourceFingerprint(
     .map(truth => ({
       projectName: normalized(truth.projectName),
       fingerprint: stableHash(stableStringify(canonicalizeReportSourceValue(
-        withoutVolatileReportSourceFields(reportSourceFactsOf(truth)),
+        withoutVolatileReportSourceFields(reportSourceFactsOf(truth), LEFT_OUT_OF_REPORT_SOURCE_2_0),
       ))),
     }))
     .sort((left, right) => left.projectName.localeCompare(right.projectName));
@@ -1396,18 +1396,34 @@ const VOLATILE_REPORT_SOURCE_FIELDS = new Set([
   // which detail tasks left with a lookahead. The dates and the tasks shown are in the fingerprint themselves.
   'onLookaheadDates', 'replacedLookaheadDates', 'lookaheadReplacement',
   // R5 item 1 (the returning task): the earlier rows of the tasks shown, and which tasks' own rows a lookahead
-  // added. Which task a row is and how it last stood; the tasks shown and what each says are in the fingerprint
-  // themselves.
+  // added. (Left out of version 1.0 so that it stays the released build's. Version 2.0 holds the earlier rows:
+  // the returning-task sentences read them. R8 item 3, below.)
   'earlierRows', 'lookaheadAddedTaskIds',
 ]);
 
-function withoutVolatileReportSourceFields(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(withoutVolatileReportSourceFields);
+/**
+ * R8 item 3 (the coordinator's decision on review pass 2, P2-3): what version
+ * 2.0 of the fingerprint leaves out, by name. Version 1.0 leaves out the
+ * whole list above, as the released build did, and must go on doing so.
+ *
+ * Version 2.0 holds `earlierRows`: the earlier rows of the tasks shown, as
+ * they are saved now. "Paint is back in the project plan." is followed by
+ * what changed since the task last stood ("moved from 60% to 70%"), and "how
+ * it last stood" is read from the row it left on. That row was in neither
+ * version, so a late edit to it from another device changed the sentence
+ * ("from 50%") while the app still called it the report already sent. Every
+ * value those sentences read is in the truth's record of the row
+ * (DAVETaskEarlierRowTruth), and that record is all of the row that is held.
+ */
+const LEFT_OUT_OF_REPORT_SOURCE_2_0: ReadonlySet<string> = new Set([...VOLATILE_REPORT_SOURCE_FIELDS].filter(field => field !== 'earlierRows'));
+
+function withoutVolatileReportSourceFields(value: unknown, leftOut: ReadonlySet<string> = VOLATILE_REPORT_SOURCE_FIELDS): unknown {
+  if (Array.isArray(value)) return value.map(item => withoutVolatileReportSourceFields(item, leftOut));
   if (value && typeof value === 'object') {
     return Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
-        .filter(([key]) => !VOLATILE_REPORT_SOURCE_FIELDS.has(key))
-        .map(([key, child]) => [key, withoutVolatileReportSourceFields(child)]),
+        .filter(([key]) => !leftOut.has(key))
+        .map(([key, child]) => [key, withoutVolatileReportSourceFields(child, leftOut)]),
     );
   }
   return value;

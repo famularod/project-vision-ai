@@ -238,9 +238,9 @@ export type DAVEProjectTruth = {
   lookaheadReplacement?: DAVELookaheadReplacementTruth;
   /**
    * Only on a truth built for a report, from every saved task: the earlier
-   * rows of the tasks shown (R5 item 1, the returning task). Left out of the
-   * report's fingerprint: they say which task a row is and how it last
-   * stood, not what the project's facts are now.
+   * rows of the tasks shown (R5 item 1, the returning task). In version 2.0
+   * of the report's fingerprint (R8 item 3): the report says what changed on
+   * a task that is back since it last stood, and reads that from here.
    */
   earlierRows?: DAVETaskEarlierRowTruth[];
   /**

@@ -422,14 +422,17 @@ describe('R5 item 1: the recorded case, a lookahead lists the dropped task as it
 });
 
 describe('R5 item 1: the report\'s fingerprint does not move', () => {
-  it('the earlier rows handed to the comparison are in neither version of the fingerprint', () => {
+  // R8 item 3 (the coordinator's decision on review pass 2, P2-3). This test said the earlier rows "are in neither
+  // version of the fingerprint". The sentences of a task that is back read them, so a late change to such a row
+  // changed the report under one fingerprint. They are in today's version now, and still not in 1.0.
+  it('the earlier rows handed to the comparison are in today\'s version of the fingerprint, and not in 1.0', () => {
     const { state: out } = paintLeftOut();
     const state = approve(out, schedule('MASTER 3', '2026-09-10T12:00:00.000Z'), [...OTHERS, PAINT_MOVED], PLAIN, SAME_TASK);
     const truths = phoneTruths(state, '2026-09-10T15:00:00.000Z');
     expect((truths[0].earlierRows ?? []).map(row => [row.taskId, row.earlierTaskId, row.percentComplete, row.owner, row.finishDate])).toEqual([['MASTER 3-4', 'MASTER 1-4', 60, 'Sam', '10/05/2026']]);
-    const without = truths.map(truth => { const { earlierRows: _rows, lookaheadAddedTaskIds: _ids, ...rest } = truth; return rest as typeof truth; });
-    expect(buildDAVEReportSourceFingerprint(truths)).toBe(buildDAVEReportSourceFingerprint(without));
-    // 1.0 is worked out from the truth as it was built, which carries the rows too: without them there as well.
+    const without = truths.map(truth => { const { earlierRows: _rows, ...rest } = truth; return rest as typeof truth; });
+    expect(buildDAVEReportSourceFingerprint(truths)).not.toBe(buildDAVEReportSourceFingerprint(without));
+    // 1.0 is worked out from the truth as it was built, which carries the rows too: without them there, as before.
     const asBuilt = daveProjectTruthAsBuilt(truths[0]);
     expect(asBuilt.earlierRows).toHaveLength(1);
     const { earlierRows: _built, ...asBuiltWithout } = asBuilt;
