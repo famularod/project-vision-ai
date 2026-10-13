@@ -5,6 +5,13 @@
  * into effect, another screen), with a plain sentence and no change.
  *
  * The dialog and the delete underneath are App.tsx's own, compiled from its source.
+ *
+ * The owner's answer to question 46 (13 Oct 2026), "Remove 'Delete PDF Only' everywhere. Deleting a schedule file
+ * always removes its tasks with it.": no schedule file offers "Delete PDF Only" any more. It had stayed for an older
+ * master and for a lookahead newer ones have replaced, and on an older master it listed every task a newer master had
+ * moved twice on the phone, the iPad and the web (the schedules reviewer's P1-10). The tests below that pinned the two
+ * choices for those files are reversed, each marked "owner answer 46"; the delete underneath still refuses for the
+ * lookahead in effect and the master in effect, as before.
  */
 import fs from 'fs';
 import path from 'path';
@@ -80,17 +87,20 @@ describe('Owner answer Q36: on the phone, the PDF of a lookahead in effect is no
     expect(scheduleFileOnlyDeleteRefusal(undefined, ALL)).toBeNull();
   });
 
-  it('(a) the dialog offers "Delete PDF Only" for a replaced lookahead, and not for the lookahead in effect; its words read true with one choice', () => {
+  // Reversed by owner answer 46: it pinned ['Cancel', 'Delete PDF Only', 'Delete PDF + Items'] for the replaced lookahead,
+  // and its question read "...will be removed. You can also remove the 1 schedule item only this PDF contains so
+  // outdated dates do not confuse Upcoming."
+  it('(a) the dialog offers "Delete PDF Only" for no lookahead, replaced or in effect (owner answer 46); its words read true with one choice', () => {
     const app = phone(ALL);
     [MASTER, OLDER, NEWER].forEach(document => app.deleteScheduleDocument(document.id));
     expect(app.alerts.map(alert => alert.buttons.map(button => button.text))).toEqual([
       ['Cancel', 'Delete PDF + Items'], // the master in effect: owner answer Q38, below
-      ['Cancel', 'Delete PDF Only', 'Delete PDF + Items'],
+      ['Cancel', 'Delete PDF + Items'], // the replaced lookahead: owner answer 46
       ['Cancel', 'Delete PDF + Items'],
     ]);
-    expect(app.alerts[1].message).toContain('LOOKAHEAD 1 will be removed. You can also remove the 1 schedule item only this PDF contains so outdated dates do not confuse Upcoming.');
+    expect(app.alerts[1].message).toContain('LOOKAHEAD 1 will be removed, with the 1 schedule item only this PDF contains.');
     expect(app.alerts[2].message).toContain('LOOKAHEAD 2 will be removed, with the 1 schedule item only this PDF contains.');
-    expect(app.alerts[2].message).not.toContain('You can also');
+    app.alerts.forEach(alert => expect(alert.message).not.toContain('You can also'));
   });
 
   it('(b) the delete underneath the button refuses for the lookahead in effect: he is told why and nothing changes; a replaced lookahead\'s file goes as before', async () => {
@@ -102,33 +112,38 @@ describe('Owner answer Q36: on the phone, the PDF of a lookahead in effect is no
     expect([app.did.tombstones, app.referenceDocumentsCurrentRef.current.map(document => document.id), app.alerts.length]).toEqual([['LOOKAHEAD 1'], ['MASTER', 'LOOKAHEAD 2'], 1]);
   });
 
-  it('"Delete PDF Only" on a replaced lookahead still saves its tasks first, removes the record and then the stored file', async () => {
+  // Reversed by owner answer 46. It was: '"Delete PDF Only" on a replaced lookahead still saves its tasks first, removes
+  // the record and then the stored file' (it pressed that button and found the file gone and its tasks kept).
+  it('a replaced lookahead has no "Delete PDF Only" to press: opening its question saves nothing and removes nothing (owner answer 46)', async () => {
     const app = phone(ALL, { scheduleItemsAfterScheduleDeleted: () => [TASKS[0]] });
     app.deleteScheduleDocument(OLDER.id);
-    app.alerts[0].buttons.find(button => button.text === 'Delete PDF Only')!.onPress!();
+    expect(app.alerts[0].buttons.find(button => button.text === 'Delete PDF Only')).toBeUndefined();
     await settled();
-    expect(app.did).toEqual({ tombstones: ['LOOKAHEAD 1'], saved: ['Framing'], filesDeleted: ['file:///LOOKAHEAD 1.pdf'] });
+    expect(app.did).toEqual({ tombstones: [], saved: [], filesDeleted: [] });
     expect(app.alerts).toHaveLength(1);
   });
 
-  it('(c) a dialog opened while the lookahead was replaced checks again at the tap: in effect by then, nothing is saved and nothing is removed', async () => {
-    // (The helper would have tasks to save; none may be.)
+  // Reversed by owner answer 46. It was: '(c) a dialog opened while the lookahead was replaced checks again at the tap'
+  // (the "Delete PDF Only" button of a dialog left open). No dialog holds that button now, whatever the state it opens
+  // in; the delete underneath still refuses once the lookahead is in effect again, whoever asks: (b) above.
+  it('(c) a dialog opened while the lookahead was replaced holds no "Delete PDF Only" to tap later; in effect by then, the delete underneath refuses (owner answer 46)', async () => {
     const app = phone(ALL, { scheduleItemsAfterScheduleDeleted: () => [TASKS[0]] });
     app.deleteScheduleDocument(OLDER.id);
-    const pdfOnly = app.alerts[0].buttons.find(button => button.text === 'Delete PDF Only')!;
+    expect(app.alerts[0].buttons.map(button => button.text)).toEqual(['Cancel', 'Delete PDF + Items']);
     // The newer lookahead is deleted on another device meanwhile: the older one is in effect again.
     app.referenceDocumentsCurrentRef.current = [MASTER, OLDER];
-    pdfOnly.onPress!();
-    await settled();
+    expect(await app.removeReferenceDocumentEverywhere(OLDER.id)).toBe(false);
     expect(app.alerts.slice(1).map(alert => [alert.title, alert.message])).toEqual([['PDF not deleted', scheduleFileOnlyDeleteRefusal(OLDER, [MASTER, OLDER])]]);
     expect(app.did).toEqual({ tombstones: [], saved: [], filesDeleted: [] });
     expect(app.referenceDocumentsCurrentRef.current.map(document => document.id)).toEqual(['MASTER', 'LOOKAHEAD 1']);
   });
 
+  // Counts changed by owner answer 46: the "Delete PDF Only" button was the third caller, and the second place a
+  // stored file was removed after that delete.
   it('every caller of that delete stops when it refuses: the stored file is left, and a project document is not taken off the device', () => {
-    expect(APP.split('.then(removed => { if (removed !== false) deleteStoredReferenceDocument(document.uri).catch(() => undefined); })')).toHaveLength(3);
+    expect(APP.split('.then(removed => { if (removed !== false) deleteStoredReferenceDocument(document.uri).catch(() => undefined); })')).toHaveLength(2);
     expect(APP).toContain('void removeReferenceDocumentEverywhere(sharedRecord.id)\n        .then(removed => (removed === false ? undefined : removeFromDevice()))');
-    expect(APP.split('removeReferenceDocumentEverywhere(')).toHaveLength(5); // the function and its three callers
+    expect(APP.split('removeReferenceDocumentEverywhere(')).toHaveLength(4); // the function and its two callers
   });
 });
 
@@ -159,14 +174,16 @@ describe('Owner answer Q38: on the phone, the PDF of the master schedule in effe
     expect(afterSetActive.map(document => scheduleFileOnlyDeleteRefusal(document, afterSetActive))).toEqual([expect.stringContaining('MASTER F is the active schedule'), null]);
   });
 
-  it('(a) the dialog offers "Delete PDF Only" for an older master and not for the master in effect; its words read true with one choice', () => {
+  // Reversed by owner answer 46 (the schedules reviewer's P1-10): it pinned ['Cancel', 'Delete PDF Only', 'Delete PDF +
+  // Items'] for the older master, the one case that was left.
+  it('(a) the dialog offers "Delete PDF Only" for no master, older or in effect (owner answer 46); its words read true with one choice', () => {
     const app = phone(SAVED);
     [F, G].forEach(document => app.deleteScheduleDocument(document.id));
     expect(app.alerts.map(alert => alert.buttons.map(button => button.text))).toEqual([
-      ['Cancel', 'Delete PDF Only', 'Delete PDF + Items'],
+      ['Cancel', 'Delete PDF + Items'], // the older master: owner answer 46
       ['Cancel', 'Delete PDF + Items'],
     ]);
-    expect(app.alerts[1].message).not.toContain('You can also');
+    app.alerts.forEach(alert => expect(alert.message).not.toContain('You can also'));
   });
 
   it('(b) the delete underneath the button refuses for the master in effect: he is told why and nothing changes; the older master\'s file goes as before', async () => {
@@ -178,14 +195,16 @@ describe('Owner answer Q38: on the phone, the PDF of the master schedule in effe
     expect(app.did.tombstones).toEqual(['MASTER F']);
   });
 
-  it('(c) a dialog opened on an older master checks again at the tap: set active meanwhile, nothing is saved and nothing is removed', async () => {
+  // Reversed by owner answer 46. It was: '(c) a dialog opened on an older master checks again at the tap' (the "Delete
+  // PDF Only" button of a dialog left open). No dialog holds that button now; the delete underneath still refuses once
+  // that master is the one in effect, whoever asks.
+  it('(c) a dialog opened on an older master holds no "Delete PDF Only" to tap later; set active meanwhile, the delete underneath refuses (owner answer 46)', async () => {
     const app = phone(SAVED, { scheduleItemsAfterScheduleDeleted: () => [TASKS[0]] });
     app.deleteScheduleDocument(F.id);
-    const pdfOnly = app.alerts[0].buttons.find(button => button.text === 'Delete PDF Only')!;
+    expect(app.alerts[0].buttons.map(button => button.text)).toEqual(['Cancel', 'Delete PDF + Items']);
     // Set Active on master F, on this device or another, while the dialog is open.
     app.referenceDocumentsCurrentRef.current = [{ ...F, isCurrent: true } as ReferenceDocument, { ...G, isCurrent: false } as ReferenceDocument, OLDER, NEWER];
-    pdfOnly.onPress!();
-    await settled();
+    expect(await app.removeReferenceDocumentEverywhere(F.id)).toBe(false);
     expect(app.alerts.slice(1).map(alert => alert.message)).toEqual(['MASTER F is the active schedule, so its PDF cannot be deleted on its own. Use Delete PDF + Items, or set another schedule active first.']);
     expect(app.did).toEqual({ tombstones: [], saved: [], filesDeleted: [] });
   });
@@ -210,13 +229,16 @@ describe('the delete question for a schedule with no tasks of its own', () => {
     expect(question(lone, [...ALL, lone])).toEqual(['MASTER 9 will be removed. It has no schedule items of its own.', ['Cancel', 'Delete PDF + Items']]);
   });
 
-  it('with both choices offered too (an older master none of whose tasks is only its own)', () => {
-    expect(question(OLD_MASTER, [OLD_MASTER, ...ALL])).toEqual(['MASTER 0 will be removed. It has no schedule items of its own.', ['Cancel', 'Delete PDF Only', 'Delete PDF + Items']]);
+  // Reversed by owner answer 46: it was 'with both choices offered too', with ['Cancel', 'Delete PDF Only', 'Delete PDF + Items'].
+  it('the same for an older master none of whose tasks is only its own: one choice (owner answer 46)', () => {
+    expect(question(OLD_MASTER, [OLD_MASTER, ...ALL])).toEqual(['MASTER 0 will be removed. It has no schedule items of its own.', ['Cancel', 'Delete PDF + Items']]);
   });
 
-  it('one or more: counted as before', () => {
+  // The replaced lookahead's sentence reversed by owner answer 46 (it read "...will be removed. You can also remove the 1
+  // schedule item only this PDF contains so outdated dates do not confuse Upcoming.").
+  it('one or more: counted, and said as what goes with the file', () => {
     expect(question(NEWER, ALL)[0]).toBe('LOOKAHEAD 2 will be removed, with the 1 schedule item only this PDF contains.');
-    expect(question(OLDER, ALL)[0]).toBe('LOOKAHEAD 1 will be removed. You can also remove the 1 schedule item only this PDF contains so outdated dates do not confuse Upcoming.');
+    expect(question(OLDER, ALL)[0]).toBe('LOOKAHEAD 1 will be removed, with the 1 schedule item only this PDF contains.');
   });
 });
 
@@ -237,12 +259,13 @@ describe('S2 item 5: the delete question says when the items removed include ear
   };
 
   it('the older master: two of its three items are earlier rows of tasks master G moved', () => {
-    expect(question(F, SAVED)).toBe('MASTER F will be removed. You can also remove the 3 schedule items only this PDF contains so outdated dates do not confuse Upcoming. 2 of those items are earlier rows of tasks a newer schedule has moved; those tasks stay in your list.');
+    // (Owner answer 46: it began "MASTER F will be removed. You can also remove the 3 schedule items only this PDF contains so outdated dates do not confuse Upcoming.")
+    expect(question(F, SAVED)).toBe('MASTER F will be removed, with the 3 schedule items only this PDF contains. 2 of those items are earlier rows of tasks a newer schedule has moved; those tasks stay in your list.');
   });
 
   it('one such row; none; and a lookahead\'s question is unchanged', () => {
     const one = SAVED.filter(item => item.id !== 'G-2');
-    expect(question(F, one)).toContain('contains so outdated dates do not confuse Upcoming. 1 of those items is the earlier row of a task a newer schedule has moved; that task stays in your list.');
+    expect(question(F, one)).toContain('with the 3 schedule items only this PDF contains. 1 of those items is the earlier row of a task a newer schedule has moved; that task stays in your list.');
     expect(question(G, SAVED)).toBe('MASTER G will be removed, with the 2 schedule items only this PDF contains.');
     expect(scheduleLookaheadDeleteNote(SAVED, G, SAVED.filter(item => item.id.startsWith('G-')), [F, G])).toBe('');
     // A row whose newer row is removed with it is not such a row: that task does not stay.
@@ -287,7 +310,8 @@ describe('Review pass 1, P1-5 (caused by S2 item 5): the delete question says a 
     const H = schedule('MASTER H', '2026-09-21T12:00:00.000Z');
     // G moved Framing and Paint; H moved Paint again and leaves Framing out.
     const saved = [row('F-1', 'Framing', F), row('F-2', 'Paint', F), row('G-1', 'Framing', G, ['F-1']), row('G-2', 'Paint', G, ['F-2']), row('H-1', 'Paint', H, ['F-2', 'G-2'])];
-    expect(question(F, [F, G, H], saved)[0]).toBe('MASTER F will be removed. You can also remove the 2 schedule items only this PDF contains so outdated dates do not confuse Upcoming. ' +
+    // (Owner answer 46: it began "MASTER F will be removed. You can also remove the 2 schedule items only this PDF contains so outdated dates do not confuse Upcoming.")
+    expect(question(F, [F, G, H], saved)[0]).toBe('MASTER F will be removed, with the 2 schedule items only this PDF contains. ' +
       '2 of those items are earlier rows of tasks a newer schedule has moved; 1 of those tasks stays in your list, and 1 will not be in your list afterwards: its newer row is kept, under a schedule that is not active.');
     // Only the task H leaves out: nothing is said to stay.
     const framingOnly = saved.filter(item => item.taskName === 'Framing');
@@ -300,5 +324,57 @@ describe('Review pass 1, P1-5 (caused by S2 item 5): the delete question says a 
     const saved = [row('F-1', 'Framing', F), row('G-1', 'Framing', G, ['F-1'])];
     expect(scheduleLookaheadDeleteNote(saved, F, [saved[0]])).toBe(' 1 of those items is the earlier row of a task a newer schedule has moved; that task stays in your list.');
     expect(scheduleLookaheadDeleteNote(saved, F, [saved[0]], [F, G])).toBe(' 1 of those items is the earlier row of a task a newer schedule has moved; that task stays in your list.');
+  });
+});
+
+/*
+ * The owner's answer to question 46 (13 Oct 2026): "Remove 'Delete PDF Only' everywhere. Deleting a schedule file
+ * always removes its tasks with it." The schedules reviewer's P1-10 (Medium, older; 22 of 150 sequences on Builds 230
+ * and 231): "Delete PDF Only" on an older master left its rows with no file, and every task a newer master had moved
+ * was then listed twice on the phone, the iPad and the web.
+ */
+describe('Owner answer 46: on the phone and the iPad no schedule file offers "Delete PDF Only"', () => {
+  const F = { ...schedule('MASTER F', '2026-09-01T12:00:00.000Z'), isCurrent: false } as ReferenceDocument;
+  const G = schedule('MASTER G', '2026-09-14T12:00:00.000Z');
+  const BARE = schedule('LOOKAHEAD 3', '2026-09-11T12:00:00.000Z', 'lookahead');
+
+  it('every schedule file, in every state: Cancel and "Delete PDF + Items", nothing else', () => {
+    const saved = [F, G, OLDER, NEWER, BARE];
+    const app = phone(saved);
+    saved.forEach(document => app.deleteScheduleDocument(document.id));
+    expect(app.alerts).toHaveLength(saved.length);
+    app.alerts.forEach(alert => {
+      expect(alert.title).toBe('Delete uploaded schedule?');
+      expect(alert.buttons.map(button => button.text)).toEqual(['Cancel', 'Delete PDF + Items']);
+    });
+  });
+
+  // "Everywhere" as built: the message screenshots listed with the schedules ("Schedule message - ...", supporting
+  // sources, never a schedule in effect) ask through this same question, and had both choices. FLAGGED for the
+  // coordinator in the item's notes: say if a screenshot should keep a delete of the picture alone.
+  it('a supporting message screenshot in the same list: the same two buttons, and the items only it contains go with it', () => {
+    const SHOT = { ...schedule('Schedule message - text', '2026-09-12T12:00:00.000Z'), category: 'Other', isCurrent: false,
+      notes: '[Schedule communication screenshot] Imported for local text recognition and schedule review.' } as ReferenceDocument;
+    expect(scheduleDocumentIsScheduleLike(SHOT)).toBe(false);
+    const items = [...TASKS, task('Call inspector', SHOT)];
+    const app = phone([...ALL, SHOT], { scheduleItems: items, scheduleItemsCurrentRef: { current: items } });
+    app.deleteScheduleDocument(SHOT.id);
+    expect(app.alerts[0].buttons.map(button => button.text)).toEqual(['Cancel', 'Delete PDF + Items']);
+    expect(app.alerts[0].message).toBe('Schedule message - text will be removed, with the 1 schedule item only this PDF contains.');
+  });
+
+  it('the reviewer\'s road cannot be started: the app has no "Delete PDF Only" button, and no screen of it asks for the file-only delete', () => {
+    expect(APP).not.toContain('Delete PDF Only');
+    expect(APP).not.toContain('fileOnly: true');
+    expect(APP.split("text: 'Delete PDF + Items'")).toHaveLength(2);
+  });
+
+  it('the question says what goes and what stays: the items only this file contains go with it, the items another schedule also contains stay', () => {
+    // G lists Framing again unchanged (the same row, also in G's import) and moved Paint (a new row that answers to F's).
+    const row = (id: string, name: string, document: ReferenceDocument, extra: Partial<ScheduleItem> = {}) => ({ ...task(name, document), id, ...extra }) as ScheduleItem;
+    const items = [row('F-1', 'Framing', F, { alsoImportedInBatchIds: [G.importBatchId as string] }), row('F-2', 'Paint', F), row('G-2', 'Paint', G, { revisedFromTaskIds: ['F-2'] })];
+    const app = phone([F, G], { scheduleItems: items, scheduleItemsCurrentRef: { current: items } });
+    app.deleteScheduleDocument(F.id);
+    expect(app.alerts[0].message).toBe('MASTER F will be removed, with the 1 schedule item only this PDF contains. 1 item another schedule also contains stays. 1 of those items is the earlier row of a task a newer schedule has moved; that task stays in your list.');
   });
 });

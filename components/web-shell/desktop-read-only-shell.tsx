@@ -3975,6 +3975,9 @@ function DocumentManagementWorkspace({
   // WS1 item 4: a replaced lookahead with no task of its own still changed the master's tasks. What its delete can put
   // back, in the phone's sentence; empty when nothing goes back, and then one button is enough, as before. A lookahead
   // in effect is never deleted here (protectedCurrentDocument).
+  // The owner's answer to question 46 (13 Oct 2026), "Deleting a schedule file always removes its tasks with it": a
+  // file with tasks of its own, or with changes to put back, is deleted only with them here too (the button that kept
+  // them is gone; on an older master it listed every task a newer master had moved twice).
   const lookaheadChangesNote = deleteCandidate && !protectedCurrentDocument &&
     scheduleDocumentAddsToMaster(deleteCandidate) && deleteCandidate.linkedScheduleItems.length === 0
     ? daveWebScheduleDocumentDeleteNote({ snapshot: { scheduleItems: tasks, knownScheduleItems: knownTasks, referenceDocuments: scheduleDocuments }, document: deleteCandidate })
@@ -4891,9 +4894,8 @@ function DocumentManagementWorkspace({
                   ? ` This import has ${deleteCandidate.linkedScheduleItems.length} linked task${deleteCandidate.linkedScheduleItems.length === 1 ? '' : 's'}.`
                   : ' No linked imported tasks were found.'}
                 {deleteCandidate.linkedScheduleItems.length > 0 && !linkedTasksAreRevisionSafe
-                  ? ' Those legacy tasks do not have safe cloud revisions, so this page will keep them.'
+                  ? ' Those legacy tasks do not have safe cloud revisions, so this page cannot delete them with the file. Delete this schedule on the iPhone or iPad: Delete PDF + Items there removes them with it.'
                   : daveWebScheduleDocumentDeleteNote({ snapshot: { scheduleItems: tasks, knownScheduleItems: knownTasks, referenceDocuments: scheduleDocuments }, document: deleteCandidate }) /* as the phone's question says it (review N2 W1) */}
-                {lookaheadChangesNote ? ' Delete Document Only leaves those tasks as they show now.' : ''}
               </Text>
             )}
           </View>
@@ -4910,7 +4912,7 @@ function DocumentManagementWorkspace({
                   : scheduleDocumentAddsToMaster(deleteCandidate) ? 'Keep Lookahead' : 'Keep Current Document'}
               </Text>
             </Pressable>
-            {!protectedCurrentDocument ? (
+            {!protectedCurrentDocument && deleteCandidate.linkedScheduleItems.length === 0 && !lookaheadChangesNote ? (
               <Pressable
                 style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
                 onPress={() => { void confirmDelete(false); }}
@@ -4918,7 +4920,7 @@ function DocumentManagementWorkspace({
                 accessibilityRole="button"
               >
                 <Text style={styles.primaryButtonText}>
-                  {deleting ? 'Deleting…' : deleteCandidate.linkedScheduleItems.length > 0 || lookaheadChangesNote ? 'Delete Document Only' : 'Delete Document'}
+                  {deleting ? 'Deleting…' : 'Delete Document'}
                 </Text>
               </Pressable>
             ) : null}
@@ -4929,7 +4931,7 @@ function DocumentManagementWorkspace({
                 disabled={deleting}
                 accessibilityRole="button"
               >
-                <Text style={styles.primaryButtonText}>{DAVE_WEB_DELETE_WITH_CHANGES_LABEL}</Text>
+                <Text style={styles.primaryButtonText}>{deleting ? 'Deleting…' : DAVE_WEB_DELETE_WITH_CHANGES_LABEL}</Text>
               </Pressable>
             ) : null}
             {!protectedCurrentDocument && deleteCandidate.linkedScheduleItems.length > 0 && linkedTasksAreRevisionSafe ? (
@@ -4940,7 +4942,7 @@ function DocumentManagementWorkspace({
                 accessibilityRole="button"
               >
                 <Text style={styles.primaryButtonText}>
-                  {`Delete Document + ${deleteCandidate.linkedScheduleItems.length} Task${deleteCandidate.linkedScheduleItems.length === 1 ? '' : 's'}`}
+                  {deleting ? 'Deleting…' : `Delete Document + ${deleteCandidate.linkedScheduleItems.length} Task${deleteCandidate.linkedScheduleItems.length === 1 ? '' : 's'}`}
                 </Text>
               </Pressable>
             ) : null}

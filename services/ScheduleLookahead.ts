@@ -1000,6 +1000,11 @@ export function scheduleItemsAfterScheduleDeleted({
    * "Delete PDF Only" (review N1): the schedules saved before the delete are given, no task is removed or given
    * back, and only the tasks shown on the master's dates because of this replaced lookahead are returned, on the
    * dates shown (scheduleDatesShownUnderReplacedLookahead).
+   *
+   * The owner's answer to question 46 (13 Oct 2026): the phone's "Delete PDF Only" and the web's "Delete Document
+   * Only" are gone, so no screen asks for this for a file with tasks, or changes, of its own. It is still what the
+   * web's plain "Delete Document" runs for a replaced lookahead with neither, and the tasks an earlier build left
+   * this way keep working.
    */
   fileOnly?: boolean;
   /**
@@ -1244,8 +1249,11 @@ export function scheduleDatesShownUnderReplacedLookahead(
  * not offered for it, and the delete underneath refuses: the lookahead's
  * dates would stay on its tasks with no lookahead left to say where they
  * came from, or to put the master's dates back. "Delete PDF + Items" stays;
- * "Delete PDF Only" stays for a master and for a lookahead newer ones have
- * replaced. (The web already keeps a lookahead in effect.)
+ * "Delete PDF Only" stayed for an older master and for a lookahead newer ones
+ * have replaced, until the owner's answer to question 46 (13 Oct 2026)
+ * removed it from every schedule file. This is now the refusal of the delete
+ * underneath alone, whoever asks. (The web already keeps a lookahead in
+ * effect.)
  *
  * The sentence he is told, or null when the file may be deleted alone. In
  * effect as everywhere else (scheduleLookaheadInEffect, owner answer Q25).

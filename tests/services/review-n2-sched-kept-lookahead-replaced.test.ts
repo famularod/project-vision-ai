@@ -109,14 +109,15 @@ function phoneSave(state: State, id: string, edit: Partial<ScheduleItem>, at: st
   return { ...state, items: ref.current };
 }
 
-/** The phone's handler for "Delete PDF Only", read from App.tsx: what it saves before it removes the file. */
-const DELETE_PDF_ONLY = (() => {
-  const from = APP_SOURCE.indexOf("text: 'Delete PDF Only'");
-  return APP_SOURCE.slice(from, APP_SOURCE.indexOf("text: 'Delete PDF + Items'", from));
-})();
-/** "Delete PDF Only" as the phone does it: the helper's tasks, each saved as the helper gives it (review P6-5; it was its two dates only), then the file goes. */
+/**
+ * "Delete PDF Only" as the phone did it up to Build 231: the helper's tasks, each saved as the helper gives it (review
+ * P6-5; it was its two dates only), then the file went. The owner's answer to question 46 (13 Oct 2026) removed that
+ * button from every schedule file, so no screen does this now. It stays here as the maker of the state an earlier build
+ * left (tasks whose file is gone), which must keep working. (It read the button's handler from App.tsx and pinned
+ * its save; the handler is gone, and that is pinned instead.)
+ */
 function deletePdfOnly(state: State, document: ReferenceDocument, at: string): State {
-  expect(DELETE_PDF_ONLY).toContain('fileOnly: true, withWhatHeSet: true }).forEach(item => updateScheduleItem(item.id, item as unknown as ScheduleItem, undefined, true))');
+  expect(APP_SOURCE).not.toContain("text: 'Delete PDF Only'");
   let next = state;
   scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true, withWhatHeSet: true, updatedAt: at })
     .forEach(task => { next = phoneSave(next, task.id, task, at, true); });

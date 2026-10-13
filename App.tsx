@@ -11666,21 +11666,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ? scheduleItemsForExactImportBatch(scheduleItems, document).length - relatedScheduleItems.length
       : 0;
 
-    const pdfOnly = !scheduleFileOnlyDeleteRefusal(document, referenceDocuments); // not offered for the lookahead or the master in effect (owner answers Q36, Q38)
+    // A schedule file always goes with its items: none offers a delete of the PDF alone (the owner's answer to question 46, 13 Oct 2026; an older master's file deleted alone listed every task a newer master had moved twice).
     Alert.alert(
       'Delete uploaded schedule?',
-      `${document.name} will be removed${relatedScheduleItems.length === 0 ? '. It has no schedule items of its own' : `${pdfOnly ? '. You can also remove' : ', with'} the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains${pdfOnly ? ' so outdated dates do not confuse Upcoming' : ''}`}.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}${scheduleLookaheadDeleteNote(scheduleItems as unknown as import('./types').ScheduleItem[], document, relatedScheduleItems as unknown as import('./types').ScheduleItem[], referenceDocuments)}`,
+      `${document.name} will be removed${relatedScheduleItems.length === 0 ? '. It has no schedule items of its own' : `, with the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains`}.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}${scheduleLookaheadDeleteNote(scheduleItems as unknown as import('./types').ScheduleItem[], document, relatedScheduleItems as unknown as import('./types').ScheduleItem[], referenceDocuments)}`,
       [
         { text: 'Cancel', style: 'cancel' },
-        ...(pdfOnly ? [{
-          text: 'Delete PDF Only',
-          onPress: () => {
-            if (fileOnlyDeleteRefused(documentId)) return; scheduleItemsAfterScheduleDeleted({ items: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], removed: [], document, documents: referenceDocumentsCurrentRef.current, fileOnly: true, withWhatHeSet: true }).forEach(item => updateScheduleItem(item.id, item as unknown as ScheduleItem, undefined, true)); // the dates shown under a replaced lookahead stay (review N1); a task the delete shows on another row shows what he last set (review P6-5)
-            void removeReferenceDocumentEverywhere(documentId)
-              .then(removed => { if (removed !== false) deleteStoredReferenceDocument(document.uri).catch(() => undefined); })
-              .catch(() => Alert.alert('Delete failed', `${document.name} could not be saved as deleted. Try again.`));
-          },
-        }] : []),
         {
           text: 'Delete PDF + Items',
           style: 'destructive',

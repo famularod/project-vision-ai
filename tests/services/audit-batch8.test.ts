@@ -15,7 +15,11 @@ describe('this phone’s own deletions reach the realtime applier at once', () =
     // The document and schedule-PDF deletes (and a phone document's Delete
     // from All Devices) share one function since audit A7 pass 4.
     expect(app).toMatch(/async function removeReferenceDocumentEverywhere\(documentId: string\) \{\n\s+if \(fileOnlyDeleteRefused\(documentId\)\) return false;[^\n]*\n\s+const tombstone = await recordDAVESyncTombstone\('reference_document', documentId\);\n\s+rememberOperationalTombstones\(\[tombstone\]\);/);
-    expect(app.match(/void removeReferenceDocumentEverywhere\(documentId\)/g)).toHaveLength(2);
+    // Pin changed deliberately (the owner's answer to question 46, 13 Oct 2026: "Remove 'Delete PDF Only' everywhere").
+    // It counted two callers; the second was the schedule's "Delete PDF Only" (the "schedule PDF" of this test's name),
+    // which no schedule file offers now. A schedule file goes only with its items, in one call: the next line.
+    expect(app.match(/void removeReferenceDocumentEverywhere\(documentId\)/g)).toHaveLength(1);
+    expect(app).not.toContain("text: 'Delete PDF Only'");
     expect(app).toMatch(/\.then\(tombstones => \{[\s\S]{0,400}?rememberOperationalTombstones\(tombstones\);/);
     // Pin changed deliberately (A10 pass 7 L5, 30 Sep 2026): a task delete records its own deletion and the
     // hidden rows it answers to in one call, and hands them all to rememberOperationalTombstones.

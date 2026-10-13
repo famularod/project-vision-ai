@@ -660,7 +660,10 @@ export function planDAVEWebScheduleDocumentDelete({
   snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems' | 'knownScheduleItems' | 'referenceDocuments'>;
   document: DAVEWebReferenceDocument;
   updatedAt?: string;
-  /** "Delete Document" / "Delete Document Only": no task is removed. */
+  /**
+   * "Delete Document": no task is removed. (Up to Build 231 also "Delete Document Only"; the owner's answer to
+   * question 46, 13 Oct 2026, removed it, so the web asks this only for a file with no task of its own.)
+   */
   keepTasks?: boolean;
 }): readonly DAVEWebScheduleImportRevision[] {
   const removedIds = new Set(keepTasks ? [] : document.linkedScheduleItems.map(item => item.id));

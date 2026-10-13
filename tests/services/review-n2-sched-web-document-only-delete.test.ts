@@ -13,6 +13,12 @@
  * (planDAVEWebScheduleDocumentDelete), the phone's save and delete as its
  * handler does them, the real CSV normalizer, merge and shown-schedule pick.
  * Synthetic data.
+ *
+ * The owner's answer to question 46 (13 Oct 2026), "Remove 'Delete PDF Only' everywhere. Deleting a schedule file
+ * always removes its tasks with it.": the web no longer offers "Delete Document Only" for a schedule file with tasks of
+ * its own or with changes it can put back, and the phone has no "Delete PDF Only". The document-only plan tested here
+ * is what those buttons ran up to Build 231; it is kept as the maker of the state they left (which must keep working),
+ * and the last group pins that the web's dialog no longer offers it.
  */
 import { daveWebScheduleDocumentDeleteNote, planDAVEWebScheduleDocumentDelete } from '../../services/DAVEWebOperations';
 import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
@@ -105,14 +111,15 @@ function phoneSave(state: State, id: string, edit: Partial<ScheduleItem>, at: st
   return { ...state, items: ref.current };
 }
 
-/** The phone's handler for "Delete PDF Only", read from App.tsx: what it saves before it removes the file. */
-const DELETE_PDF_ONLY = (() => {
-  const from = APP_SOURCE.indexOf("text: 'Delete PDF Only'");
-  return APP_SOURCE.slice(from, APP_SOURCE.indexOf("text: 'Delete PDF + Items'", from));
-})();
-/** "Delete PDF Only" as the phone does it: the helper's tasks, each saved as the helper gives it (review P6-5; it was its two dates only), then the file goes. */
+/**
+ * "Delete PDF Only" as the phone did it up to Build 231: the helper's tasks, each saved as the helper gives it (review
+ * P6-5; it was its two dates only), then the file went. The owner's answer to question 46 (13 Oct 2026) removed that
+ * button from every schedule file, so no screen does this now. It stays here as the maker of the state an earlier build
+ * left (tasks whose file is gone), which must keep working. (It read the button's handler from App.tsx and pinned
+ * its save; the handler is gone, and that is pinned instead.)
+ */
 function deletePdfOnly(state: State, document: ReferenceDocument, at: string): State {
-  expect(DELETE_PDF_ONLY).toContain('fileOnly: true, withWhatHeSet: true }).forEach(item => updateScheduleItem(item.id, item as unknown as ScheduleItem, undefined, true))');
+  expect(APP_SOURCE).not.toContain("text: 'Delete PDF Only'");
   let next = state;
   scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true, withWhatHeSet: true, updatedAt: at })
     .forEach(task => { next = phoneSave(next, task.id, task, at, true); });
@@ -226,5 +233,27 @@ describe('Review N2 W1: the web\'s delete dialog says what "+ Tasks" also puts b
     expect(shell).toContain('daveWebScheduleDocumentDeleteNote({ snapshot: { scheduleItems: tasks, knownScheduleItems: knownTasks, referenceDocuments: scheduleDocuments }, document: deleteCandidate })');
     expect(shell).toContain('knownTasks={snapshot.knownScheduleItems}');
     expect(shell).toContain('scheduleDocuments={snapshot.referenceDocuments}');
+  });
+});
+
+describe('Owner answer 46: the web offers no document-only delete for a schedule file with tasks or changes of its own', () => {
+  const shell = fs.readFileSync(path.resolve(__dirname, '../../components/web-shell/desktop-read-only-shell.tsx'), 'utf8');
+  const dialog = shell.slice(shell.indexOf('{deleteCandidate ? (', shell.indexOf('async function confirmDelete(')), shell.indexOf('<View style={styles.taskControlsRow}>', shell.indexOf('async function confirmDelete(')));
+
+  it('the page has no "Delete Document Only" button or sentence', () => {
+    expect(shell).not.toContain('Delete Document Only');
+    expect(dialog).toContain('Delete Document +');
+    expect(dialog).toContain('DAVE_WEB_DELETE_WITH_CHANGES_LABEL');
+  });
+
+  it('the one delete that keeps tasks is the plain "Delete Document", offered only for a file with no task of its own and nothing to put back', () => {
+    expect(dialog.split('confirmDelete(false)')).toHaveLength(2);
+    expect(dialog).toContain('{!protectedCurrentDocument && deleteCandidate.linkedScheduleItems.length === 0 && !lookaheadChangesNote ? (');
+    expect(dialog.split('confirmDelete(true)')).toHaveLength(3);
+  });
+
+  it('tasks with no safe cloud revision are not kept behind either: no delete is offered here, and he is sent to the iPhone or iPad', () => {
+    expect(dialog).not.toContain('so this page will keep them');
+    expect(dialog).toContain('so this page cannot delete them with the file. Delete this schedule on the iPhone or iPad: Delete PDF + Items there removes them with it.');
   });
 });

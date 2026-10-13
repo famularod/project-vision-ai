@@ -367,6 +367,10 @@ describe('Review N1 M2 (caused by ada8ef6, Q25): a task only lookaheads listed c
   });
 });
 
+// The owner's answer to question 46 (13 Oct 2026): the web no longer offers "Delete Document Only" for a schedule file
+// with tasks of its own, or with changes it can put back. The keepTasks plan below is what that button ran up to Build
+// 231 (the state it left must keep working), and what the plain "Delete Document" of a replaced lookahead with no task
+// of its own and nothing to put back still runs.
 describe('Review N1 web M1 (caused by ada8ef6, Q25): the web\'s delete of a replaced lookahead leaves the dates the phone\'s delete leaves', () => {
   const AT = '2026-09-22T12:00:00.000Z';
   const asWeb = (items: readonly ScheduleItem[]) => items.map(item => ({ ...item, projectId: 'alpha', cloudUpdatedAt: '2026-09-21T12:00:00.000Z' })) as DAVEWebScheduleItem[];
@@ -559,8 +563,11 @@ describe('Review N1 (the gap owner answer Q30 left): the web\'s upload review as
   });
 });
 
-describe('Review N1 (caused by ada8ef6, Q25; web M1 on the phone): "Delete PDF Only" on a replaced lookahead leaves the dates shown', () => {
-  /** App.tsx's "Delete PDF Only": the dates shown are saved first (the helper, through updateScheduleItem), then the file goes. */
+// The owner's answer to question 46 (13 Oct 2026) removed "Delete PDF Only" from every schedule file. What an earlier
+// build's "Delete PDF Only" left (tasks with no file) must keep working: deletePdfOnly below makes that state, as
+// Builds up to 231 did it, through the helper they called; no screen calls it now (the last test of this group).
+describe('Review N1 (caused by ada8ef6, Q25; web M1 on the phone): "Delete PDF Only" on a replaced lookahead left the dates shown', () => {
+  /** An earlier build's "Delete PDF Only" (App.tsx up to Build 231): the dates shown were saved first (the helper, through updateScheduleItem), then the file went. */
   function deletePdfOnly(state: State, document: ReferenceDocument): State {
     let items = state.items;
     // (Each as the helper gives it: review P6-5. It was the task's two dates only.)
@@ -593,12 +600,12 @@ describe('Review N1 (caused by ada8ef6, Q25; web M1 on the phone): "Delete PDF O
     expect(dates(one(after, 'Roof'))).toBe('11/03/2026-11/07/2026');
   });
 
-  it('the phone\'s Delete PDF Only saves them before it removes the file', () => {
-    const from = APP_SOURCE.indexOf("text: 'Delete PDF Only'");
-    const handler = APP_SOURCE.slice(from, APP_SOURCE.indexOf("text: 'Delete PDF + Items'", from));
-    const saves = handler.indexOf('fileOnly: true, withWhatHeSet: true }).forEach(item => updateScheduleItem(item.id, item as unknown as ScheduleItem, undefined, true))');
-    expect(saves).toBeGreaterThan(0);
-    expect(saves).toBeLessThan(handler.indexOf('removeReferenceDocumentEverywhere('));
+  // Reversed by owner answer 46. It was: 'the phone's Delete PDF Only saves them before it removes the file' (it read
+  // the button's handler from App.tsx). The phone has no such button, and nothing in App.tsx asks for the file-only delete.
+  it('the phone has no Delete PDF Only any more (owner answer 46): its delete question offers Delete PDF + Items alone', () => {
+    expect(APP_SOURCE).not.toContain("text: 'Delete PDF Only'");
+    expect(APP_SOURCE).not.toContain('fileOnly: true');
+    expect(APP_SOURCE).toContain("text: 'Delete PDF + Items'");
   });
 });
 

@@ -29,6 +29,14 @@ import type { ReferenceDocument, ScheduleItem } from '../../types';
 // approval's merge, the shown-schedule pick), as in
 // review-n2-sched-web-document-only-delete.test.ts; the page is the shell
 // harness of desktop-lookahead-document.test.tsx. Synthetic data.
+//
+// The owner's answer to question 46 (13 Oct 2026), "Remove 'Delete PDF Only'
+// everywhere. Deleting a schedule file always removes its tasks with it.":
+// the web's "Delete Document Only" is the same thing under the web's name,
+// and is no longer offered. This lookahead's dialog now has one delete,
+// "Delete Document + Its Changes"; a schedule file with tasks of its own has
+// one, "Delete Document + N Tasks" (the last group). The tests that pinned
+// the two choices are reversed below, each marked "owner answer 46".
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -169,7 +177,9 @@ describe('a replaced lookahead with no task of its own: what its delete can put 
     expect(web.items).toEqual(phoneDeleteWithItems(noDetail, L1, AT).items);
   });
 
-  it('guard: "Delete Document Only" still keeps the 60%', () => {
+  // (The plan under the old "Delete Document Only". The button is gone: owner answer 46. The plan is kept for the state
+  // an earlier build left, and for the plain "Delete Document" of a lookahead with nothing of its own to put back.)
+  it('guard: the plan that keeps the tasks still keeps the 60%', () => {
     expect(framing(webDelete(noDetail, L1, true))).toBe('10/01/2026-10/11/2026 60%');
   });
 
@@ -232,15 +242,18 @@ beforeEach(() => {
 });
 
 describe('the web\'s delete dialog for that lookahead (WS1 item 4)', () => {
-  it('offers both choices, says what each does, and "Delete Document + Its Changes" deletes with the put-back', async () => {
+  // Reversed by owner answer 46. It was: 'offers both choices, says what each does, ...': it found "Delete Document Only"
+  // beside "Delete Document + Its Changes", and the sentence "Delete Document Only leaves those tasks as they show now."
+  it('offers one delete, "Delete Document + Its Changes", says what it does, and it deletes with the put-back (owner answer 46)', async () => {
     workspace(noDetail, [L1]);
     const screen = render(<DesktopReadOnlyShell page="documents" />);
     fireEvent.press(screen.getByLabelText('Delete LOOKAHEAD L1'));
 
     expect(screen.getByText('Delete “LOOKAHEAD L1”?')).toBeTruthy();
-    expect(screen.getByText(/No linked imported tasks were found\. Delete Document \+ Its Changes also puts back the earlier progress of 1 task this lookahead changed\. Delete Document Only leaves those tasks as they show now\./)).toBeTruthy();
+    expect(screen.getByText(/No linked imported tasks were found\. Delete Document \+ Its Changes also puts back the earlier progress of 1 task this lookahead changed\.$/)).toBeTruthy();
+    expect(screen.queryByText(/leaves those tasks as they show now/)).toBeNull();
     expect(screen.getByText('Cancel')).toBeTruthy();
-    expect(screen.getByText('Delete Document Only')).toBeTruthy();
+    expect(screen.queryByText('Delete Document Only')).toBeNull();
     expect(screen.queryByText('Delete Document')).toBeNull();
 
     await act(async () => { fireEvent.press(screen.getByText('Delete Document + Its Changes')); });
@@ -250,13 +263,16 @@ describe('the web\'s delete dialog for that lookahead (WS1 item 4)', () => {
     expect(screen.getByText('Lookahead deleted, and what it had changed on the master schedule\'s tasks was put back. It is protected from returning on another device.')).toBeTruthy();
   });
 
-  it('"Delete Document Only" deletes the file alone, as before', async () => {
+  // Reversed by owner answer 46. It was: '"Delete Document Only" deletes the file alone, as before' (it pressed that
+  // button and found the delete asked to keep the tasks as they showed).
+  it('there is no "Delete Document Only" to press: nothing on the dialog deletes this file and leaves its changes (owner answer 46)', async () => {
     workspace(noDetail, [L1]);
     const screen = render(<DesktopReadOnlyShell page="documents" />);
     fireEvent.press(screen.getByLabelText('Delete LOOKAHEAD L1'));
-    await act(async () => { fireEvent.press(screen.getByText('Delete Document Only')); });
-    expect(mockAuth.deleteDocument).toHaveBeenCalledTimes(1);
-    expect(mockAuth.deleteDocument.mock.calls[0][1]).toBe(false);
+    expect(screen.queryByText('Delete Document Only')).toBeNull();
+    await act(async () => { fireEvent.press(screen.getByText('Cancel')); });
+    expect(mockAuth.deleteDocument).not.toHaveBeenCalled();
+    expect(screen.queryByText('Delete “LOOKAHEAD L1”?')).toBeNull();
   });
 
   it('guard: with nothing to put back there is one button, "Delete Document", as before', () => {
@@ -273,5 +289,58 @@ describe('the web\'s delete dialog for that lookahead (WS1 item 4)', () => {
     const screen = render(<DesktopReadOnlyShell page="documents" />);
     expect(screen.queryByLabelText('Delete LOOKAHEAD L2')).toBeNull();
     expect(screen.queryByLabelText('Delete MASTER M')).toBeNull();
+  });
+});
+
+/*
+ * The owner's answer to question 46 (13 Oct 2026). The schedules reviewer's P1-10: an older master's file deleted
+ * without its tasks left its rows with no file, and every task a newer master had moved was listed twice on the phone,
+ * the iPad and the web. On the web that was "Delete Document Only" on a prior version.
+ */
+describe('owner answer 46: the web deletes a schedule file with tasks of its own only with those tasks', () => {
+  const M2 = schedule('MASTER M2', '2026-09-20T12:00:00.000Z');
+  /** M2 moves Framing and Roof: M is a prior version, and its two rows are tasks only M contains. */
+  const onM2 = approve(onM, M2, ['Framing,Alpha,Lot,10/03/2026,10/13/2026,', 'Roof,Alpha,Lot,10/15/2026,10/23/2026,']);
+
+  it('guard (the state): M is a prior version with two tasks only it contains, and each task shows once', () => {
+    expect(onM2.documents.find(document => document.id === M.id)?.isCurrent).toBe(false);
+    expect(linkedOf(onM2, M)).toHaveLength(2);
+    expect(shown(onM2).map(item => item.taskName).sort()).toEqual(['Framing', 'Roof']);
+  });
+
+  it('an older master: Cancel and "Delete Document + 2 Tasks", and that deletes with the tasks', async () => {
+    workspace(onM2, []);
+    const screen = render(<DesktopReadOnlyShell page="documents" />);
+    fireEvent.press(screen.getByLabelText('Delete MASTER M'));
+
+    expect(screen.getByText('Delete “MASTER M”?')).toBeTruthy();
+    expect(screen.getByText(/This import has 2 linked tasks\./)).toBeTruthy();
+    expect(screen.getByText('Cancel')).toBeTruthy();
+    expect(screen.queryByText('Delete Document Only')).toBeNull();
+    expect(screen.queryByText('Delete Document')).toBeNull();
+
+    await act(async () => { fireEvent.press(screen.getByText('Delete Document + 2 Tasks')); });
+    expect(mockAuth.deleteDocument).toHaveBeenCalledTimes(1);
+    expect(mockAuth.deleteDocument.mock.calls[0][0].id).toBe(M.id);
+    expect(mockAuth.deleteDocument.mock.calls[0][1]).toBe(true);
+    expect(screen.getByText('Document and 2 linked tasks deleted and protected from returning.')).toBeTruthy();
+  });
+
+  it('tasks with no safe cloud revision: no delete is offered here (it offered "Delete Document Only" alone), and he is sent to the iPhone or iPad', () => {
+    workspace(onM2, []);
+    mockAuth.snapshot = {
+      ...mockAuth.snapshot!,
+      referenceDocuments: mockAuth.snapshot!.referenceDocuments.map(document => (document.id === M.id
+        ? { ...document, linkedScheduleItems: document.linkedScheduleItems.map(item => ({ ...item, cloudUpdatedAt: null })) }
+        : document)),
+    } as DAVEWebReadOnlySnapshot;
+    const screen = render(<DesktopReadOnlyShell page="documents" />);
+    fireEvent.press(screen.getByLabelText('Delete MASTER M'));
+
+    expect(screen.getByText(/Those legacy tasks do not have safe cloud revisions, so this page cannot delete them with the file\. Delete this schedule on the iPhone or iPad: Delete PDF \+ Items there removes them with it\./)).toBeTruthy();
+    expect(screen.getByText('Cancel')).toBeTruthy();
+    expect(screen.queryByText('Delete Document Only')).toBeNull();
+    expect(screen.queryByText('Delete Document')).toBeNull();
+    expect(screen.queryByText(/^Delete Document \+/)).toBeNull();
   });
 });
