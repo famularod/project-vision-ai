@@ -1686,6 +1686,84 @@ function whatChangedSummary(fusedEvidence: PIEFusedEvidence) {
   ]).join(' ') || 'No recent change is visible from current evidence.';
 }
 
+/**
+ * Field updates NEWEST FIRST BY THEIR OWN DATE, the one order the written
+ * report reads them in (Build 232 item 2 part A, the coordinator's decision
+ * on reports review pass 4, P4-1 and P4-2).
+ *
+ * The phone's written report took "latest" to be the first update in the
+ * list this device holds, and led each work area with the notes at the front
+ * of that list. A device that records an update puts it at the front of its
+ * list; a device that receives it by sync puts it at the end. So an iPad
+ * called a three-day-old note the "Latest update", and showed "Your other
+ * device already sent this report" above a report that read differently
+ * from the one the phone sent.
+ *
+ * The date is the update's `date`, the one the app shows as the update's
+ * date. It names a day and carries no time of day, so the updates of one day
+ * go by their id, the later id first: every device holds the same ids, and
+ * the app's own ids begin with the moment the update was started
+ * (services/RecordValues uid), so the later id is the later update. An update
+ * with no readable date goes last. The saved list itself is not reordered
+ * (App.tsx stores and merges it as before).
+ */
+export function fieldUpdatesNewestFirst<T extends { id: string; date?: string | null }>(updates: readonly T[]): T[] {
+  return updates
+    .map((update, index) => {
+      const moment = Date.parse(update.date || '');
+      return { update, index, moment: Number.isFinite(moment) ? moment : null };
+    })
+    .sort((left, right) => {
+      if (left.moment !== right.moment) {
+        if (left.moment === null) return 1;
+        if (right.moment === null) return -1;
+        return right.moment - left.moment;
+      }
+      if (left.update.id !== right.update.id) return left.update.id > right.update.id ? -1 : 1;
+      return left.index - right.index;
+    })
+    .map(entry => entry.update);
+}
+
+/**
+ * The "what changed" sentence as the WRITTEN report prints it, in its WORK
+ * AREAS / PHOTO NOTES section (Build 232 item 2 part A). The same three parts
+ * as `whatChangedSummary`, which the app's own screens read, with one
+ * difference, so that two devices write the same words: the latest update
+ * and the latest photo are the newest by the update's own date
+ * (`fieldUpdatesNewestFirst`), not the first in this device's list.
+ */
+export function whatChangedForWrittenReport(
+  fusedEvidence: Readonly<{
+    userUpdateEvidence: ReadonlyArray<Pick<PIEUserUpdateEvidence, 'id' | 'date' | 'notes'>>;
+    photoEvidence: ReadonlyArray<Pick<PIEPhotoEvidence, 'updateId' | 'caption'>>;
+    scheduleEvidence: ReadonlyArray<Pick<PIEScheduleEvidence, 'taskName' | 'dueLabel' | 'isOverdue' | 'isUpcoming7' | 'isUpcoming14'>>;
+  }>,
+) {
+  const updates = fieldUpdatesNewestFirst(fusedEvidence.userUpdateEvidence);
+  const placeOfUpdate = new Map(updates.map((update, index) => [update.id, index] as const));
+  const latestUpdate = updates[0];
+  // The first photo of the newest update that has one; an update's own photos keep their order.
+  const latestPhoto = fusedEvidence.photoEvidence
+    .map((photo, index) => ({ photo, index, place: placeOfUpdate.get(photo.updateId) ?? Number.MAX_SAFE_INTEGER }))
+    .sort((left, right) => left.place - right.place || left.index - right.index)[0]?.photo;
+  const nextSchedule = fusedEvidence.scheduleEvidence.find(
+    item => item.isOverdue || item.isUpcoming7 || item.isUpcoming14,
+  );
+
+  return uniqueText([
+    latestUpdate?.notes
+      ? `Latest update: ${truncate(latestUpdate.notes, 140)}`
+      : null,
+    latestPhoto?.caption
+      ? `Latest photo: ${truncate(latestPhoto.caption, 100)}`
+      : null,
+    nextSchedule
+      ? `Schedule focus: ${nextSchedule.taskName} (${nextSchedule.dueLabel}).`
+      : null,
+  ]).join(' ') || 'No recent change is visible from current evidence.';
+}
+
 function recommendationForFusedEvidence(fusedEvidence: PIEFusedEvidence) {
   if (fusedEvidence.safetyEvidence.some(item => item.isOpen)) {
     return 'Review the open safety concern before preparing communication.';

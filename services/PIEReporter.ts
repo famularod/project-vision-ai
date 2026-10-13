@@ -93,6 +93,7 @@ import type { PIERecommendationChallengeResult } from './PIERecommendationChalle
 import type { PIEJarvisReasoningValidation } from './PIEJarvisReasoningValidation';
 import type { PIEConfidenceDecomposition } from './PIEConfidenceDecomposition';
 import type { PIEEvidenceValuePrioritization } from './PIEEvidenceValuePrioritization';
+import { fieldUpdatesNewestFirst, whatChangedForWrittenReport } from './PIEEvidenceFusion';
 import { resolvePIEReportProjectNames } from './PIEReportScope';
 import type { PIEScheduleReconciliationResult } from './PIEScheduleReconciliation';
 import {
@@ -324,6 +325,10 @@ export type PIEReporterRuntimeInput = {
   };
   fusedEvidence?: {
     scheduleReconciliation?: PIEScheduleReconciliationResult;
+    /** What the written report's "Latest update / Latest photo / Schedule focus" sentence is made from. */
+    userUpdateEvidence?: Parameters<typeof whatChangedForWrittenReport>[0]['userUpdateEvidence'];
+    photoEvidence?: Parameters<typeof whatChangedForWrittenReport>[0]['photoEvidence'];
+    scheduleEvidence?: Parameters<typeof whatChangedForWrittenReport>[0]['scheduleEvidence'];
   } | null;
   photoProgressSummary?: string;
   photoProgress?: { acceptedEvidence: PIEPhotoProgressEvidence[] } | null;
@@ -631,7 +636,7 @@ export function collectReportEvidence(
       status: situation.situationReadiness.readiness,
     });
   }
-  const runtimeChanged = runtime?.intelligentSummary?.whatChanged;
+  const runtimeChanged = writtenReportWhatChanged(runtime);
   if (runtimeChanged && !isEmptyRuntimeSummary(runtimeChanged)) {
     evidence.push({
       id: 'runtime-what-changed',
@@ -658,6 +663,25 @@ export function collectReportEvidence(
   );
 }
 
+/**
+ * The "Latest update / Latest photo / Schedule focus" sentence of the written
+ * report, made for it from the evidence the runtime fused (Build 232 item 2):
+ * by the updates' own dates, never by the order this device's list holds
+ * them in. A runtime handed over without that evidence keeps the sentence it
+ * came with.
+ */
+function writtenReportWhatChanged(runtime: PIEReporterRuntimeInput | null | undefined) {
+  const fused = runtime?.fusedEvidence;
+  if (fused?.userUpdateEvidence && fused.photoEvidence && fused.scheduleEvidence) {
+    return whatChangedForWrittenReport({
+      userUpdateEvidence: fused.userUpdateEvidence,
+      photoEvidence: fused.photoEvidence,
+      scheduleEvidence: fused.scheduleEvidence,
+    });
+  }
+  return runtime?.intelligentSummary?.whatChanged;
+}
+
 // A confirmed comparison older than this is history, not today's photo note
 // (the same 7 days ProjectIntelligenceEngine treats as recent activity).
 const REPORT_CURRENT_PHOTO_NOTE_DAYS = 7;
@@ -667,7 +691,7 @@ function recentConfirmedPhotoNote(
   updates: ProjectUpdate[],
 ): PIEReportSourceEvidence | null {
   // Newest first, so [0] is the newest confirmed comparison.
-  const confirmed = input.runtime?.photoProgress?.acceptedEvidence?.[0];
+  const confirmed = newestConfirmedComparison(input.runtime?.photoProgress?.acceptedEvidence, updates);
   if (!confirmed?.summary || isEmptyRuntimeSummary(confirmed.summary)) return null;
   if (!isConstructionRelevantObservation(confirmed.summary)) return null;
   // Its photo must belong to this report's updates; project and area come
@@ -689,6 +713,34 @@ function recentConfirmedPhotoNote(
     summary: cleanReportBulletText(confirmed.summary),
     confidence: 'medium',
   };
+}
+
+/**
+ * The newest confirmed comparison. They come newest first by their photo's
+ * moment, and several of ONE moment (two photos of one day that carry no
+ * capture time) came in the order of this device's list. Build 232 item 2
+ * part A: of those, the one whose update comes first in the report's own
+ * order (`updates`: newest first by the update's date, then its id), so two
+ * devices quote the same comparison.
+ */
+function newestConfirmedComparison(
+  accepted: readonly PIEPhotoProgressEvidence[] | null | undefined,
+  updates: readonly ProjectUpdate[],
+) {
+  const newest = accepted?.[0];
+  if (!accepted || !newest) return newest;
+  const ofOneMoment = accepted.filter(item => item.acceptedAt === newest.acceptedAt);
+  if (ofOneMoment.length < 2) return newest;
+  const placeOf = (photoId: string): [number, number] => {
+    for (let index = 0; index < updates.length; index += 1) {
+      const within = updates[index].photos.findIndex(photo => photo.id === photoId);
+      if (within >= 0) return [index, within];
+    }
+    return [Number.MAX_SAFE_INTEGER, 0];
+  };
+  return ofOneMoment
+    .map((item, index) => ({ item, index, place: placeOf(item.currentPhotoId) }))
+    .sort((left, right) => left.place[0] - right.place[0] || left.place[1] - right.place[1] || left.index - right.index)[0].item;
 }
 
 function isIncidentalReportEvidence(item: PIEReportSourceEvidence) {
@@ -2239,13 +2291,20 @@ function selectedUpdates(
   // A note logged from a sub-project's schedule task is saved under the
   // sub-project name and names its parent in scheduleProjectName; the report
   // for the parent must still carry it.
-  return updates.filter(update =>
+  //
+  // Build 232 item 2 part A (the coordinator's decision): NEWEST FIRST BY THE
+  // UPDATES' OWN DATES, the one place the report's updates are put in order.
+  // Which notes lead each work area, and the numbers of the images, followed
+  // the order this device's list held them in, and two devices hold the same
+  // updates in different orders. The same updates are read as before; none is
+  // added or left out by the order.
+  return fieldUpdatesNewestFirst(updates.filter(update =>
     selectedProjects.includes(normalizeName(update.projectName)) ||
     Boolean(
       update.scheduleProjectName?.trim() &&
       selectedProjects.includes(normalizeName(update.scheduleProjectName)),
     ),
-  );
+  ));
 }
 
 function reportContextForUpdate(
