@@ -439,13 +439,14 @@ describe('R5 item 1: the report\'s fingerprint does not move', () => {
     expect(buildDAVELegacyReportSourceFingerprint(truths)).toBe(buildDAVELegacyReportSourceFingerprint([asBuiltWithout as typeof asBuilt]));
   });
 
-  it('nor is the list of tasks whose own row a lookahead added', () => {
+  // (R8 item 3, the same decision: the sentences of a task that is back read this list too.)
+  it('nor is the list of tasks whose own row a lookahead added in 1.0; today\'s version holds it', () => {
     const { state: out } = paintLeftOut();
     const state = approve(out, schedule('LOOKAHEAD 1', '2026-09-10T12:00:00.000Z', 'lookahead'), ['Paint,Alpha,Lot,10/02/2026,10/06/2026,']);
     const truths = phoneTruths(state, '2026-09-10T15:00:00.000Z');
     expect(truths[0].lookaheadAddedTaskIds).toEqual(['LOOKAHEAD 1-1']);
     const without = truths.map(truth => { const { lookaheadAddedTaskIds: _ids, ...rest } = truth; return rest as typeof truth; });
-    expect(buildDAVEReportSourceFingerprint(truths)).toBe(buildDAVEReportSourceFingerprint(without));
+    expect(buildDAVEReportSourceFingerprint(truths)).not.toBe(buildDAVEReportSourceFingerprint(without));
     const asBuilt = daveProjectTruthAsBuilt(truths[0]);
     expect(asBuilt.lookaheadAddedTaskIds).toEqual(['LOOKAHEAD 1-1']);
     const { lookaheadAddedTaskIds: _built, ...asBuiltWithout } = asBuilt;

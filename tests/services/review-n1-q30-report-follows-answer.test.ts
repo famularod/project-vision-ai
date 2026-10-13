@@ -1,5 +1,5 @@
 import { buildDAVEProjectTruth } from '../../services/DAVEProjectTruth';
-import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
+import { buildDAVELegacyReportSourceFingerprint, buildDAVEReportBriefing, buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
 import {
   buildDAVEReportSnapshot,
   compareDAVEReportSnapshots,
@@ -109,6 +109,8 @@ function built(state: State, known: DAVEReportSnapshot | null, now: string) {
     period: briefing.reportingPeriod,
     snapshot,
     fingerprint,
+    /** The fingerprint as an earlier build wrote it (version 1.0). */
+    earlierVersion: buildDAVELegacyReportSourceFingerprint([truth]),
   };
 }
 const sent = (state: State, now: string) =>
@@ -175,12 +177,17 @@ describe('review N1 M3: the report follows David\'s answer to "which same-named 
     expect(linkOf(onSecond as never)?.item.startDate).toBe('10/12/2026');
   });
 
-  it('his answer is not part of what the report says: the same facts give the same fingerprint with and without it', () => {
+  // R8 items 3 and 4 (the coordinator's decision on review pass 2): this test pinned the claim that his answer "is not part of what the report says". It is
+  // saved with every approved report or read by the report's own sentences, so a change to it changes the report
+  // under one fingerprint: today's version (2.0) holds it now. What the test was for still holds where it matters:
+  // the version an earlier build wrote (1.0) is worked out without it, so that build's approval or send is known.
+  it('his answer is not in the fingerprint an earlier build wrote; it is saved with the approved report, and today\'s version holds it', () => {
     const state = approve(withDavid, G, gRows, DROPPED_AND_NEW);
     const answered = shown(state).find(item => (item.notRevisionOfTaskIds || []).length > 0);
     expect(answered?.notRevisionOfTaskIds?.slice().sort()).toEqual([firstId, secondId].sort());
     const without: State = { ...state, items: state.items.map(item => ({ ...item, notRevisionOfTaskIds: undefined })) };
-    expect(built(state, null, '2026-10-08T12:00:00.000Z').fingerprint).toBe(built(without, null, '2026-10-08T12:00:00.000Z').fingerprint);
+    expect(built(state, null, '2026-10-08T12:00:00.000Z').earlierVersion).toBe(built(without, null, '2026-10-08T12:00:00.000Z').earlierVersion);
+    expect(built(state, null, '2026-10-08T12:00:00.000Z').fingerprint).not.toBe(built(without, null, '2026-10-08T12:00:00.000Z').fingerprint);
     // The saved report keeps it on the task, so the next comparison follows it too.
     const task = built(state, null, '2026-10-08T12:00:00.000Z').snapshot.tasks.find(candidate => candidate.taskId === answered?.id);
     expect(task?.notTaskIds?.slice().sort()).toEqual([firstId, secondId].sort());

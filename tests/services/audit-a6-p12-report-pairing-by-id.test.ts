@@ -33,11 +33,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 
 import { buildDAVEProjectTruth, type DAVEProjectTruth } from '../../services/DAVEProjectTruth';
-import {
-  buildDAVEReportBriefing,
-  buildDAVEReportSourceFingerprint,
-  enhanceDAVEReportDraft,
-} from '../../services/DAVEReportIntelligence';
+import { buildDAVELegacyReportSourceFingerprint, buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, enhanceDAVEReportDraft } from '../../services/DAVEReportIntelligence';
 import {
   buildDAVEReportSnapshot,
   compareDAVEReportSnapshots,
@@ -225,7 +221,11 @@ describe('L1 through the real import merge: a revised task is the task the impor
     }
   });
 
-  it('the earlier ids do not change the report\'s fingerprint (an approval or a send from an earlier build is the same content)', () => {
+  // R8 items 3 and 4 (the coordinator's decision on review pass 2): this test pinned the claim that the earlier ids "do not change the report's fingerprint". It is
+  // saved with every approved report or read by the report's own sentences, so a change to it changes the report
+  // under one fingerprint: today's version (2.0) holds it now. What the test was for still holds where it matters:
+  // the version an earlier build wrote (1.0) is worked out without it, so that build's approval or send is known.
+  it('the earlier ids do not change the fingerprint an earlier build wrote (its approval or send is the same content); today\'s version holds them', () => {
     const v1 = [
       row('tower-v1', 'tower-v1-inspection-1', '2026-10-01', 40, 1),
       row('tower-v1', 'tower-v1-inspection-2', '2026-12-01', 60, 2),
@@ -235,8 +235,10 @@ describe('L1 through the real import merge: a revised task is the task the impor
       row('tower-v2', 'tower-v2-inspection-2', '2026-12-08', 50, 2),
     ]);
     const withoutIds = shown.map(({ revisedFromTaskIds: _ids, ...item }) => item as ScheduleItem);
+    expect(buildDAVELegacyReportSourceFingerprint([truthOf(shown, NOW)]))
+      .toBe(buildDAVELegacyReportSourceFingerprint([truthOf(withoutIds, NOW)]));
     expect(buildDAVEReportSourceFingerprint([truthOf(shown, NOW)]))
-      .toBe(buildDAVEReportSourceFingerprint([truthOf(withoutIds, NOW)]));
+      .not.toBe(buildDAVEReportSourceFingerprint([truthOf(withoutIds, NOW)]));
   });
 });
 
