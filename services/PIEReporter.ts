@@ -206,6 +206,14 @@ export type PIEReportSourceEvidence = {
   sourceUpdateId?: string | null;
   actionRequired?: string | null;
   status?: string | null;
+  /**
+   * The words the work area's name is worked out from when not the summary
+   * (Build 232 item 2 part B): the "Schedule focus" sentence without the
+   * task's date. The name is read off the summary, and takes any four-digit
+   * number in it for a building number: the year of the date would have
+   * filed the sentence under "2026 <area>".
+   */
+  workAreaNameFrom?: string;
 };
 
 export type PIEReportImageReference = {
@@ -644,6 +652,7 @@ export function collectReportEvidence(
       projectName: input.currentUpdate?.projectName || selectedProjects[0] || '',
       areaName: input.currentUpdate?.selectedAreaName || '',
       summary: cleanReportBulletText(runtimeChanged),
+      workAreaNameFrom: cleanReportBulletText(writtenReportWhatChanged(runtime, { taskDate: false }) || runtimeChanged),
       confidence: 'medium',
     });
   }
@@ -670,14 +679,17 @@ export function collectReportEvidence(
  * them in. A runtime handed over without that evidence keeps the sentence it
  * came with.
  */
-function writtenReportWhatChanged(runtime: PIEReporterRuntimeInput | null | undefined) {
+function writtenReportWhatChanged(
+  runtime: PIEReporterRuntimeInput | null | undefined,
+  options?: Parameters<typeof whatChangedForWrittenReport>[1],
+) {
   const fused = runtime?.fusedEvidence;
   if (fused?.userUpdateEvidence && fused.photoEvidence && fused.scheduleEvidence) {
     return whatChangedForWrittenReport({
       userUpdateEvidence: fused.userUpdateEvidence,
       photoEvidence: fused.photoEvidence,
       scheduleEvidence: fused.scheduleEvidence,
-    });
+    }, options);
   }
   return runtime?.intelligentSummary?.whatChanged;
 }
@@ -764,7 +776,7 @@ export function buildConstructionUnderstanding(
     const workAreaName = cleanReportWorkAreaName(
       item.projectName,
       item.areaName,
-      item.summary,
+      item.workAreaNameFrom ?? item.summary,
     );
     const key = `${locationTitle(item.projectName, item.areaName)}|${workAreaName}`;
     byArea.set(key, [...(byArea.get(key) || []), item]);
@@ -1321,7 +1333,7 @@ export function buildReportRisks(
     .map(item => ({
       id: slug(`risk-${item.id}`),
       projectName: item.projectName,
-      areaName: cleanReportWorkAreaName(item.projectName, item.areaName, item.summary),
+      areaName: cleanReportWorkAreaName(item.projectName, item.areaName, item.workAreaNameFrom ?? item.summary),
       summary: cleanReportBulletText(item.summary),
       severity:
         item.source === 'safety' ||
@@ -1556,7 +1568,7 @@ function actionItemsFromEvidence(
       owner: item.owner || ownerFromText(item.summary) || 'Action Required',
       action: actionFromEvidence(item),
       projectName: item.projectName,
-      areaName: cleanReportWorkAreaName(item.projectName, item.areaName, item.summary),
+      areaName: cleanReportWorkAreaName(item.projectName, item.areaName, item.workAreaNameFrom ?? item.summary),
       needsOwner: !(item.owner || ownerFromText(item.summary)),
       sourceEvidenceIds: [item.id],
     }))

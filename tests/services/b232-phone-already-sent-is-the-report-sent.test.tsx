@@ -13,6 +13,8 @@
  *    by sync holds it at the END. The section took "latest", the notes that lead each area and the image numbers
  *    from the list's order, so the iPad's report read differently under "already sent" (P4-1 road a), and a report
  *    sent from the iPad called a three-day-old note the "Latest update" (P4-2). Now: by the updates' own dates.
+ *  DAY (part B): the section ended "Schedule focus: Pour slab (Due in 4 days)", 3 days the next morning (P4-1
+ *    road b). Now: the task's date.
  *
  * The field updates carry their date as the app saves it (a day, "2026-10-03"), two of them on one day.
  * Synthetic data. No network.
@@ -236,6 +238,7 @@ const THE_SECTION = [
   '',
   'Please let me know if you have any questions.',
 ].join('\n');
+const sectionWith = (scheduleFocus: string) => THE_SECTION.replace('SCHEDULE_FOCUS', scheduleFocus);
 /** The section with whatever stands in the schedule focus's brackets set aside (part B's business, not the order's). */
 const butForTheDay = (text: string) => text.replace(/(Schedule focus: Pour slab) \([^)]*\)/, '$1 (SCHEDULE_FOCUS)');
 
@@ -301,5 +304,26 @@ describe('B232 item 2: "Your other device already sent this report" is said of t
       });
     }
     expect(reports.ipad).toBe(reports.phone);
+  });
+
+  // ---- part B: the day ----
+  it('DAY (review P4-1, proof 2): the next morning, nothing changed: the iPad says "already sent", and its report is the phone\'s, word for word', async () => {
+    const { saidAlreadySent, sentFromThePhone, sentFromTheIpad } = await phoneSendsThenTheIpad('2026-10-06T15:00:00.000Z', ON_THE_PHONE);
+    note('day-phone-sent-5-oct.txt', sentFromThePhone);
+    note('day-ipad-would-send-6-oct.txt', sentFromTheIpad);
+    expect({ saidAlreadySent, theSameReport: sentFromTheIpad === sentFromThePhone }).toEqual({ saidAlreadySent: true, theSameReport: true });
+    // The task in focus is given its date, as the rest of the written report gives a task's date ("due 10/09/2026"
+    // under CURRENT WORK), not a count of days from today; nothing else in the section is another word.
+    expect(section(sentFromThePhone)).toBe(sectionWith('due 10/09/2026'));
+    expect(sentFromThePhone).toContain('• Pour slab (Level 1): In Progress; 40% complete; due 10/09/2026.');
+  });
+
+  it('DAY: an overdue task in focus reads "was due" and its date, the same one day overdue and two', async () => {
+    // Pour slab was due 9 Oct. The phone sends on the 10th; the iPad reads it on the 11th.
+    const { saidAlreadySent, sentFromThePhone, sentFromTheIpad } = await phoneSendsThenTheIpad('2026-10-11T15:00:00.000Z', ON_THE_PHONE, '2026-10-10T17:00:00.000Z');
+    note('day-overdue-phone-sent-10-oct.txt', sentFromThePhone);
+    expect(section(sentFromThePhone)).toContain('Schedule focus: Pour slab (was due 10/09/2026).');
+    expect(section(sentFromThePhone)).not.toMatch(/\d+ days? overdue|Due (in \d+ days|today|tomorrow)/);
+    expect({ saidAlreadySent, theSameReport: sentFromTheIpad === sentFromThePhone }).toEqual({ saidAlreadySent: true, theSameReport: true });
   });
 });

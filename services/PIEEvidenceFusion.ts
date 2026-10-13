@@ -1732,13 +1732,26 @@ export function fieldUpdatesNewestFirst<T extends { id: string; date?: string | 
  * difference, so that two devices write the same words: the latest update
  * and the latest photo are the newest by the update's own date
  * (`fieldUpdatesNewestFirst`), not the first in this device's list.
+ *
+ * Part B (the coordinator's decision): and a second, so that two days write
+ * the same words. The task in focus is given its DATE, as the rest of the
+ * written report gives a task's date ("due 10/17/2026", the date as the
+ * schedule holds it), not a count of days from today ("Due in 4 days", "Due
+ * tomorrow", "Due today", "3 days overdue"): that read differently every
+ * morning under one fingerprint, so "already sent" stood above a report
+ * that was not the one sent. An overdue task reads "was due 10/09/2026". It
+ * changes when the task crosses that line, and the fingerprint moves then.
+ * `taskDate: false` leaves the date out ("Schedule focus: Pour slab."): the
+ * report writer names the sentence's work area from that form, as it did
+ * before the sentence carried a date.
  */
 export function whatChangedForWrittenReport(
   fusedEvidence: Readonly<{
     userUpdateEvidence: ReadonlyArray<Pick<PIEUserUpdateEvidence, 'id' | 'date' | 'notes'>>;
     photoEvidence: ReadonlyArray<Pick<PIEPhotoEvidence, 'updateId' | 'caption'>>;
-    scheduleEvidence: ReadonlyArray<Pick<PIEScheduleEvidence, 'taskName' | 'dueLabel' | 'isOverdue' | 'isUpcoming7' | 'isUpcoming14'>>;
+    scheduleEvidence: ReadonlyArray<Pick<PIEScheduleEvidence, 'taskName' | 'dueDate' | 'isOverdue' | 'isUpcoming7' | 'isUpcoming14'>>;
   }>,
+  { taskDate = true }: Readonly<{ taskDate?: boolean }> = {},
 ) {
   const updates = fieldUpdatesNewestFirst(fusedEvidence.userUpdateEvidence);
   const placeOfUpdate = new Map(updates.map((update, index) => [update.id, index] as const));
@@ -1759,7 +1772,7 @@ export function whatChangedForWrittenReport(
       ? `Latest photo: ${truncate(latestPhoto.caption, 100)}`
       : null,
     nextSchedule
-      ? `Schedule focus: ${nextSchedule.taskName} (${nextSchedule.dueLabel}).`
+      ? `Schedule focus: ${nextSchedule.taskName}${taskDate ? ` (${nextSchedule.isOverdue ? 'was due' : 'due'} ${nextSchedule.dueDate})` : ''}.`
       : null,
   ]).join(' ') || 'No recent change is visible from current evidence.';
 }
