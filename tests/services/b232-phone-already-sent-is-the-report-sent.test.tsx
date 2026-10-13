@@ -106,6 +106,20 @@ const TASKS = [
   task('roof', 'Set roof', 'Roof', 0, '03/31/2027', 'Luis'),
   task('paint', 'Paint lobby', 'Level 1', 10, '04/30/2027', 'Mara'),
 ];
+/**
+ * Build 232 item 3 part 1: the same four tasks and two more that print lines of their own in the section (one
+ * waiting, one high priority), as a device holds them that got them in the order of their finish dates...
+ */
+const MORE_TASKS = [
+  TASKS[0],
+  TASKS[1],
+  { ...task('doors', 'Hang doors', 'Level 3', 0, '11/15/2026', 'Luis'), status: 'Waiting' } as ScheduleItem,
+  { ...task('glass', 'Install storefront', 'Site', 0, '11/20/2026', 'Mara'), priority: 'High' } as ScheduleItem,
+  TASKS[2],
+  TASKS[3],
+];
+/** ...and as another device holds them: the app saves tasks in the order a sync leaves them. */
+const MORE_TASKS_IN_ANOTHER_ORDER = [MORE_TASKS[3], MORE_TASKS[5], MORE_TASKS[0], MORE_TASKS[2], MORE_TASKS[4], MORE_TASKS[1]];
 const photo = (id: string, area: string, caption: string) => ({
   id, uri: `file:///photos/${id}.jpg`, caption, category: 'Progress', actionRequired: '', actionOwner: '', actionDueDate: '', actionStatus: 'Open',
   fileName: `${id}.jpg`, mimeType: 'image/jpeg', selectedAreaName: area,
@@ -243,9 +257,12 @@ const sectionWith = (scheduleFocus: string) => THE_SECTION.replace('SCHEDULE_FOC
 const butForTheDay = (text: string) => text.replace(/(Schedule focus: Pour slab) \([^)]*\)/, '$1 (SCHEDULE_FOCUS)');
 
 /** The phone sends; `later`, the iPad opens Reports with the updates in `order`, reads the sentence, and sends again. */
-const phoneSendsThenTheIpad = async (later: string, order: ProjectUpdate[], sentOn = '2026-10-05T17:00:00.000Z') => {
+const phoneSendsThenTheIpad = async (
+  later: string, order: ProjectUpdate[], sentOn = '2026-10-05T17:00:00.000Z',
+  tasks: { phone: ScheduleItem[]; ipad: ScheduleItem[] } = { phone: TASKS, ipad: TASKS },
+) => {
   setClock(sentOn);
-  visit('phone', ON_THE_PHONE);
+  visit('phone', ON_THE_PHONE, tasks.phone);
   await approve();
   await copy();
   await waitFor(() => expect(cloudRow()?.deliveredAt).toEqual(expect.any(String)), SLOW);
@@ -259,7 +276,7 @@ const phoneSendsThenTheIpad = async (later: string, order: ProjectUpdate[], sent
   current = null;
   mockDevice = 'ipad';
   await act(async () => { await recordScheduleCloudPull(new Date().toISOString()); });
-  visit('ipad', order);
+  visit('ipad', order, tasks.ipad);
   const saidAlreadySent = Boolean(await screen.findByText(ALREADY_SENT(sentAt), {}, SLOW).catch(() => null));
   // He takes the screen at its word ("Approve it only if you want to send it a second time") and sends it again.
   await approve();
@@ -325,5 +342,21 @@ describe('B232 item 2: "Your other device already sent this report" is said of t
     expect(section(sentFromThePhone)).toContain('Schedule focus: Pour slab (was due 10/09/2026).');
     expect(section(sentFromThePhone)).not.toMatch(/\d+ days? overdue|Due (in \d+ days|today|tomorrow)/);
     expect({ saidAlreadySent, theSameReport: sentFromTheIpad === sentFromThePhone }).toEqual({ saidAlreadySent: true, theSameReport: true });
+  });
+
+  // ---- Build 232 item 3 part 1: the tasks' order ----
+  it('TASKS (item 2 finding F1): the iPad holds the same tasks in another order: it says "already sent", and its report is the phone\'s, line for line', async () => {
+    const { saidAlreadySent, sentFromThePhone, sentFromTheIpad } = await phoneSendsThenTheIpad(
+      '2026-10-05T17:30:00.000Z', ON_THE_IPAD, undefined, { phone: MORE_TASKS, ipad: MORE_TASKS_IN_ANOTHER_ORDER },
+    );
+    note('tasks-phone-sent.txt', sentFromThePhone);
+    note('tasks-ipad-would-send.txt', sentFromTheIpad);
+    // The two tasks that print lines of their own are in the section, the earlier finish first.
+    const lines = section(sentFromThePhone).split('\n');
+    const doors = lines.findIndex(line => line.includes('Hang doors'));
+    const glass = lines.findIndex(line => line.includes('Install storefront'));
+    expect({ doors: doors >= 0, glass: glass >= 0, doorsFirst: doors < glass }).toEqual({ doors: true, glass: true, doorsFirst: true });
+    expect({ saidAlreadySent, theSameSection: section(sentFromTheIpad) === section(sentFromThePhone), theSameReport: sentFromTheIpad === sentFromThePhone })
+      .toEqual({ saidAlreadySent: true, theSameSection: true, theSameReport: true });
   });
 });

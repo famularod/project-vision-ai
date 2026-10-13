@@ -10,6 +10,7 @@
  *
  * "Your other device already sent this report" is said by the 2.0 fingerprint, and it has to be true to the reader:
  *   1. two devices holding the same updates in different list orders: the same text, the same fingerprint;
+ *      and (item 3) the same tasks in different list orders: the same text, the same fingerprint;
  *   2. the same saved project read on another day, no task crossing a line: the same text;
  *      and on ANY day, a text that moved means a fingerprint that moved;
  *   3. one change at a time to everything the section reads: a text that moved means a fingerprint that moved.
@@ -30,6 +31,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 
 import * as fs from 'fs';
 import { buildPIECoreIntelligence } from '../../services/PIECoreIntelligence';
+import { scheduleTasksInReportOrder } from '../../services/PIEEvidenceFusion';
 import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, enhanceDAVEReportDraft } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
 import type { ContactBook, ProjectArea, ProjectUpdate, ReferenceDocument, ScheduleItem } from '../../types';
@@ -271,6 +273,52 @@ describe('B232 item 2 part C: the phone\'s whole written report against the 2.0 
     say(`1d. two comparisons he confirmed on one day, in two updates, in three orders of the list: one text; ${fingerprints === 1 ? 'one fingerprint' : `${fingerprints} fingerprints (one more approval, counted)`}`);
   });
 
+  it('1e. (item 3 part 1) two devices holding the same tasks in different list orders: the same text, the same fingerprint', () => {
+    for (const seed of SEEDS) {
+      const world = project(seed);
+      const rand = seeded(seed * 104729);
+      const orders: Array<[string, ScheduleItem[]]> = [
+        ['in the report\'s own order', scheduleTasksInReportOrder(world.items)],
+        ['the other way round', [...world.items].reverse()],
+        ['shuffled', shuffled(rand, world.items)],
+        ['shuffled again', shuffled(rand, world.items)],
+      ];
+      const base = phone(world);
+      for (const [name, items] of orders) {
+        const other = phone({ ...world, items });
+        const same = { text: other.text === base.text, fingerprint: other.fingerprint === base.fingerprint };
+        if (!same.text) say(`seed ${seed}, tasks "${name}": THE TEXT DIFFERS${[...base.text.split('\n')].sort().join('\n') === [...other.text.split('\n')].sort().join('\n') ? ' (the same lines, in another order)' : ''}\n${newLines(base.text, other.text).map(line => `    ${line}`).join('\n')}`);
+        expect({ seed, tasks: name, ...same }).toEqual({ seed, tasks: name, text: true, fingerprint: true });
+      }
+    }
+  });
+
+  it('1f. (item 3 part 1) the order the writer takes the tasks in is the recipe\'s own fixed order: finish date, start date, name, area, id', () => {
+    // The recipe's order is private to DAVEProjectTruth (scheduleTruthInStableOrder). The writer's is written beside
+    // its rule for updates; this holds the two together, ties included.
+    const tied = [
+      task('t-b', 'Pour slab', 'Level 1', 0, date(9), 'Dana'),
+      task('t-a', 'Pour slab', 'Level 1', 0, date(9), 'Dana'),                                  // the same but the id
+      task('t-c', 'Pour slab', 'Level 2', 0, date(9), 'Dana'),                                  // another area
+      task('t-d', 'Frame walls', 'Level 2', 0, date(9), 'Dana'),                                // another name
+      task('t-e', 'Frame walls', 'Level 2', 0, date(9), 'Dana', { startDate: '08/15/2026' }),   // an earlier start
+      task('t-f', 'Set roof trusses', 'Roof', 0, '', 'Luis'),                                   // no finish date: last
+      task('t-g', 'Grade the lot', 'Site', 0, 'Oct 9, 2026', 'Mara'),                           // a date written out, earlier than those
+      task('t-h', 'Hang drywall', 'Level 2', 0, '2026-10-07', 'Mara'),                          // the web's form, the earliest of all
+    ];
+    const worlds: World[] = [...SEEDS.map(project), { ...project(SEEDS[0]), items: tied }];
+    for (const world of worlds) {
+      for (const items of [world.items, [...world.items].reverse()]) {
+        const recipe = buildDAVEReportProjectTruths({
+          projects: [{ name: 'Tower', projectId: 'report:tower' }], projectRecords: [{ name: 'Tower' }] as never,
+          updates: world.updates, scheduleItems: items, knownScheduleItems: items, knownScheduleDocuments: [], projectAreas: [], referenceDocuments: [],
+          now: at(0),
+        })[0].schedule.map(entry => entry.taskId);
+        expect(scheduleTasksInReportOrder(items).map(item => item.id)).toEqual(recipe);
+      }
+    }
+  });
+
   it('1c. COUNTED, not failed: two photos of one day under one caption, in two updates. The text is the same in either order; whether the fingerprint is, is written down', () => {
     // The report recipe keeps the first of two evidence records of one kind, one day and one wording, and calls the
     // other a duplicate (DAVEProjectTruth markDuplicates): "first" by the list's order. So here two devices can hold
@@ -455,7 +503,7 @@ describe('B232 item 2 part C: the phone\'s whole written report against the 2.0 
 // ---- KNOWN: found by this guard, told to the coordinator, not settled in this batch ----
 /** Single changes that move the text under one fingerprint (test 3): what the section reads and the 2.0 fingerprint does not hold. */
 const KNOWN_BY_CHANGE: readonly string[] = [
-  'the saved tasks in another order',
+  // ('the saved tasks in another order', F1, was here: settled by item 3 part 1, see test 1e.)
   'a later task made high priority',
   'the task due soonest named a milestone',
   'the photos of one update in another order',

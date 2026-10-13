@@ -93,7 +93,7 @@ import type { PIERecommendationChallengeResult } from './PIERecommendationChalle
 import type { PIEJarvisReasoningValidation } from './PIEJarvisReasoningValidation';
 import type { PIEConfidenceDecomposition } from './PIEConfidenceDecomposition';
 import type { PIEEvidenceValuePrioritization } from './PIEEvidenceValuePrioritization';
-import { fieldUpdatesNewestFirst, whatChangedForWrittenReport } from './PIEEvidenceFusion';
+import { fieldUpdatesNewestFirst, scheduleTasksInReportOrder, whatChangedForWrittenReport } from './PIEEvidenceFusion';
 import { resolvePIEReportProjectNames } from './PIEReportScope';
 import type { PIEScheduleReconciliationResult } from './PIEScheduleReconciliation';
 import {
@@ -567,10 +567,11 @@ export function collectReportEvidence(
 ): PIEReportSourceEvidence[] {
   const selectedProjects = selectedProjectsFromInput(input);
   const updates = selectedUpdates(input, selectedProjects);
+  const scheduleItems = reportScheduleItems(input);
   const evidence: PIEReportSourceEvidence[] = [];
 
   updates.forEach(update => {
-    const context = reportContextForUpdate(update, input.scheduleItems || []);
+    const context = reportContextForUpdate(update, scheduleItems);
     const suggestedNote = update.pieSuggestedNote?.trim() || '';
     const noteWasGeneratedFromPhotoAnalysis = Boolean(
       update.pieSuggestedNoteAccepted &&
@@ -599,8 +600,8 @@ export function collectReportEvidence(
     });
   });
 
-  input.scheduleItems
-    ?.filter(item =>
+  scheduleItems
+    .filter(item =>
       [item.scheduleProjectName, item.projectName, item.locationName]
         .some(name => selectedProjects.includes(normalizeName(name || ''))),
     )
@@ -716,7 +717,7 @@ function recentConfirmedPhotoNote(
   const reportAt = (input.generatedAt || new Date()).getTime();
   if (!Number.isFinite(seenAt)) return null;
   if (reportAt - seenAt > REPORT_CURRENT_PHOTO_NOTE_DAYS * 24 * 60 * 60 * 1000) return null;
-  const context = reportContextForUpdate(source, input.scheduleItems || []);
+  const context = reportContextForUpdate(source, reportScheduleItems(input));
   return {
     id: `runtime-photo-progress-${confirmed.currentPhotoId}`,
     source: 'photo',
@@ -2289,6 +2290,18 @@ function selectedProjectsFromInput(input: PIEReportDraftInput) {
       ...(input.savedUpdates || []).map(update => update.projectName),
     ],
   }).map(normalizeName);
+}
+
+/**
+ * The report's tasks, in the report's own order: the one place the writer
+ * takes its tasks (Build 232 item 3 part 1, the coordinator's decision). The
+ * schedule lines of the section, and the task an update is matched to by
+ * its names, followed the order this device's list held the tasks in, and
+ * two devices hold the same tasks in different orders. The same tasks are
+ * read as before; none is added or left out by the order.
+ */
+function reportScheduleItems(input: PIEReportDraftInput) {
+  return scheduleTasksInReportOrder(input.scheduleItems || []);
 }
 
 function selectedUpdates(

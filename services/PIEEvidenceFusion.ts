@@ -26,6 +26,7 @@ import {
   scheduleHasAuthoritativeProgressJudgment,
   type PIEScheduleReconciliationResult,
 } from './PIEScheduleReconciliation';
+import { scheduleCalendarDay } from './ScheduleCalendarDay';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import {
@@ -1725,6 +1726,77 @@ export function fieldUpdatesNewestFirst<T extends { id: string; date?: string | 
     .map(entry => entry.update);
 }
 
+/** What the report orders a task by: its dates as days, then its name, its area and its id. */
+type ReportTaskOrderKey = Readonly<{ finish: string | null | undefined; start: string | null | undefined; name: string; area: string; id: string }>;
+
+function compareTasksInReportOrder(left: ReportTaskOrderKey, right: ReportTaskOrderKey) {
+  // A date that names no day (blank, "TBD") goes last. The app's one reading of a schedule date.
+  const day = (value: string | null | undefined) => {
+    const named = scheduleCalendarDay(value);
+    if (!named) return Number.MAX_SAFE_INTEGER;
+    const [year, month, dayOfMonth] = named.split('-').map(Number);
+    return Date.UTC(year, month - 1, dayOfMonth);
+  };
+  // By code unit, never by locale, so every device puts them in the same order.
+  const plain = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  return day(left.finish) - day(right.finish) || day(left.start) - day(right.start) ||
+    plain(left.name, right.name) || plain(left.area, right.area) || plain(left.id, right.id);
+}
+
+/**
+ * The saved tasks in the ONE order the written report's older writer reads
+ * them in (Build 232 item 3 part 1, the coordinator's decision on item 2's
+ * finding F1): by finish date, then start date (a task with no date last),
+ * then name, area and id.
+ *
+ * The section WORK AREAS / PHOTO NOTES filed its schedule lines, and found
+ * the task an update belongs to, in the order of the list this device holds.
+ * The app saves tasks in the order a sync leaves them, so two devices with
+ * the same tasks printed the same lines in another order, under one
+ * fingerprint: "Your other device already sent this report" above a report
+ * that did not read the same.
+ *
+ * It is the report recipe's own fixed order, the one Current Work's lines
+ * fall back on (DAVEProjectTruth scheduleTruthInStableOrder, which the
+ * writer cannot reach: that module is private to the recipe and far above
+ * this one). Written here once more, from the same reading of a schedule
+ * date, and held to the recipe's by a kept test. Nothing of a task's own is
+ * read that every device does not hold the same, and nothing of today's
+ * date. The saved list itself is not reordered.
+ */
+export function scheduleTasksInReportOrder<
+  T extends Pick<ScheduleItem, 'id' | 'taskName' | 'locationName' | 'startDate' | 'finishDate'>,
+>(items: readonly T[]): T[] {
+  return items
+    .map((item, index) => ({
+      item,
+      index,
+      key: { finish: item.finishDate, start: item.startDate, name: item.taskName, area: (item.locationName || '').trim(), id: item.id },
+    }))
+    .sort((left, right) => compareTasksInReportOrder(left.key, right.key) || left.index - right.index)
+    .map(entry => entry.item);
+}
+
+/**
+ * The task the "Schedule focus" names: the first of the fusion's ranked
+ * tasks that is overdue or due within two weeks, as before. Several of one
+ * rank due on one day came in the order of this device's list; of those,
+ * the first in the report's own order (Build 232 item 3 part 1).
+ */
+function taskInScheduleFocus(scheduleEvidence: readonly PIEScheduleEvidence[]) {
+  const inWindow = scheduleEvidence.filter(item => item.isOverdue || item.isUpcoming7 || item.isUpcoming14);
+  const first = inWindow[0];
+  if (!first) return undefined;
+  const level = inWindow.filter(item =>
+    scheduleEvidenceRank(item) === scheduleEvidenceRank(first) && item.daysUntilDue === first.daysUntilDue);
+  if (level.length < 2) return first;
+  const key = (item: PIEScheduleEvidence): ReportTaskOrderKey =>
+    ({ finish: item.dueDate, start: item.startDate, name: item.taskName, area: item.areaName, id: item.id });
+  return level
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => compareTasksInReportOrder(key(left.item), key(right.item)) || left.index - right.index)[0].item;
+}
+
 /**
  * The "what changed" sentence as the WRITTEN report prints it, in its WORK
  * AREAS / PHOTO NOTES section (Build 232 item 2 part A). The same three parts
@@ -1749,7 +1821,7 @@ export function whatChangedForWrittenReport(
   fusedEvidence: Readonly<{
     userUpdateEvidence: ReadonlyArray<Pick<PIEUserUpdateEvidence, 'id' | 'date' | 'notes'>>;
     photoEvidence: ReadonlyArray<Pick<PIEPhotoEvidence, 'updateId' | 'caption'>>;
-    scheduleEvidence: ReadonlyArray<Pick<PIEScheduleEvidence, 'taskName' | 'dueDate' | 'isOverdue' | 'isUpcoming7' | 'isUpcoming14'>>;
+    scheduleEvidence: readonly PIEScheduleEvidence[];
   }>,
   { taskDate = true }: Readonly<{ taskDate?: boolean }> = {},
 ) {
@@ -1760,9 +1832,7 @@ export function whatChangedForWrittenReport(
   const latestPhoto = fusedEvidence.photoEvidence
     .map((photo, index) => ({ photo, index, place: placeOfUpdate.get(photo.updateId) ?? Number.MAX_SAFE_INTEGER }))
     .sort((left, right) => left.place - right.place || left.index - right.index)[0]?.photo;
-  const nextSchedule = fusedEvidence.scheduleEvidence.find(
-    item => item.isOverdue || item.isUpcoming7 || item.isUpcoming14,
-  );
+  const nextSchedule = taskInScheduleFocus(fusedEvidence.scheduleEvidence);
 
   return uniqueText([
     latestUpdate?.notes
