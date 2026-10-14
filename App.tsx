@@ -274,6 +274,7 @@ import {
 } from './services/GpsPrecision';
 import { createRecentLocationFix } from './services/RecentLocationFix';
 import { asLibraryPhoto, newPhotoGps, withDraftGps, withDraftLocation } from './services/DraftPhotoGps';
+import { libraryPhotoGpsFromExif, libraryPhotoLocationLine } from './services/LibraryPhotoLocation';
 import { applyFixToDraft, areaChangeLocationFields, draftAfterAreaDeleted } from './services/DraftFix';
 import {
   currentDraftAreaSuggestion,
@@ -6701,7 +6702,7 @@ useEffect(() => {
         ...prev,
         ...locationFields,
         areaStatus: area ? 'confirmed' as const : 'unknown' as const,
-        photos: prev.photos.map(photo => withDraftLocation(photo, locationFields)),
+        photos: prev.photos.map(photo => withDraftLocation(photo, locationFields, draftProjectAreas)),
       };
 
       nextDraftAfterAreaChange = next;
@@ -9398,14 +9399,20 @@ Note: This update was opened through Outlook because PLZ email security may reje
         mediaTypes: ['images'],
         quality: 0.85,
         selectionLimit: 10,
+        exif: true, // the photo's own location places it (open item 3.26)
     });
 
     if (!result.canceled) {
       const photos: UpdatePhoto[] = [];
+      const libraryAreas = draftRef.current.projectName === draft.projectName ? draftProjectAreas : [];
 
       try {
         for (const asset of result.assets) {
-          photos.push(asLibraryPhoto(withDraftPhotoContext(await photoFromAsset(asset), draftRef.current)));
+          photos.push(asLibraryPhoto(
+            withDraftPhotoContext(await photoFromAsset(asset), draftRef.current),
+            libraryPhotoGpsFromExif(asset.exif),
+            libraryAreas,
+          ));
         }
 
         // The draft as it is now, not when the button was tapped: a GPS fix
@@ -15409,6 +15416,7 @@ function AddPhotosScreen({
           projectName={update.projectName}
           photo={photo}
           index={index}
+          locationLine={libraryPhotoLocationLine(photo, projectAreas)}
           onUpdate={next => onUpdatePhoto(photo.id, next)}
           onRemove={() => onRemovePhoto(photo.id)}
           onMoveUp={() => onMovePhoto(photo.id, 'up')}
@@ -15727,6 +15735,7 @@ function PhotoCard({
   projectName,
   photo,
   index,
+  locationLine,
   onUpdate,
   onRemove,
   onMoveUp,
@@ -15740,6 +15749,7 @@ function PhotoCard({
   projectName: string;
   photo: UpdatePhoto;
   index: number;
+  locationLine?: string | null;
   onUpdate: (
     next: Partial<UpdatePhoto>,
   ) => void;
@@ -15783,6 +15793,9 @@ function PhotoCard({
               ? 'Ready for update'
               : 'Needs field note'}
           </Text>
+          {locationLine ? (
+            <Text style={styles.bodyText}>{locationLine}</Text>
+          ) : null}
         </View>
 
         <TouchableOpacity

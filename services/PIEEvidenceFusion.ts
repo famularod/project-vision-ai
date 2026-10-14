@@ -162,6 +162,8 @@ export type PIEPhotoEvidence = {
   gpsAccuracy: number | null;
   /** When the photo's GPS was taken: the update's fix time when the photo took that fix (GPS review pass 22). */
   gpsCapturedAt?: string | null;
+  /** Chosen from the library: its own location says where it was taken, never where you are now (3.26). */
+  pickedFromLibrary?: boolean;
   hasGps: boolean;
   isIssue: boolean;
   isSafety: boolean;
@@ -654,6 +656,7 @@ export function extractPhotoEvidence({
           gpsLongitude: photo.gpsLongitude ?? null,
           gpsAccuracy: photo.gpsAccuracy ?? null,
           gpsCapturedAt: photoGpsCapturedAt(photo, update),
+          ...(photo.pickedFromLibrary === true ? { pickedFromLibrary: true } : {}),
           hasGps,
           isIssue,
           isSafety,
@@ -729,7 +732,9 @@ export function extractGPSEvidence({
     }));
   // Ordered by the activity's time (a late photo orders its update, pass
   // 12); the reading's currency runs from the fix's time (pass 22).
-  const photoGps = photoEvidence.map(photo => ({
+  // A library photo's own location (3.26) is where it was taken, maybe days
+  // ago: it is never the latest reading of where you are (pass 9).
+  const photoGps = photoEvidence.filter(photo => !photo.pickedFromLibrary).map(photo => ({
     projectName: photo.projectName,
     areaId: photo.areaId ?? null,
     areaName: namedArea(photo.areaName),

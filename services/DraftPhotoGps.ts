@@ -11,8 +11,12 @@
  * could stamp older photos). A photo
  * keeps its own capture time; the fix's time is not the photo's (pass 8:
  * prior-photo ordering reads it). A photo chosen from the library was taken
- * at an unknown place, so it never takes the draft's fix (pass 7).
+ * at an unknown place, so it never takes the draft's fix (pass 7); one that
+ * carries its own location is placed by it (open item 3.26).
  */
+import type { ProjectArea } from '../types';
+import { libraryPhotoPlacement, type LibraryPhotoOwnGps } from './LibraryPhotoLocation';
+
 export type DraftGpsFields = Readonly<{
   gpsLatitude?: number | null;
   gpsLongitude?: number | null;
@@ -103,16 +107,37 @@ export function withDraftGps<TPhoto extends DraftGpsFields>(photo: TPhoto, draft
   return gps && fixCoversPhoto(photo.locationCapturedAt, draft.locationCapturedAt) ? { ...photo, ...gps } : photo;
 }
 
-/** A photo chosen from the library: where it was taken is not known. */
-export function asLibraryPhoto<TPhoto extends DraftGpsFields>(photo: TPhoto): TPhoto {
-  return { ...photo, pickedFromLibrary: true, ...NO_GPS };
+/**
+ * A photo chosen from the library: it never takes the draft's fix. Its own
+ * location, when it carries one (open item 3.26), is its GPS, and files it
+ * under the saved area that location is clearly inside; otherwise it keeps
+ * the draft's area. Without one, where it was taken is not known.
+ */
+export function asLibraryPhoto<TPhoto extends DraftGpsFields>(
+  photo: TPhoto,
+  ownGps: LibraryPhotoOwnGps | null = null,
+  areas: readonly ProjectArea[] = [],
+): TPhoto {
+  const library = { ...photo, pickedFromLibrary: true, ...NO_GPS };
+  if (!ownGps) return library;
+  const located = { ...library, ...ownGps };
+  const placement = libraryPhotoPlacement(located, areas);
+  return placement
+    ? {
+        ...located,
+        selectedAreaId: placement.area.id,
+        selectedAreaName: placement.area.name,
+        distanceFromSelectedAreaFeet: placement.distanceFeet,
+      }
+    : located;
 }
 
 /**
  * The draft's area and location onto a photo after an area change. Every
  * photo takes the area; a camera photo takes the draft's location only if
  * the fix covers it, and a photo keeps its own capture time (pass 8; an
- * area change used to wipe or replace it).
+ * area change used to wipe or replace it). A library photo its own location
+ * places in one of `areas` keeps that area (3.26).
  */
 export function withDraftLocation<TPhoto extends DraftGpsFields & Readonly<{
   selectedAreaId?: string | null;
@@ -120,9 +145,20 @@ export function withDraftLocation<TPhoto extends DraftGpsFields & Readonly<{
 }>>(
   photo: TPhoto,
   fields: DraftGpsFields & Readonly<{ selectedAreaId: string | null; selectedAreaName: string | null }>,
+  areas: readonly ProjectArea[] = [],
 ): TPhoto {
   const area = { selectedAreaId: fields.selectedAreaId, selectedAreaName: fields.selectedAreaName };
-  if (photo.pickedFromLibrary) return { ...photo, ...area };
+  if (photo.pickedFromLibrary) {
+    const placement = libraryPhotoPlacement(photo, areas);
+    return placement
+      ? {
+          ...photo,
+          selectedAreaId: placement.area.id,
+          selectedAreaName: placement.area.name,
+          distanceFromSelectedAreaFeet: placement.distanceFeet,
+        }
+      : { ...photo, ...area };
+  }
   if (!fixCoversPhoto(photo.locationCapturedAt, fields.locationCapturedAt)) {
     // No fix, or not this photo's: the area only; its distance was to the
     // previous area, and its own GPS stays.
