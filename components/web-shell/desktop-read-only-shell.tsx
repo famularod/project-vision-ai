@@ -121,6 +121,8 @@ import {
   daveWebScheduleUploadOtherProjectLine,
   daveWebUploadMadeWithTicks,
   DAVE_WEB_UPLOAD_TICKS_CHANGED_TEXT,
+  daveWebUploadMadeAsType,
+  DAVE_WEB_UPLOAD_TYPE_CHANGED_TEXT,
   daveWebScheduleUploadProjectReview,
   daveWebScheduleUploadRowNeedsProject,
   daveWebScheduleUploadRowProject,
@@ -3934,14 +3936,17 @@ function DocumentManagementWorkspace({
   // High item 2: a task the file names by no project of his waits for one; the upload is held until each has one.
   const projectReview = useMemo(() => daveWebScheduleUploadProjectReview(preparedUpload), [preparedUpload]);
   // A review made with other ticks than those shown (they changed while the file was read) is cleared: what is
-  // uploaded must be what the page shows at the press (review pass 2).
+  // uploaded must be what the page shows at the press (review pass 2). So is one made under another document type
+  // (review pass H3, H3S-4).
   useEffect(() => {
-    if (!preparedUpload || daveWebUploadMadeWithTicks(preparedUpload, uploadProjects)) return;
+    if (!preparedUpload) return;
+    const ticksChanged = !daveWebUploadMadeWithTicks(preparedUpload, uploadProjects);
+    if (!ticksChanged && daveWebUploadMadeAsType(preparedUpload, uploadCategory)) return;
     setPreparedUpload(null);
     setPreparedBytes(null);
     setPreparedFile(null);
-    setNotice({ tone: 'danger', text: DAVE_WEB_UPLOAD_TICKS_CHANGED_TEXT });
-  }, [preparedUpload, uploadProjects]);
+    setNotice({ tone: 'danger', text: ticksChanged ? DAVE_WEB_UPLOAD_TICKS_CHANGED_TEXT : DAVE_WEB_UPLOAD_TYPE_CHANGED_TEXT });
+  }, [preparedUpload, uploadProjects, uploadCategory]);
   const useForAll = projectReview.useForAll;
   const pairingQuestions = useMemo(() => roleReviewedUpload
     ? daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: roleReviewedUpload.scheduleItems, document: roleReviewedUpload.document })

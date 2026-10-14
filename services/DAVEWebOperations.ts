@@ -774,6 +774,19 @@ export function daveWebUploadMadeWithTicks(prepared: Pick<DAVEWebPreparedUpload,
 export const DAVE_WEB_UPLOAD_TICKS_CHANGED_TEXT =
   'The ticked projects changed while the file was being read, so its review was cleared. Choose the file again.';
 
+/**
+ * Review pass H3, H3S-4 (Low, older; the same on Build 231): the review is also made under the document type of the
+ * moment the file was chosen. Switched to "Permit Card" while a schedule file was read, the page showed the schedule's
+ * tasks under Permit Card, and Upload saved a schedule. As for the ticks: where the type shown is not the one the
+ * review was made under, the page clears the review and says so.
+ */
+export function daveWebUploadMadeAsType(prepared: Pick<DAVEWebPreparedUpload, 'document'>, category: string): boolean {
+  return normalized(prepared.document.category) === normalized(category);
+}
+
+export const DAVE_WEB_UPLOAD_TYPE_CHANGED_TEXT =
+  'The document type changed while the file was being read, so its review was cleared. Choose the file again.';
+
 /** A task the review lists as waiting for one of his projects (High item 2). */
 export function daveWebScheduleUploadRowNeedsProject(item: Pick<ScheduleItem, 'projectName'>): boolean {
   return (item.projectName || '').trim() === SCHEDULE_IMPORT_NEEDS_PROJECT;
