@@ -458,6 +458,7 @@ import {
   REPORT_TEXT_IMAGE_LIMIT,
   resolveReportImageAttachments,
 } from './services/ReportImageAttachments';
+import { reportEmailRecipients, reportTextRecipients } from './services/ReportRecipients';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import {
   assertBackupSerializedFits,
@@ -10157,6 +10158,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       subject: reportSubjectWithDate(report.subject || report.title, report.generatedAt),
       body: report.body + note,
       attachments,
+      recipients: reportEmailRecipients(report),
     });
     // An unreadable attachment makes the composer throw before it opens; send
     // the text alone then. A real send failure is not retried.
@@ -10207,11 +10209,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     const images = await reportImageFiles(reportBodyCitesImages(report) ? report : { ...report, locationGroups: [] }, REPORT_TEXT_IMAGE_LIMIT);
     const reportText = `${report.title}\n\n${report.body}`;
-    const textOnly = () => SMS.sendSMSAsync([], `${reportText}\n\n${REPORT_IMAGES_NOT_ATTACHED}`);
+    const textOnly = () => SMS.sendSMSAsync(reportTextRecipients(report), `${reportText}\n\n${REPORT_IMAGES_NOT_ATTACHED}`);
     const attachments = await buildSmsAttachments(images.photos).catch(() => null);
     const { result } = attachments === null
       ? await textOnly()
-      : await SMS.sendSMSAsync([], `${reportText}${images.note}`, { attachments }).catch(error => {
+      : await SMS.sendSMSAsync(reportTextRecipients(report), `${reportText}${images.note}`, { attachments }).catch(error => {
         if (attachments.length === 0 || !isAttachmentReadError(error)) throw error;
         return textOnly();
       });

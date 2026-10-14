@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type {
   StyleProp,
   ViewStyle,
@@ -20,6 +20,7 @@ import { ScreenCard } from '../components/layout/ScreenCard';
 import { ScreenHeader } from '../components/layout/ScreenHeader';
 import { ReportsWideWorkspace } from '../components/reports-workspace-layout';
 import { ReportMarkSentPanel } from '../components/report-mark-sent';
+import { ReportRecipientsPanel } from '../components/report-recipients';
 import { useAppShellLayout } from '../components/app-shell-layout';
 import {
   colors,
@@ -72,6 +73,13 @@ import {
   sameReportSource,
   withReportEditedText,
 } from '../services/DAVEReportSnapshot';
+import {
+  pickReportRecipient,
+  reportRecipientPickMessage,
+  withReportRecipient,
+  withReportRecipients,
+  type ReportRecipient,
+} from '../services/ReportRecipients';
 import {
   loadDAVEReportPeriod,
   loadDAVEReportSnapshot,
@@ -209,8 +217,8 @@ export function ReportsScreen({
   onMilestoneReport,
   onSavedUpdates,
   onCopyReport,
-  onEmailReport,
-  onTextReport,
+  onEmailReport: emailReportFromTheApp,
+  onTextReport: textReportFromTheApp,
   onDownloadWordReport,
   onOutlookReport,
   onResolveDrawingPreview,
@@ -330,6 +338,10 @@ export function ReportsScreen({
   const [approvalSavedHereCheckedKey, setApprovalSavedHereCheckedKey] = useState<string | null>(null);
   const [markSentRecording, setMarkSentRecording] = useState(false);
   const [markSentMessage, setMarkSentMessage] = useState('');
+  // Open item 7.21, part two: who Email Report and Text Report open with (chosen from his contacts; none: as before).
+  const [reportRecipients, setReportRecipients] = useState<ReportRecipient[]>([]);
+  const [recipientPicking, setRecipientPicking] = useState(false);
+  const [recipientMessage, setRecipientMessage] = useState('');
   const liveAuthority = usePIELiveAuthority();
   const runtime = liveAuthority.runtime;
   const reportGenerationAllowed = liveAuthority.policy.reportGenerationAllowed;
@@ -826,7 +838,26 @@ export function ReportsScreen({
     setApprovalChecking(false);
     approvalCheckRef.current = null;
     pendingCommunicationTokenRef.current = null;
+    // Another report (projects, type or format): its own recipients.
+    setReportRecipients([]);
+    setRecipientMessage('');
   }, [reportStateIdentityKey]);
+
+  /** Add from Contacts: contacts access is asked for here and only here (open item 7.21, part two). */
+  const addReportRecipient = () => {
+    if (recipientPicking) return;
+    setRecipientPicking(true);
+    setRecipientMessage('');
+    void pickReportRecipient().then(pick => {
+      if (!mountedRef.current) return;
+      setRecipientPicking(false);
+      if (pick.status === 'picked') setReportRecipients(list => withReportRecipient(list, pick.recipient));
+      else setRecipientMessage(reportRecipientPickMessage(pick));
+    });
+  };
+  // Email Report and Text Report carry the people he chose (none: Mail and Messages open as before).
+  const onEmailReport = (report: PIEReportDraft) => emailReportFromTheApp(withReportRecipients(report, reportRecipients));
+  const onTextReport = (report: PIEReportDraft) => textReportFromTheApp(withReportRecipients(report, reportRecipients));
 
   const completeCommunication = (
     communicate: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>,
@@ -1354,6 +1385,16 @@ export function ReportsScreen({
             onTextReport={() => {
               completeCommunication(onTextReport);
             }}
+            recipientsPanel={(
+              <ReportRecipientsPanel
+                recipients={reportRecipients}
+                picking={recipientPicking}
+                message={recipientMessage}
+                disabled={communicationPending}
+                onAdd={addReportRecipient}
+                onRemove={key => setReportRecipients(list => list.filter(item => item.key !== key))}
+              />
+            )}
             onDownloadWordReport={() => {
               // A review copy before approval is titled as one (audit A6).
               completeCommunication(report =>
@@ -1682,6 +1723,7 @@ function PIEReporterPreview({
   onDownloadWordReport,
   onOutlookReport,
   markSent,
+  recipientsPanel,
 }: {
   reportDraft: PIEReportDraft;
   hasManualEdits: boolean;
@@ -1731,6 +1773,8 @@ function PIEReporterPreview({
     message: string;
     onRecord: (choice: 'now' | Date) => void;
   }> | null;
+  /** Who Email Report and Text Report open with (open item 7.21, part two). */
+  recipientsPanel?: ReactNode;
 }) {
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -1984,6 +2028,7 @@ function PIEReporterPreview({
           <ReportShareButton icon="mail-outline" label="Email Report" onPress={onEmailReport} disabled={communicationPending} />
           <ReportShareButton icon="chatbubble-outline" label="Text Report" onPress={onTextReport} disabled={communicationPending} />
           <ReportShareButton icon="briefcase-outline" label="Email from Outlook (work)" onPress={onOutlookReport} disabled={communicationPending} />
+          {recipientsPanel}
         </View>
       ) : null}
 
