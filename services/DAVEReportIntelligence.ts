@@ -4,7 +4,7 @@ import {
   buildScheduleTaskAccounting,
   scheduleTaskDurationWeight,
 } from './dave-project-schedule-rollup';
-import type { ScheduleItem } from '../types';
+import type { ReferenceDocument, ScheduleItem } from '../types';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import {
@@ -165,7 +165,12 @@ export type DAVEReportBriefing = Readonly<{
 export function buildDAVEReportSourceFingerprint(
   truths: readonly DAVEProjectTruth[],
 ): string {
-  const fingerprint = `${DAVE_REPORT_SOURCE_VERSION}:${hashOfProjects(truths, truth => reportSourceFactsOf3(truth), LEFT_OUT_OF_REPORT_SOURCE_3_0)}`;
+  // HIGH item 1b: with each project's facts, the ORDER the "since the last report" lines are written in (a task's
+  // saved time, of an open task, is held as that and nothing more).
+  const fingerprint = `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify({
+    projects: hashOfProjects(truths, truth => reportSourceFactsOf3(truth), LEFT_OUT_OF_REPORT_SOURCE_3_0),
+    recentChangesOrder: recentChangesOrder(truths),
+  }))}`;
   // R7 item A (the coordinator's decision on review pass 1, F0): a 1.0 fingerprint is a name of these facts only
   // where this build's report counts the same field updates as Build 230's did for the same saved data. Where it
   // counts even one that Build 230 left out, the 1.0 fingerprint is of a report without it, blind to whatever
@@ -296,13 +301,58 @@ function reportSourceFactsOf(truth: DAVEProjectTruth): unknown {
  */
 function reportSourceFactsOf3(truth: DAVEProjectTruth): unknown {
   const {
-    briefing, entityLinks: _entityLinks, intelligence, reasoning, verificationQueue: _verificationQueue, schedule, ...facts
+    briefing, entityLinks: _entityLinks, intelligence, reasoning, verificationQueue: _verificationQueue, schedule, evidence, correlations, ...facts
   } = truth as DAVEProjectTruth & Record<string, unknown>;
+  // HIGH item 1b (open item 7.46; the coordinator's decision): a record saved again with nothing a report prints
+  // changed moves nothing. Of a task: who last saved its settings (never printed); its saved time and the moment its
+  // percent was confirmed, for a task not complete (printed for a completed task only, in Completed Work's "Last
+  // updated" and its order; for any task the saved time decides only the order of the "since the last report" lines,
+  // held once for the report, recentChangesOrder). Of a schedule file: its notes (never printed).
+  const open = new Set((schedule ?? []).filter(task => !scheduleProgressIsComplete(task)).map(task => task.taskId));
+  const recordAsPrinted = (record: DAVEProjectTruth['evidence']['records'][number]) => {
+    if (record.kind === 'schedule' && open.has(record.taskId ?? '')) {
+      const { capturedAt: _confirmedAt, ...kept } = record;
+      return kept;
+    }
+    if (record.kind === 'document') {
+      const { equipmentKeys: _wordsOfItsNameAndNotes, ...kept } = record;
+      return kept;
+    }
+    return record;
+  };
   // (A truth made by hand, as some tests make one, may lack a part: it is read as empty.)
   return withoutReportProjectId(truth, {
     ...facts,
-    schedule: (schedule ?? []).map(task => (task.urgency === 'upcoming' ? { ...task, urgency: 'not_urgent' as const } : task)),
-    referenceDocuments: intelligence?.referenceDocuments ?? [],
+    schedule: (schedule ?? []).map(task => {
+      const { updatedBy: _savedBy, updatedAt, ...kept } = task;
+      return {
+        ...kept,
+        ...(open.has(task.taskId) ? {} : { updatedAt }),
+        urgency: task.urgency === 'upcoming' ? 'not_urgent' as const : task.urgency,
+      };
+    }),
+    evidence: evidence
+      ? { ...evidence, records: (evidence.records ?? []).map(recordAsPrinted), unresolvedRecords: (evidence.unresolvedRecords ?? []).map(recordAsPrinted) }
+      : evidence,
+    correlations: correlations
+      ? {
+          ...correlations,
+          tasks: (correlations.tasks ?? []).map(correlation => (open.has(correlation.taskId)
+            ? {
+                ...correlation,
+                evidence: correlation.evidence.map(claim => {
+                  if (claim.id !== `correlation:schedule:${correlation.taskId}`) return claim;
+                  const { recordedAt: _confirmedOrSavedAt, ...kept } = claim;
+                  return kept;
+                }),
+              }
+            : correlation)),
+        }
+      : correlations,
+    referenceDocuments: (intelligence?.referenceDocuments ?? []).map(document => {
+      const { notes: _notes, ...kept } = document as ReferenceDocument;
+      return kept;
+    }),
     listedDecisions: uniqueBy([...(reasoning?.criticalDecisions ?? []), ...(reasoning?.decisions ?? [])], decision => decision.taskId)
       .filter(listedDecision)
       .map(decision => ({
@@ -319,6 +369,24 @@ function reportSourceFactsOf3(truth: DAVEProjectTruth): unknown {
       whatChanged: (briefing?.whatChanged ?? []).map(item => toPMReportLanguage(item)).filter(Boolean),
     },
   });
+}
+
+/**
+ * HIGH item 1b: the order of the "since the last report" lines, as buildRecentChanges writes them: every task of the
+ * report by its latest activity or saved time, newest first (projects by name where two are of one moment, then the
+ * report's own task order). The saved time of a task not complete is in version 3.0 as this order and nothing more:
+ * saved again later with nothing changed, it moves nothing a report prints, unless it moves the task in this order.
+ */
+function recentChangesOrder(truths: readonly DAVEProjectTruth[]): string[] {
+  return truths
+    .flatMap(truth => (truth.schedule ?? []).map((task, index) => ({
+      project: normalized(truth.projectName),
+      index,
+      key: `${normalized(truth.projectName)}|${task.taskId}`,
+      at: dateValue(latestDate([task.latestActivityAt, task.updatedAt])) ?? 0,
+    })))
+    .sort((left, right) => right.at - left.at || left.project.localeCompare(right.project) || left.index - right.index)
+    .map(entry => entry.key);
 }
 
 /** `facts` without the id the truth is filed under, wherever an id carries it (see reportSourceFactsOf). */
