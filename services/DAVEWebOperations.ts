@@ -174,6 +174,11 @@ export type DAVEWebPreparedUpload = Readonly<{
    * when every row keeps what its file gave.
    */
   fileScheduleProjectNames?: Readonly<Record<string, string>>;
+  /**
+   * The rows whose project the file gives only by its top line (a PDF root that is a project of his not ticked; review
+   * pass H4, H4S-2): listed as naming it, and read by the suggestion as Build 231 read them (no project). Absent if none.
+   */
+  fileTopLineProjectRows?: readonly string[];
 }>;
 
 type DAVEWebDocumentPreparationInput = Readonly<{
@@ -337,9 +342,22 @@ export function prepareDAVEWebDocumentUpload({
   // High item 2: each row's project as the phone resolves it, among his projects (daveWebRowProjects). The cloud's
   // list of his open projects when the page has it, even empty (review pass 1, L-4: the page's own list also holds
   // names known only from saved tasks); without it (an older caller), the page's list.
-  const rowProjects = daveWebRowProjects(readItems, uniqueNames([...selectedProjectNames, ...(openProjectNames ?? projects)]), selectedProjectNames);
+  const ownProjects = uniqueNames([...selectedProjectNames, ...(openProjectNames ?? projects)]);
   // Open item 2.35: a row's schedule parent (a PDF's root) only where it is a ticked project, as on the phone.
   const parents = daveWebRowParents(readItems, selectedProjectNames);
+  // Review pass H4, H4S-2: a row that names no project, under a top line that is one of his projects NOT ticked (by the
+  // strict rule: the phone's comparison or scheduleProjectScopeKey), is read as a spreadsheet row naming that project:
+  // it waits with the unticked-project words, the line names the project, and there is no one button. (It said "the
+  // file names no project", and with one tick a button filed it under the ticked project.)
+  const fileTopLineProjectRows: string[] = [];
+  const asNamed = readItems.map((item, index) => {
+    const root = item.scheduleProjectName?.trim() || '';
+    const his = root && ownProjects.some(project => normalized(project) === normalized(root) || scheduleProjectScopeKey(project) === scheduleProjectScopeKey(root));
+    if (item.projectName?.trim() || parents[index] || !his) return item;
+    fileTopLineProjectRows.push(item.id);
+    return { ...item, projectName: root };
+  });
+  const rowProjects = daveWebRowProjects(asNamed, ownProjects, selectedProjectNames);
   const fileScheduleProjectNames: Record<string, string> = {};
   // The duplicate check compares a waiting row by the name the FILE gives, so two names the app does not know stay two
   // rows (review pass 1, H1S-1: two "Needs Project" rows of one task on one day were one); then the row waits. Two
@@ -396,6 +414,7 @@ export function prepareDAVEWebDocumentUpload({
     ...(Object.keys(rowProjects.fileProjectNames).length > 0 ? { fileProjectNames: Object.freeze(rowProjects.fileProjectNames) } : {}),
     ...(Object.keys(rowProjects.waitingProjectNames).length > 0 ? { waitingProjectNames: Object.freeze(rowProjects.waitingProjectNames) } : {}),
     ...(Object.keys(fileScheduleProjectNames).length > 0 ? { fileScheduleProjectNames: Object.freeze(fileScheduleProjectNames) } : {}),
+    ...(fileTopLineProjectRows.length > 0 ? { fileTopLineProjectRows: Object.freeze(fileTopLineProjectRows) } : {}),
   });
 }
 
@@ -643,7 +662,7 @@ export function daveWebScheduleUploadRoleSuggestion({
   prepared,
 }: {
   snapshot: DAVEWebImportSnapshot | null | undefined;
-  prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'extractionStatus' | 'fileProjectNames' | 'fileScheduleProjectNames'> | null | undefined;
+  prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'extractionStatus' | 'fileProjectNames' | 'fileScheduleProjectNames' | 'fileTopLineProjectRows'> | null | undefined;
 }): ScheduleImportRoleSuggestion | null {
   if (!snapshot || !prepared || prepared.extractionStatus !== 'ready' || normalized(prepared.document.category) !== 'schedules') return null;
   const { scheduleRole: _role, ...file } = prepared.document;
@@ -653,9 +672,11 @@ export function daveWebScheduleUploadRoleSuggestion({
   const named = prepared.fileProjectNames ?? {};
   const parents = prepared.fileScheduleProjectNames ?? {};
   const first = prepared.document.projectNames?.[0] || prepared.document.projectName || '';
+  // Review pass H4, H4S-2: a row named only by the file's top line, too.
+  const topLine = new Set(prepared.fileTopLineProjectRows ?? []);
   const items = prepared.scheduleItems.map(item => {
     if (named[item.id] === undefined && parents[item.id] === undefined) return item;
-    const projectName = named[item.id] === undefined ? item.projectName : named[item.id] || first;
+    const projectName = named[item.id] === undefined ? item.projectName : (!topLine.has(item.id) && named[item.id]) || first;
     return {
       ...item,
       projectName,
