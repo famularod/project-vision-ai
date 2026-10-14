@@ -17,7 +17,7 @@ import type { PIEScheduleImportBatch } from './PIEScheduleImportBatch';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
 import { scheduleEditWithDateChangedAlone } from './ScheduleDateEdit';
-import { scheduleItemAsLastSetOnItsOtherRow } from './ScheduleItemEditBase';
+import { SCHEDULE_PROGRESS_FIELDS, scheduleItemAsLastSetOnItsOtherRow } from './ScheduleItemEditBase';
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressIsManagers,
@@ -914,6 +914,71 @@ export function scheduleItemsAfterLookaheadDeleted(
   documents?: readonly ReferenceDocument[],
 ): ScheduleItem[] {
   return tasksAfterLookaheadDeleted(items, document, updatedAt, documents).map(entry => entry.item);
+}
+
+/** What schedules have made of a task's lookahead note: the master's dates in it, each lookahead's own and its marks. */
+function noteAsSchedulesLeftIt(item: ScheduleItem): string {
+  const overlay = overlayOf(item);
+  if (!overlay) return '';
+  return JSON.stringify([key(overlay.masterStartDate), key(overlay.masterFinishDate), (overlay.masterDatesBefore ?? []).length,
+    overlay.lookaheads.map(entry => [key(entry.batchId), key(entry.startDate), key(entry.finishDate), entry.percentComplete ?? null, entry.datesReplacedByMaster ?? null])]);
+}
+
+/** What "Delete PDF + Items" puts back on a task its lookahead restated: the dates, the note, the master's dates kept, the progress. */
+const putBackFields = (): readonly string[] => ['startDate', 'finishDate', 'lookaheadOverlay', 'masterDatesOfRow', ...SCHEDULE_PROGRESS_FIELDS];
+
+/**
+ * Way 2, step 2b, part F (open item 2.53, 14 Oct 2026; older: the design note's "seen in passing", 2.13's family). A
+ * lookahead moved Framing and every device heard it; with the phone out of signal the iPad approved a second one
+ * moving it again (maybe with a percent); the phone, not having heard, deleted the first with its items. Its save, a
+ * whole copy put back as the phone knew the task (the master's dates), met the cloud's row with the second lookahead
+ * in its note; both copies' notes had changed, the sync merge took the later copy whole, and Framing went to the
+ * master's dates everywhere, the second lookahead's dates and percent lost, with no card.
+ *
+ * The rule: a delete's put-back never goes over a lookahead, or any newer schedule, the deleting device had not
+ * heard of. Where the copy is a lookahead's delete (its note lost lookaheads the copy it started from named, and
+ * gained none) and the cloud's row has heard from a schedule since (its note is not, as schedules left it, the
+ * copy's), the delete is made again on the cloud's row by the delete's own rule, as one device doing the steps in
+ * order makes it. Returned: this copy with what the delete puts back taken from that, and the copy it started from
+ * with those same fields as the cloud's row has them, so the weighing field by field sends exactly what the delete
+ * changes there, and weighs the rest of the copy (his edit that waited, his notes) as before. Null, and the copy goes
+ * as before, for any other copy, or where the copy's dates and percent are not the delete's own (made on the copy it
+ * started from the delete would not give them: something else of his changed them too).
+ */
+export function scheduleLookaheadDeleteMadeOnCloudRow(
+  local: ScheduleItem,
+  copy: Readonly<Record<string, unknown>> | null | undefined,
+  remote: ScheduleItem,
+): Readonly<{ itemData: ScheduleItem; copy: Record<string, unknown> }> | null {
+  const before = copy && typeof copy === 'object' ? copy as unknown as ScheduleItem : null;
+  const was = before ? overlayOf(before) : null;
+  if (!before || !was) return null;
+  const batchesOf = (item: ScheduleItem) => (overlayOf(item)?.lookaheads ?? []).map(entry => key(entry.batchId)).filter(Boolean);
+  const named = batchesOf(before);
+  const kept = batchesOf(local);
+  const deleted = named.filter(batchId => !kept.includes(batchId));
+  if (deleted.length === 0 || kept.some(batchId => !named.includes(batchId))) return null;
+  if (noteAsSchedulesLeftIt(remote) === noteAsSchedulesLeftIt(before)) return null;
+  const at = typeof local.updatedAt === 'string' && local.updatedAt ? local.updatedAt : new Date().toISOString();
+  const deletedOn = (row: ScheduleItem) => deleted.reduce((item, batchId) =>
+    tasksAfterLookaheadDeleted([item], { id: '', importBatchId: batchId } as unknown as ReferenceDocument, at)[0]?.item ?? item, row);
+  const onCopy = deletedOn(before);
+  const same = (one: ScheduleItem, other: ScheduleItem) => sameScheduleCalendarDay(one.startDate, other.startDate) &&
+    sameScheduleCalendarDay(one.finishDate, other.finishDate) && percentOf(one) === percentOf(other) && key(one.status) === key(other.status) &&
+    JSON.stringify(batchesOf(one)) === JSON.stringify(batchesOf(other));
+  if (!same(onCopy, local)) return null;
+  const onCloud = deletedOn(remote) as unknown as Record<string, unknown>;
+  const itemData = { ...local } as unknown as Record<string, unknown>;
+  const startedFrom: Record<string, unknown> = { ...copy };
+  const take = (target: Record<string, unknown>, source: Record<string, unknown>, field: string) => {
+    if (source[field] === undefined) delete target[field];
+    else target[field] = source[field];
+  };
+  putBackFields().forEach(field => {
+    take(itemData, onCloud, field);
+    take(startedFrom, remote as unknown as Record<string, unknown>, field);
+  });
+  return { itemData: itemData as unknown as ScheduleItem, copy: startedFrom };
 }
 
 function timeOf(value: string | null | undefined): number {

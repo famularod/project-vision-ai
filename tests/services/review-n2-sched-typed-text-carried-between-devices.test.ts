@@ -7273,3 +7273,127 @@ describe('Way 2, step 2b, part E (2.52): an activity note is kept when a whole c
     await nothingAskedOrWaiting(phone, ipad);
   });
 });
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Way 2, step 2b, part F (open item 2.53, 14 Oct 2026; older: the design note's "seen in passing", 2.13's family;
+ * the returned item 1 moved its waiting case from nearly right to wrong). A lookahead moves Framing and every device
+ * has heard it. The phone loses signal. On the iPad he approves a SECOND lookahead that moves Framing again (and may
+ * state a percent). On the phone, which has not heard of it, he deletes the FIRST lookahead with its items. Once
+ * everything had synced Framing was on the MASTER's dates in all three places, the second lookahead's dates and
+ * percent gone, with no card, though that lookahead is still listed.
+ *
+ * Why: the delete's save is a whole copy of the task, put back as the phone knew it (the master's dates). The cloud's
+ * row had meanwhile taken the second lookahead, so the two copies' lookahead notes both changed and the sync merge
+ * took the later copy whole: the phone's.
+ *
+ * The rule now: a delete's put-back never goes over a lookahead, or any newer schedule, the deleting device had not
+ * heard of. When the cloud's row has heard from a schedule the copy did not know (a lookahead added or taken off, a
+ * master's dates or marks in the note), the delete is made again on the cloud's row by the delete's own rule, as one
+ * device doing the steps in order makes it; what else the copy changed (his edit that waited, a note) is weighed as
+ * before. Only where the copy's dates and percent are the delete's own (made on the copy it started from, the delete
+ * gives exactly them); otherwise as before.
+ */
+describe('Way 2, step 2b, part F (2.53): a delete\'s put-back never goes over a schedule the deleting device had not heard of', () => {
+  const LOOK = scheduleDoc('LOOKAHEAD F1', '2026-09-09T12:00:00.000Z', 'lookahead');
+  const LOOK2 = scheduleDoc('LOOKAHEAD F2 SECOND', '2026-09-10T10:00:00.000Z', 'lookahead');
+  const lookaheadsOf = (item: ScheduleItem) => ((item as unknown as { lookaheadOverlay?: { lookaheads?: Array<{ batchId?: string }> } }).lookaheadOverlay?.lookaheads ?? []).map(entry => entry.batchId);
+  const seen = (items: readonly ScheduleItem[]) => framingOf(items).map(item => ({
+    dates: `${item.startDate} - ${item.finishDate}`, percent: item.percentComplete, owner: item.owner || '', lookaheads: lookaheadsOf(item),
+    notes: (item.activity ?? []).map(entry => entry.id),
+  }));
+  const ending = async (phone: Device, ipad: Device) => ({
+    places: [seen(deviceShown(phone)), seen(deviceShown(ipad)), seen(webShown())],
+    cards: [(await conflictsOf(phone)).length, (await conflictsOf(ipad)).length], waiting: [(await queueOf(phone)).length, (await queueOf(ipad)).length],
+  });
+  const heardEverywhere = async (device: Device, other: Device) => { shareDocuments(device); await backgroundUpload(device); await settle(device, other); };
+  const everythingSyncs = async (phone: Device, ipad: Device) => {
+    setOnline(phone, true); shareDocuments(phone); setOnline(ipad, true); shareDocuments(ipad);
+    await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+  };
+  const FIRST = { 'no percent': 'Framing,Alpha,Lot,10/18/2026,10/28/2026,', '70%': 'Framing,Alpha,Lot,10/18/2026,10/28/2026,70' } as const;
+  const SECOND = {
+    'moves it again, no percent': ['Framing,Alpha,Lot,10/21/2026,10/31/2026,', '10/21/2026 - 10/31/2026', 0],
+    'moves it again and states 80%': ['Framing,Alpha,Lot,10/21/2026,10/31/2026,80', '10/21/2026 - 10/31/2026', 80],
+    'leaves it on the first lookahead\'s dates and states 80%': ['Framing,Alpha,Lot,10/18/2026,10/28/2026,80', '10/18/2026 - 10/28/2026', 80],
+  } as const;
+  type How = 'one device in order' | 'his owner sent first' | 'his owner waiting';
+
+  /**
+   * The first lookahead is approved on the phone and heard everywhere; he sets Framing's owner on the phone. One device
+   * in order: the phone then approves the second lookahead and deletes the first. Two devices: the phone loses signal,
+   * the iPad approves the second, and the phone, not having heard, deletes the first (`signalBack`: with signal again
+   * just before the delete, sending at once).
+   */
+  async function steps(how: How, first: keyof typeof FIRST, second: keyof typeof SECOND, signalBack = false) {
+    const { phone, ipad } = await start();
+    at(LOOK.importedAt!); await approve(phone, LOOK, [FIRST[first]], true); await heardEverywhere(phone, ipad);
+    const id = theRow(phone).id;
+    at('2026-09-10T09:00:00.000Z');
+    if (how === 'his owner waiting') { setOnline(phone, false); await edit(phone, id, { owner: 'Mike' }); }
+    else { await edit(phone, id, { owner: 'Mike' }); await backgroundUpload(phone); await echoes(ipad); if (how !== 'one device in order') setOnline(phone, false); }
+    const approver = how === 'one device in order' ? phone : ipad;
+    at(LOOK2.importedAt!); await approve(approver, LOOK2, [SECOND[second][0]], true); shareDocuments(approver); await backgroundUpload(approver);
+    at('2026-09-10T12:00:00.000Z');
+    if (signalBack) setOnline(phone, true);
+    await deleteWithItems(phone, LOOK);
+    if (isOnline(phone)) { shareDocuments(phone); await backgroundUpload(phone); }
+    at('2026-09-10T15:00:00.000Z');
+    await everythingSyncs(phone, ipad);
+    return ending(phone, ipad);
+  }
+
+  describe.each(Object.keys(FIRST) as Array<keyof typeof FIRST>)('the first lookahead states %s', first => {
+    it.each(Object.keys(SECOND) as Array<keyof typeof SECOND>)('the iPad\'s second lookahead %s: every way of syncing ends as one device doing the steps in order, on the second lookahead\'s dates and its percent', async second => {
+      const inOrder = await steps('one device in order', first, second);
+      const [, dates, percent] = SECOND[second];
+      // One device in order (the design note's R16): the second lookahead's dates, its percent where it states one, his
+      // owner, its note alone.
+      expect(inOrder).toEqual({ places: Array(3).fill([{ dates, percent, owner: 'Mike', lookaheads: [LOOK2.importBatchId], notes: [] }]), cards: [0, 0], waiting: [0, 0] });
+      for (const how of ['his owner sent first', 'his owner waiting'] as const) {
+        for (const signalBack of [false, true]) {
+          // (It was: the master's 10/15 - 10/25 at 0% in all three places, with no lookahead note.)
+          expect([how, signalBack, await steps(how, first, second, signalBack)]).toEqual([how, signalBack, inOrder]);
+        }
+      }
+    });
+  });
+
+  it('seed 6248\'s shape (two lookaheads list the task; the phone deletes the first, the iPad, not having heard, the second): the task is on the master\'s dates with no lookahead note, as one device in order', async () => {
+    const LA = scheduleDoc('LOOKAHEAD F6248 A', '2026-09-09T12:00:00.000Z', 'lookahead');
+    const LB = scheduleDoc('LOOKAHEAD F6248 B', '2026-09-09T14:00:00.000Z', 'lookahead');
+    const run = async (inOrder: boolean) => {
+      const { phone, ipad } = await start();
+      at(LA.importedAt!); await approve(phone, LA, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true); await heardEverywhere(phone, ipad);
+      at(LB.importedAt!); await approve(phone, LB, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true); await heardEverywhere(phone, ipad);
+      if (!inOrder) setOnline(ipad, false);
+      at('2026-09-10T10:00:00.000Z'); await deleteWithItems(phone, LA); shareDocuments(phone); await backgroundUpload(phone);
+      if (inOrder) await settle(phone, ipad);
+      at('2026-09-10T12:00:00.000Z'); await deleteWithItems(inOrder ? phone : ipad, LB);
+      at('2026-09-10T13:00:00.000Z'); await everythingSyncs(phone, ipad);
+      return ending(phone, ipad);
+    };
+    const inOrder = await run(true);
+    expect(inOrder).toEqual({ places: Array(3).fill([{ dates: '10/15/2026 - 10/25/2026', percent: 0, owner: '', lookaheads: [], notes: [] }]), cards: [0, 0], waiting: [0, 0] });
+    // (It was: the deleted lookaheads' 10/18 - 10/28 in all three places, the first one's note back on the task.)
+    expect(await run(false)).toEqual(inOrder);
+  });
+
+  it('a newer MASTER the phone had not heard of lists the task on the lookahead\'s dates; the phone deletes the lookahead: the task stays on that master\'s dates, as one device in order', async () => {
+    const GM = scheduleDoc('MASTER F-GM', '2026-09-10T10:00:00.000Z');
+    const run = async (inOrder: boolean) => {
+      const { phone, ipad } = await start();
+      at(LOOK.importedAt!); await approve(phone, LOOK, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true); await heardEverywhere(phone, ipad);
+      const approver = inOrder ? phone : ipad;
+      if (!inOrder) setOnline(phone, false);
+      at(GM.importedAt!); await approve(approver, GM, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,', SURVEY]); shareDocuments(approver); await backgroundUpload(approver);
+      at('2026-09-10T12:00:00.000Z'); await deleteWithItems(phone, LOOK);
+      at('2026-09-10T15:00:00.000Z'); await everythingSyncs(phone, ipad);
+      return ending(phone, ipad);
+    };
+    const inOrder = await run(true);
+    expect(inOrder).toMatchObject({ places: Array(3).fill([{ dates: '10/18/2026 - 10/28/2026', lookaheads: [] }]), cards: [0, 0], waiting: [0, 0] });
+    // (It was: the old master's 10/15 - 10/25 in all three places.)
+    expect(await run(false)).toEqual(inOrder);
+  });
+});
