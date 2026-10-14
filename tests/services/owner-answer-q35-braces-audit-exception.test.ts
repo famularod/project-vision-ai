@@ -91,8 +91,13 @@ describe('owner answer Q35: the braces advisory in the build and test tools', ()
     expect(result.excused.map(found => found.name).sort()).toEqual(['@expo/code-signing-certificates', 'node-forge']);
   });
 
-  it('ends after its review date, with Q33\'s', () => {
+  it('still holds on 2 Nov 2026, with Q33\'s: owner answer Q53 (13 Oct 2026) moved both review dates to 1 Feb 2027', () => {
     const result = evaluateDependencyAudit(todaysReport(), new Date('2026-11-02T12:00:00Z'));
+    expect(result.expired).toEqual([]);
+  });
+
+  it('ends after its review date, with Q33\'s', () => {
+    const result = evaluateDependencyAudit(todaysReport(), new Date('2027-02-02T12:00:00Z'));
     expect(result.expired.map(exception => exception.advisory).sort()).toEqual(['GHSA-86w9-cpqp-85rv', 'GHSA-vfj7-8cjw-p6xm']);
     expect(result.excused).toEqual([]);
   });
