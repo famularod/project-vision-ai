@@ -7661,3 +7661,145 @@ describe('Open item 2.13: two lookaheads approved apart on two devices: the note
     expect(await run(false)).toEqual(inOrder);
   });
 });
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Open item 2.62 (Medium, older: Build 232 and every build before; 14 Oct 2026; the rest of 2.13, N213's probe Z19
+ * "approval before the delete"). Lookahead L1 moved Framing (master 10/15 - 10/25) to 10/18 - 10/28 and every device
+ * heard it. The iPad, with no signal, approved lookahead L2 (10/21 - 10/31); then the phone, online and not having
+ * heard, deleted L1 with its items, and its save went up first. When the iPad's approval went up after it, every device
+ * ended on the MASTER's dates with no lookahead note and no card: L2 was lost. One device doing the same steps in order
+ * ends on L2's dates with L2 in the note.
+ *
+ * Why: the iPad's whole copy met the cloud's row of the delete; both had changed the note, the sync merge kept the
+ * later copy whole (the delete's), which names no lookahead of its own, so 2.13's rule had nothing to act on.
+ *
+ * The rule now (Way 2, step 2b's part F turned round): where the approving copy goes up over a delete it had not heard
+ * of, and the merge kept the delete's copy, the delete is made again on the approving copy (L1 out, L2 kept), and the
+ * copy is weighed field by field as if the approval had been made on the cloud's row. The other arrival order (the
+ * iPad's approval up first, then the phone's delete) is part F's, and ends the same.
+ */
+describe('Open item 2.62: a lookahead approved offline is kept when another device\'s delete of the earlier lookahead goes up first', () => {
+  const L1 = scheduleDoc('LOOKAHEAD N262 L1', '2026-09-09T12:00:00.000Z', 'lookahead');
+  const L2 = scheduleDoc('LOOKAHEAD N262 L2', '2026-09-10T10:00:00.000Z', 'lookahead');
+  const lookaheadsOf = (item: ScheduleItem) => ((item as unknown as { lookaheadOverlay?: { lookaheads?: Array<{ batchId?: string }> } }).lookaheadOverlay?.lookaheads ?? []).map(entry => entry.batchId);
+  const seen = (items: readonly ScheduleItem[]) => framingOf(items).map(item => ({
+    dates: `${item.startDate} - ${item.finishDate}`, percent: item.percentComplete, owner: item.owner || '', lookaheads: lookaheadsOf(item),
+  }));
+  const ending = async (phone: Device, ipad: Device) => ({
+    places: [seen(deviceShown(phone)), seen(deviceShown(ipad)), seen(webShown())],
+    cards: [(await conflictsOf(phone)).length, (await conflictsOf(ipad)).length], waiting: [(await queueOf(phone)).length, (await queueOf(ipad)).length],
+  });
+  const heardEverywhere = async (device: Device, other: Device) => { shareDocuments(device); await backgroundUpload(device); await settle(device, other); };
+  const FIRST = { 'no percent': 'Framing,Alpha,Lot,10/18/2026,10/28/2026,', '70%': 'Framing,Alpha,Lot,10/18/2026,10/28/2026,70' } as const;
+  const SECOND = {
+    'moves it again, no percent': ['Framing,Alpha,Lot,10/21/2026,10/31/2026,', '10/21/2026 - 10/31/2026'],
+    'moves it again and states 80%': ['Framing,Alpha,Lot,10/21/2026,10/31/2026,80', '10/21/2026 - 10/31/2026'],
+    'leaves it on the first lookahead\'s dates and states 80%': ['Framing,Alpha,Lot,10/18/2026,10/28/2026,80', '10/18/2026 - 10/28/2026'],
+  } as const;
+  type How = 'one device in order' | 'the phone\'s delete up first' | 'the iPad\'s approval up first';
+  type Extra = 'nothing else' | 'by Full Sync and the app\'s start' | 'the answer to the iPad\'s write lost' | 'his owner typed on the iPad, waiting with the approval' |
+    'his dates moved by hand on the phone just before its delete' | 'his 30% entered on the phone just before its delete';
+
+  /**
+   * L1 is approved on the phone and heard everywhere. One device in order: the phone approves L2, then deletes L1. Two
+   * devices: the iPad, with no signal, approves L2; then the phone, not having heard, deletes L1; `how` says whose save
+   * reaches the cloud first (the phone online at its delete, or with no signal until after the iPad's).
+   */
+  async function steps(how: How, first: keyof typeof FIRST, second: keyof typeof SECOND, extra: Extra = 'nothing else') {
+    const { phone, ipad } = await start();
+    at(L1.importedAt!); await approve(phone, L1, [FIRST[first]], true); await heardEverywhere(phone, ipad);
+    const approver = how === 'one device in order' ? phone : ipad;
+    if (approver === ipad) setOnline(ipad, false);
+    if (extra === 'his owner typed on the iPad, waiting with the approval') { at('2026-09-10T09:00:00.000Z'); await edit(approver, theRow(approver).id, { owner: 'Mike' }); }
+    at(L2.importedAt!); await approve(approver, L2, [SECOND[second][0]], true);
+    if (approver === phone) { shareDocuments(phone); await backgroundUpload(phone); }
+    if (how === 'the iPad\'s approval up first') setOnline(phone, false);
+    at('2026-09-10T11:00:00.000Z');
+    if (extra === 'his dates moved by hand on the phone just before its delete') await edit(phone, theRow(phone).id, { startDate: '10/24/2026', finishDate: '11/03/2026' });
+    if (extra === 'his 30% entered on the phone just before its delete') await edit(phone, theRow(phone).id, { percentComplete: 30 });
+    at('2026-09-10T12:00:00.000Z'); await deleteWithItems(phone, L1);
+    if (isOnline(phone)) { shareDocuments(phone); await backgroundUpload(phone); }
+    if (how !== 'one device in order') {
+      at('2026-09-10T13:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+      // (The iPad's write reaches the cloud, but its answer is lost: the iPad sends the task again later.)
+      if (extra === 'the answer to the iPad\'s write lost') mockCloud.lostAnswers = 1;
+      await backgroundUpload(ipad);
+      if (extra === 'the answer to the iPad\'s write lost') { expect(await queueOf(ipad)).toHaveLength(1); at('2026-09-10T13:30:00.000Z'); }
+    }
+    at('2026-09-10T15:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    // (Full Sync and the app's start merge the two copies of the task by their stamps: a tie keeps the device's own.)
+    if (extra === 'by Full Sync and the app\'s start') { await fullSync(phone); await fullSync(ipad); await startup(ipad); await startup(phone); await fullSync(ipad); }
+    await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+    return ending(phone, ipad);
+  }
+
+  describe.each(Object.keys(FIRST) as Array<keyof typeof FIRST>)('L1 states %s', first => {
+    it.each(Object.keys(SECOND) as Array<keyof typeof SECOND>)('the iPad\'s L2 %s: in both arrival orders, as one device doing the steps in order (L2\'s dates and percent, L2 alone in the note)', async second => {
+      const inOrder = await steps('one device in order', first, second);
+      // One device in order: L2's dates, its percent where it states one (where only L1 states one, the delete gives
+      // back the master's 0%), L2 alone in the note, no card.
+      const percent = second.includes('80%') ? 80 : 0;
+      expect(inOrder).toEqual({ places: Array(3).fill([{ dates: SECOND[second][1], percent, owner: '', lookaheads: [L2.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
+      // (It was, the phone's delete up first: the master's 10/15 - 10/25 at 0% in all three places, no lookahead note,
+      // no card. The iPad's approval up first: as now, part F of step 2b.)
+      for (const how of ['the phone\'s delete up first', 'the iPad\'s approval up first'] as const) {
+        expect([how, await steps(how, first, second)]).toEqual([how, inOrder]);
+      }
+    });
+  });
+
+  it.each([
+    'by Full Sync and the app\'s start',
+    'the answer to the iPad\'s write lost',
+    'his owner typed on the iPad, waiting with the approval',
+  ] as Extra[])('%s: in both arrival orders, as one device in order', async extra => {
+    const inOrder = await steps('one device in order', '70%', 'moves it again and states 80%', extra);
+    expect(inOrder).toEqual({
+      places: Array(3).fill([{ dates: '10/21/2026 - 10/31/2026', percent: 80, owner: extra.startsWith('his owner') ? 'Mike' : '', lookaheads: [L2.importBatchId] }]),
+      cards: [0, 0], waiting: [0, 0],
+    });
+    for (const how of ['the phone\'s delete up first', 'the iPad\'s approval up first'] as const) {
+      expect([how, await steps(how, '70%', 'moves it again and states 80%', extra)]).toEqual([how, inOrder]);
+    }
+  });
+
+  // The guard (part F's, turned round): where the delete's copy carries something else of his that changed the dates or
+  // the percent (his edit made just before it), the cloud's row is not the delete's own, and the approval goes up as
+  // before: what he set on the phone is never put under the approving copy's dates or percent.
+  it.each([
+    ['his dates moved by hand on the phone just before its delete', { dates: '10/24/2026 - 11/03/2026' }],
+    ['his 30% entered on the phone just before its delete', { percent: 30 }],
+  ] as Array<[Extra, Record<string, unknown>]>)('%s: what he set stands in all three places, as one device in order', async (extra, his) => {
+    const inOrder = await steps('one device in order', 'no percent', 'moves it again and states 80%', extra);
+    expect(inOrder).toMatchObject({ places: Array(3).fill([his]), cards: [0, 0], waiting: [0, 0] });
+    for (const how of ['the phone\'s delete up first', 'the iPad\'s approval up first'] as const) {
+      expect([how, await steps(how, 'no percent', 'moves it again and states 80%', extra)]).toMatchObject([how, { places: Array(3).fill([his]), waiting: [0, 0] }]);
+    }
+  });
+
+  // Where the rule acts, on the records alone: only where the merge kept the cloud's note (where it kept the approving
+  // copy's, 2.13's rule acts, as before), and only over the cloud's row of the delete's own (part F's guard turned round).
+  it('on the records: the delete made again on the approving copy only where the merge kept the delete\'s copy, and only over the delete\'s own row', () => {
+    const { scheduleLookaheadDeleteMadeOnApproval } = require('../../services/ScheduleLookahead') as typeof import('../../services/ScheduleLookahead');
+    const task = (dates: string, names: Array<[string, string]>, updatedAt: string) => ({
+      id: 'MASTER R-1', title: 'Framing', projectName: 'Alpha', startDate: dates.split(' - ')[0], finishDate: dates.split(' - ')[1], percentComplete: 0, updatedAt,
+      ...(names.length > 0 ? { lookaheadOverlay: { masterStartDate: '10/15/2026', masterFinishDate: '10/25/2026', masterPercentComplete: 0,
+        lookaheads: names.map(([batchId, on]) => ({ batchId, startDate: on.split(' - ')[0], finishDate: on.split(' - ')[1] })) } } : {}),
+    }) as unknown as ScheduleItem;
+    const [ONE, TWO, THREE] = ['10/18/2026 - 10/28/2026', '10/21/2026 - 10/31/2026', '10/24/2026 - 11/03/2026'];
+    const before = task(ONE, [['b1', ONE]], '2026-09-09T12:00:00.000Z');
+    const approval = task(TWO, [['b1', ONE], ['b2', TWO]], '2026-09-10T10:00:00.000Z');
+    const deleted = task('10/15/2026 - 10/25/2026', [], '2026-09-10T12:00:00.000Z');
+    const made = scheduleLookaheadDeleteMadeOnApproval(approval, before as unknown as Record<string, unknown>, deleted, deleted);
+    expect(made && { dates: `${made.itemData.startDate} - ${made.itemData.finishDate}`, lookaheads: lookaheadsOf(made.itemData), copyNote: made.copy.lookaheadOverlay })
+      .toEqual({ dates: TWO, lookaheads: ['b2'], copyNote: undefined });
+    // The merge kept the approving copy's note: 2.13's rule acts there, not this one.
+    expect(scheduleLookaheadDeleteMadeOnApproval(approval, before as unknown as Record<string, unknown>, deleted, approval)).toBeNull();
+    // The cloud's row is not the delete's own: it names a lookahead of its own besides, or his dates moved by hand.
+    const elsewhere = task(THREE, [['b3', THREE]], '2026-09-10T12:00:00.000Z');
+    expect(scheduleLookaheadDeleteMadeOnApproval(approval, before as unknown as Record<string, unknown>, elsewhere, elsewhere)).toBeNull();
+    const byHand = task(THREE, [], '2026-09-10T12:00:00.000Z');
+    expect(scheduleLookaheadDeleteMadeOnApproval(approval, before as unknown as Record<string, unknown>, byHand, byHand)).toBeNull();
+  });
+});

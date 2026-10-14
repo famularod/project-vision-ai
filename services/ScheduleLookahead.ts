@@ -983,6 +983,59 @@ export function scheduleLookaheadDeleteMadeOnCloudRow(
 }
 
 /**
+ * Open item 2.62 (Medium, older: Build 232 and every build before; 14 Oct 2026; the rest of 2.13): part F turned
+ * round. Lookahead L1 moved Framing and every device heard it; the iPad, with no signal, approved L2 moving it again;
+ * then the phone, not having heard, deleted L1 with its items, and its save went up first. The iPad's whole copy then
+ * met the cloud's row of that delete: both had changed the note, the sync merge kept the later copy whole (the
+ * delete's, naming no lookahead of its own, so 2.13's rule had nothing to act on), and Framing went to the master's
+ * dates everywhere, L2 lost, with no card. One device doing the steps in order ends on L2's dates, L2 in the note.
+ *
+ * Where the copy is a lookahead's approval (it names every lookahead the copy it started from named, and one or more of
+ * its own) and the cloud's row is a delete of lookaheads this copy still names (it no longer names them, and names none
+ * the copy it started from did not), and the merge kept the cloud's note: the delete is made again on this copy by the
+ * delete's own rule, as one device in order makes it (L1 out, L2 kept). Returned as part F returns: this copy with what
+ * the delete puts back taken from that, and the copy it started from with those same fields as the cloud's row has
+ * them, so the weighing field by field sends exactly what the approval changes over the delete, and weighs the rest of
+ * the copy as before. Guard: only where the cloud's row's dates, percent, status and lookaheads are the delete's own
+ * (made on the copy it started from it gives exactly them), or are already this copy's with the delete made on it (its
+ * own write, sent again after its answer was lost). Null, and the copy goes as before, for any other copy.
+ */
+export function scheduleLookaheadDeleteMadeOnApproval(
+  local: ScheduleItem,
+  copy: Readonly<Record<string, unknown>> | null | undefined,
+  remote: ScheduleItem,
+  merged: ScheduleItem,
+): Readonly<{ itemData: ScheduleItem; copy: Record<string, unknown> }> | null {
+  const before = copy && typeof copy === 'object' ? copy as unknown as ScheduleItem : null;
+  if (!before || !overlayOf(before) || !overlayOf(local)) return null;
+  const batchesOf = (item: ScheduleItem) => (overlayOf(item)?.lookaheads ?? []).map(entry => key(entry.batchId)).filter(Boolean);
+  const [named, here, there] = [batchesOf(before), batchesOf(local), batchesOf(remote)];
+  const deleted = named.filter(batchId => !there.includes(batchId));
+  if (deleted.length === 0 || !named.every(batchId => here.includes(batchId)) || !here.some(batchId => !named.includes(batchId))) return null;
+  if (JSON.stringify(batchesOf(merged)) !== JSON.stringify(there)) return null;
+  const at = typeof local.updatedAt === 'string' && local.updatedAt ? local.updatedAt : new Date().toISOString();
+  const deletedOn = (row: ScheduleItem) => deleted.reduce((item, batchId) =>
+    tasksAfterLookaheadDeleted([item], { id: '', importBatchId: batchId } as unknown as ReferenceDocument, at)[0]?.item ?? item, row);
+  const same = (one: ScheduleItem, other: ScheduleItem) => sameScheduleCalendarDay(one.startDate, other.startDate) &&
+    sameScheduleCalendarDay(one.finishDate, other.finishDate) && percentOf(one) === percentOf(other) && key(one.status) === key(other.status) &&
+    JSON.stringify(batchesOf(one)) === JSON.stringify(batchesOf(other));
+  const onCopy = deletedOn(local);
+  const heardAlready = same(onCopy, remote);
+  if (!heardAlready && !same(deletedOn(before), remote)) return null;
+  const itemData = { ...local } as unknown as Record<string, unknown>;
+  const startedFrom: Record<string, unknown> = { ...copy };
+  const take = (target: Record<string, unknown>, source: Record<string, unknown>, field: string) => {
+    if (source[field] === undefined) delete target[field];
+    else target[field] = source[field];
+  };
+  putBackFields().forEach(field => {
+    take(itemData, onCopy as unknown as Record<string, unknown>, field);
+    take(startedFrom, remote as unknown as Record<string, unknown>, field);
+  });
+  return { itemData: itemData as unknown as ScheduleItem, copy: startedFrom };
+}
+
+/**
  * Open item 2.13 (Medium, older: Build 232 and every build before; 14 Oct 2026). Two lookaheads that both move a task
  * were approved apart: one on the phone, one on the iPad with no signal. Where the two approvals met (the second
  * device's whole copy going up over the cloud's row), both copies had changed the task's lookahead note, so the sync

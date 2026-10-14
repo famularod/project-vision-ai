@@ -110,7 +110,7 @@ import { compactECOSDocumentIndexForCloud } from './ECOSDocumentIndexPersistence
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { withScheduleImportMembershipOf } from './ScheduleImportProvenance';
 import { scheduleItemAnsweringToTaskId, scheduleTaskEarlierIds, withScheduleTaskEarlierIdsOf } from './ScheduleTaskRevisions';
-import { scheduleLookaheadApprovalsHeardIn, scheduleLookaheadApprovalsOfBoth, scheduleLookaheadDeleteMadeOnCloudRow } from './ScheduleLookahead';
+import { scheduleLookaheadApprovalsHeardIn, scheduleLookaheadApprovalsOfBoth, scheduleLookaheadDeleteMadeOnApproval, scheduleLookaheadDeleteMadeOnCloudRow } from './ScheduleLookahead';
 import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
 import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
@@ -8138,11 +8138,16 @@ async function uploadQueueItem(
           allowCloudOnly: true,
         }).find(candidate => candidate.id === payload.id) || wholeCopy
       : null;
+    // Open item 2.62 (part F turned round): a lookahead's approval whose save meets the cloud's row of a delete it had
+    // not heard of, the merge keeping the delete's copy, has that delete made again on it, as one device in order
+    // (scheduleLookaheadDeleteMadeOnApproval); then weighed field by field as part F's copy is.
+    const deleteOnApproval = merged && remote && !deleteOnCloudRow && isEditBase(payload.base) ? scheduleLookaheadDeleteMadeOnApproval(payload.itemData, payload.base.copy, remote, merged) : null;
+    const madeAgain = deleteOnCloudRow ?? deleteOnApproval;
     // Review P7-2: with the rest of the cloud's row changed too, the copy is weighed field by field from the copy it
     // started from: what only it changed goes on the cloud's row, what only the cloud's row changed stays, and a
     // field changed on both is asked about. (Without that copy, or where the sync merge alone has a rule: the merge.)
     const byField = merged && remote
-      ? scheduleItemWholeCopyFieldByField(wholeCopy, deleteOnCloudRow && isEditBase(payload.base) ? { ...payload.base, copy: deleteOnCloudRow.copy } : payload.base, remote, merged)
+      ? scheduleItemWholeCopyFieldByField(madeAgain?.itemData ?? wholeCopy, madeAgain && isEditBase(payload.base) ? { ...payload.base, copy: madeAgain.copy } : payload.base, remote, merged)
       : null;
     // Way 2, step 2b, part E (open item 2.52): where the copy goes the merge's way, the merge kept the activity notes of
     // the copy it ranked first only: a note added on one device was lost when the other's whole copy went up (two
