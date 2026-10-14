@@ -3979,6 +3979,10 @@ function DocumentManagementWorkspace({
   // The owner's answer to question 46 (13 Oct 2026), "Deleting a schedule file always removes its tasks with it": a
   // file with tasks of its own, or with changes to put back, is deleted only with them here too (the button that kept
   // them is gone; on an older master it listed every task a newer master had moved twice).
+  // Review pass 4, C-4 (the coordinator's decision, 13 Oct 2026): a document that is not a schedule by the app's own test
+  // (a message screenshot, "Schedule message - ...") keeps the dialog Build 231 gave it, "Delete Document Only" too: one
+  // picture of a set picked in one go could not be removed without every activity of the set.
+  const keepsDocumentOnlyDelete = Boolean(deleteCandidate && !scheduleDocumentIsScheduleLike(deleteCandidate));
   const lookaheadChangesNote = deleteCandidate && !protectedCurrentDocument &&
     scheduleDocumentAddsToMaster(deleteCandidate) && deleteCandidate.linkedScheduleItems.length === 0
     ? daveWebScheduleDocumentDeleteNote({ snapshot: { scheduleItems: tasks, knownScheduleItems: knownTasks, referenceDocuments: scheduleDocuments }, document: deleteCandidate })
@@ -4896,7 +4900,8 @@ function DocumentManagementWorkspace({
                   ? ` This import has ${deleteCandidate.linkedScheduleItems.length} linked task${deleteCandidate.linkedScheduleItems.length === 1 ? '' : 's'}.`
                   : ' No linked imported tasks were found.'}
                 {deleteCandidate.linkedScheduleItems.length > 0 && !linkedTasksAreRevisionSafe
-                  ? ' Those legacy tasks do not have safe cloud revisions, so this page cannot delete them with the file. Delete this schedule on the iPhone or iPad: Delete PDF + Items there removes them with it.'
+                  ? keepsDocumentOnlyDelete ? ' Those legacy tasks do not have safe cloud revisions, so this page will keep them.'
+                    : ' Those legacy tasks do not have safe cloud revisions, so this page cannot delete them with the file. Delete this schedule on the iPhone or iPad: Delete PDF + Items there removes them with it.'
                   : daveWebScheduleDocumentDeleteNote({ snapshot: { scheduleItems: tasks, knownScheduleItems: knownTasks, referenceDocuments: scheduleDocuments }, document: deleteCandidate }) /* as the phone's question says it (review N2 W1) */}
               </Text>
             )}
@@ -4914,7 +4919,7 @@ function DocumentManagementWorkspace({
                   : scheduleDocumentAddsToMaster(deleteCandidate) ? 'Keep Lookahead' : 'Keep Current Document'}
               </Text>
             </Pressable>
-            {!protectedCurrentDocument && deleteCandidate.linkedScheduleItems.length === 0 && !lookaheadChangesNote ? (
+            {!protectedCurrentDocument && (keepsDocumentOnlyDelete || (deleteCandidate.linkedScheduleItems.length === 0 && !lookaheadChangesNote)) ? (
               <Pressable
                 style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
                 onPress={() => { void confirmDelete(false); }}
@@ -4922,7 +4927,7 @@ function DocumentManagementWorkspace({
                 accessibilityRole="button"
               >
                 <Text style={styles.primaryButtonText}>
-                  {deleting ? 'Deleting…' : 'Delete Document'}
+                  {deleting ? 'Deleting…' : deleteCandidate.linkedScheduleItems.length > 0 || lookaheadChangesNote ? 'Delete Document Only' : 'Delete Document'}
                 </Text>
               </Pressable>
             ) : null}

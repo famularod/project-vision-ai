@@ -12,6 +12,12 @@
  * moved twice on the phone, the iPad and the web (the schedules reviewer's P1-10). The tests below that pinned the two
  * choices for those files are reversed, each marked "owner answer 46"; the delete underneath still refuses for the
  * lookahead in effect and the master in effect, as before.
+ *
+ * Review pass 4, C-4 (Low, caused by that change; the coordinator's decision, 13 Oct 2026): a MESSAGE SCREENSHOT in the
+ * same list ("Schedule message - ...", not a schedule by the app's own test, scheduleDocumentIsScheduleLike) keeps the
+ * question Build 231 asked of it, with "Delete PDF Only": one picture of a set picked in one go could not be removed
+ * without every activity of the set. Every schedule file stays as owner answer 46 made it. The tests that pinned a
+ * screenshot's two buttons, and that the button was nowhere in App.tsx, are changed, each marked "review pass 4, C-4".
  */
 import fs from 'fs';
 import path from 'path';
@@ -138,12 +144,13 @@ describe('Owner answer Q36: on the phone, the PDF of a lookahead in effect is no
     expect(app.referenceDocumentsCurrentRef.current.map(document => document.id)).toEqual(['MASTER', 'LOOKAHEAD 1']);
   });
 
-  // Counts changed by owner answer 46: the "Delete PDF Only" button was the third caller, and the second place a
-  // stored file was removed after that delete.
+  // Counts changed by owner answer 46 (the "Delete PDF Only" button was the third caller, and the second place a
+  // stored file was removed after that delete), and changed back by review pass 4, C-4 (the coordinator's decision):
+  // the button is a caller again, for a message screenshot alone.
   it('every caller of that delete stops when it refuses: the stored file is left, and a project document is not taken off the device', () => {
-    expect(APP.split('.then(removed => { if (removed !== false) deleteStoredReferenceDocument(document.uri).catch(() => undefined); })')).toHaveLength(2);
+    expect(APP.split('.then(removed => { if (removed !== false) deleteStoredReferenceDocument(document.uri).catch(() => undefined); })')).toHaveLength(3);
     expect(APP).toContain('void removeReferenceDocumentEverywhere(sharedRecord.id)\n        .then(removed => (removed === false ? undefined : removeFromDevice()))');
-    expect(APP.split('removeReferenceDocumentEverywhere(')).toHaveLength(4); // the function and its two callers
+    expect(APP.split('removeReferenceDocumentEverywhere(')).toHaveLength(5); // the function and its three callers
   });
 });
 
@@ -349,24 +356,65 @@ describe('Owner answer 46: on the phone and the iPad no schedule file offers "De
     });
   });
 
-  // "Everywhere" as built: the message screenshots listed with the schedules ("Schedule message - ...", supporting
-  // sources, never a schedule in effect) ask through this same question, and had both choices. FLAGGED for the
-  // coordinator in the item's notes: say if a screenshot should keep a delete of the picture alone.
-  it('a supporting message screenshot in the same list: the same two buttons, and the items only it contains go with it', () => {
-    const SHOT = { ...schedule('Schedule message - text', '2026-09-12T12:00:00.000Z'), category: 'Other', isCurrent: false,
-      notes: '[Schedule communication screenshot] Imported for local text recognition and schedule review.' } as ReferenceDocument;
-    expect(scheduleDocumentIsScheduleLike(SHOT)).toBe(false);
+  // Reversed by review pass 4, C-4 (the coordinator's decision, 13 Oct 2026). It was: 'a supporting message screenshot
+  // in the same list: the same two buttons, and the items only it contains go with it' (item 7 had taken "Delete PDF
+  // Only" from the screenshots too, flagged for a decision). A message screenshot ("Schedule message - ...") is not a
+  // schedule by the app's own test, and it keeps the question Build 231 asked of it, to the word.
+  const SHOT_NOTES = '[Schedule communication screenshot] Imported for local text recognition and schedule review.';
+  it('a supporting message screenshot in the same list keeps Build 231\'s question: Cancel, "Delete PDF Only", "Delete PDF + Items" (review pass 4, C-4)', () => {
+    const SHOT = { ...schedule('Schedule message - text', '2026-09-12T12:00:00.000Z'), category: 'Other', isCurrent: false, notes: SHOT_NOTES } as ReferenceDocument;
+    const BARE_SHOT = { ...SHOT, id: 'Schedule message - blank', name: 'Schedule message - blank', importBatchId: 'batch-blank' } as ReferenceDocument;
+    expect([SHOT, BARE_SHOT].map(scheduleDocumentIsScheduleLike)).toEqual([false, false]);
     const items = [...TASKS, task('Call inspector', SHOT)];
-    const app = phone([...ALL, SHOT], { scheduleItems: items, scheduleItemsCurrentRef: { current: items } });
-    app.deleteScheduleDocument(SHOT.id);
-    expect(app.alerts[0].buttons.map(button => button.text)).toEqual(['Cancel', 'Delete PDF + Items']);
-    expect(app.alerts[0].message).toBe('Schedule message - text will be removed, with the 1 schedule item only this PDF contains.');
+    const app = phone([...ALL, SHOT, BARE_SHOT], { scheduleItems: items, scheduleItemsCurrentRef: { current: items } });
+    [SHOT, BARE_SHOT].forEach(document => app.deleteScheduleDocument(document.id));
+    expect(app.alerts.map(alert => [alert.title, alert.buttons.map(button => button.text)])).toEqual([
+      ['Delete uploaded schedule?', ['Cancel', 'Delete PDF Only', 'Delete PDF + Items']],
+      ['Delete uploaded schedule?', ['Cancel', 'Delete PDF Only', 'Delete PDF + Items']],
+    ]);
+    expect(app.alerts[0].message).toBe('Schedule message - text will be removed. You can also remove the 1 schedule item only this PDF contains so outdated dates do not confuse Upcoming.');
+    expect(app.alerts[1].message).toBe('Schedule message - blank will be removed. It has no schedule items of its own.');
   });
 
-  it('the reviewer\'s road cannot be started: the app has no "Delete PDF Only" button, and no screen of it asks for the file-only delete', () => {
-    expect(APP).not.toContain('Delete PDF Only');
-    expect(APP).not.toContain('fileOnly: true');
+  // Review pass 4, C-4 (Low, caused by item 7): three screenshots picked in one go, four activities approved from them.
+  // Delete on ONE of the three offered "Delete PDF + Items" alone, which deletes all four activities on every device and
+  // leaves the other two pictures listed with nothing. The picture alone can be removed again, as on Build 231.
+  it('one screenshot of a set of three: "Delete PDF Only" removes that picture alone, and all four activities stay (review pass 4, C-4, the reviewer\'s 2a)', async () => {
+    const shot = (index: number) => ({ ...schedule(`Schedule message - IMG_000${index}`, '2026-09-20T12:00:00.000Z'), id: `shot-${index}`, originalFileName: `IMG_000${index}.png`, uri: `file:///IMG_000${index}.png`,
+      category: 'Other', isCurrent: false, notes: SHOT_NOTES, importBatchId: 'batch-shots' }) as ReferenceDocument;
+    const shots = [shot(1), shot(2), shot(3)];
+    const activity = (id: string, name: string, from: ReferenceDocument) => ({ ...task(name, from), id, importedFrom: from.originalFileName }) as ScheduleItem;
+    const activities = [activity('msg-1', 'Call inspector', shots[0]), activity('msg-2', 'Order trusses', shots[0]), activity('msg-3', 'Meet plumber', shots[1]), activity('msg-4', 'Pour footing', shots[2])];
+    const items = [...TASKS, ...activities];
+    const scheduleItemsCurrentRef = { current: items };
+    const app = phone([...ALL, ...shots], { scheduleItems: items, scheduleItemsCurrentRef });
+    app.deleteScheduleDocument('shot-2');
+    expect(app.alerts[0].message).toBe('Schedule message - IMG_0002 will be removed. You can also remove the 4 schedule items only this PDF contains so outdated dates do not confuse Upcoming.');
+    expect(app.alerts[0].buttons.map(button => button.text)).toEqual(['Cancel', 'Delete PDF Only', 'Delete PDF + Items']);
+
+    app.alerts[0].buttons.find(button => button.text === 'Delete PDF Only')!.onPress!();
+    await settled(); await settled();
+    // One deletion record, the picture's; no activity is deleted or saved again; the other two pictures stay listed.
+    expect(app.did).toEqual({ tombstones: ['shot-2'], saved: [], filesDeleted: ['file:///IMG_0002.png'] });
+    expect(app.referenceDocumentsCurrentRef.current.map(document => document.id)).toEqual(['MASTER', 'LOOKAHEAD 1', 'LOOKAHEAD 2', 'shot-1', 'shot-3']);
+    expect(scheduleItemsCurrentRef.current.filter(item => item.id.startsWith('msg-')).map(item => item.taskName)).toEqual(['Call inspector', 'Order trusses', 'Meet plumber', 'Pour footing']);
+    expect(app.alerts).toHaveLength(1);
+  });
+
+  // Changed by review pass 4, C-4 (the coordinator's decision). It was: 'the reviewer's road cannot be started: the app
+  // has no "Delete PDF Only" button, and no screen of it asks for the file-only delete'. The button is back for a
+  // document that is not a schedule, and for nothing else: the road (an older master's file deleted alone) stays shut.
+  it('the reviewer\'s road still cannot be started: "Delete PDF Only" is offered only to a document that is not a schedule by the app\'s own test', () => {
+    expect(APP).toContain('const pdfOnly = !scheduleDocumentIsScheduleLike(document);');
+    expect(APP).toContain("...(pdfOnly ? [{\n          text: 'Delete PDF Only',");
+    expect(APP.split('Delete PDF Only')).toHaveLength(2);
+    expect(APP.split('fileOnly: true')).toHaveLength(2);
     expect(APP.split("text: 'Delete PDF + Items'")).toHaveLength(2);
+    // A schedule file that also carries the screenshot's note is a schedule: no delete of the file alone.
+    const MARKED = { ...schedule('MASTER H', '2026-09-02T12:00:00.000Z'), isCurrent: false, notes: SHOT_NOTES } as ReferenceDocument;
+    const app = phone([...ALL, MARKED]);
+    app.deleteScheduleDocument(MARKED.id);
+    expect(app.alerts[0].buttons.map(button => button.text)).toEqual(['Cancel', 'Delete PDF + Items']);
   });
 
   it('the question says what goes and what stays: the items only this file contains go with it, the items another schedule also contains stay', () => {

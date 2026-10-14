@@ -168,8 +168,9 @@ describe('deleting a phone document withdraws its bridge only while it has not u
     const everywhere = app.slice(app.indexOf('  async function removeReferenceDocumentEverywhere(documentId: string) {'));
     expect(everywhere.slice(0, 600)).toMatch(/await recordDAVESyncTombstone\('reference_document', documentId\);\n\s+rememberOperationalTombstones\(\[tombstone\]\);/);
     // Pin changed deliberately (the owner's answer to question 46, 13 Oct 2026): it counted two such callers, and the
-    // second was the schedule's "Delete PDF Only", which no schedule file offers now.
-    expect(app.match(/void removeReferenceDocumentEverywhere\(documentId\)/g)).toHaveLength(1);
+    // second was the schedule's "Delete PDF Only", which no schedule file offers now. Changed again by review pass 4,
+    // C-4 (the coordinator's decision): a message screenshot has that button again, so there are two.
+    expect(app.match(/void removeReferenceDocumentEverywhere\(documentId\)/g)).toHaveLength(2);
   });
 });
 

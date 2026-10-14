@@ -344,3 +344,79 @@ describe('owner answer 46: the web deletes a schedule file with tasks of its own
     expect(screen.queryByText(/^Delete Document \+/)).toBeNull();
   });
 });
+
+/*
+ * Review pass 4, C-4 (Low, caused by item 7; the coordinator's decision, 13 Oct 2026). A MESSAGE SCREENSHOT ("Schedule
+ * message - ...") is not a schedule by the app's own test (scheduleDocumentIsScheduleLike), and it keeps the dialog
+ * Build 231 gave it: "Delete Document Only" beside "Delete Document + N Tasks". Three screenshots picked in one go on
+ * the phone are one import with four activities; with "+ 4 Tasks" alone, removing ONE picture (a duplicate, a wrong
+ * one) deleted all four activities on every device. Every schedule file stays as owner answer 46 made it (above).
+ */
+describe('review pass 4, C-4: a message screenshot keeps "Delete Document Only" on the web', () => {
+  const NOTES = '[Schedule communication screenshot] Imported for local text recognition and schedule review.';
+  const shot = (index: number) => ({ ...schedule(`Schedule message - IMG_000${index}`, '2026-09-25T12:00:00.000Z'), id: `shot-${index}`, originalFileName: `IMG_000${index}.png`,
+    category: 'Other', isCurrent: false, importBatchId: 'batch-shots', notes: NOTES }) as unknown as ReferenceDocument;
+  const activity = (index: number, name: string, from: string) => ({ ...onM.items[0], id: `msg-${index}`, taskName: name, startDate: '10/05/2026', finishDate: '10/05/2026',
+    importBatchId: 'batch-shots', sourceDocumentId: undefined, importedFrom: from, alsoImportedInBatchIds: undefined }) as unknown as ScheduleItem;
+  const ACTIVITIES = ['Call inspector', 'Order trusses', 'Meet plumber', 'Pour footing'];
+  /** Master M in use, and a set of three screenshots with four activities (the reviewer's W10). */
+  const shots: State = { items: [...onM.items, activity(1, ACTIVITIES[0], 'IMG_0001.png'), activity(2, ACTIVITIES[1], 'IMG_0001.png'), activity(3, ACTIVITIES[2], 'IMG_0002.png'), activity(4, ACTIVITIES[3], 'IMG_0003.png')],
+    documents: [...onM.documents, shot(1), shot(2), shot(3)] };
+  const activitiesShown = (state: State) => shown(state).map(item => item.taskName).filter(name => ACTIVITIES.includes(name));
+
+  it('guard (the state): a screenshot is not a schedule, the set has four activities, and all four show', () => {
+    expect(scheduleDocumentIsScheduleLike(shot(2))).toBe(false);
+    expect(linkedOf(shots, shot(2))).toHaveLength(4);
+    expect(activitiesShown(shots)).toEqual(ACTIVITIES);
+  });
+
+  it('one screenshot of a set of three: Cancel, "Delete Document Only" and "Delete Document + 4 Tasks"; the first removes the picture alone and all four activities stay', async () => {
+    workspace(shots, []);
+    const screen = render(<DesktopReadOnlyShell page="documents" />);
+    fireEvent.press(screen.getByLabelText('Delete Schedule message - IMG_0002'));
+
+    expect(screen.getByText('Delete “Schedule message - IMG_0002”?')).toBeTruthy();
+    expect(screen.getByText(/This import has 4 linked tasks\.$/)).toBeTruthy();
+    expect(screen.getByText('Cancel')).toBeTruthy();
+    expect(screen.getByText('Delete Document + 4 Tasks')).toBeTruthy();
+
+    await act(async () => { fireEvent.press(screen.getByText('Delete Document Only')); });
+    expect(mockAuth.deleteDocument).toHaveBeenCalledTimes(1);
+    expect(mockAuth.deleteDocument.mock.calls[0][0].id).toBe('shot-2');
+    expect(mockAuth.deleteDocument.mock.calls[0][1]).toBe(false);
+    // What that asks of the cloud, by the web's own plan: the picture goes, no task is removed or rewritten.
+    const after = webDelete(shots, shot(2), true);
+    expect(after.documents.map(document => document.id)).toEqual(['MASTER M', 'shot-1', 'shot-3']);
+    expect(activitiesShown(after)).toEqual(ACTIVITIES);
+    expect(after.items).toEqual(shots.items);
+  });
+
+  it('"Delete Document + 4 Tasks" still deletes the picture with the set\'s activities, as before', async () => {
+    workspace(shots, []);
+    const screen = render(<DesktopReadOnlyShell page="documents" />);
+    fireEvent.press(screen.getByLabelText('Delete Schedule message - IMG_0002'));
+    await act(async () => { fireEvent.press(screen.getByText('Delete Document + 4 Tasks')); });
+    expect(mockAuth.deleteDocument.mock.calls.map(call => [call[0].id, call[1]])).toEqual([['shot-2', true]]);
+  });
+
+  it('a screenshot whose activities have no safe cloud revision: "Delete Document Only" alone, and Build 231\'s sentence', () => {
+    workspace(shots, []);
+    mockAuth.snapshot = { ...mockAuth.snapshot!, referenceDocuments: mockAuth.snapshot!.referenceDocuments.map(document => (document.id === 'shot-2'
+      ? { ...document, linkedScheduleItems: document.linkedScheduleItems.map(item => ({ ...item, cloudUpdatedAt: null })) } : document)) } as DAVEWebReadOnlySnapshot;
+    const screen = render(<DesktopReadOnlyShell page="documents" />);
+    fireEvent.press(screen.getByLabelText('Delete Schedule message - IMG_0002'));
+    expect(screen.getByText(/Those legacy tasks do not have safe cloud revisions, so this page will keep them\.$/)).toBeTruthy();
+    expect(screen.getByText('Delete Document Only')).toBeTruthy();
+    expect(screen.queryByText(/^Delete Document \+/)).toBeNull();
+  });
+
+  it('a screenshot with no activity of its own: one button, "Delete Document", as before', () => {
+    const bare: State = { items: onM.items, documents: [...onM.documents, { ...shot(1), importBatchId: 'batch-bare' } as ReferenceDocument] };
+    workspace(bare, []);
+    const screen = render(<DesktopReadOnlyShell page="documents" />);
+    fireEvent.press(screen.getByLabelText('Delete Schedule message - IMG_0001'));
+    expect(screen.getByText('Delete Document')).toBeTruthy();
+    expect(screen.queryByText('Delete Document Only')).toBeNull();
+    expect(screen.queryByText(/^Delete Document \+/)).toBeNull();
+  });
+});

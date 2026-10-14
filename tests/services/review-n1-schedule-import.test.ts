@@ -601,10 +601,14 @@ describe('Review N1 (caused by ada8ef6, Q25; web M1 on the phone): "Delete PDF O
   });
 
   // Reversed by owner answer 46. It was: 'the phone's Delete PDF Only saves them before it removes the file' (it read
-  // the button's handler from App.tsx). The phone has no such button, and nothing in App.tsx asks for the file-only delete.
-  it('the phone has no Delete PDF Only any more (owner answer 46): its delete question offers Delete PDF + Items alone', () => {
-    expect(APP_SOURCE).not.toContain("text: 'Delete PDF Only'");
-    expect(APP_SOURCE).not.toContain('fileOnly: true');
+  // the button's handler from App.tsx). The phone has no such button for a schedule, and nothing else in App.tsx asks for
+  // the file-only delete. Changed by review pass 4, C-4 (the coordinator's decision, 13 Oct 2026): it pinned that the
+  // button and the file-only delete were nowhere in App.tsx; they are back once, for a message screenshot alone.
+  it('the phone has no Delete PDF Only for a schedule any more (owner answer 46): only a document that is not a schedule is offered it', () => {
+    expect(APP_SOURCE).toContain('const pdfOnly = !scheduleDocumentIsScheduleLike(document);');
+    expect(APP_SOURCE).toContain("...(pdfOnly ? [{\n          text: 'Delete PDF Only',");
+    expect(APP_SOURCE.split("text: 'Delete PDF Only'")).toHaveLength(2);
+    expect(APP_SOURCE.split('fileOnly: true')).toHaveLength(2);
     expect(APP_SOURCE).toContain("text: 'Delete PDF + Items'");
   });
 });

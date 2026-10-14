@@ -112,12 +112,13 @@ function phoneSave(state: State, id: string, edit: Partial<ScheduleItem>, at: st
 /**
  * "Delete PDF Only" as the phone did it up to Build 231: the helper's tasks, each saved as the helper gives it (review
  * P6-5; it was its two dates only), then the file went. The owner's answer to question 46 (13 Oct 2026) removed that
- * button from every schedule file, so no screen does this now. It stays here as the maker of the state an earlier build
- * left (tasks whose file is gone), which must keep working. (It read the button's handler from App.tsx and pinned
- * its save; the handler is gone, and that is pinned instead.)
+ * button from every schedule file, so no screen does this to a schedule now. It stays here as the maker of the state an
+ * earlier build left (tasks whose file is gone), which must keep working. (It read the button's handler from App.tsx and
+ * pinned its save. Review pass 4, C-4, the coordinator's decision: the button is back for a message screenshot alone;
+ * what is pinned is that it is offered to no schedule file.)
  */
 function deletePdfOnly(state: State, document: ReferenceDocument, at: string): State {
-  expect(APP_SOURCE).not.toContain("text: 'Delete PDF Only'");
+  expect(APP_SOURCE).toContain('const pdfOnly = !scheduleDocumentIsScheduleLike(document);'); // review pass 4, C-4: it pinned that App.tsx had no "Delete PDF Only" at all; the button is back for a message screenshot alone, so what is pinned is that no schedule file is offered it
   let next = state;
   scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true, withWhatHeSet: true, updatedAt: at })
     .forEach(task => { next = phoneSave(next, task.id, task, at, true); });

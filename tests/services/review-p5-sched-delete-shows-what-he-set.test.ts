@@ -83,8 +83,9 @@ function phoneDeleteWithItems(state: State, id: string, at: string): State {
 const APP_SOURCE = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
 /**
  * What the phone's "Delete PDF Only" saved before it removed the file, as App.tsx had it up to Build 231 (review P6-5).
- * The owner's answer to question 46 (13 Oct 2026) removed that button from every schedule file, so App.tsx no longer
- * has the handler this was read from; its save is kept here, word for word but for the type casts.
+ * The owner's answer to question 46 (13 Oct 2026) removed that button from every schedule file; its save is kept
+ * here, word for word but for the type casts. (Review pass 4, C-4, the coordinator's decision: App.tsx has the button
+ * again for a message screenshot alone, with this same save; no schedule file is offered it, which is what is pinned.)
  */
 const SAVES_OF_THE_REMOVED_DELETE_PDF_ONLY = 'scheduleItemsAfterScheduleDeleted({ items: scheduleItemsCurrentRef.current, removed: [], document, documents: referenceDocumentsCurrentRef.current, fileOnly: true, withWhatHeSet: true }).forEach(item => updateScheduleItem(item.id, item, undefined, true));';
 /**
@@ -93,7 +94,7 @@ const SAVES_OF_THE_REMOVED_DELETE_PDF_ONLY = 'scheduleItemsAfterScheduleDeleted(
  */
 function phoneDeletePdfOnly(state: State, id: string, at: string): State {
   const document = state.documents.find(saved => saved.id === id)!;
-  expect(APP_SOURCE).not.toContain("text: 'Delete PDF Only'");
+  expect(APP_SOURCE).toContain('const pdfOnly = !scheduleDocumentIsScheduleLike(document);'); // review pass 4, C-4: it pinned that App.tsx had no "Delete PDF Only" at all; the button is back for a message screenshot alone, so what is pinned is that no schedule file is offered it
   const saves = SAVES_OF_THE_REMOVED_DELETE_PDF_ONLY;
   const from = APP_SOURCE.indexOf('\n  function updateScheduleItem(');
   const to = APP_SOURCE.indexOf('\n  async function saveScheduleItemChanges(', from);

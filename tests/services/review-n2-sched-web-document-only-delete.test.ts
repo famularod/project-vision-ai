@@ -114,12 +114,13 @@ function phoneSave(state: State, id: string, edit: Partial<ScheduleItem>, at: st
 /**
  * "Delete PDF Only" as the phone did it up to Build 231: the helper's tasks, each saved as the helper gives it (review
  * P6-5; it was its two dates only), then the file went. The owner's answer to question 46 (13 Oct 2026) removed that
- * button from every schedule file, so no screen does this now. It stays here as the maker of the state an earlier build
- * left (tasks whose file is gone), which must keep working. (It read the button's handler from App.tsx and pinned
- * its save; the handler is gone, and that is pinned instead.)
+ * button from every schedule file, so no screen does this to a schedule now. It stays here as the maker of the state an
+ * earlier build left (tasks whose file is gone), which must keep working. (It read the button's handler from App.tsx and
+ * pinned its save. Review pass 4, C-4, the coordinator's decision: the button is back for a message screenshot alone;
+ * what is pinned is that it is offered to no schedule file.)
  */
 function deletePdfOnly(state: State, document: ReferenceDocument, at: string): State {
-  expect(APP_SOURCE).not.toContain("text: 'Delete PDF Only'");
+  expect(APP_SOURCE).toContain('const pdfOnly = !scheduleDocumentIsScheduleLike(document);'); // review pass 4, C-4: it pinned that App.tsx had no "Delete PDF Only" at all; the button is back for a message screenshot alone, so what is pinned is that no schedule file is offered it
   let next = state;
   scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true, withWhatHeSet: true, updatedAt: at })
     .forEach(task => { next = phoneSave(next, task.id, task, at, true); });
@@ -240,20 +241,28 @@ describe('Owner answer 46: the web offers no document-only delete for a schedule
   const shell = fs.readFileSync(path.resolve(__dirname, '../../components/web-shell/desktop-read-only-shell.tsx'), 'utf8');
   const dialog = shell.slice(shell.indexOf('{deleteCandidate ? (', shell.indexOf('async function confirmDelete(')), shell.indexOf('<View style={styles.taskControlsRow}>', shell.indexOf('async function confirmDelete(')));
 
-  it('the page has no "Delete Document Only" button or sentence', () => {
-    expect(shell).not.toContain('Delete Document Only');
+  // The three pins below were changed by review pass 4, C-4 (the coordinator's decision, 13 Oct 2026). They pinned that
+  // the page had no "Delete Document Only" at all. A message screenshot (not a schedule by the app's own test) has it
+  // again, as on Build 231; what is pinned now is that nothing but such a document is offered it. The screen test is
+  // tests/components/web-ws1-lookahead-delete-puts-back.test.tsx.
+  const NOT_A_SCHEDULE = 'const keepsDocumentOnlyDelete = Boolean(deleteCandidate && !scheduleDocumentIsScheduleLike(deleteCandidate));';
+  it('the page has "Delete Document Only" for a document that is not a schedule, and for no schedule file', () => {
+    expect(shell).toContain(NOT_A_SCHEDULE);
+    expect(shell.split("'Delete Document Only'")).toHaveLength(2);
+    expect(shell).not.toContain('Delete Document Only leaves those tasks');
     expect(dialog).toContain('Delete Document +');
     expect(dialog).toContain('DAVE_WEB_DELETE_WITH_CHANGES_LABEL');
   });
 
-  it('the one delete that keeps tasks is the plain "Delete Document", offered only for a file with no task of its own and nothing to put back', () => {
+  it('the one delete that keeps tasks is offered to a schedule file only when it has no task of its own and nothing to put back', () => {
     expect(dialog.split('confirmDelete(false)')).toHaveLength(2);
-    expect(dialog).toContain('{!protectedCurrentDocument && deleteCandidate.linkedScheduleItems.length === 0 && !lookaheadChangesNote ? (');
+    expect(dialog).toContain('{!protectedCurrentDocument && (keepsDocumentOnlyDelete || (deleteCandidate.linkedScheduleItems.length === 0 && !lookaheadChangesNote)) ? (');
     expect(dialog.split('confirmDelete(true)')).toHaveLength(3);
   });
 
-  it('tasks with no safe cloud revision are not kept behind either: no delete is offered here, and he is sent to the iPhone or iPad', () => {
-    expect(dialog).not.toContain('so this page will keep them');
+  it('a schedule\'s tasks with no safe cloud revision are not kept behind either: no delete is offered here, and he is sent to the iPhone or iPad', () => {
+    expect(dialog.split('so this page will keep them')).toHaveLength(2);
+    expect(dialog).toContain("? keepsDocumentOnlyDelete ? ' Those legacy tasks do not have safe cloud revisions, so this page will keep them.'");
     expect(dialog).toContain('so this page cannot delete them with the file. Delete this schedule on the iPhone or iPad: Delete PDF + Items there removes them with it.');
   });
 });
