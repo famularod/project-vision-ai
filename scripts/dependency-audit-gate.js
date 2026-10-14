@@ -17,6 +17,8 @@ const path = require('node:path');
  * the newest node-forge and the newest @expo/cli and code-signing package still
  * required it, so no update could remove it. The exception ends by itself as
  * soon as npm reports a non-breaking fix for node-forge, or on reviewBy.
+ * Owner answer Q53 (13 Oct 2026): extended from 2026-11-01 to 2027-02-01. On
+ * 13 Oct 1.4.0 was still the newest node-forge on the registry.
  */
 const ACCEPTED_ADVISORIES = [
   {
@@ -28,8 +30,8 @@ const ACCEPTED_ADVISORIES = [
       'expo',
       '@react-native-community/datetimepicker',
     ],
-    approval: 'owner answer Q33, 1 Oct 2026',
-    reviewBy: '2026-11-01',
+    approval: 'owner answer Q33, 1 Oct 2026; extended by owner answer Q53, 13 Oct 2026',
+    reviewBy: '2027-02-01',
   },  /**
    * Owner answer Q35 (2 Oct 2026): braces <= 3.0.3 (GHSA-vfj7-8cjw-p6xm, a
    * stack overflow from deeply nested brace patterns) is a file-pattern
@@ -40,7 +42,8 @@ const ACCEPTED_ADVISORIES = [
    * patterns from this repository's own configuration. When it was published,
    * 3.0.3 was the newest braces, so no update could remove it. The exception
    * ends by itself once npm reports a non-breaking fix for braces, or on
-   * reviewBy.
+   * reviewBy. Owner answer Q53 (13 Oct 2026): extended from 2026-11-01 to
+   * 2027-02-01. On 13 Oct 3.0.3 was still the newest braces on the registry.
    */
   {
     advisory: 'GHSA-vfj7-8cjw-p6xm',
@@ -58,8 +61,8 @@ const ACCEPTED_ADVISORIES = [
       'metro-transform-worker', 'micromatch', 'react-native', 'react-native-reanimated',
       'react-native-worklets',
     ],
-    approval: 'owner answer Q35, 2 Oct 2026',
-    reviewBy: '2026-11-01',
+    approval: 'owner answer Q35, 2 Oct 2026; extended by owner answer Q53, 13 Oct 2026',
+    reviewBy: '2027-02-01',
   },
 ];
 
