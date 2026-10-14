@@ -430,7 +430,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
-import * as Contacts from 'expo-contacts';
+import { PhoneContactPicker } from './components/phone-contact-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -458,7 +458,7 @@ import {
   REPORT_TEXT_IMAGE_LIMIT,
   resolveReportImageAttachments,
 } from './services/ReportImageAttachments';
-import { reportEmailRecipients, reportTextRecipients } from './services/ReportRecipients';
+import { reportEmailRecipients, reportTextRecipients, type PhoneContactRead } from './services/ReportRecipients';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import {
   assertBackupSerializedFits,
@@ -2074,40 +2074,14 @@ function expandRecipients(
   return contactBook.contacts.filter(contact => ids.has(contact.id));
 }
 
-function phoneContactDisplayName(contact: Contacts.ExistingContact) {
-  return (
-    contact.name ||
-    [contact.firstName, contact.lastName].filter(Boolean).join(' ') ||
-    contact.company ||
-    'Unnamed Contact'
-  );
-}
-
-function contactEmails(contact: Contacts.ExistingContact) {
-  return uniqueStrings(
-    contact.emails
-      ?.map(item => item.email?.trim() || '')
-      .filter(Boolean) || [],
-  );
-}
-
-function contactPhones(contact: Contacts.ExistingContact) {
-  return uniqueStrings(
-    contact.phoneNumbers
-      ?.map(item => item.number?.trim() || '')
-      .filter(Boolean) || [],
-  );
-}
-
-function phoneContactToProjectContact(
-  contact: Contacts.ExistingContact,
-): ProjectContact {
-  const emails = contactEmails(contact);
-  const phones = contactPhones(contact);
+/** A contact he chose on the phone (open item 4.92: read by services/ReportRecipients), as a recipient. */
+function phoneContactToProjectContact(contact: PhoneContactRead): ProjectContact {
+  const emails = [...contact.emails];
+  const phones = [...contact.phones];
 
   return normalizeContact({
     id: `phone-${contact.id}`,
-    name: phoneContactDisplayName(contact).trim(),
+    name: contact.name.trim() || 'Unnamed Contact',
     email: emails[0] || '',
     phone: phones[0] || '',
     emails,
@@ -18367,56 +18341,6 @@ function ContactsScreen({
     next: Partial<ProjectContact>,
   ) => void;
 }) {
-  const [status, setStatus] = useState<
-    'idle' | 'loading' | 'denied' | 'error' | 'unavailable'
-  >('idle');
-
-  async function choosePhoneContact() {
-    setStatus('loading');
-
-    try {
-      if (Platform.OS !== 'ios') {
-        const permission = await Contacts.requestPermissionsAsync();
-
-        if (!permission.granted) {
-          setStatus('denied');
-          return;
-        }
-      }
-
-      const contact = await Contacts.presentContactPickerAsync();
-
-      if (!contact) {
-        setStatus('idle');
-        return;
-      }
-
-      const projectContact = phoneContactToProjectContact(contact);
-
-      if (!projectContact.email && !projectContact.phone) {
-        Alert.alert(
-          'No email or phone',
-          'Choose a contact with an email address or phone number.',
-        );
-        setStatus('idle');
-        return;
-      }
-
-      onTogglePhoneContact(projectContact);
-      setStatus('idle');
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes('presentContactPickerAsync')
-      ) {
-        setStatus('unavailable');
-        return;
-      }
-
-      setStatus('error');
-    }
-  }
-
   const selectedContactIds = useMemo(
     () => new Set(selectedRecipients.contactIds),
     [selectedRecipients.contactIds],
@@ -18459,46 +18383,7 @@ function ContactsScreen({
         Phone Contacts
       </Text>
 
-      <SecondaryButton
-        label="Choose Contact"
-        icon="person-add-outline"
-        onPress={() => {
-          void choosePhoneContact();
-        }}
-      />
-
-      {status === 'idle' ? (
-        <Text style={styles.mutedNote}>
-          Use the phone contact picker to search and choose one recipient at a time.
-        </Text>
-      ) : null}
-
-      {status === 'loading' ? (
-        <Text style={styles.mutedNote}>
-          Opening contacts...
-        </Text>
-      ) : null}
-
-      {status === 'denied' ? (
-        <EmptyState
-          title="Contacts access needed"
-          text="Allow contacts access in Settings, then come back here to choose recipients."
-        />
-      ) : null}
-
-      {status === 'error' ? (
-        <EmptyState
-          title="Contacts unavailable"
-          text="Phone contacts could not be opened right now."
-        />
-      ) : null}
-
-      {status === 'unavailable' ? (
-        <EmptyState
-          title="Rebuild needed"
-          text="The installed app does not include the native contacts picker yet. Rebuild the app, then try again."
-        />
-      ) : null}
+      <PhoneContactPicker onPicked={contact => onTogglePhoneContact(phoneContactToProjectContact(contact))} />
 
       <SecondaryButton
         label={doneLabel}
