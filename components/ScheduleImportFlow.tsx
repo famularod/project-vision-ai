@@ -12,6 +12,8 @@ import {
 } from 'react-native';
 import {
   scheduleImportBatchCounts,
+  scheduleImportCardFileProjectNote,
+  scheduleImportCardProject,
   scheduleImportItemHasCoreFacts,
   scheduleImportItemIsReady,
   scheduleImportReviewFields,
@@ -465,6 +467,8 @@ export function ScheduleImportFlow({
               const needsCompletionVerification = scheduleItemNeedsCompletionVerification(item);
               const verificationLabel = scheduleCompletionVerificationLabel(item);
               const expanded = expandedItemIds.includes(item.id);
+              // Open item 2.45: a task waiting for a project names the job the file gives it, on its own card.
+              const fileProjectNote = scheduleImportCardFileProjectNote(pendingBatch, item);
 
               return (
                 <View key={item.id} style={[styles.itemCard, needsReview && styles.itemCardReview]}>
@@ -499,6 +503,7 @@ export function ScheduleImportFlow({
                       ) : null}
                       <ReviewInput label="Task" value={item.taskName} onChangeText={taskName => updatePendingItem(item.id, { taskName })} highlight={missing.includes('task')} disabled={saveBusy} />
                       <ReviewInput label="Project" value={item.projectName} onChangeText={projectName => updatePendingItem(item.id, { projectName })} highlight={missing.includes('project')} disabled={saveBusy} />
+                      {fileProjectNote ? <Text style={styles.compactDetail}>{fileProjectNote}</Text> : null}
                       <ReviewInput label="Area" value={item.locationName} onChangeText={locationName => updatePendingItem(item.id, { locationName })} highlight={missing.includes('area')} disabled={saveBusy} />
                       <ReviewInput label="Finish / due date" value={item.finishDate} onChangeText={finishDate => updatePendingItem(item.id, { finishDate })} placeholder="MM/DD/YYYY" highlight={missing.includes('date') || dateChecks.some(check => check.which !== 'start')} disabled={saveBusy} />
                       <ReviewInput label="Owner" value={item.owner} onChangeText={owner => updatePendingItem(item.id, { owner })} highlight={missing.includes('owner')} disabled={saveBusy} />
@@ -510,7 +515,7 @@ export function ScheduleImportFlow({
                         <Text style={styles.verificationTitle}>{verificationLabel}</Text>
                       ) : null}
                       <Text style={styles.compactDetail}>
-                        {item.projectName || 'Project unassigned'} • {item.locationName || 'Area unassigned'}
+                        {scheduleImportCardProject(pendingBatch, item) || 'Project unassigned'} • {item.locationName || 'Area unassigned'}
                       </Text>
                       <Text style={styles.compactDetail}>
                         {item.finishDate || 'Date required'} • {item.owner || 'Owner unassigned'}
@@ -696,10 +701,20 @@ function scheduleImportWarnings(batch: PIEScheduleImportBatch | null) {
   ).warnings;
   if (!Array.isArray(warnings)) return [];
 
+  // Open item 2.45: the project check's reason for a task left waiting ('Project "6101" is outside ...', 'No active
+  // project was identified. ...') is listed once, however many rows share it. One line per FILE row (a row dropped as
+  // a copy too) read as one per card; each card now names its own job. Every other line as before.
+  const listedOnce = new Set<string>();
   return warnings
     .filter((warning): warning is string => typeof warning === 'string')
     .map(warning => warning.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter(warning => {
+      if (!/^(Project "|No active project was identified\.)/.test(warning)) return true;
+      if (listedOnce.has(warning)) return false;
+      listedOnce.add(warning);
+      return true;
+    });
 }
 
 const styles = StyleSheet.create({

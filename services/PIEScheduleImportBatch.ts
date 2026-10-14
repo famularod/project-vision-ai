@@ -32,7 +32,31 @@ export type PIEScheduleImportBatch = {
    * id, or null for a new task (scheduleImportPairingQuestions).
    */
   pairingChoices?: Readonly<Record<string, string | null>> | null;
+  /**
+   * Open item 2.45: for each task the project check left waiting ("Needs Project"), by its id, the project name the
+   * FILE gives it ('' for a blank Project cell), so its card can say so. Absent when no task waits (or the road does
+   * not know the file's names: screenshots), and the cards read as before.
+   */
+  fileProjectNames?: Readonly<Record<string, string>>;
 };
+
+/**
+ * Open item 2.45: what a review card lists as a task's project. A task waiting for one says the name the file gives
+ * it, in the computer's words (DAVEWebOperations' daveWebScheduleUploadRowProject), or that the file gives none; any
+ * other task, or one the batch has no file name for, is listed as before.
+ */
+export function scheduleImportCardProject(batch: Pick<PIEScheduleImportBatch, 'fileProjectNames'> | null, item: Pick<ScheduleItem, 'id' | 'projectName'>): string {
+  const named = batch?.fileProjectNames?.[item.id];
+  if (named === undefined || (item.projectName || '').trim() !== SCHEDULE_IMPORT_NEEDS_PROJECT) return item.projectName;
+  return named ? `${SCHEDULE_IMPORT_NEEDS_PROJECT} (the file names "${named}")` : `${SCHEDULE_IMPORT_NEEDS_PROJECT} (the file names no project)`;
+}
+
+/** Open item 2.45: under an opened card's Project box, while he types, the name the file gave the task; else null. */
+export function scheduleImportCardFileProjectNote(batch: Pick<PIEScheduleImportBatch, 'fileProjectNames'> | null, item: Pick<ScheduleItem, 'id'>): string | null {
+  const named = batch?.fileProjectNames?.[item.id];
+  if (named === undefined) return null;
+  return named ? `The file names "${named}".` : 'The file names no project.';
+}
 
 /**
  * Binds every reviewed task and source document to the batch's immutable ID.

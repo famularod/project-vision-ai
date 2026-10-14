@@ -12087,9 +12087,21 @@ Note: This update was opened through Outlook because PLZ email security may reje
       });
       // Open item 2.36 (H2b's rule): a row left waiting keeps the file's project name for its id and the duplicate check.
       const waitingFileProjectNames = validation.itemResults?.map(result => result.assignment === 'needs_project' ? result.originalProjectName || '' : null);
+      const items = bindStableScheduleImportItemIds(validation.items, sourceIdentity, waitingFileProjectNames);
+      // Open item 2.45: each waiting row's card names the job the file gives it (the first row of an id names it).
+      const fileProjectNames: Record<string, string> = {};
+      items.forEach((item, index) => {
+        const name = waitingFileProjectNames?.[index];
+        if (typeof name === 'string' && !(item.id in fileProjectNames)) fileProjectNames[item.id] = name.trim();
+      });
       return {
-        items: bindStableScheduleImportItemIds(validation.items, sourceIdentity, waitingFileProjectNames),
+        items,
         waitingFileProjectNames,
+        // Only the rows the review lists; none waiting: no field, the batch as before.
+        namesOf: (listed: readonly ScheduleItem[]) => {
+          const names = Object.fromEntries(listed.filter(item => item.id in fileProjectNames).map(item => [item.id, fileProjectNames[item.id]]));
+          return Object.keys(names).length ? { fileProjectNames: names } : {};
+        },
         warnings: [
           ...extractionWarnings.map(value => value.trim()).filter(Boolean),
           ...validation.warnings.map(value => value.message),
@@ -12126,6 +12138,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         items,
         documents: [scheduleDocument],
         warnings: validated.warnings,
+        ...validated.namesOf(items),
       };
     }
 
@@ -12192,6 +12205,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         items,
         documents: [scheduleDocument],
         warnings: validated.warnings,
+        ...validated.namesOf(items),
       };
     }
     const reviewItem = {
