@@ -128,7 +128,8 @@ describe('the desktop\'s upload review after the first independent review (High 
     expect(review(stray).heldLine).toBe('3 tasks need a project before you can upload: the file names their project "6101", which is not one of your open projects. Choose a project for each of them above.');
     // The ticked project is still his, spelled any way the app takes for it.
     expect(prepare([QUAY], csv(fieldPlan('6101 quay works')), { projects: [...ALL, '6101'], openProjectNames: [] }).scheduleItems[0].projectName).toBe(QUAY);
-    // No list given at all (an older caller): the page's list, as before.
-    expect(prepare([QUAY], csv(fieldPlan('6101')), { projects: [...ALL, '6101'] }).scheduleItems[0].projectName).toBe('6101');
+    // No list given at all (an older caller): the page's list, as before. CHANGED by open item 4.88 (13 Oct 2026; the owner's go-ahead for every High and Medium item):
+    // "6101" is then one of his projects but not ticked, so the tasks wait and the page names it (before: filed under it).
+    expect(prepare([QUAY], csv(fieldPlan('6101')), { projects: [...ALL, '6101'] }).waitingProjectNames?.['6101']).toEqual({ fitsEqually: ['6101'], mayBeAnother: false });
   });
 });

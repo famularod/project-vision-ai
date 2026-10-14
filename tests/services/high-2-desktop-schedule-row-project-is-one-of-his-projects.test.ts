@@ -163,13 +163,16 @@ describe('the desktop saves a schedule row under one of his projects (High item 
     for (const spelling of ['6101', 'Quay Works', '6101 Quay', 'Quay Works 6101', '6101 Quay Works (Phase 2)', 'PLZ 6101 Quay Works', 'Shed', '6101 Quay Works.']) {
       expect([spelling, resolvedAs(spelling)]).toEqual([spelling, 'Needs Project']);
     }
-    // A project of his that is not ticked is his project, as before (open item 4.88, not this item): Mill Yard.
-    expect(resolvedAs('6102 mill yard')).toBe(MILL);
+    // CHANGED by open item 4.88 (13 Oct 2026; the owner's go-ahead for every High and Medium item): a project of his that is not ticked
+    // (Mill Yard) now waits for a project, as on the phone, and the page names it; before, the row was filed under it.
+    expect(resolvedAs('6102 mill yard')).toBe('Needs Project');
     // Two projects of his that differ only in punctuation: the exact name decides; another spelling of both waits.
     // CHANGED by 2c (review pass 2, L2S-2; the coordinator's decision): another spelling of both is the TICKED one when
     // one of them is ticked (the ticked projects are read first by the scope key); with neither ticked it waits.
     const twins = (spelling: string, ticked = [SHED]) => prepare(ticked, csv([['Survey', spelling, '10/26/2026', '10/30/2026']]), { projects: [SHED, 'Garden-shed', QUAY] }).scheduleItems[0].projectName;
-    expect([twins('Garden shed'), twins('Garden-shed'), twins('GARDEN_SHED'), twins('GARDEN_SHED', [QUAY])]).toEqual([SHED, 'Garden-shed', SHED, 'Needs Project']);
+    // CHANGED by open item 4.88 (13 Oct 2026): "Garden-shed" exactly is his OTHER project, not ticked, so it now waits
+    // (named on the page as that project) instead of being filed under it.
+    expect([twins('Garden shed'), twins('Garden-shed'), twins('GARDEN_SHED'), twins('GARDEN_SHED', [QUAY])]).toEqual([SHED, 'Needs Project', SHED, 'Needs Project']);
   });
 
   it('his projects are his OPEN projects in the cloud when the desktop knows them: a name the list only has from saved tasks, or a closed project, waits', () => {
@@ -177,11 +180,15 @@ describe('the desktop saves a schedule row under one of his projects (High item 
     const listed = [...ALL, '6101'];
     expect(prepare([QUAY], csv(fieldPlan('6101')), { projects: listed, openProjectNames: [...ALL] }).scheduleItems[0].projectName).toBe('Needs Project');
     expect(prepare([QUAY], csv(fieldPlan('Old Pier')), { projects: [...ALL], openProjectNames: [...ALL] }).scheduleItems[0].projectName).toBe('Needs Project');
-    // Ticked, a name is his choice; an unticked open project is his project.
+    // Ticked, a name is his choice.
     expect(prepare([QUAY, '6101'], csv(fieldPlan('6101')), { projects: listed, openProjectNames: [...ALL] }).scheduleItems[0].projectName).toBe('6101');
-    expect(prepare([QUAY], csv(fieldPlan(MILL)), { projects: [QUAY], openProjectNames: [...ALL] }).scheduleItems[0].projectName).toBe(MILL);
-    // Without the cloud's list (an older caller), the desktop's own list is read.
-    expect(prepare([QUAY], csv(fieldPlan('6101')), { projects: listed }).scheduleItems[0].projectName).toBe('6101');
+    // CHANGED by open item 4.88 (13 Oct 2026; the owner's go-ahead for every High and Medium item): an unticked open project is still his
+    // project, but its rows now wait (as on the phone) and the page names it; before, they were filed under it.
+    const mill = prepare([QUAY], csv(fieldPlan(MILL)), { projects: [QUAY], openProjectNames: [...ALL] });
+    expect([mill.scheduleItems[0].projectName, mill.waitingProjectNames?.[MILL]]).toEqual(['Needs Project', { fitsEqually: [MILL], mayBeAnother: false }]);
+    // Without the cloud's list (an older caller), the desktop's own list is read: "6101" is one of his projects there
+    // (CHANGED by 4.88 likewise: not ticked, it waits, named as his project).
+    expect(prepare([QUAY], csv(fieldPlan('6101')), { projects: listed }).waitingProjectNames?.['6101']).toEqual({ fitsEqually: ['6101'], mayBeAnother: false });
   });
 
   it('the one button only for ONE project ticked and ONE name; its words for one task; never with two names or two ticks', () => {
@@ -229,14 +236,21 @@ describe('the desktop saves a schedule row under one of his projects (High item 
   it('a file whose rows all name his projects exactly, or name none, is prepared as before (no file names kept, rows as read)', () => {
     for (const [ticked, contents] of [
       [ALL, csv(fieldPlan(SHED))],
-      [[QUAY, SHED], csv([['Footings', SHED, '10/26/2026', '10/30/2026'], ['Refit', MILL, '11/02/2026', '11/06/2026']])],
-      [ALL, csv([['Footings', '', '10/26/2026', '10/30/2026']])],
-      [ALL, ['Task,Area,Start,Finish', 'Footings,Lot,10/26/2026,10/30/2026'].join('\n')],
     ] as const) {
       const prepared = prepare(ticked, contents);
       expect(prepared.fileProjectNames).toBeUndefined();
       expect(review(prepared)).toEqual({ heldLine: null, useForAll: null, savedUnderLine: null });
       expect(prepared.scheduleItems.every(item => item.projectName !== 'Needs Project')).toBe(true);
+    }
+    // CHANGED by open item 4.88 (13 Oct 2026; the owner's go-ahead for every High and Medium item): a row naming a project of his that is not
+    // ticked, a blank Project cell, and a file with no Project column now wait for a project, as on the phone; before,
+    // they took that project or the first ticked one. Their words: tests/services/m1-4-88-*.
+    for (const [ticked, contents] of [
+      [[QUAY, SHED], csv([['Footings', SHED, '10/26/2026', '10/30/2026'], ['Refit', MILL, '11/02/2026', '11/06/2026']])],
+      [ALL, csv([['Footings', '', '10/26/2026', '10/30/2026']])],
+      [ALL, ['Task,Area,Start,Finish', 'Footings,Lot,10/26/2026,10/30/2026'].join('\n')],
+    ] as const) {
+      expect(prepare(ticked, contents).scheduleItems.some(item => item.projectName === 'Needs Project')).toBe(true);
     }
   });
 

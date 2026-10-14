@@ -299,7 +299,9 @@ describe('Kept from Build 232 item 10b part 1, as Build 231 does it: a real thre
 describe('Kept from Build 232 item 10b part 1, as Build 231 does it: the file\'s project names (the ticks) are read', () => {
   it('a file of the new project with ANOTHER project alone ticked is read for the ticked project (item 10 let the rows decide; Build 231 read the tick)', () => {
     const wrongTick = desktop(ACCOUNT, [LONG], threeWeeks(NEW));
-    expect(wrongTick.rowProjects).toEqual([NEW]);
+    // CHANGED by open item 4.88 (13 Oct 2026; the owner's go-ahead for every High and Medium item): the rows name a project of his that is not
+    // ticked, so they wait for a project (before: filed under it). The suggestion still reads the file's names.
+    expect(wrongTick.rowProjects).toEqual(['Needs Project']);
     expect(wrongTick.label).toEqual([LONG]);
     expect(wrongTick.suggestion).toEqual({ role: 'lookahead', reason: AGAINST_LONG });
   });

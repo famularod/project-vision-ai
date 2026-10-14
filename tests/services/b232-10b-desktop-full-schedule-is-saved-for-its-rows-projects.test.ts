@@ -165,17 +165,23 @@ describe('in every other case the upload is, letter for letter, what it was: the
 
   it('one project ticked and the rows name it', () => unchanged(chosen([NEW], allFor(NEW))));
 
-  it('a file with no Project column: its rows name no project (each takes the first ticked one), so every ticked project stays', () => {
+  // CHANGED by open item 4.88 (13 Oct 2026; the owner's go-ahead for every High and Medium item): a row with no project no longer takes the
+  // first ticked project: it waits for one (so nothing is said and the upload is held); once he has given every task a
+  // project in the review, the full schedule is saved for the projects he gave them, with the line in its own words.
+  // Before: every ticked project stayed, also after he gave every task one project (10b's decision 7). RETITLED (it
+  // was "...: its rows name no project (each takes the first ticked one), so every ticked project stays").
+  it('a file with no Project column: its rows wait for a project, and once given one the file is saved for the project given', () => {
     const noColumn = chosen(ACTIVE, allFor(null));
-    expect([...new Set(noColumn.scheduleItems.map(item => item.projectName))]).toEqual([LONG]);
+    expect([...new Set(noColumn.scheduleItems.map(item => item.projectName))]).toEqual(['Needs Project']);
     unchanged(noColumn);
-    // Also once he has given every task to one project in the review: the file itself named none.
-    unchanged(withTaskMovedTo(withTaskMovedTo(withTaskMovedTo(noColumn, 0, NEW), 1, NEW), 2, NEW));
+    const given = withTaskMovedTo(withTaskMovedTo(withTaskMovedTo(noColumn, 0, NEW), 1, NEW), 2, NEW);
+    expect(withDAVEWebScheduleUploadRole(given, 'master').document.projectNames).toEqual([NEW]);
+    expect(daveWebFullScheduleProjectsLine(given, 'master')).toBe(`Every task as listed above is for ${NEW}, so as a full schedule it will be saved for ${NEW} only, not for every project ticked above.`);
   });
 
   it('one row with no project among rows that name one', () => {
     const oneBlank = chosen(ACTIVE, csv([['Pour footings', NEW], ['Set steel', ''], ['Deck and detail', NEW]]));
-    expect(oneBlank.scheduleItems.map(item => item.projectName)).toEqual([NEW, LONG, NEW]);
+    expect(oneBlank.scheduleItems.map(item => item.projectName)).toEqual([NEW, 'Needs Project', NEW]);
     unchanged(oneBlank);
   });
 
@@ -185,6 +191,8 @@ describe('in every other case the upload is, letter for letter, what it was: the
     unchanged(chosen(ACTIVE, allFor('Pilot')));
   });
 
+  // Open item 4.88 (13 Oct 2026): the rows of such a file now wait for a project (they name a project of his that is not
+  // ticked), so the upload is held and the page says which project to tick; the object is still given back as it is.
   it('another project alone ticked (review pass 4, O-3\'s "one wrong tick"): still saved for the ticked project; REPORTED, not changed', () => {
     const wrongTick = chosen([LONG], allFor(NEW));
     unchanged(wrongTick);

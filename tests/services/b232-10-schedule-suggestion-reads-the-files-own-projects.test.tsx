@@ -416,8 +416,9 @@ describe('Kept from Build 232 items 10 and 10b, as Build 231 does it: the deskto
   // RETITLED by item 10c: the title ended "(item 10b)".
   it('with the new project alone ticked it was right already; with another project ticked instead, the file is read for the ticked project (as on Build 231)', () => {
     expect(suggestion([TEST])).toEqual({ role: 'master', reason: 'there is no master schedule for Test project yet' });
-    // The desktop keeps a row's project as the file writes it, ticked or not.
-    expect([...new Set(upload([P2321]).scheduleItems.map(item => item.projectName))]).toEqual([TEST]);
+    // The desktop keeps a row's project as the file writes it, ticked or not. CHANGED by open item 4.88 (13 Oct 2026; the owner's go-ahead for every High and Medium item):
+    // not ticked, the rows now wait for a project (as on the phone); the suggestion below still reads the file's names.
+    expect([...new Set(upload([P2321]).scheduleItems.map(item => item.projectName))]).toEqual(['Needs Project']);
     expect(suggestion([P2321])).toEqual({ role: 'lookahead', reason: `its dates cover 3 weeks and the master for ${P2321} covers about 16 months` });
   });
 
