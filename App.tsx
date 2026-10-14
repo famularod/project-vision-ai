@@ -324,7 +324,7 @@ import {
 } from './services/AuthoritativeDocumentSystem';
 import { buildECOSDocumentReadiness } from './services/ECOSDocumentReadiness';
 import { compactECOSReferenceDocumentsForOperationalRead } from './services/ECOSDocumentIndexPersistence';
-import { activateSharedReferenceDocument, importedScheduleOfPhoneSchedule, loadECOSScheduleRetirementScope, phoneScheduleActivationTarget, phoneScheduleCardIsCurrent, phoneScheduleCardNotSharedYet, scheduleImportOfFile, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning } from './services/SharedDocumentActivation';
+import { activateSharedReferenceDocument, importedScheduleOfPhoneSchedule, loadECOSScheduleRetirementScope, phoneScheduleActivationTarget, phoneScheduleCardIsCurrent, phoneScheduleCardNotSharedYet, scheduleImportOfFile, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning, withDetailsTypedDuringActivation } from './services/SharedDocumentActivation';
 import {
   createECOSMobileDrawingControls,
   mobileDrawingMetadataForUpload,
@@ -11017,6 +11017,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return false;
     }
     currentReferenceActivationIdsRef.current.add(documentId);
+    const documentsAtPress = referenceDocumentsCurrentRef.current; // what is typed on a card while the press is on its way goes on after it (review pass 6, H6S-2)
     projectDocumentSharedRecordSync.flush(documentId); // text typed just before goes first (whole-app audit A8 pass 2 #7)
     try {
       const outcome = await activateSharedReferenceDocument({
@@ -11068,17 +11069,19 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'reference_document',
       );
       const kept = await requeueReferenceDocumentEditsOutlivingActivation(outcome.documents).catch(() => []); // text typed first outlives the activation's stamp (whole-app audit A8 pass 3 M2)
-      const mergedDocuments = reconcileCurrentScheduleDocuments(
+      const typedDuring = withDetailsTypedDuringActivation(reconcileCurrentScheduleDocuments(
         mergeDAVEReferenceDocumentRecoveryRecords({
           local: [...referenceDocumentsCurrentRef.current, ...kept],
           cloud: [...outcome.documents],
           deletedIds,
         }),
-      );
+      ), documentsAtPress, referenceDocumentsCurrentRef.current);
+      const mergedDocuments = typedDuring.documents;
       const carried = new Map(scheduleProgressCarriedOnActivation({ items: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], documentsBefore: referenceDocumentsCurrentRef.current, documentsAfter: mergedDocuments }).map(item => [item.id, item as unknown as ScheduleItem])); // progress recorded since the import follows the task now shown (A5 pass 4 #3)
       markReferenceDocumentsAuthorityReady(true);
       referenceDocumentsCurrentRef.current = mergedDocuments;
       setReferenceDocuments(mergedDocuments);
+      typedDuring.carried.forEach(document => projectDocumentSharedRecordSync.queueNow(document.id)); // sent by the card's own text sync, so it reaches the other devices
       if (carried.size > 0) { const shownBefore = new Map(scheduleItemsCurrentRef.current.map(item => [item.id, item])); markScheduleItemsAuthorityReady(true); scheduleItemsCurrentRef.current = scheduleItemsCurrentRef.current.map(item => carried.get(item.id) || item); setScheduleItems(scheduleItemsCurrentRef.current); carried.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id), undefined, shownBefore.get(item.id)); }); } // with the copy each started from (owner answer Q28)
       return true;
     } catch {

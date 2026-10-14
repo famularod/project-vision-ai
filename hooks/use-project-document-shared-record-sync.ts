@@ -49,6 +49,13 @@ export function useProjectDocumentSharedRecordSync(
           queueProjectDocumentSharedRecordNow({ lifecycle, documentId, onReady });
         }
       },
+      /**
+       * Queues this document's shared record now, with any text still waiting for a pause: after Make Current, for text
+       * typed on its card while the press was on its way (review pass 6, H6S-2).
+       */
+      queueNow(documentId: string) {
+        queueProjectDocumentSharedRecordNow({ lifecycle, documentId, onReady });
+      },
       /** Queues this document's waiting text now, as Make Current begins. */
       flush(documentId: string) {
         return flushProjectDocumentSharedRecordSync({ lifecycle, documentId, onReady });

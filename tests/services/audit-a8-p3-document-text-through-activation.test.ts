@@ -66,6 +66,7 @@ import {
   referenceDocumentEditOutlivingActivation,
 } from '../../services/DAVECloudRecovery';
 import { reconcileCurrentScheduleDocuments } from '../../services/PIEScheduleReconciliation';
+import { withDetailsTypedDuringActivation } from '../../services/SharedDocumentActivation';
 import type { ReferenceDocument } from '../../types';
 
 const fs = jest.requireActual('fs') as typeof import('fs');
@@ -214,6 +215,7 @@ describe('after this phone\'s Make Current, the typed text is queued again and s
       normalizeReferenceDocuments: (rows: unknown) => rows, scheduleRetirementMessage: () => '', Alert: { alert: jest.fn() },
       deletedDAVERecordIds: () => [], operationalSyncTombstonesRef: { current: [] },
       requeueReferenceDocumentEditsOutlivingActivation, mergeDAVEReferenceDocumentRecoveryRecords, reconcileCurrentScheduleDocuments,
+      withDetailsTypedDuringActivation, // S1d (14 Oct, review pass 6's H6S-2): text typed on a card during the press is put back after it
       // Audit A5 pass 4 #3 (landed alongside): no schedule progress to carry for a drawing.
       scheduleProgressCarriedOnActivation: () => [], scheduleItemsCurrentRef: { current: [] },
       markReferenceDocumentsAuthorityReady: jest.fn(), setReferenceDocuments: jest.fn(),

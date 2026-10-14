@@ -25,6 +25,7 @@ import {
   activateSharedReferenceDocument,
   scheduleDocumentsAfterActivation,
   scheduleRetirementMessage,
+  withDetailsTypedDuringActivation,
 } from '../../services/SharedDocumentActivation';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 
@@ -168,6 +169,7 @@ describe('Set Active carries progress recorded since the import to the task now 
       deletedDAVERecordIds: () => [], operationalSyncTombstonesRef: { current: [] },
       mergeDAVEReferenceDocumentRecoveryRecords: ({ cloud }: { cloud: ReferenceDocument[] }) => cloud,
       reconcileCurrentScheduleDocuments: (documents: ReferenceDocument[]) => documents,
+      withDetailsTypedDuringActivation, // S1d (14 Oct, review pass 6's H6S-2): text typed on a card during the press is put back after it
       markReferenceDocumentsAuthorityReady: jest.fn(), setReferenceDocuments: jest.fn(),
       scheduleProgressCarriedOnActivation, scheduleItemsCurrentRef, markScheduleItemsAuthorityReady: jest.fn(), setScheduleItems: jest.fn(),
       // Audit A8 pass 3 M2 (landed alongside): no typed text is waiting here.

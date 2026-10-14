@@ -46,7 +46,7 @@ jest.mock('../../services/SupabaseService', () => ({
 import { getOfflineQueue, queueReferenceDocumentRecord, requeueReferenceDocumentEditsOutlivingActivation, uploadPendingChanges } from '../../services/SyncService';
 import { mergeDAVEReferenceDocumentRecoveryRecords } from '../../services/DAVECloudRecovery';
 import { reconcileCurrentScheduleDocuments, scheduleDocumentIsCurrentEverywhere } from '../../services/PIEScheduleReconciliation';
-import { activateSharedReferenceDocument } from '../../services/SharedDocumentActivation';
+import { activateSharedReferenceDocument, withDetailsTypedDuringActivation } from '../../services/SharedDocumentActivation';
 import type { ReferenceDocument } from '../../types';
 
 const fs = jest.requireActual('fs') as typeof import('fs');
@@ -126,6 +126,7 @@ async function press(label: string, local: ReferenceDocument[], opts: { staleUpl
     Alert: { alert: (title: string, message?: string) => alerts.push(`${title} | ${message || ''}`) },
     deletedDAVERecordIds: () => [], operationalSyncTombstonesRef: { current: [] },
     requeueReferenceDocumentEditsOutlivingActivation, mergeDAVEReferenceDocumentRecoveryRecords, reconcileCurrentScheduleDocuments,
+    withDetailsTypedDuringActivation, // S1d (14 Oct, review pass 6's H6S-2): text typed on a card during the press is put back after it
     scheduleProgressCarriedOnActivation: () => [], scheduleItemsCurrentRef: { current: [] },
     markReferenceDocumentsAuthorityReady: () => undefined, setReferenceDocuments: () => undefined,
   };

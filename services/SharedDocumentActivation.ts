@@ -61,11 +61,54 @@ export const SCHEDULE_NOT_UPLOADED_YET =
 export const SCHEDULE_DETAILS_NOT_HEARD_BACK =
   'This device has not yet heard back from the cloud about this schedule, and its details here (such as a note just typed) differ from the cloud’s copy. Nothing was changed on any device, and nothing you typed was lost. Try again in a moment.';
 
-/** The details a person types or picks on a document's card, as text, for comparing two copies of one document. */
+/** The details a person types or picks on a document's card. */
+const PERSON_DETAIL_KEYS = ['name', 'notes', 'category', 'drawingNumber', 'drawingRevision', 'drawingDiscipline', 'drawingIssuedAt', 'drawingStatus'] as const;
+
+/** Those details, as text, for comparing two copies of one document. */
 function personDetails(document: ReferenceDocument): string {
   const record = document as unknown as Record<string, unknown>;
   const text = (name: string) => (typeof record[name] === 'string' ? (record[name] as string).trim() : '');
-  return JSON.stringify(['name', 'notes', 'category', 'drawingNumber', 'drawingRevision', 'drawingDiscipline', 'drawingIssuedAt', 'drawingStatus'].map(text));
+  return JSON.stringify(PERSON_DETAIL_KEYS.map(text));
+}
+
+/** A document's revision as the recovery merge ranks it (DAVECloudRecovery): its own stamp, else the cloud's, else its import. */
+function revisionOf(document: ReferenceDocument): number {
+  for (const value of [document.updatedAt, document.cloudUpdatedAt, document.importedAt]) {
+    const parsed = new Date(value || '').getTime();
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+/**
+ * Review pass 6's H6S-2 (14 Oct 2026, Low): a note typed on a document's card WHILE Make Current was on its way (after
+ * the press read the cloud, before the cloud answered) stayed on this phone's card only: the activation's answer
+ * outranked the copy typed meanwhile, the press left the shared copy with the old note, and the upload that followed
+ * sent nothing (with no cloud stamp here: caused by 3.1; with the pause in typing after the press: older).
+ * The documents the press leaves on this device (`merged`, the cloud's answer merged in), with the details typed on any
+ * of them during the press (what `typedAt` holds now that `atPress` did not) put back, stamped just after the cloud's
+ * copy so they outrank it here and on the other devices; the cloud's current flags stay. `carried` are the ones to
+ * send. Nothing typed during the press: the same documents, nothing carried.
+ */
+export function withDetailsTypedDuringActivation<T extends ReferenceDocument>(
+  merged: readonly T[],
+  atPress: readonly ReferenceDocument[],
+  typedAt: readonly ReferenceDocument[],
+  now = Date.now(),
+): Readonly<{ documents: T[]; carried: T[] }> {
+  const before = new Map(atPress.map(document => [document.id, personDetails(document)]));
+  const typed = new Map(typedAt.filter(document => before.has(document.id) && before.get(document.id) !== personDetails(document))
+    .map(document => [document.id, document]));
+  const carried: T[] = [];
+  const documents = merged.map(document => {
+    const mine = typed.get(document.id);
+    if (!mine || personDetails(mine) === personDetails(document)) return document;
+    const details = Object.fromEntries(PERSON_DETAIL_KEYS.map(name => [name, (mine as unknown as Record<string, unknown>)[name]]));
+    const next = { ...document, ...details, updatedAt: new Date(Math.max(now, revisionOf(document) + 1)).toISOString() } as T;
+    carried.push(next);
+    return next;
+  });
+  return { documents, carried };
 }
 
 /** What making a schedule current does to another project's schedule. */
