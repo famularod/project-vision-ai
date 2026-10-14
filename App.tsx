@@ -698,6 +698,7 @@ import { useIdentityAliasCleanup } from './hooks/use-identity-alias-cleanup';
 import { useKeptTalkCapture } from './hooks/use-kept-talk-capture';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from './services/ScheduleImportMerge';
+import { scheduleTurnedHighLineBetween } from './services/ScheduleTurnedHigh';
 import { scheduleDependenciesAfterScheduleDeleted, scheduleFileOnlyDeleteRefusal, scheduleImportAddsToMaster, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote, scheduleTasksOnMasterDatesOnceLookaheadGone, type ScheduleLookaheadNotesSeen } from './services/ScheduleLookahead';
 import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
 import {
@@ -12457,7 +12458,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return null;
     }
   }
-  async function approveScheduleImport(batch: PIEScheduleImportBatch): Promise<void> {
+  async function approveScheduleImport(batch: PIEScheduleImportBatch): Promise<string | null> {
+    const itemsBefore = scheduleItemsCurrentRef.current; // the tasks before it: which it turned High is said at the review (open item 2.38)
     let scheduleSyncItems: ScheduleItem[] = [];
     let referenceDocumentSyncRecords: ReferenceDocument[] = [];
     const archivedKeys = new Set(
@@ -12659,6 +12661,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'The reviewed schedule is protected in the local recovery queue. Vitruvius will retry any unfinished cloud work automatically.',
       );
     }
+    return scheduleTurnedHighLineBetween(itemsBefore, appliedSynchronizedItems);
   }
 
   function ensureScheduleParentProjects(
@@ -19371,7 +19374,7 @@ function ScheduleScreen({
   onDelete: (itemId: string) => void;
   onImport: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
   onImportScreenshot: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
-  onApproveImport: (batch: PIEScheduleImportBatch) => Promise<void>;
+  onApproveImport: (batch: PIEScheduleImportBatch) => Promise<string | null>;
   onCancelImport: (batch: PIEScheduleImportBatch) => void;
   incomingImportBatch: PIEScheduleImportBatch | null;
   onIncomingImportConsumed: () => void;

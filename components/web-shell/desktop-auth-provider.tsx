@@ -46,6 +46,7 @@ import type {
 import type { ReferenceDocument, ReferenceDocumentExtractedPage } from '../../types';
 import type { ScheduleRetirementScope } from '../../services/ECOSHostedIndexer';
 import { scheduleProgressCarriedToShownTasks } from '../../services/ScheduleImportMerge';
+import { scheduleTurnedHighLineBetween, scheduleUploadTurnedHighLine } from '../../services/ScheduleTurnedHigh';
 import { scheduleDocumentAddsToMaster } from '../../services/PIEScheduleReconciliation';
 import { scheduleItemIdsDeletedWithTask } from '../../services/DAVEDeletedTaskEvidence';
 import {
@@ -107,12 +108,13 @@ type DesktopAuthContextValue = Readonly<{
     bytes: ArrayBuffer,
   ) => Promise<void>;
   deleteDocument: (document: DAVEWebReferenceDocument, deleteLinkedTasks: boolean) => Promise<void>;
+  /** Resolves with the line naming the tasks a full schedule's upload turned High, or null (open item 2.38). */
   uploadDocument: (
     prepared: DAVEWebPreparedUpload,
     bytes: ArrayBuffer,
     file?: Blob,
     onProgress?: (fraction: number) => void,
-  ) => Promise<void>;
+  ) => Promise<string | null>;
   linkDocument: (
     prepared: DAVEWebPreparedUpload,
     bytes: ArrayBuffer,
@@ -121,6 +123,11 @@ type DesktopAuthContextValue = Readonly<{
   ) => Promise<void>;
   /** Resolves with how the cloud retired other schedules (owner answer Q15). */
   setCurrentSchedule: (document: DAVEWebReferenceDocument) => Promise<ScheduleRetirementScope>;
+  /**
+   * After setCurrentSchedule: the line naming the tasks shown High from then on that were not before (a task the
+   * schedule moved, on its new row), once, or null (open item 2.38).
+   */
+  takeScheduleTurnedHighLine?: (documentId: string) => string | null;
   setCurrentDocument: (document: DAVEWebReferenceDocument) => Promise<void>;
   updateDocument: (document: DAVEWebReferenceDocument) => Promise<void>;
   enqueueDocumentPreparation: (documentId: string) => Promise<void>;
@@ -1135,6 +1142,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       : ['reference_documents'];
     announceMutation(collections);
     await refreshSnapshotInBackground(collections);
+    return scheduleUploadTurnedHighLine(plan); // a task it leaves on its dates is raised here, before Make Current (open item 2.38)
   }, [announceMutation, refreshSnapshotInBackground, snapshot]);
 
   const linkDocument = useCallback(async (
@@ -1157,6 +1165,12 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     await refreshSnapshotInBackground(collections);
   }, [announceMutation, refreshSnapshotInBackground]);
 
+  const turnedHighByScheduleRef = useRef(new Map<string, string>()); // open item 2.38
+  const takeScheduleTurnedHighLine = useCallback((documentId: string) => {
+    const line = turnedHighByScheduleRef.current.get(documentId) ?? null;
+    turnedHighByScheduleRef.current.delete(documentId);
+    return line;
+  }, []);
   const setCurrentSchedule = useCallback(async (document: DAVEWebReferenceDocument) => {
     // A lookahead adds to the master (owner answer Q22): never made current, replaced or not (review N1 web M1).
     if (scheduleDocumentAddsToMaster(document)) {
@@ -1180,6 +1194,11 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       documentsAfter: snapshotRef.current?.referenceDocuments ?? [],
     }) as DAVEWebScheduleItem[];
     if (carried.length > 0) await updateTasks(carried).catch(() => 0);
+    const carriedById = new Map(carried.map(item => [item.id, item]));
+    const turnedHigh = scheduleTurnedHighLineBetween(shownBefore, (snapshotRef.current?.scheduleItems ?? []).map(item => carriedById.get(item.id) ?? item));
+    // A task it moved shows its new row, High, from now (open item 2.38); the page reads it with the notice.
+    if (turnedHigh) turnedHighByScheduleRef.current.set(document.id, turnedHigh);
+    else turnedHighByScheduleRef.current.delete(document.id);
     return scope;
   }, [announceMutation, refreshSnapshotInBackground, snapshot?.referenceDocuments, updateTasks]);
 
@@ -1326,6 +1345,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     uploadDocument,
     linkDocument,
     setCurrentSchedule,
+    takeScheduleTurnedHighLine,
     setCurrentDocument,
     updateDocument,
     enqueueDocumentPreparation,
@@ -1359,6 +1379,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     uploadDocument,
     linkDocument,
     setCurrentSchedule,
+    takeScheduleTurnedHighLine,
     setCurrentDocument,
     updateDocument,
     enqueueDocumentPreparation,

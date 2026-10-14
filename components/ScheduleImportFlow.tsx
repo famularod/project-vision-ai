@@ -61,7 +61,8 @@ export function ScheduleImportFlow({
   onImportFile: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
   onImportScreenshots: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
   onAddManually: () => void;
-  onApprove: (batch: PIEScheduleImportBatch) => Promise<void>;
+  /** Resolves with the line naming the tasks the schedule turned High, if any (open item 2.38). */
+  onApprove: (batch: PIEScheduleImportBatch) => Promise<string | null | void>;
   onCancel: (batch: PIEScheduleImportBatch) => void;
   incomingBatch?: PIEScheduleImportBatch | null;
   onIncomingBatchConsumed?: () => void;
@@ -77,6 +78,8 @@ export function ScheduleImportFlow({
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Open item 2.38: which tasks the approved schedule turned High, shown under the button until the next review opens.
+  const [turnedHighLine, setTurnedHighLine] = useState<string | null>(null);
   const [pendingBatch, setPendingBatch] = useState<PIEScheduleImportBatch | null>(null);
   const [expandedItemIds, setExpandedItemIds] = useState<string[]>([]);
   // How the schedule is used: suggested when the review opens, David's choice after (owner answer Q22).
@@ -111,6 +114,7 @@ export function ScheduleImportFlow({
   function openReview(batch: PIEScheduleImportBatch) {
     setExpandedItemIds([]);
     setSaveError(null);
+    setTurnedHighLine(null);
     setRoleReview({
       ...suggestScheduleImportRole({ batch, documents: roleContext?.documents || [], scheduleItems: roleContext?.items || [] }),
       batchId: batch.id,
@@ -204,6 +208,11 @@ export function ScheduleImportFlow({
     } : null);
   }
 
+  /** Accept Selected and then the rest: each approval's line is kept beside the one before. */
+  function noteTurnedHigh(line: string | null | void) {
+    if (typeof line === 'string' && line.trim()) setTurnedHighLine(current => (current ? `${current} ${line}` : line));
+  }
+
   async function approveReadyItems() {
     if (!pendingBatch || saveBusy) return;
 
@@ -217,7 +226,7 @@ export function ScheduleImportFlow({
     setSaveError(null);
     setSaveBusy(true);
     try {
-      await onApprove(withScheduleImportPairingChoices(withReviewedRole({ ...batchToReview, items: readyItems }), pairingQuestions, pairingAnswerOf));
+      noteTurnedHigh(await onApprove(withScheduleImportPairingChoices(withReviewedRole({ ...batchToReview, items: readyItems }), pairingQuestions, pairingAnswerOf)));
 
       if (remainingItems.length) {
         setPendingBatch(current => current?.id === batchToReview.id ? {
@@ -250,7 +259,7 @@ export function ScheduleImportFlow({
     setSaveError(null);
     setSaveBusy(true);
     try {
-      await onApprove(withScheduleImportPairingChoices(withReviewedRole(batchToSave), pairingQuestions, pairingAnswerOf));
+      noteTurnedHigh(await onApprove(withScheduleImportPairingChoices(withReviewedRole(batchToSave), pairingQuestions, pairingAnswerOf)));
       setPendingBatch(current => current?.id === batchToSave.id ? null : current);
       setExpandedItemIds([]);
     } catch (error) {
@@ -276,6 +285,13 @@ export function ScheduleImportFlow({
           disabled={Boolean(busyLabel) || saveBusy}
           onPress={() => setChoiceOpen(true)}
         />
+
+        {turnedHighLine ? (
+          <View style={styles.turnedHighCard} accessibilityRole="alert">
+            <Ionicons name="flag-outline" size={20} color={colors.warning} />
+            <Text style={styles.turnedHighText}>{turnedHighLine}</Text>
+          </View>
+        ) : null}
 
         {busyLabel ? (
           <View style={styles.loadingCard} accessibilityRole="progressbar">
@@ -711,6 +727,8 @@ const styles = StyleSheet.create({
   warningTitle: { color: colors.text, fontSize: 16, lineHeight: 21, fontWeight: '800' },
   warningText: { color: colors.text, fontSize: 14, lineHeight: 20 },
   saveErrorCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.danger, backgroundColor: colors.dangerSoft, padding: spacing.md, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  turnedHighCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.warning, backgroundColor: colors.warningSoft, padding: spacing.md, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  turnedHighText: { flex: 1, color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: '700' },
   saveErrorText: { flex: 1, color: colors.danger, fontSize: 14, lineHeight: 20, fontWeight: '700' },
   savingCard: { minHeight: 72, borderRadius: 16, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.primarySoft, padding: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   bulkSaveCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.primarySoft, padding: spacing.md, gap: spacing.sm },

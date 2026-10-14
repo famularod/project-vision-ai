@@ -4252,7 +4252,7 @@ function DocumentManagementWorkspace({
         expectedSizeBytes: preparedUpload.document.sizeBytes || preparedFile.size,
       });
       if (uploadBytes !== preparedBytes) setPreparedBytes(uploadBytes);
-      await auth.uploadDocument(
+      const turnedHigh = await auth.uploadDocument(
         reviewedUpload,
         uploadBytes,
         preparedFile,
@@ -4263,7 +4263,7 @@ function DocumentManagementWorkspace({
         text: preparedUpload.scheduleItems.length > 0
           ? reviewedRole === 'lookahead'
             ? `Lookahead and ${preparedUpload.scheduleItems.length} reviewed schedule task${preparedUpload.scheduleItems.length === 1 ? '' : 's'} uploaded. It adds to the master schedule now, so there is nothing to make current.`
-            : `Document and ${preparedUpload.scheduleItems.length} reviewed schedule task${preparedUpload.scheduleItems.length === 1 ? '' : 's'} uploaded. Use Make Current when this schedule should replace the active version.`
+            : `Document and ${preparedUpload.scheduleItems.length} reviewed schedule task${preparedUpload.scheduleItems.length === 1 ? '' : 's'} uploaded. Use Make Current when this schedule should replace the active version.${turnedHigh ? ` ${turnedHigh}` : ''}`
           : normalizedName(preparedUpload.document.category) === 'drawing'
             ? 'Drawing uploaded. Vitruvius is preparing it in the background; it will remain unavailable to Ask ECOS until preparation passes and you make this exact revision current.'
             : 'Document uploaded and classified in the shared project record.',
@@ -4334,11 +4334,12 @@ function DocumentManagementWorkspace({
       // which the activation's response says and the notice names.
       const documentsBefore = auth.snapshot?.referenceDocuments ?? [];
       const scope = isSchedule ? await auth.setCurrentSchedule(document) : null;
+      const turnedHigh = isSchedule ? auth.takeScheduleTurnedHighLine?.(document.id) : null; // which tasks it turned High (open item 2.38)
       if (!isSchedule) await auth.setCurrentDocument(document);
       setNotice({
         tone: 'good',
         text: isSchedule
-          ? scheduleActivationNotice(document, documentsBefore, scope ?? 'schedule')
+          ? `${scheduleActivationNotice(document, documentsBefore, scope ?? 'schedule')}${turnedHigh ? ` ${turnedHigh}` : ''}`
           : `“${document.name}” is now current. Vitruvius will use it only after the hosted index confirms this exact source, project, and revision. Prior revisions remain available as history.`,
       });
     } catch (error) {

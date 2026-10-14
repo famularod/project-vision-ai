@@ -51,6 +51,7 @@ import { buildDAVEWebReportSource, buildDAVEWebTruthDiagnostics } from '../../se
 import { buildDAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 import { bindPIEScheduleImportBatchProvenance, scheduleItemsForExactImportBatch, scheduleItemsOfUnbatchedDocument } from '../../services/PIEScheduleImportBatch';
 import { scheduleDocumentsAfterApproval } from '../../services/ScheduleDocumentLabels';
+import { scheduleTurnedHighLineBetween } from '../../services/ScheduleTurnedHigh';
 import { reconcileDAVEScheduleRecords } from '../../services/DAVEScheduleRecovery';
 import { dependencyChangesForDeletedTask } from '../../services/VitruviusScheduleEngine';
 import { scheduleDocumentIsScheduleLike } from '../../services/PIEScheduleReconciliation';
@@ -544,6 +545,7 @@ describe('App.tsx, compiled: approving a lookahead and deleting it (owner answer
       runScheduleImportCloudSync: cloudSync, markScheduleItemsAuthorityReady: noop, markReferenceDocumentsAuthorityReady: noop,
       setScheduleItems: noop, setReferenceDocuments: noop, scheduleItemsCurrentRef, referenceDocumentsCurrentRef,
       projectScheduleImportCardRef: { current: null }, markProjectScheduleCardCurrent: noop, Alert: { alert: jest.fn() },
+      scheduleTurnedHighLineBetween, // open item 2.38 (landed after this test): the approval names the tasks it turned High
     });
     const reviewed = withScheduleImportRole({
       id: lookahead.importBatchId, kind: 'schedule_file', sourceCount: 1, sourceLabel: lookahead.originalFileName, message: '',
