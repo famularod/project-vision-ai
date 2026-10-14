@@ -7532,3 +7532,132 @@ describe('Way 2, step 2b, part F (2.53): a delete\'s put-back never goes over a 
     expect(await run(false)).toEqual(inOrder);
   });
 });
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Open item 2.13 (Medium, older: Build 232 and every build before; 14 Oct 2026). Two lookaheads that both move
+ * Framing are approved apart: one on the phone, one on the iPad with no signal. When the two approvals met, the task's
+ * lookahead note kept ONE copy's list of lookaheads: it named only the newer one. Deleting the newer one with its items
+ * then put Framing back on the MASTER's dates on every device, though the older lookahead is still in effect; one
+ * device doing the same steps in order goes back to the older lookahead's dates (and its percent, where it stated one).
+ *
+ * Why: where the two approvals meet (the second device's whole copy going up over the cloud's row), both copies had
+ * changed the note, so the sync merge took one copy's note whole (lookaheadNoteOfBoth keeps the base copy's list).
+ * And where only the older lookahead stated a percent, the merge took the newer copy's progress, which that lookahead
+ * had left alone (one device keeps the older one's percent).
+ *
+ * The rule now, at that merge only (two approvals met: each copy names every lookahead the copy it started from named,
+ * and one or more of its own): the note names the lookaheads of both copies, the other copy's just before the merged
+ * copy's own, so the task stays on the newer one's dates and deleting it goes back to the older one's (part A). The
+ * progress goes with the copy whose lookahead changed it, when only one did (part B; the weighing field by field's own
+ * rule). Any other copy, and any other merge, as before.
+ */
+describe('Open item 2.13: two lookaheads approved apart on two devices: the note names both, and deleting the newer one goes back to the older one', () => {
+  const lookaheadsOf = (item: ScheduleItem) => ((item as unknown as { lookaheadOverlay?: { lookaheads?: Array<{ batchId?: string }> } }).lookaheadOverlay?.lookaheads ?? []).map(entry => entry.batchId);
+  const seen = (items: readonly ScheduleItem[]) => framingOf(items).map(item => ({
+    dates: `${item.startDate} - ${item.finishDate}`, percent: item.percentComplete, lookaheads: lookaheadsOf(item),
+  }));
+  const ending = async (phone: Device, ipad: Device) => ({
+    places: [seen(deviceShown(phone)), seen(deviceShown(ipad)), seen(webShown())],
+    cards: [(await conflictsOf(phone)).length, (await conflictsOf(ipad)).length], waiting: [(await queueOf(phone)).length, (await queueOf(ipad)).length],
+  });
+  const heardEverywhere = async (device: Device, other: Device) => { shareDocuments(device); await backgroundUpload(device); await settle(device, other); };
+  const A_DATES = '10/18/2026 - 10/28/2026';
+  const B_DATES = '10/21/2026 - 10/31/2026';
+  type Order = 'the phone\'s first, the iPad\'s later' | 'the iPad\'s first, the phone\'s later';
+
+  /**
+   * Lookahead A (Framing 10/18 - 10/28, percent `pa`) is approved on the phone and sent; lookahead B (10/21 - 10/31,
+   * percent `pb`) on the iPad with no signal; in `order` (each imported when it is approved). The iPad gets signal back
+   * and everything syncs. Then the phone deletes the newer of the two with its items, and everything syncs.
+   * One device in order: the phone approves both, in the same order, and deletes the same one.
+   */
+  async function steps(order: Order, pa: string, pb: string, oneDevice: boolean, byFullSync = false, answerLost = false) {
+    const phoneFirst = order.startsWith('the phone');
+    const LA = scheduleDoc('LOOKAHEAD N213 A', phoneFirst ? '2026-09-09T12:00:00.000Z' : '2026-09-09T14:00:00.000Z', 'lookahead');
+    const LB = scheduleDoc('LOOKAHEAD N213 B', phoneFirst ? '2026-09-09T14:00:00.000Z' : '2026-09-09T12:00:00.000Z', 'lookahead');
+    const { phone, ipad } = await start();
+    const approverOfB = oneDevice ? phone : ipad;
+    if (!oneDevice) setOnline(ipad, false);
+    const approveA = async () => { at(LA.importedAt!); await approve(phone, LA, [`Framing,Alpha,Lot,10/18/2026,10/28/2026,${pa}`], true); shareDocuments(phone); await backgroundUpload(phone); };
+    const approveB = async () => {
+      at(LB.importedAt!); await approve(approverOfB, LB, [`Framing,Alpha,Lot,10/21/2026,10/31/2026,${pb}`], true);
+      if (isOnline(approverOfB)) { shareDocuments(approverOfB); await backgroundUpload(approverOfB); }
+    };
+    if (phoneFirst) { await approveA(); await approveB(); } else { await approveB(); await approveA(); }
+    at('2026-09-09T16:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+    // (The iPad's write reaches the cloud, but its answer is lost: the iPad sends the task again later.)
+    if (answerLost) mockCloud.lostAnswers = 1;
+    await backgroundUpload(ipad);
+    if (answerLost) { expect(await queueOf(ipad)).toHaveLength(1); at('2026-09-09T16:30:00.000Z'); }
+    // (Full Sync and the app's start merge the two copies of the task by their stamps: a tie keeps the device's own.)
+    if (byFullSync) { await fullSync(ipad); await fullSync(phone); await startup(ipad); await startup(phone); await fullSync(ipad); }
+    await settle(phone, ipad);
+    const afterApprovals = await ending(phone, ipad);
+    at('2026-09-10T12:00:00.000Z'); await deleteWithItems(phone, phoneFirst ? LB : LA); await heardEverywhere(phone, ipad);
+    await refresh(phone); await refresh(ipad);
+    return { afterApprovals, end: await ending(phone, ipad), LA, LB };
+  }
+
+  describe.each(['the phone\'s first, the iPad\'s later', 'the iPad\'s first, the phone\'s later'] as Order[])('%s', order => {
+    it.each([
+      ['neither states a percent', '', ''],
+      ['the older states 70%, the newer none', 'older 70', ''],
+      ['the older states none, the newer 80%', '', 'newer 80'],
+      ['the older states 70%, the newer 80%', 'older 70', 'newer 80'],
+    ])('%s: as one device doing the steps in order, the note names both, then the task goes back to the older lookahead\'s dates and percent', async (_label, older, newer) => {
+      const phoneFirst = order.startsWith('the phone');
+      const olderPercent = older ? 70 : null;
+      const newerPercent = newer ? 80 : null;
+      // A is the older on the phone's-first order; B on the other.
+      const pa = String((phoneFirst ? olderPercent : newerPercent) ?? '');
+      const pb = String((phoneFirst ? newerPercent : olderPercent) ?? '');
+      const inOrder = await steps(order, pa, pb, true);
+      const [olderBatch, newerBatch] = phoneFirst ? [inOrder.LA.importBatchId, inOrder.LB.importBatchId] : [inOrder.LB.importBatchId, inOrder.LA.importBatchId];
+      const [olderDates, newerDates] = phoneFirst ? [A_DATES, B_DATES] : [B_DATES, A_DATES];
+      // One device in order: the newer lookahead's dates and its percent (else the older one's), the note naming both,
+      // older first; with the newer deleted, the older one's dates and percent, the note naming it alone.
+      expect(inOrder.afterApprovals).toEqual({ places: Array(3).fill([{ dates: newerDates, percent: newerPercent ?? olderPercent ?? 0, lookaheads: [olderBatch, newerBatch] }]), cards: [0, 0], waiting: [0, 0] });
+      expect(inOrder.end).toEqual({ places: Array(3).fill([{ dates: olderDates, percent: olderPercent ?? 0, lookaheads: [olderBatch] }]), cards: [0, 0], waiting: [0, 0] });
+      const apart = await steps(order, pa, pb, false);
+      // (It was: after the approvals the note named the newer lookahead alone, and where only the older stated a percent,
+      // 0%; with the newer deleted, the master's 10/15 - 10/25 at 0% in all three places, no lookahead note, no card.)
+      expect({ afterApprovals: apart.afterApprovals, end: apart.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+    });
+  });
+
+  it.each(['the phone\'s first, the iPad\'s later', 'the iPad\'s first, the phone\'s later'] as Order[])('%s, each device then syncing by Full Sync and starting the app again: the same, as one device in order', async order => {
+    const inOrder = await steps(order, '', '', true);
+    const apart = await steps(order, '', '', false, true);
+    expect({ afterApprovals: apart.afterApprovals, end: apart.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+  });
+
+  it.each(['the phone\'s first, the iPad\'s later', 'the iPad\'s first, the phone\'s later'] as Order[])('%s, the answer to the iPad\'s write lost (it reached the cloud) and the task sent again: no card, as one device in order', async order => {
+    const inOrder = await steps(order, '', '', true);
+    const apart = await steps(order, '', '', false, false, true);
+    // (It was, on the change without part C: a whole-task card on the iPad with nothing on either side; and the
+    // iPad's-first order had that card before this change too.)
+    expect({ afterApprovals: apart.afterApprovals, end: apart.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+  });
+
+  it('a lookahead the phone deleted while the iPad, with no signal and not having heard, approved another one: the deleted one is not brought back, as one device in order', async () => {
+    const L1 = scheduleDoc('LOOKAHEAD N213 G1', '2026-09-09T12:00:00.000Z', 'lookahead');
+    const L2 = scheduleDoc('LOOKAHEAD N213 G2', '2026-09-10T10:00:00.000Z', 'lookahead');
+    const run = async (oneDevice: boolean) => {
+      const { phone, ipad } = await start();
+      at(L1.importedAt!); await approve(phone, L1, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,70'], true); await heardEverywhere(phone, ipad);
+      const approver = oneDevice ? phone : ipad;
+      if (!oneDevice) setOnline(ipad, false);
+      at('2026-09-10T09:00:00.000Z'); await deleteWithItems(phone, L1); shareDocuments(phone); await backgroundUpload(phone);
+      at(L2.importedAt!); await approve(approver, L2, ['Framing,Alpha,Lot,10/21/2026,10/31/2026,'], true);
+      at('2026-09-10T12:00:00.000Z'); setOnline(ipad, true); shareDocuments(approver); await backgroundUpload(approver);
+      await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+      return ending(phone, ipad);
+    };
+    const inOrder = await run(true);
+    // One device in order: the delete gives back the master's 0%, then the second lookahead's dates, its note alone.
+    expect(inOrder).toEqual({ places: Array(3).fill([{ dates: B_DATES, percent: 0, lookaheads: [L2.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
+    // (It was: the deleted lookahead named again in the note, before the second, at its 70%, in all three places.)
+    expect(await run(false)).toEqual(inOrder);
+  });
+});

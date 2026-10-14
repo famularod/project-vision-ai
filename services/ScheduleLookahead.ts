@@ -17,7 +17,8 @@ import type { PIEScheduleImportBatch } from './PIEScheduleImportBatch';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
 import { scheduleEditWithDateChangedAlone } from './ScheduleDateEdit';
-import { SCHEDULE_PROGRESS_FIELDS, scheduleItemAsLastSetOnItsOtherRow } from './ScheduleItemEditBase';
+import { SCHEDULE_PROGRESS_FIELDS, scheduleItemAsLastSetOnItsOtherRow, scheduleItemFieldAsRead } from './ScheduleItemEditBase';
+import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressIsManagers,
@@ -979,6 +980,84 @@ export function scheduleLookaheadDeleteMadeOnCloudRow(
     take(startedFrom, remote as unknown as Record<string, unknown>, field);
   });
   return { itemData: itemData as unknown as ScheduleItem, copy: startedFrom };
+}
+
+/**
+ * Open item 2.13 (Medium, older: Build 232 and every build before; 14 Oct 2026). Two lookaheads that both move a task
+ * were approved apart: one on the phone, one on the iPad with no signal. Where the two approvals met (the second
+ * device's whole copy going up over the cloud's row), both copies had changed the task's lookahead note, so the sync
+ * merge kept one copy's note whole (lookaheadNoteOfBoth keeps the base copy's list): it named only the newer
+ * lookahead. Deleting that one with its items then put the task back on the master's dates on every device, though the
+ * older lookahead is still in effect; one device doing the steps in order goes back to the older one's dates. And where
+ * only the older lookahead stated a percent, the merge took the newer copy's progress, which its lookahead had left
+ * alone (one device keeps the older one's percent). The same merge kept a lookahead the other device had deleted
+ * meanwhile in the note of a copy approved before that device's delete was heard.
+ *
+ * At that merge only: where the copy merged kept the note of one copy, and that copy named lookaheads of its own
+ * (approved since the copy the save started from), the note names what one device in order would: the other copy's own
+ * lookaheads too, just before the kept copy's own (so the task stays on the dates of the kept copy's newest), less the
+ * lookaheads the other copy no longer names (deleted there). Part B: the progress goes with the copy that changed it,
+ * when only one did (the weighing field by field's own rule). Null, and the merged copy goes as before, for any other
+ * copy (no copy it started from, a note neither copy changed that way, or nothing to add or take off).
+ */
+export function scheduleLookaheadApprovalsOfBoth(
+  merged: ScheduleItem,
+  local: ScheduleItem,
+  copy: Readonly<Record<string, unknown>> | null | undefined,
+  remote: ScheduleItem,
+): ScheduleItem | null {
+  const before = copy && typeof copy === 'object' ? copy as unknown as ScheduleItem : null;
+  const note = overlayOf(merged);
+  if (!before || !note || note.lookaheads.length === 0) return null;
+  const batchesOf = (item: ScheduleItem) => (overlayOf(item)?.lookaheads ?? []).map(entry => key(entry.batchId));
+  const named = batchesOf(before);
+  const inNote = batchesOf(merged);
+  const sides = [local, remote].map(item => {
+    const batches = batchesOf(item);
+    return { item, batches, added: batches.filter(batchId => !named.includes(batchId)), removed: named.filter(batchId => !batches.includes(batchId)) };
+  });
+  // The copy whose note the merge kept, its newest lookahead one of its own; the other copy's changes to the list.
+  const kept = sides.find(side => JSON.stringify(side.batches) === JSON.stringify(inNote));
+  if (!kept || !kept.added.includes(inNote[inNote.length - 1])) return null;
+  const other = sides.find(side => side !== kept)!;
+  const gained = other.added.filter(batchId => !inNote.includes(batchId));
+  const dropped = other.removed.filter(batchId => inNote.includes(batchId));
+  if (gained.length === 0 && dropped.length === 0) return null;
+  const first = inNote.findIndex(batchId => kept.added.includes(batchId));
+  const theirs = (overlayOf(other.item)?.lookaheads ?? []).filter(entry => gained.includes(key(entry.batchId)));
+  const lookaheads = [...note.lookaheads.slice(0, first), ...theirs, ...note.lookaheads.slice(first)]
+    .filter(entry => !dropped.includes(key(entry.batchId)));
+  const next = { ...merged } as unknown as Record<string, unknown>;
+  // Part B: the progress of the copy that changed it, when only one did.
+  const asRead = (item: ScheduleItem, field: string) => {
+    const value = scheduleItemFieldAsRead(field, (item as unknown as Record<string, unknown>)[field]);
+    return value === undefined || value === null ? 'null' : canonicalScheduleItemJson(value);
+  };
+  const progressChanged = sides.map(side => SCHEDULE_PROGRESS_FIELDS.some(field => asRead(side.item, field) !== asRead(before, field)));
+  const progressOf = progressChanged[0] !== progressChanged[1] ? sides[progressChanged[0] ? 0 : 1].item as unknown as Record<string, unknown> : null;
+  if (progressOf) SCHEDULE_PROGRESS_FIELDS.forEach(field => { if (progressOf[field] === undefined) delete next[field]; else next[field] = progressOf[field]; });
+  return withOverlay(next as unknown as ScheduleItem, { ...note, lookaheads });
+}
+
+/**
+ * Open item 2.13, part C: the answer to that write lost. The copy that met another device's lookahead was written as
+ * the note of both (above), but its answer never came back, so the device sent the copy again. The cloud's row, its
+ * own write, then outranked the copy whole, and Review Conflicts showed a whole-task card with nothing on either side
+ * (one device in order asks nothing). Whether the cloud's row has already heard this copy's lookahead approvals: the
+ * copy names lookaheads the copy it started from did not, and the cloud's note names every lookahead the copy names,
+ * none the copy no longer names, and one or more besides (the lookaheads of both copies).
+ */
+export function scheduleLookaheadApprovalsHeardIn(
+  local: ScheduleItem,
+  copy: Readonly<Record<string, unknown>> | null | undefined,
+  remote: ScheduleItem,
+): boolean {
+  const before = copy && typeof copy === 'object' ? copy as unknown as ScheduleItem : null;
+  if (!before) return false;
+  const batchesOf = (item: ScheduleItem) => (overlayOf(item)?.lookaheads ?? []).map(entry => key(entry.batchId));
+  const [named, here, there] = [batchesOf(before), batchesOf(local), batchesOf(remote)];
+  return here.some(batchId => !named.includes(batchId)) && here.every(batchId => there.includes(batchId)) &&
+    named.every(batchId => here.includes(batchId) || !there.includes(batchId)) && there.some(batchId => !here.includes(batchId));
 }
 
 function timeOf(value: string | null | undefined): number {

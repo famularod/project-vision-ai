@@ -110,7 +110,7 @@ import { compactECOSDocumentIndexForCloud } from './ECOSDocumentIndexPersistence
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import { withScheduleImportMembershipOf } from './ScheduleImportProvenance';
 import { scheduleItemAnsweringToTaskId, scheduleTaskEarlierIds, withScheduleTaskEarlierIdsOf } from './ScheduleTaskRevisions';
-import { scheduleLookaheadDeleteMadeOnCloudRow } from './ScheduleLookahead';
+import { scheduleLookaheadApprovalsHeardIn, scheduleLookaheadApprovalsOfBoth, scheduleLookaheadDeleteMadeOnCloudRow } from './ScheduleLookahead';
 import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
 import { scheduleDocumentIsScheduleLike, selectAuthoritativeScheduleItems } from './PIEScheduleReconciliation';
 import { planPendingUploadBatch } from './SyncUploadBatchPolicy';
@@ -8150,7 +8150,12 @@ async function uploadQueueItem(
     // order of their dates, stamped just after the later of the two copies so each device takes them.
     const notesOfBoth = merged && remote && !byField ? scheduleItemActivityWithOtherRows(merged.activity, wholeCopy.activity, remote.activity) : null;
     const mergedWithNotes = notesOfBoth ? { ...merged!, activity: notesOfBoth, updatedAt: scheduleItemStampAfter(payload.itemData.updatedAt, remote!.updatedAt) } : merged;
-    const recovered = remote && !changedFields && !payload.forceLocal ? restUnchanged ? payload.itemData : byField?.itemData ?? mergedWithNotes : null;
+    // Open item 2.13: where two lookahead approvals meet (or an approval meets a lookahead deleted elsewhere), the merge
+    // kept one copy's note: it now names the lookaheads of both copies, as one device in order (and the progress goes
+    // with the copy that changed it, when only one did); stamped just after the later copy so each device takes it.
+    const approvalsOfBoth = mergedWithNotes && remote && !byField && isEditBase(payload.base) ? scheduleLookaheadApprovalsOfBoth(mergedWithNotes, wholeCopy, payload.base.copy, remote) : null;
+    const mergedOfBoth = approvalsOfBoth ? { ...approvalsOfBoth, updatedAt: scheduleItemStampAfter(payload.itemData.updatedAt, remote!.updatedAt) } : mergedWithNotes;
+    const recovered = remote && !changedFields && !payload.forceLocal ? restUnchanged ? payload.itemData : byField?.itemData ?? mergedOfBoth : null;
     const wholeWeighedAsItStarted = recovered && remote && isEditBase(payload.base)
       ? scheduleItemWholeCopyAgainstCloud(recovered, payload.itemData, payload.base, remote, taskOfRow)
       : null;
@@ -8269,7 +8274,10 @@ async function uploadQueueItem(
         JSON.stringify(payload.itemData) === JSON.stringify(remote) ||
         // A whole copy that differs from the cloud's row only where it is the copy it started from has nothing to ask
         // about (owner answer Q28): the cloud's row stands, as its other device left it.
-        (isEditBase(payload.base) && JSON.stringify(scheduleItemWholeCopyOverCloud(payload.itemData, payload.base, remote)) === JSON.stringify(remote))
+        (isEditBase(payload.base) && JSON.stringify(scheduleItemWholeCopyOverCloud(payload.itemData, payload.base, remote)) === JSON.stringify(remote)) ||
+        // Open item 2.13, part C: nor a copy whose lookahead approvals the cloud's row already names with the other
+        // device's (this device's own write of both, sent again after its answer was lost).
+        (isEditBase(payload.base) && scheduleLookaheadApprovalsHeardIn(payload.itemData, payload.base.copy, remote))
       ) {
         await settleScheduleItemConflicts(payload.id, settles);
         return 'uploaded';
