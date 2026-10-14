@@ -115,6 +115,10 @@ import {
   daveWebScheduleDocumentDeleteNote,
   daveWebScheduleImportPairingQuestions,
   daveWebScheduleUploadRoleRefusal,
+  daveWebScheduleUploadProjectReview,
+  daveWebScheduleUploadRowNeedsProject,
+  daveWebScheduleUploadRowProject,
+  daveWebScheduleUploadUseProject,
   daveWebFullScheduleProjectsLine,
   daveWebScheduleUploadRoleSuggestion,
   withDAVEWebScheduleUploadRole,
@@ -3920,6 +3924,9 @@ function DocumentManagementWorkspace({
     () => (preparedUpload && reviewedRole ? withDAVEWebScheduleUploadRole(preparedUpload, reviewedRole) : preparedUpload),
     [preparedUpload, reviewedRole],
   );
+  // High item 2: a task the file names by no project of his waits for one; the upload is held until each has one.
+  const projectReview = useMemo(() => daveWebScheduleUploadProjectReview(preparedUpload), [preparedUpload]);
+  const useForAll = projectReview.useForAll;
   const pairingQuestions = useMemo(() => roleReviewedUpload
     ? daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: roleReviewedUpload.scheduleItems, document: roleReviewedUpload.document })
     : [], [auth.snapshot, roleReviewedUpload]);
@@ -4073,6 +4080,7 @@ function DocumentManagementWorkspace({
         category: uploadCategory,
         projectNames: uploadProjects,
         projects,
+        openProjectNames: auth.snapshot?.openCloudProjects?.map(project => project.name),
         fingerprint,
         versionGroupId:
           replacement?.webVersionGroupId || replacement?.drawingNumber?.trim() || replacement?.id || null,
@@ -4170,8 +4178,8 @@ function DocumentManagementWorkspace({
   async function uploadPreparedDocument() {
     if (!preparedUpload || !preparedBytes || !preparedFile || uploading) return;
     const roleRefusal = daveWebScheduleUploadRoleRefusal(preparedUpload, reviewedRole);
-    if (roleRefusal) {
-      setNotice({ tone: 'danger', text: roleRefusal });
+    if (roleRefusal || projectReview.heldLine) {
+      setNotice({ tone: 'danger', text: roleRefusal || projectReview.heldLine || '' });
       return;
     }
     const pairingRefusal = scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);
@@ -4767,13 +4775,13 @@ function DocumentManagementWorkspace({
                       <View style={styles.dataRow}>
                         <View style={styles.dataGrow}>
                           <Text style={styles.dataTitle}>{item.taskName}</Text>
-                          <Text style={styles.dataMeta}>{item.projectName}{item.locationName ? ` · ${item.locationName}` : ''}</Text>
+                          <Text style={styles.dataMeta}>{daveWebScheduleUploadRowProject(preparedUpload, item)}{item.locationName ? ` · ${item.locationName}` : ''}</Text>
                           <Text style={styles.dataDetail}>{item.status} · {item.percentComplete}% · Finish {formatCalendarDate(item.finishDate)}</Text>
                           {/* A date outside 2000 to 2100 is pointed out before the upload, not changed (review pass 1, L3). */}
                           {scheduleDatesToCheck(item).map(check => (
                             <Text key={check.which} style={styles.errorText}>{check.text}</Text>
                           ))}
-                          {uploadProjects.length > 1 ? (
+                          {uploadProjects.length > 1 || daveWebScheduleUploadRowNeedsProject(item) ? (
                             <View style={[styles.optionRow, styles.taskProjectChoices]}>
                               {uploadProjects.map(project => {
                                 const selected = normalizedName(item.projectName) === normalizedName(project);
@@ -4820,10 +4828,22 @@ function DocumentManagementWorkspace({
                   onChange={answer => setPairingAnswers(current => ({ ...current, [pairingKey(question)]: answer }))}
                 />
               ))}
+              {projectReview.savedUnderLine ? <Text style={styles.dataMeta}>{projectReview.savedUnderLine}</Text> : null}
+              {projectReview.heldLine ? <Text style={styles.errorText}>{projectReview.heldLine}</Text> : null}
+              {useForAll ? (
+                <Pressable
+                  style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+                  onPress={() => setPreparedUpload(current => (current ? daveWebScheduleUploadUseProject(current, useForAll.project) : current))}
+                  disabled={uploading}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.secondaryButtonText}>{useForAll.label}</Text>
+                </Pressable>
+              ) : null}
               <Pressable
-                style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed, uploading && styles.buttonDisabled]}
+                style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed, (uploading || projectReview.heldLine) && styles.buttonDisabled]}
                 onPress={() => { void uploadPreparedDocument(); }}
-                disabled={uploading}
+                disabled={uploading || Boolean(projectReview.heldLine)}
                 accessibilityRole="button"
               >
                 {uploading ? (
