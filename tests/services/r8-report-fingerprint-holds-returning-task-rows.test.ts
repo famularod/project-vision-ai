@@ -120,14 +120,16 @@ describe('R8 item 3: what a report says of a task that is back is read from a ro
     expect([again.readsAsAlreadySent, again.ofPaint]).toEqual([true, four.ofPaint]);
   });
 
-  it('the iPad, offline since before master 2, syncs an edit it had made to Paint\'s old row (50%): the report now says "from 50%", and it is another report', () => {
+  it('the iPad, offline since before master 2, syncs an edit it had made to Paint\'s old row (50%): the report still says what report 1 listed, and it is offered once (7.17)', () => {
     const { state, three, four } = paintIsBack();
     const late = withRow(state, 'MASTER M1-1', { percentComplete: 50, progressConfirmedAt: '2026-09-08T09:00:00.000Z', updatedAt: '2026-09-08T09:00:00.000Z' });
     // Nothing he sees in the task list has changed.
     expect(shown(late).map(item => [item.id, item.percentComplete])).toEqual(shown(state).map(item => [item.id, item.percentComplete]));
-    // The sentence is read from that row: written again against the same period as report 4, it says "from 50%".
-    expect(report(late, three.sent, AGAIN).ofPaint).toContain('Paint moved from 50% to 70% complete.');
-    // So it is not the report he sent. (It read as already sent, one fingerprint for the two: review pass 2, P2-3.)
+    // The sentence was read from that row, and said "from 50%" (review pass 2, P2-3). Open item 7.17 (13 Oct 2026):
+    // it is read from how report 1 listed Paint, kept with the reports since (saved, it cannot change under him), so
+    // written again against the same period as report 4 it says what report 4 said. Expectation moved deliberately.
+    expect(report(late, three.sent, AGAIN).ofPaint).toEqual(['Paint is back in the project plan.', 'Paint moved from 60% to 70% complete.', 'Paint finish changed from 09/25/2026 to 10/02/2026.']);
+    // The fingerprint still holds the row, so it is not taken for the report he sent: offered once (the safe side).
     const again = report(late, four.sent, AGAIN);
     expect(again.fingerprint).not.toBe(four.fingerprint);
     expect(again.readsAsAlreadySent).toBe(false);

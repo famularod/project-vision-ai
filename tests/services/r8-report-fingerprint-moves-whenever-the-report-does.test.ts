@@ -487,7 +487,11 @@ describe('R8 item 4: whenever one change to an input moves the written report or
     // areas moved the report somewhere. (A work area decides nothing a report says, so the links worked out from
     // them stay out of the fingerprint, as R4 left them: the web does not have them.)
     expect([...byFamily.keys()].sort()).toEqual(['activity notes', 'approvals', 'areas', 'comparisons', 'documents', 'drawings', 'earlier rows', 'field updates', 'lookaheads', 'photos', 'tasks']);
-    expect([...byFamily].filter(([, counts]) => counts.movedTheReport === 0).map(([family]) => family)).toEqual(['areas']);
+    // Open item 7.17 (13 Oct 2026): a task that is back is read from how the last report that listed it had it, kept
+    // with the reports saved since; its hidden earlier rows are read only for a report counted from one saved before
+    // that record began. In this rig every report is saved with it, so a change to an earlier row moves no report
+    // (the fingerprint still holds them: such a change offers the report once more, the safe side). Moved deliberately.
+    expect([...byFamily].filter(([, counts]) => counts.movedTheReport === 0).map(([family]) => family).sort()).toEqual(['areas', 'earlier rows']);
     expect(tally.movedTheReport).toBeGreaterThan(tally.projects * 20);
     // R9: the 1.0 road was walked. R10 (the coordinator's decision on review pass 3, P3-2) closed it: no 1.0 name
     // stands, so today's report is never taken for one Build 230 saved and there is nothing on that road to move.

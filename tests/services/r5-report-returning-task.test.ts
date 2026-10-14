@@ -233,7 +233,7 @@ describe('R5 item 1: a task a report said was removed, that a later master lists
     sameOnTheWeb(state, whileOut.sent, '2026-09-10T17:00:00.000Z', back);
   });
 
-  it('back on its own row after two reports, a row that itself answers to an older row: "added", never compared with that older row (found by the taught text driver)', () => {
+  it('back on its own row after two reports, a row that itself answers to an older row: back as the first report listed it, never compared with that older row (found by the taught text driver; 7.17)', () => {
     // Master 1 lists Paint; master 2 moves it, on a new row that answers to master 1's; he sets 60% and Sam; a report goes out.
     let state = approve({ items: [], documents: [] }, schedule('MASTER 1', '2026-09-05T12:00:00.000Z'), [...OTHERS, PAINT]);
     state = approve(state, schedule('MASTER 2', '2026-09-07T12:00:00.000Z'), [...OTHERS, PAINT_MOVED]);
@@ -252,11 +252,13 @@ describe('R5 item 1: a task a report said was removed, that a later master lists
     expect(one(state, 'Paint').map(item => [item.id, item.percentComplete, item.owner])).toEqual([['MASTER 2-4', 60, 'Sam']]);
     state = set(state, 'Paint', { percentComplete: 70 }, '2026-09-20T16:00:00.000Z');
     const back = report(state, secondWhileOut.sent, '2026-09-20T17:00:00.000Z');
-    // The row it left on is the row shown: nothing saved tells how it stood in the last report that listed it. Master
-    // 1's row is older than that report, and what it holds was never what a report said. (It read: back, "moved from
-    // 0% to 70% complete", "finish changed from 10/05/2026 to 10/07/2026", "owner changed from unassigned to Sam".)
-    expect(back.paint).toEqual([ADDED]);
-    expect(back.onceApproved.paint).toEqual([ADDED]);
+    // The row it left on is the row shown. Master 1's row is older than that report, and what it holds was never what
+    // a report said. (It read: back, "moved from 0% to 70% complete", "finish changed from 10/05/2026 to 10/07/2026",
+    // "owner changed from unassigned to Sam".) It then read "added" (reports review pass 5, F6).
+    // Open item 7.17 (13 Oct 2026): the reports kept since record how the first one listed Paint (60%, Sam): it is
+    // back, compared with that, and never with master 1's row. Expectation moved deliberately.
+    expect(back.paint).toEqual([BACK, 'Paint moved from 60% to 70% complete.']);
+    expect(back.onceApproved.paint).toEqual([BACK, 'Paint moved from 60% to 70% complete.']);
     sameOnTheWeb(state, secondWhileOut.sent, '2026-09-20T17:00:00.000Z', back);
   });
 

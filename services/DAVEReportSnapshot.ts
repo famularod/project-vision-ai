@@ -178,7 +178,27 @@ export type DAVEReportSnapshot = Readonly<{
    * one replaced (`supersedes`), which is read for its tasks only.
    */
   editedText?: DAVEReportEditedText;
+  /**
+   * Open items 7.12 and 7.17 (reports review pass 5, F2 and F6; the owner's
+   * authorisation of 13 Oct 2026): the tasks earlier reports listed that this
+   * report's plan does not hold, each as the last report that listed it had
+   * it, carried from report to report until the task is back. A task back in
+   * the plan is "back" and compared with that; one no report listed is
+   * "added". `since`: the report from which the record is whole (the first one
+   * saved with it, or the one it counted from); a task that left the plan
+   * before then is read as before. Absent on reports saved before then.
+   */
+  outOfPlan?: DAVEReportOutOfPlan;
 }>;
+
+/** The tasks earlier reports listed that a report's plan does not hold, as last listed (open items 7.12, 7.17). */
+export type DAVEReportOutOfPlan = Readonly<{ since: string; tasks: readonly DAVEReportSnapshotTask[] }>;
+
+/** A saved report's record of the tasks out of its plan, when it is one (saved by a build that keeps it). */
+function outOfPlanRecord(snapshot: DAVEReportSnapshot | null | undefined): DAVEReportOutOfPlan | null {
+  const record = snapshot?.outOfPlan;
+  return record && typeof record.since === 'string' && Array.isArray(record.tasks) ? record : null;
+}
 
 /** The title and text the owner changed the report to (open item 7.44). */
 export type DAVEReportEditedText = Readonly<{ title: string; body: string }>;
@@ -412,7 +432,10 @@ export function reportSnapshotToSave(
   if (previous && samePeriod && sameReportSource(previous.sourceFingerprint, current.sourceFingerprint)) {
     return null;
   }
-  const pending = { ...current, deliveredAt: null };
+  // The report this one counts from: the one it keeps as the report before (`supersedes`).
+  const baseline = !previous || !samePeriod ? null : wasDelivered(previous) ? previous : previous.supersedes ?? null;
+  // Open items 7.12, 7.17: the tasks out of its plan, carried on from that report's.
+  const pending = { ...current, deliveredAt: null, outOfPlan: compareReportPeriod({ current, previous: baseline }).outOfPlan };
   if (!previous || !samePeriod) return Object.freeze(pending);
   if (!wasDelivered(previous)) {
     return Object.freeze({ ...pending, supersedes: previous.supersedes ? withReportBefore(previous.supersedes) : null });
@@ -831,7 +854,18 @@ export function buildDAVEReportSnapshot({
   return Object.freeze(snapshot);
 }
 
-export function compareDAVEReportSnapshots({
+export function compareDAVEReportSnapshots(
+  args: Parameters<typeof compareReportPeriod>[0],
+): DAVEReportPeriodComparison {
+  return compareReportPeriod(args).comparison;
+}
+
+/**
+ * The comparison, and (open items 7.12, 7.17) the record of the tasks out of the plan a report of `current` keeps:
+ * what this comparison says removed, as the earlier report listed it, and what that report's own record still
+ * carries, less what is back now.
+ */
+function compareReportPeriod({
   current,
   previous,
   tasksLeftByLookahead = [],
@@ -865,18 +899,22 @@ export function compareDAVEReportSnapshots({
    * before.
    */
   tasksLeftByLookahead?: readonly DAVEReportTaskLeftByLookahead[];
-}): DAVEReportPeriodComparison {
+}): { comparison: DAVEReportPeriodComparison; outOfPlan: DAVEReportOutOfPlan } {
   if (!previous || previous.scopeKey !== current.scopeKey) {
-    return Object.freeze({
-      basis: 'current_snapshot',
-      label: 'Current reporting period',
-      startedAt: null,
-      endedAt: current.capturedAt,
-      completeDelta: 0,
-      openDelta: 0,
-      overdueDelta: 0,
-      changes: Object.freeze([]),
-    });
+    return {
+      comparison: Object.freeze({
+        basis: 'current_snapshot',
+        label: 'Current reporting period',
+        startedAt: null,
+        endedAt: current.capturedAt,
+        completeDelta: 0,
+        openDelta: 0,
+        overdueDelta: 0,
+        changes: Object.freeze([]),
+      }),
+      // No report before this one: none listed a task this one does not hold.
+      outOfPlan: Object.freeze({ since: current.capturedAt, tasks: Object.freeze([]) }),
+    };
   }
 
   const previousById = new Map(previous.tasks.map(task => [task.taskId, task]));
@@ -1001,10 +1039,35 @@ export function compareDAVEReportSnapshots({
   // reads as Build 230 wrote it, "was added". What is read from the SAVED report before, above, is untouched:
   // saved data cannot change under him. From the first report sent on this build it reads as before.
   const liveEarlierRowsMayBeRead = !currentReadAsEarlierVersionReport && !isLegacyReportSource(previous.sourceFingerprint);
+  // Open items 7.12 and 7.17 (reports review pass 5, F2 and F6; the owner's authorisation of 13 Oct 2026). The
+  // saved earlier report and the one before it are not enough to say what the client was last told of a task that
+  // comes back. F2: a task put in the plan and taken out again between two reports read "is back", with a change
+  // from a date no report gave, because the row it left on was saved before the last report. F6: a task out for two
+  // reports or more that came back on a row saved before the last report read "added", and what changed was never
+  // said. The earlier report now keeps the tasks reports listed that its plan does not hold, as last listed
+  // (`outOfPlan`): a task back is "back" against that, else, where the record covers the time it left, "added".
+  // Where the record is absent (saved before this change) or does not reach back to the row it left on, as before;
+  // and never against a report known by a 1.0 name, nor for a report read as one (R9: as Build 230 wrote it).
+  const record = currentReadAsEarlierVersionReport || isLegacyReportSource(previous.sourceFingerprint)
+    ? null
+    : outOfPlanRecord(previous);
+  const recordSince = Date.parse(record?.since ?? '');
+  const carriedById = new Map((record?.tasks ?? []).map(task => [task.taskId, task]));
+  const linkedCarried = record ? linkTasksById(record.tasks, [...noPriorNow]) : null;
+  /** The ids of carried tasks that are back now (no longer out of the plan). */
+  const carriedBack = new Set<string>();
   const returnedFrom = (task: DAVEReportSnapshotTask): DAVEReportSnapshotTask | null => {
     if (!noPriorNow.has(task)) return null;
     const before = reportBeforeById.get(task.taskId) ?? linkedBefore?.pairs.get(task);
-    if (before) return isLookaheadDetail(before) ? null : before;
+    if (before) {
+      carriedBack.add(before.taskId);
+      return isLookaheadDetail(before) ? null : before;
+    }
+    const carried = carriedById.get(task.taskId) ?? linkedCarried?.pairs.get(task);
+    if (carried) {
+      carriedBack.add(carried.taskId);
+      return isLookaheadDetail(carried) ? null : carried;
+    }
     if (!reportBefore || !liveEarlierRowsMayBeRead) return null;
     const rows = (earlierRowsOf.get(task.taskId) || []).filter(row => {
       const saved = Date.parse(row.savedAt ?? '');
@@ -1013,6 +1076,8 @@ export function compareDAVEReportSnapshots({
         !Number.isNaN(shownSaved) && shownSaved >= earlierReportMade;
     });
     const row = rows.at(-1);
+    // Left on a row saved since the record began, and not in it: no report listed the task (7.12).
+    if (row && record && !(Date.parse(row.savedAt ?? '') < recordSince)) return null;
     return row ? Object.freeze({
       taskId: row.earlierTaskId,
       projectName: task.projectName,
@@ -1154,7 +1219,18 @@ export function compareDAVEReportSnapshots({
 
   const distinctChanges = dedupeChanges(changes);
   const counted = leftCounted.length > 0 ? [...current.tasks, ...leftCounted] : current.tasks;
-  return Object.freeze({
+  // What a report of `current` keeps as out of its plan (7.12, 7.17): the tasks said removed, as the earlier report
+  // listed them, then those the earlier report's record carries that are not back; never a lookahead's detail row
+  // (one that left with its lookahead was never said removed).
+  const outOfPlanTasks = new Map<string, DAVEReportSnapshotTask>();
+  [...removedTasks, ...(record?.tasks ?? []).filter(task => !carriedBack.has(task.taskId) && !currentById.has(task.taskId))]
+    .filter(task => !isLookaheadDetail(task) && !outOfPlanTasks.has(task.taskId))
+    .forEach(task => outOfPlanTasks.set(task.taskId, task));
+  const outOfPlan: DAVEReportOutOfPlan = Object.freeze({
+    since: record?.since ?? previous.capturedAt,
+    tasks: Object.freeze([...outOfPlanTasks.values()]),
+  });
+  return { outOfPlan, comparison: Object.freeze({
     basis: 'previous_approved_report',
     label: reportPeriodLabel(previous),
     startedAt: previous.capturedAt,
@@ -1168,7 +1244,7 @@ export function compareDAVEReportSnapshots({
     unchangedTaskIds: Object.freeze([...unchangedTaskIds]),
     newActivityTaskIds: Object.freeze([...newActivityTaskIds]),
     sameActivityTaskIds: Object.freeze([...sameActivityTaskIds]),
-  });
+  }) };
 }
 
 /**
