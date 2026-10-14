@@ -7803,3 +7803,89 @@ describe('Open item 2.62: a lookahead approved offline is kept when another devi
     expect(scheduleLookaheadDeleteMadeOnApproval(approval, before as unknown as Record<string, unknown>, byHand, byHand)).toBeNull();
   });
 });
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * W3-1 (review pass 3 of Way 2, Medium; caused by open item 2.13's part B, 14 Oct 2026). Two lookaheads that both move
+ * Framing are approved apart (one on the phone, one on the iPad with no signal), and the NEWER one states the percent
+ * the task already had: Framing at 0%, the phone's lookahead A says 70%, the iPad's newer B says 0%. Once the devices
+ * synced, Framing showed B's dates at A's 70% on the phone, the iPad and the computer, with no question; the other order
+ * (B older at 80%, A newer at 0%) showed 80%. One device doing the same steps in order shows 0% (the newer word), and so
+ * did Build 232.
+ *
+ * Why: part B gave the progress to "the copy whose progress changed", and a lookahead stating 0% over a task at 0%
+ * changes nothing that test can see. The task's note already says whether each lookahead gave a percent (its entry's
+ * percentComplete; null when it left progress alone): part B now asks that of the newer lookahead.
+ *
+ * Every percent combination, both orders, from a master that gives Framing 0% or 40%: each lookahead states none, one
+ * above the start, the start itself, or (from 40%) one below it. Each runs ONE device in order first and asserts its
+ * values outright (after the approvals: the newer's dates and its percent, else the older's, else the start; after the
+ * newer is deleted with its items: the older's dates and its percent, else the start), then the two devices, which must
+ * end exactly as one device, after the approvals and after the delete, in all three places, no card, nothing waiting.
+ */
+describe('W3-1 (2.13, part B): two lookaheads approved apart: the newer one\'s percent stands, even the one the task already had', () => {
+  const lookaheadsOf = (item: ScheduleItem) => ((item as unknown as { lookaheadOverlay?: { lookaheads?: Array<{ batchId?: string }> } }).lookaheadOverlay?.lookaheads ?? []).map(entry => entry.batchId);
+  const seen = (items: readonly ScheduleItem[]) => framingOf(items).map(item => ({
+    dates: `${item.startDate} - ${item.finishDate}`, percent: item.percentComplete, lookaheads: lookaheadsOf(item),
+  }));
+  const ending = async (phone: Device, ipad: Device) => ({
+    places: [seen(deviceShown(phone)), seen(deviceShown(ipad)), seen(webShown())],
+    cards: [(await conflictsOf(phone)).length, (await conflictsOf(ipad)).length], waiting: [(await queueOf(phone)).length, (await queueOf(ipad)).length],
+  });
+  const heardEverywhere = async (device: Device, other: Device) => { shareDocuments(device); await backgroundUpload(device); await settle(device, other); };
+  const A_DATES = '10/18/2026 - 10/28/2026';
+  const B_DATES = '10/21/2026 - 10/31/2026';
+  type Order = 'the phone\'s A older, the iPad\'s B newer' | 'the iPad\'s B older, the phone\'s A newer';
+
+  /**
+   * The master gives Framing `start` (10/15 - 10/25). Lookahead A (10/18 - 10/28, percent `pa`) is approved on the phone
+   * and sent; lookahead B (10/21 - 10/31, percent `pb`) on the iPad with no signal; in `order`. The iPad gets signal and
+   * everything syncs. Then the phone deletes the newer of the two with its items, and everything syncs.
+   * One device in order: the phone approves both, in the same order, and deletes the same one.
+   */
+  async function steps(start: number, order: Order, pa: string, pb: string, oneDevice: boolean) {
+    const phoneFirst = order.startsWith('the phone');
+    const LA = scheduleDoc('LOOKAHEAD W31 A', phoneFirst ? '2026-09-09T12:00:00.000Z' : '2026-09-09T14:00:00.000Z', 'lookahead');
+    const LB = scheduleDoc('LOOKAHEAD W31 B', phoneFirst ? '2026-09-09T14:00:00.000Z' : '2026-09-09T12:00:00.000Z', 'lookahead');
+    at('2026-09-07T12:00:00.000Z');
+    const { phone, ipad } = await startBoth(F, [`Framing,Alpha,Lot,10/15/2026,10/25/2026,${start || ''}`, SURVEY]);
+    const approverOfB = oneDevice ? phone : ipad;
+    if (!oneDevice) setOnline(ipad, false);
+    const approveA = async () => { at(LA.importedAt!); await approve(phone, LA, [`Framing,Alpha,Lot,10/18/2026,10/28/2026,${pa}`], true); shareDocuments(phone); await backgroundUpload(phone); };
+    const approveB = async () => {
+      at(LB.importedAt!); await approve(approverOfB, LB, [`Framing,Alpha,Lot,10/21/2026,10/31/2026,${pb}`], true);
+      if (isOnline(approverOfB)) { shareDocuments(approverOfB); await backgroundUpload(approverOfB); }
+    };
+    if (phoneFirst) { await approveA(); await approveB(); } else { await approveB(); await approveA(); }
+    at('2026-09-09T16:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad); await backgroundUpload(ipad);
+    await settle(phone, ipad);
+    const afterApprovals = await ending(phone, ipad);
+    at('2026-09-10T12:00:00.000Z'); await deleteWithItems(phone, phoneFirst ? LB : LA); await heardEverywhere(phone, ipad);
+    await refresh(phone); await refresh(ipad);
+    return { afterApprovals, end: await ending(phone, ipad), LA, LB };
+  }
+
+  const said = (percent: string, start: number) => (percent === '' ? 'none' : Number(percent) > start ? `${percent}% (above the start)`
+    : Number(percent) === start ? `${percent}% (the start itself)` : `${percent}% (below the start)`);
+  const cases = ([[0, ['', '70', '0'], ['', '80', '0']], [40, ['', '70', '40', '20'], ['', '80', '40', '10']]] as Array<[number, string[], string[]]>)
+    .flatMap(([start, forA, forB]) => forA.flatMap(pa => forB.map(pb => [`from ${start}%, A states ${said(pa, start)}, B states ${said(pb, start)}`, start, pa, pb] as [string, number, string, string])));
+
+  describe.each(['the phone\'s A older, the iPad\'s B newer', 'the iPad\'s B older, the phone\'s A newer'] as Order[])('%s', order => {
+    it.each(cases)('%s: as one device doing the steps in order, after the approvals and after the newer is deleted', async (_label, start, pa, pb) => {
+      const phoneFirst = order.startsWith('the phone');
+      const [olderSays, newerSays] = phoneFirst ? [pa, pb] : [pb, pa];
+      const [olderPercent, newerPercent] = [olderSays, newerSays].map(percent => (percent === '' ? null : Number(percent)));
+      const inOrder = await steps(start, order, pa, pb, true);
+      const [olderBatch, newerBatch] = phoneFirst ? [inOrder.LA.importBatchId, inOrder.LB.importBatchId] : [inOrder.LB.importBatchId, inOrder.LA.importBatchId];
+      const [olderDates, newerDates] = phoneFirst ? [A_DATES, B_DATES] : [B_DATES, A_DATES];
+      // One device in order: the newer lookahead's dates and its percent (else the older one's, else the start), the note
+      // naming both; with the newer deleted, the older one's dates and its percent (else the start), the note naming it.
+      expect(inOrder.afterApprovals).toEqual({ places: Array(3).fill([{ dates: newerDates, percent: newerPercent ?? olderPercent ?? start, lookaheads: [olderBatch, newerBatch] }]), cards: [0, 0], waiting: [0, 0] });
+      expect(inOrder.end).toEqual({ places: Array(3).fill([{ dates: olderDates, percent: olderPercent ?? start, lookaheads: [olderBatch] }]), cards: [0, 0], waiting: [0, 0] });
+      const apart = await steps(start, order, pa, pb, false);
+      // (It was, where the newer states the start itself and the older another percent: the older one's percent with the
+      // newer one's dates in all three places, no card; after the delete as one device.)
+      expect({ afterApprovals: apart.afterApprovals, end: apart.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+    });
+  });
+});

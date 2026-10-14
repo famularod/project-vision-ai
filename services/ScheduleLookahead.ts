@@ -1052,6 +1052,13 @@ export function scheduleLookaheadDeleteMadeOnApproval(
  * lookaheads the other copy no longer names (deleted there). Part B: the progress goes with the copy that changed it,
  * when only one did (the weighing field by field's own rule). Null, and the merged copy goes as before, for any other
  * copy (no copy it started from, a note neither copy changed that way, or nothing to add or take off).
+ *
+ * Part B, W3-1 (review pass 3 of Way 2, Medium, caused by part B; 14 Oct 2026): Framing at 0%; the phone approved
+ * lookahead A saying 70%, the iPad with no signal the newer B saying 0%. B's 0% over a task at 0% changed nothing part B
+ * could see, so the task took A's 70% with B's dates on every device; one device in order (and Build 232) shows 0%. The
+ * task's note already says whether a lookahead gave a percent (its entry's percentComplete, null when it left progress
+ * alone): where the kept copy's newest lookahead gave one, that copy counts as having changed the progress, so the other
+ * copy's change no longer stands over it alone (both changed: the merge's progress, as before part B).
  */
 export function scheduleLookaheadApprovalsOfBoth(
   merged: ScheduleItem,
@@ -1086,7 +1093,10 @@ export function scheduleLookaheadApprovalsOfBoth(
     const value = scheduleItemFieldAsRead(field, (item as unknown as Record<string, unknown>)[field]);
     return value === undefined || value === null ? 'null' : canonicalScheduleItemJson(value);
   };
-  const progressChanged = sides.map(side => SCHEDULE_PROGRESS_FIELDS.some(field => asRead(side.item, field) !== asRead(before, field)));
+  // (W3-1: the kept copy's newest lookahead gave a percent, by its own entry, though maybe the one the task had.)
+  const newestGave = typeof (overlayOf(kept.item)?.lookaheads ?? []).slice(-1)[0]?.percentComplete === 'number';
+  const progressChanged = sides.map(side => (side === kept && newestGave) ||
+    SCHEDULE_PROGRESS_FIELDS.some(field => asRead(side.item, field) !== asRead(before, field)));
   const progressOf = progressChanged[0] !== progressChanged[1] ? sides[progressChanged[0] ? 0 : 1].item as unknown as Record<string, unknown> : null;
   if (progressOf) SCHEDULE_PROGRESS_FIELDS.forEach(field => { if (progressOf[field] === undefined) delete next[field]; else next[field] = progressOf[field]; });
   return withOverlay(next as unknown as ScheduleItem, { ...note, lookaheads });
