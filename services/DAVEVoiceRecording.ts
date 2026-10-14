@@ -62,9 +62,51 @@ export function daveRecordingHadNoSound(levels: DAVERecordingLevels): boolean {
   return levels.readings >= DAVE_NO_SOUND_MIN_READINGS && levels.loudest <= DAVE_NO_SOUND_LEVEL_DB;
 }
 
-/** What the voice sheet says of such a recording. The owner's was an iPhone his Mac used as its microphone; an iPad names no Mac. */
-export function daveNoSoundMessage(device: 'iPhone' | 'iPad'): string {
+/** What to do about a microphone that gives nothing. The owner's was an iPhone his Mac used as its microphone; an iPad names no Mac. */
+function daveNoSoundAdvice(device: 'iPhone' | 'iPad'): string {
   const holder = device === 'iPhone' ? 'your Mac or another device' : 'another device';
-  return `The microphone gave no sound, so there is nothing to send. If ${holder} is using this ${device}'s ` +
-    `microphone, stop that, then record again. Restarting the ${device} also clears it.`;
+  return `If ${holder} is using this ${device}'s microphone, stop that, then record again. Restarting the ${device} also clears it.`;
+}
+
+/** What the voice sheet says of such a recording. */
+export function daveNoSoundMessage(device: 'iPhone' | 'iPad'): string {
+  return `The microphone gave no sound, so there is nothing to send. ${daveNoSoundAdvice(device)}`;
+}
+
+/**
+ * Build 232 round, item 9b (13 Oct 2026; the coordinator's decision): a way
+ * out. The level above has not been measured on a phone, nor on a recorder's
+ * second recording, nor through AirPods or a car. Read wrong somewhere, every
+ * dictation of two seconds or more was refused there until a new build, and
+ * he could neither send it nor keep it. A wrong level must cost him one more
+ * tap, not his dictation.
+ *
+ * His first tap on the sheet's own button still sends nothing; the sheet
+ * then says this, naming that button as the sheet shows it. His second tap,
+ * for the same recording, sends it as any recording is sent.
+ */
+export function daveNoSoundSendAnywayMessage(device: 'iPhone' | 'iPad', buttonLabel: string): string {
+  return `${daveNoSoundMessage(device)} If you did speak, tap ${buttonLabel} again to send it anyway.`;
+}
+
+/**
+ * Sent anyway, and the speech service could make nothing of it either: the
+ * state of 13 Oct itself. The sheet says both things, and what to do about a
+ * microphone that gives nothing; not the service's own "Record again in a
+ * quieter place", which sent him to the wrong place.
+ */
+export function daveNoSoundAndNotUnderstoodMessage(device: 'iPhone' | 'iPad'): string {
+  return 'The voice service could not make out any words in this recording, and the microphone seemed to give no sound. ' +
+    daveNoSoundAdvice(device);
+}
+
+/**
+ * Whether a failure is the speech service saying it could make nothing of
+ * the recording: its server's 502, "transcription_provider_failed" and
+ * "transcription_empty", which the service words as one sentence
+ * (daveVoiceTranscriptionErrorMessage). Known by that sentence's opening;
+ * the item's test holds the two together with the service's own function.
+ */
+export function daveVoiceServiceCouldNotUnderstand(reason: unknown): boolean {
+  return reason instanceof Error && reason.message.startsWith('The voice service could not understand this recording.');
 }

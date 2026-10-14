@@ -63,6 +63,9 @@ const NO_SOUND_IPHONE =
 const NO_SOUND_IPAD =
   'The microphone gave no sound, so there is nothing to send. If another device is using this iPad\'s ' +
   'microphone, stop that, then record again. Restarting the iPad also clears it.';
+// Item 9b (13 Oct 2026): after his first tap on the sheet's button the line also says how to send it anyway
+// (tests/components/b232-9b-voice-no-sound-send-anyway.test.tsx has the second tap and what follows it).
+const NO_SOUND_AND_HOW_TO_SEND_IT = `${NO_SOUND_IPHONE} If you did speak, tap Continue again to send it anyway.`;
 const NOT_UNDERSTOOD = 'The voice service could not understand this recording. Record again in a quieter place or type the answer.';
 const CLOSE_AND_KEEP = 'Close and Keep on This Device';
 
@@ -183,7 +186,7 @@ async function expectSentAsToday() {
 }
 
 describe('a recording that carried no sound at all (the Mac was using the iPhone’s microphone)', () => {
-  it('says so in plain words, keeps it for Replay, and does not send it: not on Stop, and not when he taps Continue', async () => {
+  it('says so in plain words, keeps it for Replay, and does not send it: not on Stop, and not when he first taps Continue', async () => {
     await putUp();
     await recordsFor(6, () => NOTHING);
     await stops();
@@ -191,10 +194,9 @@ describe('a recording that carried no sound at all (the Mac was using the iPhone
     expect(screen.getByText('0:06')).toBeTruthy();
     expectSilentRecordingInTheSheet();
 
+    // His first tap sends nothing; the line then also says how to send it anyway (item 9b).
     await taps('Continue');
-    expectSilentRecordingInTheSheet();
-    await taps('Continue');
-    expectSilentRecordingInTheSheet();
+    expectSilentRecordingInTheSheet(NO_SOUND_AND_HOW_TO_SEND_IT);
 
     // Not kept on the device either: brought back after a closed app it would be offered, and sent, as any other.
     await settle(200);
@@ -229,7 +231,7 @@ describe('a recording that carried no sound at all (the Mac was using the iPhone
     expectSilentRecordingInTheSheet();
   });
 
-  it('says it again, and still sends nothing, when the sheet was hidden and is shown again with it', async () => {
+  it('says it again at once, and still sends nothing, when the sheet was hidden and is shown again with it', async () => {
     await putUp();
     await recordsFor(6, () => NOTHING);
     await stops();
@@ -237,10 +239,11 @@ describe('a recording that carried no sound at all (the Mac was using the iPhone
 
     await act(async () => { screenControls.hide(); await pause(40); });
     await act(async () => { screenControls.show(); await pause(120); });
-    expect(screen.getByText('Recording ready')).toBeTruthy();
+    // At once, before any tap (review pass 5, V-L1).
+    expectSilentRecordingInTheSheet();
 
     await taps('Continue');
-    expectSilentRecordingInTheSheet();
+    expectSilentRecordingInTheSheet(NO_SOUND_AND_HOW_TO_SEND_IT);
     expect(keptFiles()).toEqual([]);
   });
 
