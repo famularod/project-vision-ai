@@ -26,6 +26,7 @@ import {
 import { markCurrentProjectScheduleDocument } from '../../services/DAVEDocumentWorkspace';
 import { bindPIEScheduleImportBatchProvenance } from '../../services/PIEScheduleImportBatch';
 import { scheduleImportAddsToMaster } from '../../services/ScheduleLookahead';
+import { scheduleTurnedHighLineBetween } from '../../services/ScheduleTurnedHigh';
 import {
   createOwnedLocalFileManifest,
   createOwnedLocalFileManifestRecord,
@@ -152,6 +153,8 @@ function phone(initial: { cards: Card[]; documents: ReferenceDocument[]; items: 
       [...approvedDocuments, ...documents],
     normalizeReferenceDocument: (value: unknown) => value,
     runScheduleImportCloudSync: jest.fn(async () => syncResult),
+    // Open item 2.38 (landed after this test): the approval names the tasks it turned High.
+    scheduleTurnedHighLineBetween,
     markScheduleItemsAuthorityReady: jest.fn(), markReferenceDocumentsAuthorityReady: jest.fn(),
     setScheduleItems: (items: ScheduleItem[]) => { state.items = items; },
     setReferenceDocuments: (documents: ReferenceDocument[]) => { state.documents = documents; },

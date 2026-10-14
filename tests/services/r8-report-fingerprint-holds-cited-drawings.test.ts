@@ -20,7 +20,7 @@
  * rows as the upload cuts them down, the one report recipe, the screen's own
  * citation function and the snapshot Approve saves. Synthetic data.
  */
-import { compactECOSDocumentIndexForCloud, compactECOSReferenceDocumentsForOperationalRead } from '../../services/ECOSDocumentIndexPersistence';
+import { compactECOSDocumentIndexForCloud, compactECOSReferenceDocumentsForOperationalRead, referenceDocumentsCitedAsListed } from '../../services/ECOSDocumentIndexPersistence';
 import { buildDAVELegacyReportSourceFingerprint, buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
 import {
@@ -155,7 +155,6 @@ describe('R8 item 2: and still nothing that belongs to a device', () => {
     ['where the cloud keeps the file, its size and checksum', { storagePath: 'owner-1/doc-a201/another.pdf', sizeBytes: 204800 }],
     ['the text read out of the file', { extractedText: null }],
     ['the text of the page, and of the region the Lot was found in', { extractedPages: [{ ...PAGE, text: null, regions: [{ ...REGION, text: 'LOT', evidenceText: 'SITE PLAN - LOT' }] }] }],
-    ['where on the page the Lot is', { extractedPages: [{ ...PAGE, regions: [{ ...REGION, x: 0.12, y: 0.08, width: 0.41, height: 0.29 }] }] }],
     ['which reader read the file', { extractionMethod: 'embedded_text_and_ocr', extractionStatus: 'partial' }],
     ['drawing details the citation does not print', { drawingDiscipline: 'Civil', drawingIssuedAt: '2026-09-19' }],
   ])('%s: the same citation, the same fingerprint, and the report is the one already sent', (_what, change) => {
@@ -168,6 +167,20 @@ describe('R8 item 2: and still nothing that belongs to a device', () => {
     // The truth a report is written from still holds none of it.
     expect(Object.keys(now.truths[0].intelligence.referenceDocuments.find(document => document.id === 'doc-a201') ?? {}).sort())
       .toEqual(['category', 'id', 'importedAt', 'isCurrent', 'name', 'notes', 'originalFileName', 'projectId', 'projectName', 'projectNames', 'uri']);
+  });
+
+  // HIGH item 1f (the final review's F1; the coordinator's decision: a report holds everything it prints in any of its
+  // outputs). Where on the page the Lot is decides the excerpt the Word file and the Reports screen show. Since high item 3
+  // every device cites a drawing from the list's own copy of its page index, so it is the same on each device (the next
+  // case): it no longer belongs to a device, and it is held. (R8 item 2 kept it out as a device's own.) The citation as
+  // printed does not change; the picture does.
+  it('where on the page the Lot is: the same citation, another part of the page shown: another report', () => {
+    const change = { extractedPages: [{ ...PAGE, regions: [{ ...REGION, x: 0.12, y: 0.08, width: 0.41, height: 0.29 }] }] };
+    const sent = reports([SCHEDULE, DRAWING]);
+    const now = reports(withDrawing(change));
+    expect(now.cites).toEqual(sent.cites);
+    expect(now.fingerprint).not.toBe(sent.fingerprint);
+    expect(alreadySent([SCHEDULE, DRAWING], withDrawing(change))).toBe(false);
   });
 
   it('the phone and the web, the drawing\'s row as the upload cuts its page index down: the same citation and the same fingerprint', async () => {
@@ -199,14 +212,18 @@ describe('R8 item 2: the web\'s fingerprint holds what the web\'s Word report ci
 });
 
 describe('R8 item 2: where two devices cite differently for the same saved project, their fingerprints differ, as their reports do', () => {
-  it('one phone: the session that read the drawing cites it; after the next launch its page index is emptied, it cites nothing, and that is another report', () => {
+  it('one phone, as its Reports screen cites: neither the drawing it has just read nor, after the next launch, anything; one report (high item 3 (c))', () => {
+    // Until high item 3 (the owner's instruction of 13 Oct 2026) the session that read the file cited it and the next
+    // launch did not, so the report was offered once more (review pass 3, P3-3). Now a report cites a drawing only from
+    // the index the cloud's document list gives (h3c-cite-only-the-lists-copy), never from the device's own reading.
     const [nextLaunch] = compactECOSReferenceDocumentsForOperationalRead([DRAWING]);
     expect(nextLaunch.extractedPages).toEqual([]);
-    const read = reports([SCHEDULE, DRAWING]);
-    const relaunched = reports([SCHEDULE, nextLaunch]);
-    expect([read.cites, relaunched.cites]).toEqual([['Lot: A-201 Site plan · Rev C · Page 1'], []]);
-    expect(relaunched.fingerprint).not.toBe(read.fingerprint);
-    expect(alreadySent([SCHEDULE, DRAWING], [SCHEDULE, nextLaunch])).toBe(false);
+    const asTheScreenCites = (documents: ReferenceDocument[]) => referenceDocumentsCitedAsListed(documents);
+    const read = reports(asTheScreenCites([SCHEDULE, DRAWING]));
+    const relaunched = reports(asTheScreenCites([SCHEDULE, nextLaunch]));
+    expect([read.cites, relaunched.cites]).toEqual([[], []]);
+    expect(relaunched.fingerprint).toBe(read.fingerprint);
+    expect(alreadySent(asTheScreenCites([SCHEDULE, DRAWING]), asTheScreenCites([SCHEDULE, nextLaunch]))).toBe(true);
   });
 
   it('the web, for a drawing whose row carries no page index (a Google Drive file): it cites nothing where the phone that read it cites the page', async () => {

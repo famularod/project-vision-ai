@@ -134,7 +134,7 @@ describe('R4 item 4a on the Reports screen: a sync that only reorders the saved 
     await approve();
     await waitFor(() => expect(stored()).not.toBeNull(), SLOW);
     const approved = stored();
-    expect(approved?.sourceFingerprint).toMatch(/^dave-report-source\/2\.0:/);
+    expect(approved?.sourceFingerprint).toMatch(/^dave-report-source\/3\.0:/);
     const before = await currentWork();
     expect(before).toEqual(['Excavate', 'Frame walls', 'Pour slab', 'Roofing']);
     view.rerender(screenFor(REORDERED));
@@ -191,7 +191,7 @@ describe('R4 item 4a on the Reports screen, reversed by R10: an approval made be
     expect(stored()).toMatchObject({ sourceFingerprint: underOne, deliveredAt: null });
     await act(async () => { buttons[1].onPress?.(); });
     await shareable();
-    await waitFor(() => expect(stored()?.sourceFingerprint).toMatch(/^dave-report-source\/2\.0:/), SLOW);
+    await waitFor(() => expect(stored()?.sourceFingerprint).toMatch(/^dave-report-source\/3\.0:/), SLOW);
     const approvedHere = stored();
     await copy();
     expect(onCopyReport).toHaveBeenCalledTimes(1);

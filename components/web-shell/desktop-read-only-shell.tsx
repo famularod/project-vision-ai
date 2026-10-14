@@ -113,8 +113,21 @@ import {
   planDAVEWebLinksRemovedWithTasks,
   type DAVEWebLinksLeftAfterDelete,
   daveWebScheduleDocumentDeleteNote,
+  daveWebDocumentDetailsRefusal,
+  daveWebScheduleCategoryStays,
+  DAVE_WEB_SCHEDULE_DETAILS_STAY_TEXT,
   daveWebScheduleImportPairingQuestions,
   daveWebScheduleUploadRoleRefusal,
+  daveWebScheduleUploadOtherProjectLine,
+  daveWebUploadMadeWithTicks,
+  DAVE_WEB_UPLOAD_TICKS_CHANGED_TEXT,
+  daveWebUploadMadeAsType,
+  DAVE_WEB_UPLOAD_TYPE_CHANGED_TEXT,
+  daveWebScheduleUploadProjectReview,
+  daveWebScheduleUploadRowNeedsProject,
+  daveWebScheduleUploadRowProject,
+  daveWebScheduleUploadUseProject,
+  daveWebFullScheduleProjectsLine,
   daveWebScheduleUploadRoleSuggestion,
   withDAVEWebScheduleUploadRole,
   formatDAVEWebReport,
@@ -159,7 +172,7 @@ import {
   projectItemWorkflowReadiness,
 } from '../../services/ProjectItemWorkflow';
 import { resolveWebReportWordMedia } from '../../services/ReportWordMedia.web';
-import { buildDAVEReportSourceFingerprint, REPORT_PERIOD_WAITING_LINE, reportPeriodMovementLines } from '../../services/DAVEReportIntelligence';
+import { buildDAVEReportSourceOnPeriod, REPORT_PERIOD_WAITING_LINE, reportPeriodMovementLines } from '../../services/DAVEReportIntelligence';
 import {
   buildDAVEReportSnapshot,
   daveReportSnapshotScopeKey,
@@ -229,6 +242,7 @@ import {
   daveWebReportAlreadySentElsewhereNote,
 } from '../../services/DAVEWebReportPeriod';
 import { buildAutomaticReportDrawingReferences } from '../../services/ReportDrawingReferences';
+import { referenceDocumentsCitedAsListed } from '../../services/ECOSDocumentIndexPersistence';
 import {
   ECOSDocumentExtractionCancelledError,
   extractECOSWebDocument,
@@ -3919,6 +3933,21 @@ function DocumentManagementWorkspace({
     () => (preparedUpload && reviewedRole ? withDAVEWebScheduleUploadRole(preparedUpload, reviewedRole) : preparedUpload),
     [preparedUpload, reviewedRole],
   );
+  // High item 2: a task the file names by no project of his waits for one; the upload is held until each has one.
+  const projectReview = useMemo(() => daveWebScheduleUploadProjectReview(preparedUpload), [preparedUpload]);
+  // A review made with other ticks than those shown (they changed while the file was read) is cleared: what is
+  // uploaded must be what the page shows at the press (review pass 2). So is one made under another document type
+  // (review pass H3, H3S-4).
+  useEffect(() => {
+    if (!preparedUpload) return;
+    const ticksChanged = !daveWebUploadMadeWithTicks(preparedUpload, uploadProjects);
+    if (!ticksChanged && daveWebUploadMadeAsType(preparedUpload, uploadCategory)) return;
+    setPreparedUpload(null);
+    setPreparedBytes(null);
+    setPreparedFile(null);
+    setNotice({ tone: 'danger', text: ticksChanged ? DAVE_WEB_UPLOAD_TICKS_CHANGED_TEXT : DAVE_WEB_UPLOAD_TYPE_CHANGED_TEXT });
+  }, [preparedUpload, uploadProjects, uploadCategory]);
+  const useForAll = projectReview.useForAll;
   const pairingQuestions = useMemo(() => roleReviewedUpload
     ? daveWebScheduleImportPairingQuestions({ snapshot: auth.snapshot, importedScheduleItems: roleReviewedUpload.scheduleItems, document: roleReviewedUpload.document })
     : [], [auth.snapshot, roleReviewedUpload]);
@@ -3975,6 +4004,13 @@ function DocumentManagementWorkspace({
   // WS1 item 4: a replaced lookahead with no task of its own still changed the master's tasks. What its delete can put
   // back, in the phone's sentence; empty when nothing goes back, and then one button is enough, as before. A lookahead
   // in effect is never deleted here (protectedCurrentDocument).
+  // The owner's answer to question 46 (13 Oct 2026), "Deleting a schedule file always removes its tasks with it": a
+  // file with tasks of its own, or with changes to put back, is deleted only with them here too (the button that kept
+  // them is gone; on an older master it listed every task a newer master had moved twice).
+  // Review pass 4, C-4 (the coordinator's decision, 13 Oct 2026): a document that is not a schedule by the app's own test
+  // (a message screenshot, "Schedule message - ...") keeps the dialog Build 231 gave it, "Delete Document Only" too: one
+  // picture of a set picked in one go could not be removed without every activity of the set.
+  const keepsDocumentOnlyDelete = Boolean(deleteCandidate && !scheduleDocumentIsScheduleLike(deleteCandidate));
   const lookaheadChangesNote = deleteCandidate && !protectedCurrentDocument &&
     scheduleDocumentAddsToMaster(deleteCandidate) && deleteCandidate.linkedScheduleItems.length === 0
     ? daveWebScheduleDocumentDeleteNote({ snapshot: { scheduleItems: tasks, knownScheduleItems: knownTasks, referenceDocuments: scheduleDocuments }, document: deleteCandidate })
@@ -4065,6 +4101,7 @@ function DocumentManagementWorkspace({
         category: uploadCategory,
         projectNames: uploadProjects,
         projects,
+        openProjectNames: auth.snapshot?.openCloudProjects?.map(project => project.name),
         fingerprint,
         versionGroupId:
           replacement?.webVersionGroupId || replacement?.drawingNumber?.trim() || replacement?.id || null,
@@ -4162,8 +4199,8 @@ function DocumentManagementWorkspace({
   async function uploadPreparedDocument() {
     if (!preparedUpload || !preparedBytes || !preparedFile || uploading) return;
     const roleRefusal = daveWebScheduleUploadRoleRefusal(preparedUpload, reviewedRole);
-    if (roleRefusal) {
-      setNotice({ tone: 'danger', text: roleRefusal });
+    if (roleRefusal || projectReview.heldLine) {
+      setNotice({ tone: 'danger', text: roleRefusal || projectReview.heldLine || '' });
       return;
     }
     const pairingRefusal = scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);
@@ -4215,7 +4252,7 @@ function DocumentManagementWorkspace({
         expectedSizeBytes: preparedUpload.document.sizeBytes || preparedFile.size,
       });
       if (uploadBytes !== preparedBytes) setPreparedBytes(uploadBytes);
-      await auth.uploadDocument(
+      const turnedHigh = await auth.uploadDocument(
         reviewedUpload,
         uploadBytes,
         preparedFile,
@@ -4226,7 +4263,7 @@ function DocumentManagementWorkspace({
         text: preparedUpload.scheduleItems.length > 0
           ? reviewedRole === 'lookahead'
             ? `Lookahead and ${preparedUpload.scheduleItems.length} reviewed schedule task${preparedUpload.scheduleItems.length === 1 ? '' : 's'} uploaded. It adds to the master schedule now, so there is nothing to make current.`
-            : `Document and ${preparedUpload.scheduleItems.length} reviewed schedule task${preparedUpload.scheduleItems.length === 1 ? '' : 's'} uploaded. Use Make Current when this schedule should replace the active version.`
+            : `Document and ${preparedUpload.scheduleItems.length} reviewed schedule task${preparedUpload.scheduleItems.length === 1 ? '' : 's'} uploaded. Use Make Current when this schedule should replace the active version.${turnedHigh ? ` ${turnedHigh}` : ''}`
           : normalizedName(preparedUpload.document.category) === 'drawing'
             ? 'Drawing uploaded. Vitruvius is preparing it in the background; it will remain unavailable to Ask ECOS until preparation passes and you make this exact revision current.'
             : 'Document uploaded and classified in the shared project record.',
@@ -4297,11 +4334,12 @@ function DocumentManagementWorkspace({
       // which the activation's response says and the notice names.
       const documentsBefore = auth.snapshot?.referenceDocuments ?? [];
       const scope = isSchedule ? await auth.setCurrentSchedule(document) : null;
+      const turnedHigh = isSchedule ? auth.takeScheduleTurnedHighLine?.(document.id) : null; // which tasks it turned High (open item 2.38)
       if (!isSchedule) await auth.setCurrentDocument(document);
       setNotice({
         tone: 'good',
         text: isSchedule
-          ? scheduleActivationNotice(document, documentsBefore, scope ?? 'schedule')
+          ? `${scheduleActivationNotice(document, documentsBefore, scope ?? 'schedule')}${turnedHigh ? ` ${turnedHigh}` : ''}`
           : `“${document.name}” is now current. Vitruvius will use it only after the hosted index confirms this exact source, project, and revision. Prior revisions remain available as history.`,
       });
     } catch (error) {
@@ -4539,6 +4577,12 @@ function DocumentManagementWorkspace({
     next: Partial<ReferenceDocument>,
   ) {
     if (uploading) return;
+    // Open item 2.34: a schedule file with tasks keeps its Category (the form does not offer another; refused here too).
+    const refusal = daveWebDocumentDetailsRefusal(document, next);
+    if (refusal) {
+      setNotice({ tone: 'danger', text: refusal });
+      return;
+    }
     setUploading(true);
     setNotice(null);
     try {
@@ -4747,6 +4791,7 @@ function DocumentManagementWorkspace({
                 <DesktopScheduleUploadRole
                   suggestion={roleSuggestion}
                   chosen={chosenRole}
+                  savedFor={daveWebFullScheduleProjectsLine(preparedUpload, reviewedRole)}
                   disabled={uploading}
                   onChoose={role => setRoleReview(current => (current ? { ...current, chosen: role } : current))}
                 />
@@ -4758,13 +4803,13 @@ function DocumentManagementWorkspace({
                       <View style={styles.dataRow}>
                         <View style={styles.dataGrow}>
                           <Text style={styles.dataTitle}>{item.taskName}</Text>
-                          <Text style={styles.dataMeta}>{item.projectName}{item.locationName ? ` · ${item.locationName}` : ''}</Text>
+                          <Text style={styles.dataMeta}>{daveWebScheduleUploadRowProject(preparedUpload, item)}{item.locationName ? ` · ${item.locationName}` : ''}</Text>
                           <Text style={styles.dataDetail}>{item.status} · {item.percentComplete}% · Finish {formatCalendarDate(item.finishDate)}</Text>
                           {/* A date outside 2000 to 2100 is pointed out before the upload, not changed (review pass 1, L3). */}
                           {scheduleDatesToCheck(item).map(check => (
                             <Text key={check.which} style={styles.errorText}>{check.text}</Text>
                           ))}
-                          {uploadProjects.length > 1 ? (
+                          {uploadProjects.length > 1 || daveWebScheduleUploadRowNeedsProject(item) ? (
                             <View style={[styles.optionRow, styles.taskProjectChoices]}>
                               {uploadProjects.map(project => {
                                 const selected = normalizedName(item.projectName) === normalizedName(project);
@@ -4811,10 +4856,23 @@ function DocumentManagementWorkspace({
                   onChange={answer => setPairingAnswers(current => ({ ...current, [pairingKey(question)]: answer }))}
                 />
               ))}
+              {projectReview.savedUnderLine ? <Text style={styles.dataMeta}>{projectReview.savedUnderLine}</Text> : null}
+              {projectReview.heldLine ? <Text style={styles.errorText}>{projectReview.heldLine}</Text> : null}
+              {daveWebScheduleUploadOtherProjectLine(preparedUpload) ? <Text style={styles.dataMeta}>{daveWebScheduleUploadOtherProjectLine(preparedUpload)}</Text> : null}
+              {useForAll ? (
+                <Pressable
+                  style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
+                  onPress={() => setPreparedUpload(current => (current ? daveWebScheduleUploadUseProject(current, useForAll.project) : current))}
+                  disabled={uploading}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.secondaryButtonText}>{useForAll.label}</Text>
+                </Pressable>
+              ) : null}
               <Pressable
-                style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed, uploading && styles.buttonDisabled]}
+                style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed, (uploading || projectReview.heldLine) && styles.buttonDisabled]}
                 onPress={() => { void uploadPreparedDocument(); }}
-                disabled={uploading}
+                disabled={uploading || Boolean(projectReview.heldLine)}
                 accessibilityRole="button"
               >
                 {uploading ? (
@@ -4891,9 +4949,9 @@ function DocumentManagementWorkspace({
                   ? ` This import has ${deleteCandidate.linkedScheduleItems.length} linked task${deleteCandidate.linkedScheduleItems.length === 1 ? '' : 's'}.`
                   : ' No linked imported tasks were found.'}
                 {deleteCandidate.linkedScheduleItems.length > 0 && !linkedTasksAreRevisionSafe
-                  ? ' Those legacy tasks do not have safe cloud revisions, so this page will keep them.'
+                  ? keepsDocumentOnlyDelete ? ' Those legacy tasks do not have safe cloud revisions, so this page will keep them.'
+                    : ' Those legacy tasks do not have safe cloud revisions, so this page cannot delete them with the file. Delete this schedule on the iPhone or iPad: Delete PDF + Items there removes them with it.'
                   : daveWebScheduleDocumentDeleteNote({ snapshot: { scheduleItems: tasks, knownScheduleItems: knownTasks, referenceDocuments: scheduleDocuments }, document: deleteCandidate }) /* as the phone's question says it (review N2 W1) */}
-                {lookaheadChangesNote ? ' Delete Document Only leaves those tasks as they show now.' : ''}
               </Text>
             )}
           </View>
@@ -4910,7 +4968,7 @@ function DocumentManagementWorkspace({
                   : scheduleDocumentAddsToMaster(deleteCandidate) ? 'Keep Lookahead' : 'Keep Current Document'}
               </Text>
             </Pressable>
-            {!protectedCurrentDocument ? (
+            {!protectedCurrentDocument && (keepsDocumentOnlyDelete || (deleteCandidate.linkedScheduleItems.length === 0 && !lookaheadChangesNote)) ? (
               <Pressable
                 style={({ pressed }) => [styles.dangerButton, pressed && styles.buttonPressed]}
                 onPress={() => { void confirmDelete(false); }}
@@ -4929,7 +4987,7 @@ function DocumentManagementWorkspace({
                 disabled={deleting}
                 accessibilityRole="button"
               >
-                <Text style={styles.primaryButtonText}>{DAVE_WEB_DELETE_WITH_CHANGES_LABEL}</Text>
+                <Text style={styles.primaryButtonText}>{deleting ? 'Deleting…' : DAVE_WEB_DELETE_WITH_CHANGES_LABEL}</Text>
               </Pressable>
             ) : null}
             {!protectedCurrentDocument && deleteCandidate.linkedScheduleItems.length > 0 && linkedTasksAreRevisionSafe ? (
@@ -4940,7 +4998,7 @@ function DocumentManagementWorkspace({
                 accessibilityRole="button"
               >
                 <Text style={styles.primaryButtonText}>
-                  {`Delete Document + ${deleteCandidate.linkedScheduleItems.length} Task${deleteCandidate.linkedScheduleItems.length === 1 ? '' : 's'}`}
+                  {deleting ? 'Deleting…' : `Delete Document + ${deleteCandidate.linkedScheduleItems.length} Task${deleteCandidate.linkedScheduleItems.length === 1 ? '' : 's'}`}
                 </Text>
               </Pressable>
             ) : null}
@@ -5561,6 +5619,9 @@ function DocumentECOSDetailsEditor({
   }
 
   const drawing = normalizedName(category) === 'drawing';
+  // Open item 2.34 and review pass H4, H4S-1: a schedule file with tasks keeps its Category and Projects (changed, its
+  // tasks came back on every device, or Make Current on it hid another project's tasks), so nothing here is offered.
+  const stays = daveWebScheduleCategoryStays(document);
   const canSave = selectedProjects.length > 0 && (!drawing || (
     Boolean(number.trim()) && Boolean(revision.trim()) && Boolean(issueStatus)
   ));
@@ -5570,15 +5631,24 @@ function DocumentECOSDetailsEditor({
       <Text style={styles.sectionDetail}>These fields control project scope, revision authority, and whether ECOS may use this source.</Text>
       <View style={styles.fieldGroup}>
         <Text style={styles.fieldLabel}>Category</Text>
-        <OptionButtons<string>
-          options={DAVE_WEB_DOCUMENT_CATEGORIES}
-          value={category}
-          onChange={setCategory}
-        />
+        {stays ? (
+          <Text style={styles.dataDetail}>{document.category}</Text>
+        ) : (
+          <OptionButtons<string>
+            options={DAVE_WEB_DOCUMENT_CATEGORIES}
+            value={category}
+            onChange={setCategory}
+          />
+        )}
       </View>
       <View style={styles.fieldGroup}>
         <Text style={styles.fieldLabel}>Projects</Text>
-        <View style={styles.optionRow}>
+        {stays ? (
+          <>
+            <Text style={styles.dataDetail}>{[...new Set(initialProjects)].join(', ')}</Text>
+            <Text style={styles.dataMeta}>{DAVE_WEB_SCHEDULE_DETAILS_STAY_TEXT}</Text>
+          </>
+        ) : <View style={styles.optionRow}>
           {projects.map(project => {
             const selected = selectedProjects.some(value => normalizedName(value) === normalizedName(project));
             return (
@@ -5595,7 +5665,7 @@ function DocumentECOSDetailsEditor({
               </Pressable>
             );
           })}
-        </View>
+        </View>}
         {selectedProjects.length === 0 ? <Text style={styles.errorText}>Choose at least one project.</Text> : null}
       </View>
       {drawing ? (
@@ -5621,23 +5691,25 @@ function DocumentECOSDetailsEditor({
         >
           <Text style={styles.secondaryButtonText}>Cancel</Text>
         </Pressable>
-        <Pressable
-          style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed, (!canSave || pending) && styles.buttonDisabled]}
-          onPress={() => onSave({
-            category,
-            projectName: selectedProjects[0] || null,
-            projectNames: selectedProjects,
-            drawingNumber: drawing ? number.trim() || null : null,
-            drawingRevision: drawing ? revision.trim() || null : null,
-            drawingDiscipline: drawing ? discipline.trim() || null : null,
-            drawingStatus: drawing ? issueStatus : null,
-            drawingIssuedAt: drawing ? issueDate.trim() || null : null,
-          })}
-          disabled={!canSave || pending}
-          accessibilityRole="button"
-        >
-          <Text style={styles.primaryButtonText}>{pending ? 'Saving…' : 'Save Document Details'}</Text>
-        </Pressable>
+        {stays ? null : (
+          <Pressable
+            style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed, (!canSave || pending) && styles.buttonDisabled]}
+            onPress={() => onSave({
+              category,
+              projectName: selectedProjects[0] || null,
+              projectNames: selectedProjects,
+              drawingNumber: drawing ? number.trim() || null : null,
+              drawingRevision: drawing ? revision.trim() || null : null,
+              drawingDiscipline: drawing ? discipline.trim() || null : null,
+              drawingStatus: drawing ? issueStatus : null,
+              drawingIssuedAt: drawing ? issueDate.trim() || null : null,
+            })}
+            disabled={!canSave || pending}
+            accessibilityRole="button"
+          >
+            <Text style={styles.primaryButtonText}>{pending ? 'Saving…' : 'Save Document Details'}</Text>
+          </Pressable>
+        )}
       </View>
     </View>
   );
@@ -5782,7 +5854,6 @@ function ReportWorkspace({
     () => buildDAVEWebReportTruths(snapshot, selectedProject),
     [selectedProject, snapshot],
   );
-  const reportFingerprint = useMemo(() => buildDAVEReportSourceFingerprint(reportTruths), [reportTruths]);
   const periodScopeKey = daveReportSnapshotScopeKey(reportTruths.map(truth => truth.projectName));
   const periodReadKey = `${periodScopeKey}|${reportAudience}`;
   const [periodRead, setPeriodRead] = useState<{ key: string; read: DAVEWebReportPeriodRead }>({
@@ -5808,6 +5879,14 @@ function ReportWorkspace({
   const currentPeriodRead: DAVEWebReportPeriodRead = periodRead.key === periodReadKey
     ? periodRead.read
     : { status: 'loading' };
+  // HIGH item 1c: worked out against the report this one counts from (the period's last report, as shared), where a
+  // task's saved time prints ("since the last report"); the same on the phone and the iPad reading the same period.
+  const currentPeriodSnapshot = periodRead.key === periodReadKey && periodRead.read.status !== 'loading' ? periodRead.read.snapshot ?? null : null;
+  // HIGH item 1d: of the report in the format chosen here (the period read is that format's), as that report prints it.
+  const reportFingerprint = useMemo(
+    () => buildDAVEReportSourceOnPeriod(reportTruths, currentPeriodSnapshot, reportAudience).fingerprint,
+    [currentPeriodSnapshot, reportAudience, reportTruths],
+  );
   const period = daveWebReportPeriodState({
     read: currentPeriodRead,
     fingerprint: reportFingerprint,
@@ -5848,8 +5927,8 @@ function ReportWorkspace({
     [briefing, reportAudience, sinceSection],
   );
   const currentReportSource = useMemo(
-    () => buildDAVEWebReportSource(snapshot, selectedProject, period.periodKey, periodWaiting),
-    [period.periodKey, periodWaiting, selectedProject, snapshot],
+    () => buildDAVEWebReportSource(snapshot, selectedProject, period.periodKey, periodWaiting, currentPeriodSnapshot, reportAudience),
+    [currentPeriodSnapshot, period.periodKey, periodWaiting, reportAudience, selectedProject, snapshot],
   );
   const reportDocuments = documents.filter(document => reportRecordFromDocument(document));
   const [reportId, setReportId] = useState(() => createDAVEWebId('web-report'));
@@ -6197,7 +6276,8 @@ function ReportWorkspace({
         sourceUpdates.flatMap(update => update.photos.map(photo => photo.id)),
       );
       const drawingReferences = buildAutomaticReportDrawingReferences({
-        documents: [...snapshot.referenceDocuments],
+        // High item 3: a drawing piece only from the list's copy of its index.
+        documents: referenceDocumentsCitedAsListed([...snapshot.referenceDocuments] as ReferenceDocument[]),
         scheduleItems: [...snapshot.scheduleItems],
         selectedProjectNames,
       });

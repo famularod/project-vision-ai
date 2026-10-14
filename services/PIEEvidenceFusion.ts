@@ -26,6 +26,7 @@ import {
   scheduleHasAuthoritativeProgressJudgment,
   type PIEScheduleReconciliationResult,
 } from './PIEScheduleReconciliation';
+import { scheduleCalendarDay } from './ScheduleCalendarDay';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import {
@@ -161,6 +162,8 @@ export type PIEPhotoEvidence = {
   gpsAccuracy: number | null;
   /** When the photo's GPS was taken: the update's fix time when the photo took that fix (GPS review pass 22). */
   gpsCapturedAt?: string | null;
+  /** Chosen from the library: its own location says where it was taken, never where you are now (3.26). */
+  pickedFromLibrary?: boolean;
   hasGps: boolean;
   isIssue: boolean;
   isSafety: boolean;
@@ -509,14 +512,20 @@ export function buildFusedEvidence({
 export function extractScheduleEvidence({
   projectName,
   scheduleItems = [],
+  now,
 }: {
   projectName?: string | null;
   scheduleItems?: ScheduleItem[];
+  /**
+   * The moment the days are counted from; the device's clock when not given (as the runtime counts them). HIGH
+   * item 1: the report's fingerprint names the "Schedule focus" the written report prints, at the report's moment.
+   */
+  now?: Date;
 }): PIEScheduleEvidence[] {
   return scheduleItems
     .filter(item => matchesProject(projectName, item.projectName))
     .map(item => {
-      const days = daysUntilDate(item.finishDate);
+      const days = now ? daysUntilDate(item.finishDate, now) : daysUntilDate(item.finishDate);
       const isComplete = scheduleProgressIsComplete(item);
       const notes = trimOrNull(item.notes);
       const importedFrom = trimOrNull(item.importedFrom ?? '');
@@ -535,7 +544,7 @@ export function extractScheduleEvidence({
         areaName: item.locationName.trim() || 'Unassigned area',
         startDate: trimOrNull(item.startDate),
         dueDate: trimOrNull(item.finishDate),
-        dueLabel: dueStatusText(item.finishDate),
+        dueLabel: now ? dueStatusText(item.finishDate, now) : dueStatusText(item.finishDate),
         daysUntilDue: days,
         status: item.status,
         percentComplete: item.percentComplete,
@@ -647,6 +656,7 @@ export function extractPhotoEvidence({
           gpsLongitude: photo.gpsLongitude ?? null,
           gpsAccuracy: photo.gpsAccuracy ?? null,
           gpsCapturedAt: photoGpsCapturedAt(photo, update),
+          ...(photo.pickedFromLibrary === true ? { pickedFromLibrary: true } : {}),
           hasGps,
           isIssue,
           isSafety,
@@ -722,7 +732,9 @@ export function extractGPSEvidence({
     }));
   // Ordered by the activity's time (a late photo orders its update, pass
   // 12); the reading's currency runs from the fix's time (pass 22).
-  const photoGps = photoEvidence.map(photo => ({
+  // A library photo's own location (3.26) is where it was taken, maybe days
+  // ago: it is never the latest reading of where you are (pass 9).
+  const photoGps = photoEvidence.filter(photo => !photo.pickedFromLibrary).map(photo => ({
     projectName: photo.projectName,
     areaId: photo.areaId ?? null,
     areaName: namedArea(photo.areaName),
@@ -1666,12 +1678,180 @@ function scheduleStatusSummary(fusedEvidence: PIEFusedEvidence) {
   return 'No urgent schedule concern is detected from imported items.';
 }
 
+/**
+ * The runtime's own "what changed" sentence (intelligentSummary.whatChanged:
+ * its briefings' "what changed", and what memory recall, pattern matching
+ * and evidence quality are handed as the new evidence).
+ *
+ * Build 232 item 3 part 3 (the coordinator's decision): it took the FIRST
+ * update in the list this device holds as the latest, so the device that
+ * recorded an update and the device that received it by sync were handed
+ * two different "latest" updates. It now takes the newest by the update's
+ * own date, by the one rule the written report reads them by
+ * (`fieldUpdatesNewestFirst`), and the task in focus the same way
+ * (`taskInScheduleFocus`). Its count of days stays ("Due in 4 days"): it is
+ * read on the day, not sent.
+ */
 function whatChangedSummary(fusedEvidence: PIEFusedEvidence) {
-  const latestUpdate = fusedEvidence.userUpdateEvidence[0];
-  const latestPhoto = fusedEvidence.photoEvidence[0];
-  const nextSchedule = fusedEvidence.scheduleEvidence.find(
-    item => item.isOverdue || item.isUpcoming7 || item.isUpcoming14,
-  );
+  return whatChangedSentence(fusedEvidence, task => task.dueLabel);
+}
+
+/**
+ * Field updates NEWEST FIRST BY THEIR OWN DATE, the one order the written
+ * report reads them in (Build 232 item 2 part A, the coordinator's decision
+ * on reports review pass 4, P4-1 and P4-2).
+ *
+ * The phone's written report took "latest" to be the first update in the
+ * list this device holds, and led each work area with the notes at the front
+ * of that list. A device that records an update puts it at the front of its
+ * list; a device that receives it by sync puts it at the end. So an iPad
+ * called a three-day-old note the "Latest update", and showed "Your other
+ * device already sent this report" above a report that read differently
+ * from the one the phone sent.
+ *
+ * The date is the update's `date`, the one the app shows as the update's
+ * date. It names a day and carries no time of day, so the updates of one day
+ * go by their id, the later id first: every device holds the same ids, and
+ * the app's own ids begin with the moment the update was started
+ * (services/RecordValues uid), so the later id is the later update. An update
+ * with no readable date goes last. The saved list itself is not reordered
+ * (App.tsx stores and merges it as before).
+ */
+export function fieldUpdatesNewestFirst<T extends { id: string; date?: string | null }>(updates: readonly T[]): T[] {
+  return updates
+    .map((update, index) => {
+      const moment = Date.parse(update.date || '');
+      return { update, index, moment: Number.isFinite(moment) ? moment : null };
+    })
+    .sort((left, right) => {
+      if (left.moment !== right.moment) {
+        if (left.moment === null) return 1;
+        if (right.moment === null) return -1;
+        return right.moment - left.moment;
+      }
+      if (left.update.id !== right.update.id) return left.update.id > right.update.id ? -1 : 1;
+      return left.index - right.index;
+    })
+    .map(entry => entry.update);
+}
+
+/** What the report orders a task by: its dates as days, then its name, its area and its id. */
+type ReportTaskOrderKey = Readonly<{ finish: string | null | undefined; start: string | null | undefined; name: string; area: string; id: string }>;
+
+function compareTasksInReportOrder(left: ReportTaskOrderKey, right: ReportTaskOrderKey) {
+  // A date that names no day (blank, "TBD") goes last. The app's one reading of a schedule date.
+  const day = (value: string | null | undefined) => {
+    const named = scheduleCalendarDay(value);
+    if (!named) return Number.MAX_SAFE_INTEGER;
+    const [year, month, dayOfMonth] = named.split('-').map(Number);
+    return Date.UTC(year, month - 1, dayOfMonth);
+  };
+  // By code unit, never by locale, so every device puts them in the same order.
+  const plain = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+  return day(left.finish) - day(right.finish) || day(left.start) - day(right.start) ||
+    plain(left.name, right.name) || plain(left.area, right.area) || plain(left.id, right.id);
+}
+
+/**
+ * The saved tasks in the ONE order the written report's older writer reads
+ * them in (Build 232 item 3 part 1, the coordinator's decision on item 2's
+ * finding F1): by finish date, then start date (a task with no date last),
+ * then name, area and id.
+ *
+ * The section WORK AREAS / PHOTO NOTES filed its schedule lines, and found
+ * the task an update belongs to, in the order of the list this device holds.
+ * The app saves tasks in the order a sync leaves them, so two devices with
+ * the same tasks printed the same lines in another order, under one
+ * fingerprint: "Your other device already sent this report" above a report
+ * that did not read the same.
+ *
+ * It is the report recipe's own fixed order, the one Current Work's lines
+ * fall back on (DAVEProjectTruth scheduleTruthInStableOrder, which the
+ * writer cannot reach: that module is private to the recipe and far above
+ * this one). Written here once more, from the same reading of a schedule
+ * date, and held to the recipe's by a kept test. Nothing of a task's own is
+ * read that every device does not hold the same, and nothing of today's
+ * date. The saved list itself is not reordered.
+ */
+export function scheduleTasksInReportOrder<
+  T extends Pick<ScheduleItem, 'id' | 'taskName' | 'locationName' | 'startDate' | 'finishDate'>,
+>(items: readonly T[]): T[] {
+  return items
+    .map((item, index) => ({
+      item,
+      index,
+      key: { finish: item.finishDate, start: item.startDate, name: item.taskName, area: (item.locationName || '').trim(), id: item.id },
+    }))
+    .sort((left, right) => compareTasksInReportOrder(left.key, right.key) || left.index - right.index)
+    .map(entry => entry.item);
+}
+
+/**
+ * The task the "Schedule focus" names: the first of the fusion's ranked
+ * tasks that is overdue or due within two weeks, as before. Several of one
+ * rank due on one day came in the order of this device's list; of those,
+ * the first in the report's own order (Build 232 item 3 part 1).
+ */
+function taskInScheduleFocus(scheduleEvidence: readonly PIEScheduleEvidence[]) {
+  const inWindow = scheduleEvidence.filter(item => item.isOverdue || item.isUpcoming7 || item.isUpcoming14);
+  const first = inWindow[0];
+  if (!first) return undefined;
+  const level = inWindow.filter(item =>
+    scheduleEvidenceRank(item) === scheduleEvidenceRank(first) && item.daysUntilDue === first.daysUntilDue);
+  if (level.length < 2) return first;
+  const key = (item: PIEScheduleEvidence): ReportTaskOrderKey =>
+    ({ finish: item.dueDate, start: item.startDate, name: item.taskName, area: item.areaName, id: item.id });
+  return level
+    .map((item, index) => ({ item, index }))
+    .sort((left, right) => compareTasksInReportOrder(key(left.item), key(right.item)) || left.index - right.index)[0].item;
+}
+
+/**
+ * The "what changed" sentence as the WRITTEN report prints it, in its WORK
+ * AREAS / PHOTO NOTES section (Build 232 item 2 part A). The same three parts
+ * as `whatChangedSummary`, the runtime's own, and since Build 232 item 3
+ * part 3 the same latest update and latest photo: the newest by the
+ * update's own date (`fieldUpdatesNewestFirst`), not the first in this
+ * device's list.
+ *
+ * Part B (the coordinator's decision): one difference from the runtime's
+ * own, so that two days write the same words. The task in focus is given
+ * its DATE, as the rest of the
+ * written report gives a task's date ("due 10/17/2026", the date as the
+ * schedule holds it), not a count of days from today ("Due in 4 days", "Due
+ * tomorrow", "Due today", "3 days overdue"): that read differently every
+ * morning under one fingerprint, so "already sent" stood above a report
+ * that was not the one sent. An overdue task reads "was due 10/09/2026". It
+ * changes when the task crosses that line, and the fingerprint moves then.
+ * `taskDate: false` leaves the date out ("Schedule focus: Pour slab."): the
+ * report writer names the sentence's work area from that form, as it did
+ * before the sentence carried a date.
+ */
+export function whatChangedForWrittenReport(
+  fusedEvidence: Readonly<{
+    userUpdateEvidence: ReadonlyArray<Pick<PIEUserUpdateEvidence, 'id' | 'date' | 'notes'>>;
+    photoEvidence: ReadonlyArray<Pick<PIEPhotoEvidence, 'updateId' | 'caption'>>;
+    scheduleEvidence: readonly PIEScheduleEvidence[];
+  }>,
+  { taskDate = true }: Readonly<{ taskDate?: boolean }> = {},
+) {
+  return whatChangedSentence(fusedEvidence, task => (taskDate ? `${task.isOverdue ? 'was due' : 'due'} ${task.dueDate}` : null));
+}
+
+/** "Latest update: ... Latest photo: ... Schedule focus: <task> (<what the reader is told of its date>)." */
+function whatChangedSentence(
+  fusedEvidence: Parameters<typeof whatChangedForWrittenReport>[0],
+  taskInBrackets: (task: PIEScheduleEvidence) => string | null,
+) {
+  const updates = fieldUpdatesNewestFirst(fusedEvidence.userUpdateEvidence);
+  const placeOfUpdate = new Map(updates.map((update, index) => [update.id, index] as const));
+  const latestUpdate = updates[0];
+  // The first photo of the newest update that has one; an update's own photos keep their order.
+  const latestPhoto = fusedEvidence.photoEvidence
+    .map((photo, index) => ({ photo, index, place: placeOfUpdate.get(photo.updateId) ?? Number.MAX_SAFE_INTEGER }))
+    .sort((left, right) => left.place - right.place || left.index - right.index)[0]?.photo;
+  const nextSchedule = taskInScheduleFocus(fusedEvidence.scheduleEvidence);
+  const inBrackets = nextSchedule ? taskInBrackets(nextSchedule) : null;
 
   return uniqueText([
     latestUpdate?.notes
@@ -1681,7 +1861,7 @@ function whatChangedSummary(fusedEvidence: PIEFusedEvidence) {
       ? `Latest photo: ${truncate(latestPhoto.caption, 100)}`
       : null,
     nextSchedule
-      ? `Schedule focus: ${nextSchedule.taskName} (${nextSchedule.dueLabel}).`
+      ? `Schedule focus: ${nextSchedule.taskName}${inBrackets ? ` (${inBrackets})` : ''}.`
       : null,
   ]).join(' ') || 'No recent change is visible from current evidence.';
 }

@@ -206,9 +206,14 @@ describe('S6 item 1: a master that moves a task', () => {
     expect(one(onH, 'Framing').priority).toBe('Medium');
   });
 
-  it('a task the master leaves on its dates is the same row, its priority as it was, set or not', () => {
+  // REVERSED by the owner's answer to question 47 (13 Oct 2026). It read "...its priority as it was, set or not" and
+  // expected Framing to stay Medium. Framing's finish (10/11) is within the week of G's import, so G's file gives its
+  // row High: the task is turned High though G leaves it on its dates. Roof, which he set Low, stays Low; unset and
+  // a month out it stays Medium. (More: owner-answer-q47-critical-raises-unmoved-task.)
+  it('a task the master leaves on its dates is the same row: a priority he set stays as it was; one he never set is turned High when its finish has come within the week', () => {
     const onG = approve(set(onF, roofF, 'Low'), G, [FRAMING_F, ROOF]);
-    expect([one(onG, 'Framing').id, one(onG, 'Framing').priority, one(onG, 'Roof').id, one(onG, 'Roof').priority]).toEqual([framingF, 'Medium', roofF, 'Low']);
+    expect([one(onG, 'Framing').id, one(onG, 'Framing').priority, one(onG, 'Roof').id, one(onG, 'Roof').priority]).toEqual([framingF, 'High', roofF, 'Low']);
+    expect(one(approve(onF, G, [FRAMING_F, ROOF]), 'Roof').priority).toBe('Medium');
   });
 
   it('rows saved before this build: a Low he set follows; a Medium or High there cannot be told from the file\'s and takes the new row\'s, as on Build 229', () => {

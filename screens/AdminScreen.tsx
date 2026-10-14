@@ -28,6 +28,7 @@ import { queuedDocumentChangesSnapshot, subscribeToQueuedDocumentChanges } from 
 import { signOutNotInCloudSentences } from '../services/SignOutNotInCloudWarning';
 import { scheduleItemConflictCopyOfFields, scheduleItemConflictFieldLabel, scheduleItemConflictFields } from '../services/ScheduleItemEditBase';
 import { fieldUpdateConflictChanges } from '../services/FieldUpdateEditBase';
+import { checkFieldUpdatesAgainstCloud, fieldUpdateCloudCheckText } from '../services/FieldUpdateCloudCheck';
 import { DAVECaptureConfirmationSheet } from '../components/DAVECaptureConfirmationSheet';
 import { Screen } from '../components/layout/Screen';
 import { ScreenCard } from '../components/layout/ScreenCard';
@@ -247,6 +248,9 @@ export function AdminScreen({
   // still miss a photo analysis that landed before Settings re-rendered.
   const savedUpdatesRef = useRef(savedUpdates);
   savedUpdatesRef.current = savedUpdates;
+  // Open item 2.30: "Check field updates against the cloud" (read only; it sends and changes nothing).
+  const [fieldUpdateCheckRunning, setFieldUpdateCheckRunning] = useState(false);
+  const [fieldUpdateCheck, setFieldUpdateCheck] = useState<ReturnType<typeof fieldUpdateCloudCheckText> | null>(null);
   const [syncConflicts, setSyncConflicts] = useState<SyncConflict[]>([]);
   const [conflictReviewVisible, setConflictReviewVisible] = useState(false);
   const [resolvingConflictId, setResolvingConflictId] = useState<string | null>(null);
@@ -508,6 +512,21 @@ export function AdminScreen({
       <ScreenSection title="Data & Sync">
         <ScreenCard style={styles.settingsCard}>
           <SettingsActionRow icon="sync-outline" title={isSyncing ? 'Syncing…' : 'Sync Now'} detail="Sync projects, updates, schedules, areas, and documents" onPress={() => { void handleFullSyncNow(); }} disabled={isSyncing} />
+          <SettingsActionRow
+            icon="search-outline"
+            title={fieldUpdateCheckRunning ? 'Checking…' : 'Check field updates against the cloud'}
+            detail="Lists field updates on this device marked Cloud Synced that the cloud does not have. Sends nothing, changes nothing."
+            onPress={() => { void checkFieldUpdatesNow(); }}
+            disabled={fieldUpdateCheckRunning}
+          />
+          {fieldUpdateCheck ? (
+            <View accessibilityRole="summary">
+              <Text style={styles.actionSummary} selectable>{fieldUpdateCheck.summary}</Text>
+              {fieldUpdateCheck.items.map((line, index) => (
+                <Text key={`${index}-${line}`} style={styles.actionSummary} selectable>{`• ${line}`}</Text>
+              ))}
+            </View>
+          ) : null}
           <TouchableOpacity
             style={styles.settingsRow}
             onPress={() => setDataRecoveryOpen(open => !open)}
@@ -801,6 +820,18 @@ export function AdminScreen({
       setAdminActionSummary(message);
     } finally {
       setIsSyncing(false);
+    }
+  }
+
+  /** Only when he taps it: one look at the cloud's lists, then what it found. Nothing is sent or changed. */
+  async function checkFieldUpdatesNow() {
+    if (fieldUpdateCheckRunning) return;
+    setFieldUpdateCheckRunning(true);
+    setFieldUpdateCheck(null);
+    try {
+      setFieldUpdateCheck(fieldUpdateCloudCheckText(await checkFieldUpdatesAgainstCloud(savedUpdatesRef.current)));
+    } finally {
+      setFieldUpdateCheckRunning(false);
     }
   }
 

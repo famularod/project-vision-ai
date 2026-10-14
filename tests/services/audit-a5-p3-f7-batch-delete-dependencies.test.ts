@@ -88,7 +88,7 @@ function harness(items: ScheduleItem[], documents: ReferenceDocument[]) {
     buttons.find(button => button.text === text)?.onPress?.();
     await new Promise(resolve => setImmediate(resolve));
   };
-  return { ...mod.exports, press, scheduleItemsCurrentRef, updates, warnings };
+  return { ...mod.exports, press, offered: () => buttons.map(button => button.text), scheduleItemsCurrentRef, updates, warnings };
 }
 
 describe('"Delete PDF + Items" and the tasks that survive it (whole-app audit A5 pass 3 F7)', () => {
@@ -112,11 +112,16 @@ describe('"Delete PDF + Items" and the tasks that survive it (whole-app audit A5
     expect([...h.warnings]).toEqual(['shared']);
   });
 
-  it('Delete PDF Only leaves every dependency as stored', async () => {
+  // Reversed by the owner's answer to question 46 (13 Oct 2026: "Remove 'Delete PDF Only' everywhere"). It was: 'Delete
+  // PDF Only leaves every dependency as stored' (it pressed that button). The question has no such button now; leaving
+  // it with Cancel is the one way to keep the file, and it stores nothing.
+  it('there is no Delete PDF Only (owner answer 46): the question offers Cancel and Delete PDF + Items, and Cancel leaves every dependency as stored', async () => {
     const h = harness(items(), [v1, v2]);
     h.deleteScheduleDocument('rev-2');
-    await h.press('Delete PDF Only');
+    expect(h.offered()).toEqual(['Cancel', 'Delete PDF + Items']);
+    await h.press('Cancel');
     expect(h.updates).toEqual([]);
+    expect(h.scheduleItemsCurrentRef.current.map(item => item.id)).toEqual(['shared', 'only-2a', 'only-2b', 'kept']);
   });
 
   it('the rule takes several ids and gives one change per successor', () => {

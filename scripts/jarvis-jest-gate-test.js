@@ -7,6 +7,11 @@
  * side (VIC_JEST_PARTS), because one in-band run does not fit a runner. This
  * holds two things: the Mac's run is the command it always was, and the
  * parts mode gives up nothing the gate checks.
+ *
+ * Build 232: every jest this gate starts, the one run and each part, is
+ * started with node's --no-sparkplug in front of the jest script (see the
+ * gate script for why). scripts/jest-no-sparkplug-test.js holds the other
+ * places the repo starts jest and what the flag does.
  */
 
 const assert = require('node:assert/strict');
@@ -14,6 +19,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const {
+  JEST_NODE_FLAGS,
   MAX_PARTS,
   PARTS_ENVIRONMENT_NAME,
   coverageFailures,
@@ -36,12 +42,23 @@ assert(
   'scripts/jarvis-release-gate-test.js must run this contract.',
 );
 
-// The Mac: nothing set, one run, and exactly the command the gate has always used.
+// Node's own flags for every jest this gate starts. They go before the jest script: after it they would be
+// handed to jest, which does not know them.
+assert.deepEqual(JEST_NODE_FLAGS, ['--no-sparkplug']);
+const gateSource = fs.readFileSync(path.join(__dirname, 'jarvis-jest-gate.js'), 'utf8');
+// Both ways the gate starts jest take their command line from jestArguments, and nothing else in it starts a process.
+assert(gateSource.includes('spawnSync(process.execPath, jestArguments(coverageDirectory), {'), 'the one run must start jest with jestArguments.');
+assert(gateSource.includes('await run(jestArguments(partDirectory(part), part))'), 'each part must start jest with jestArguments.');
+assert(gateSource.includes('spawn(process.execPath, args, {'), 'a part must be started with the arguments it is given.');
+assert.equal(gateSource.match(/\bspawn(?:Sync)?\(/g).length, 2, 'the gate starts jest in two places, the one run and a part.');
+
+// The Mac: nothing set, one run, and the command the gate has always used, behind node's flags.
 assert.equal(PARTS_ENVIRONMENT_NAME, 'VIC_JEST_PARTS');
 for (const unset of [{}, { VIC_JEST_PARTS: '' }, { VIC_JEST_PARTS: '  ' }, { VIC_JEST_PARTS: '1' }]) {
   assert.equal(partCount(unset), 1);
 }
 assert.deepEqual(jestArguments('/tmp/coverage'), [
+  '--no-sparkplug',
   jestBinary,
   '--runInBand',
   '--watchman=false',
@@ -60,6 +77,7 @@ for (const wrong of ['0', '-2', '2.5', 'three', String(MAX_PARTS + 1), '1e1']) {
 // Each part is still jest in band with coverage, never a worker pool.
 const partArguments = jestArguments('/tmp/coverage/part-2', { index: 2, count: 3 });
 assert.deepEqual(partArguments, [
+  '--no-sparkplug',
   jestBinary,
   '--runInBand',
   '--watchman=false',
@@ -174,6 +192,8 @@ function writeCoverage(name, coverage) {
       ['--shard=1/3', '--shard=2/3', '--shard=3/3'],
     );
     assert(passing.started.every(args => args.includes('--runInBand') && args.includes('--coverage')));
+    // Every part is started with node's flag in front of the jest script.
+    assert(passing.started.every(args => args[0] === '--no-sparkplug' && args[1] === jestBinary));
     assert.equal(new Set(passing.started.map(args => args.find(argument => argument.startsWith('--coverageDirectory=')))).size, 3);
     // Everything each part printed is shown, part by part, and the merged totals after them.
     for (const expected of ['---- jest part 1 of 3 ----\nPASS tests/a.test.ts', '---- jest part 3 of 3 ----\nPASS tests/c.test.ts', 'Coverage summary (3 parts merged)', 'Statements   : 100% ( 4/4 )']) {
@@ -201,7 +221,7 @@ function writeCoverage(name, coverage) {
       ['Jest did not produce fresh coverage for 2 of 2 parts.'],
     );
 
-    console.log('Strict jest gate contract PASS: one in-band run when VIC_JEST_PARTS is not set; in-band parts side by side when it is, with the same warnings and coverage floors.');
+    console.log('Strict jest gate contract PASS: every jest behind node --no-sparkplug; one in-band run when VIC_JEST_PARTS is not set; in-band parts side by side when it is, with the same warnings and coverage floors.');
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

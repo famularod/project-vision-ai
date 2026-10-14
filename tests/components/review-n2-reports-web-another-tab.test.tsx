@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react-native';
 
 import { DesktopReadOnlyShell } from '../../components/web-shell/desktop-read-only-shell';
-import { buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
+import { buildDAVEReportSourceOnPeriod } from '../../services/DAVEReportIntelligence';
 import {
   buildDAVEReportSnapshot,
   markReportSnapshotDelivered,
@@ -178,8 +178,9 @@ async function otherTabApprovesAndCopies(snapshot: DAVEWebReadOnlySnapshot, sent
     cloud: otherTab.daveWebReportSnapshotCloud(mockAuth.loadReportPeriod, mockAuth.saveReportPeriod as never),
   };
   const truths = buildDAVEWebReportTruths(snapshot, null);
-  const facts = buildDAVEReportSourceFingerprint(truths);
   const period = (await otherTab.loadDAVEWebReportPeriod(store, 'tower', 'project_manager')).snapshot;
+  // As its page works it out since HIGH item 1c: against the report it counts from.
+  const facts = buildDAVEReportSourceOnPeriod(truths, period).fingerprint;
   const current = buildDAVEReportSnapshot({ truths, scopeKey: 'tower', sourceFingerprint: facts, capturedAt: snapshot.refreshedAt, reportFormat: 'project_manager' });
   expect((await otherTab.approveDAVEWebReportPeriod(store, current, reportPeriodSentAt(period))).status).toBe('saved');
   expect((await otherTab.recordDAVEWebReportSend(store, { scopeKey: 'tower', reportFormat: 'project_manager' }, facts, sentAt))?.status).toBe('saved');
@@ -386,7 +387,7 @@ describe('review N2 (Low): what does not stop a report', () => {
       cloud: otherTab.daveWebReportSnapshotCloud(mockAuth.loadReportPeriod, mockAuth.saveReportPeriod as never),
     };
     const truths = buildDAVEWebReportTruths(AT_70(), null);
-    const later = buildDAVEReportSnapshot({ truths, scopeKey: 'tower', sourceFingerprint: buildDAVEReportSourceFingerprint(truths), capturedAt: AT_70().refreshedAt, reportFormat: 'project_manager' });
+    const later = buildDAVEReportSnapshot({ truths, scopeKey: 'tower', sourceFingerprint: buildDAVEReportSourceOnPeriod(truths, sharedSnapshot()).fingerprint, capturedAt: AT_70().refreshedAt, reportFormat: 'project_manager' });
     expect((await otherTab.approveDAVEWebReportPeriod(store, later, '2026-10-01T10:00:00.000Z')).status).toBe('saved');
     await settle();
     // This tab reads the period again (a refresh that changes no facts here): the approval waiting is that one.
@@ -403,6 +404,10 @@ describe('review N2 (Low): what does not stop a report', () => {
     // The report approved here is still on screen; this tab's own record is never called another tab's.
     expect(screen.queryAllByText(/Another tab of this browser/)).toHaveLength(0);
     fireEvent.press(screen.getByText('Share Approved Report'));
+    // HIGH items 1 and 1c: the refresh changes no fingerprint (under 2.0 its six minutes alone did). But the period
+    // now runs from the send just marked (the other tab's report), so the report on this page counts from that one:
+    // it is no longer the report approved here, which counted from the phone's (A6 pass 8 M1, an approval stands only
+    // on its period), and the page says it could not record it.
     expect(await screen.findByText(NOT_RECORDED)).toBeTruthy();
     expect(copied()).toHaveBeenCalledTimes(1);
     expect(screen.queryAllByText(/Another tab of this browser/)).toHaveLength(0);

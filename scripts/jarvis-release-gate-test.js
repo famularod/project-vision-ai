@@ -222,3 +222,8 @@ console.log('ECOS Assurance release gate timeout and manifest contracts PASS.');
 // the suite runs as in-band parts side by side). It runs from here so that
 // the release-hardening checks, which run this file, hold it as well.
 require('./jarvis-jest-gate-test');
+
+// Build 232: every jest the repo starts (that gate, the package.json scripts,
+// the GitHub workflows) is started with node's --no-sparkplug, and jest's
+// worker processes get it. Held from here for the same reason.
+require('./jest-no-sparkplug-test');

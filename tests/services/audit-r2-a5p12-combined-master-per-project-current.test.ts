@@ -85,7 +85,10 @@ function webUpload(id: string, projects: string[], importedAt: string, file: { r
   });
   expect(prepared.extractionStatus).toBe('ready');
   const document = { ...prepared.document, id, name: id } as ReferenceDocument;
-  const items = prepared.scheduleItems.map((item, index) => ({ ...item, id: `${id}-${index + 1}`, sourceDocumentId: id }) as ScheduleItem);
+  // Open item 2.35 (13 Oct 2026): the desktop now keeps a PDF's root only where it is a ticked project, as the phone
+  // does; Build 231's desktop kept it on every row, and his cloud may still hold such rows. These scenarios are
+  // about those rows, so the upload is taken as Build 231's desktop saved it: the root as each row's schedule parent.
+  const items = prepared.scheduleItems.map((item, index) => ({ ...item, scheduleProjectName: prepared.fileScheduleProjectNames?.[item.id] ?? item.scheduleProjectName, id: `${id}-${index + 1}`, sourceDocumentId: id }) as ScheduleItem);
   return { document, items };
 }
 

@@ -22,7 +22,8 @@ describe('reference-document startup cache contract', () => {
       'value: compactECOSReferenceDocumentsForOperationalRead(referenceDocuments)',
     );
     expect(supabaseSource).toContain(
-      'const compactDocuments = compactECOSReferenceDocumentsForOperationalRead(documents);',
+      // High item 3 (c): the list's own compaction, which also takes the list's copy of a drawing's index.
+      'const compactDocuments = compactECOSReferenceDocumentsFromTheDocumentList(documents);',
     );
     expect(supabaseSource).toContain(
       'return okResult(compactDocuments, status);',

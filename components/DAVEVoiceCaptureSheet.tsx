@@ -14,6 +14,7 @@ import {
   Alert,
   AppState,
   Modal,
+  Platform,
   StyleSheet,
   Text,
   TextInput,
@@ -41,7 +42,14 @@ import type { DAVEVoiceUnderstandingResponse } from '../services/DAVEVoiceUnders
 import type { DAVEProjectWalkContext } from '../services/DAVEProjectWalk';
 import {
   DAVE_MIN_RECORDING_DURATION_MS,
+  DAVE_NO_LEVELS_YET,
+  daveNoSoundAndNotUnderstoodMessage,
+  daveNoSoundMessage,
+  daveNoSoundSendAnywayMessage,
+  daveRecordingHadNoSound,
   daveRecordingIsLongEnough,
+  daveVoiceServiceCouldNotUnderstand,
+  noteDAVERecordingLevel,
   preserveDAVERecordingDuration,
 } from '../services/DAVEVoiceRecording';
 import { colors, spacing } from '../theme';
@@ -118,6 +126,11 @@ type RecordingHeldAside = Readonly<{ uri: string; durationMs: number; madeFor: K
 function sameAccountAndProject(left: KeepsUnder, right: KeepsUnder): boolean {
   return left.account === right.account &&
     left.projectName.trim().toLowerCase() === right.projectName.trim().toLowerCase();
+}
+
+/** The device the "no sound" lines name (item 9); only an iPhone or iPad is asked for levels. */
+function deviceNamed(): 'iPhone' | 'iPad' {
+  return Platform.OS === 'ios' && Platform.isPad ? 'iPad' : 'iPhone';
 }
 
 const MAX_RECORDING_SECONDS = 180;
@@ -202,8 +215,13 @@ export function DAVEVoiceCaptureSheet({
 }) {
   const { width } = useWindowDimensions();
   const usesTabletSheet = daveVoiceCaptureUsesTabletSheet(width);
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  // Build 232 item 9 (13 Oct 2026): the same recording as before, and on an iPhone or iPad the recorder
+  // is also asked how loud its microphone is (RecorderState.metering). Not elsewhere: Android's and the
+  // browser's levels are made another way, and theirs are not known to tell a dead microphone apart.
+  const recorder = useAudioRecorder({ ...RecordingPresets.HIGH_QUALITY, isMeteringEnabled: Platform.OS === 'ios' });
   const recorderState = useAudioRecorderState(recorder, 200);
+  // The levels the recorder has answered with during the recording under way (item 9).
+  const recordingLevelsRef = useRef(DAVE_NO_LEVELS_YET);
   const [recordingUri, setRecordingUri] = useState<string | null>(null);
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -261,8 +279,10 @@ export function DAVEVoiceCaptureSheet({
   const sentForWordsRef = useRef(false);
   const [keptChecked, setKeptChecked] = useState(!keepsOnDevice);
   // Review N1 L3: when this recording was dictated and the walk's area then;
-  // `restored` when it was brought back from the device.
-  const captureRef = useRef<(DAVEVoiceKeptCapture & { restored: boolean }) | null>(null);
+  // `restored` when it was brought back from the device. `noSound` when its microphone gave nothing (item 9).
+  // `sendAnyway` (item 9b): 'told' once his tap on the button was answered with how to send it anyway, on
+  // this showing of the sheet; 'sent' once his next tap sent it, and `noSound` is then off for good.
+  const captureRef = useRef<(DAVEVoiceKeptCapture & { restored: boolean; noSound?: boolean; sendAnyway?: 'told' | 'sent' }) | null>(null);
   const recordingUriRef = useRef<string | null>(null);
   recordingUriRef.current = recordingUri;
   // Review P5 N1: a recording the sheet let go of (it was shown for another project) that the phone
@@ -313,7 +333,12 @@ export function DAVEVoiceCaptureSheet({
       autoStartHandledRef.current = false;
       return;
     }
-    setError(null);
+    // Item 9b (review pass 5, V-L1): a recording with no sound that is still in the sheet (it was hidden
+    // without his Cancel) is shown with its red line at once; it was "Recording ready" with no word until
+    // he tapped. A tap he made before the sheet was hidden is not counted: the line does not say "again".
+    const silent = captureRef.current?.noSound ? captureRef.current : null;
+    if (silent) captureRef.current = { ...silent, sendAnyway: undefined };
+    setError(silent ? daveNoSoundMessage(deviceNamed()) : null);
     setNotice(null);
     preparingOperationRef.current = null;
     setIsTranscribing(false);
@@ -374,6 +399,7 @@ export function DAVEVoiceCaptureSheet({
         recorderState.durationMillis,
         recorder.currentTime * 1_000,
       );
+      recordingLevelsRef.current = noteDAVERecordingLevel(recordingLevelsRef.current, recorderState.metering);
       return;
     }
     if (!recordingActiveRef.current || !recorderState.url) return;
@@ -385,7 +411,7 @@ export function DAVEVoiceCaptureSheet({
     );
     // finishRecordingThatEndedOnItsOwn only reads refs and stable setters.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [recorder, recorderState.durationMillis, recorderState.isRecording, recorderState.url]);
+  }, [recorder, recorderState.durationMillis, recorderState.isRecording, recorderState.metering, recorderState.url]);
 
   // The recorder stops reporting isRecording without the owner pressing Stop in two
   // cases: the 3-minute limit (already stopped) or, on iOS, a phone lock, auto-lock or
@@ -406,7 +432,7 @@ export function DAVEVoiceCaptureSheet({
     const abandoned = generation !== transcriptionOperationRef.current;
     if (uri && !abandoned) {
       recordingDurationRef.current = duration;
-      noteRecordingCaptured(uri, duration);
+      noteRecordingCaptured(uri, duration, daveRecordingHadNoSound(recordingLevelsRef.current));
       setRecordingUri(uri);
       setRecordingDuration(duration);
     }
@@ -596,6 +622,7 @@ export function DAVEVoiceCaptureSheet({
     setRecordingUri(null);
     setRecordingDuration(0);
     recordingDurationRef.current = 0;
+    recordingLevelsRef.current = DAVE_NO_LEVELS_YET;
 
     // Review N2 follow-up: X, the system's back or Type Instead in the moment
     // before the recorder had started closed the sheet, and the recorder then
@@ -713,10 +740,24 @@ export function DAVEVoiceCaptureSheet({
    * signal, so the app closed at "Recording ready" (or after a lock or call
    * stopped it), during the first "Preparing…", or after "The voice upload
    * was interrupted" lost the dictation.
+   *
+   * Build 232 item 9 (13 Oct 2026): `noSound` when the recorder's microphone
+   * gave nothing for the whole of it (his Mac was using the iPhone's
+   * microphone). The sheet says so at once. The recording stays in the sheet,
+   * so he can Replay it and hear that for himself; it is not sent for its
+   * words unless he taps the sheet's button twice (transcribeRecording, item
+   * 9b), and until then it is not kept on the device, where it would come
+   * back as a recording to use.
    */
-  function noteRecordingCaptured(uri: string, duration: number) {
-    captureRef.current = { recordedAt: new Date().toISOString(), walkArea: walkContext?.recommendedArea ?? null, restored: false };
-    if (keepsOnDevice && daveRecordingIsLongEnough(duration)) void keepRecordingOnDevice(uri, duration, 'ready');
+  function noteRecordingCaptured(uri: string, duration: number, noSound = false) {
+    captureRef.current = { recordedAt: new Date().toISOString(), walkArea: walkContext?.recommendedArea ?? null, restored: false, noSound };
+    if (noSound) setError(noSoundWords());
+    else if (keepsOnDevice && daveRecordingIsLongEnough(duration)) void keepRecordingOnDevice(uri, duration, 'ready');
+  }
+
+  /** What the sheet says of a recording with no sound at all (item 9). */
+  function noSoundWords(): string {
+    return daveNoSoundMessage(deviceNamed());
   }
 
   /**
@@ -982,7 +1023,7 @@ export function DAVEVoiceCaptureSheet({
       }
       if (!uri) throw new Error('Recording file missing.');
       recordingDurationRef.current = stoppedDuration;
-      noteRecordingCaptured(uri, stoppedDuration);
+      noteRecordingCaptured(uri, stoppedDuration, daveRecordingHadNoSound(recordingLevelsRef.current));
       setRecordingUri(uri);
       setRecordingDuration(stoppedDuration);
       await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
@@ -1002,8 +1043,24 @@ export function DAVEVoiceCaptureSheet({
     }
   }
 
-  async function transcribeRecording(uri: string, duration: number) {
+  async function transcribeRecording(uri: string, duration: number, hisTap = false) {
     if (isTranscribing) return;
+    // Item 9: a recording whose microphone gave nothing is not sent: the speech service could only fail on it.
+    // Item 9b (13 Oct 2026): unless he says he did speak. The level is not measured on a phone, and a
+    // level read wrong must not cost him his dictation. Nothing is sent by itself (Stop on a sheet that
+    // sends on Stop is not his tap). His first tap on the sheet's button sends nothing and is told how to
+    // send it anyway; his next tap on it, for this same recording, sends it as any recording.
+    const judged = captureRef.current;
+    if (judged?.noSound) {
+      if (!hisTap || judged.sendAnyway !== 'told') {
+        if (hisTap) captureRef.current = { ...judged, sendAnyway: 'told' };
+        setError(hisTap ? daveNoSoundSendAnywayMessage(deviceNamed(), continueLabel) : noSoundWords());
+        return;
+      }
+      // A recording like any other from here on: sent, kept on the device and offered as one. `sent` only
+      // remembers what the level had said, for the words below should the service find nothing either.
+      captureRef.current = { ...judged, noSound: false, sendAnyway: 'sent' };
+    }
     if (!daveRecordingIsLongEnough(duration)) {
       setError(`The recording is too short. Speak for at least ${DAVE_MIN_RECORDING_DURATION_MS / 1_000} second, then try again.`);
       return;
@@ -1058,7 +1115,12 @@ export function DAVEVoiceCaptureSheet({
       const kept = keepsOnDevice &&
         await keepRecordingOnDevice(uri, duration, daveVoiceFailureIsWaitingForSignal(reason) ? 'no-signal' : 'sent');
       if (operation !== transcriptionOperationRef.current) return;
-      setError(daveVoiceFailureMessage(reason, continueLabel, kept && daveVoiceFailureIsTheUpload(reason)));
+      // Item 9b: sent anyway, and the speech service could make nothing of it either. Not its own words,
+      // which send him to a quieter place: both things, and what to do about a microphone that gives
+      // nothing. Every other failure keeps its own words.
+      setError(captureRef.current?.sendAnyway === 'sent' && daveVoiceServiceCouldNotUnderstand(reason)
+        ? daveNoSoundAndNotUnderstoodMessage(deviceNamed())
+        : daveVoiceFailureMessage(reason, continueLabel, kept && daveVoiceFailureIsTheUpload(reason)));
     } finally {
       if (operation === transcriptionOperationRef.current) {
         preparingOperationRef.current = null;
@@ -1085,9 +1147,10 @@ export function DAVEVoiceCaptureSheet({
       : `Stopped waiting. The recording is kept here while Vitruvius stays open. Tap ${continueLabel} to try again.`);
   }
 
+  /** His tap on the sheet's own button (continueLabel). */
   async function transcribe() {
     if (!recordingUri) return;
-    await transcribeRecording(recordingUri, recordingDuration);
+    await transcribeRecording(recordingUri, recordingDuration, true);
   }
 
   // A finished recording that has not been used (for example after an offline
@@ -1117,7 +1180,9 @@ export function DAVEVoiceCaptureSheet({
       void leave();
       return;
     }
-    if (keepsOnDevice) {
+    // Not offered for a recording with no sound (item 9): kept, it would come back as one to use.
+    // Offered again once he has sent it anyway (item 9b): it is then kept as any recording that was sent.
+    if (keepsOnDevice && !captureRef.current?.noSound) {
       Alert.alert(
         'Discard this recording?',
         'It has not been used yet. Discarding deletes it from this device. ' +

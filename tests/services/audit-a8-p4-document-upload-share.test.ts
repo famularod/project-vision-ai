@@ -221,7 +221,7 @@ function phone(options: Readonly<{
     isComplianceSensitiveProjectDocument: () => Boolean(options.sensitive),
     findSharedReferenceDocumentForProjectDocument,
     // A shared copy's edit, queued after a pause (the real lifecycle is tested in audit-a8-p2-document-sync).
-    projectDocumentSharedRecordSync: { cancel: jest.fn(), queueAfterChange: (id: string) => { sharedEdits.push(id); } },
+    projectDocumentSharedRecordSync: { cancel: jest.fn(), queueAfterChange: (id: string) => { sharedEdits.push(id); }, noteOwnEdit: jest.fn() }, // S1e: the card's own edit is recorded too
     // updateProjectDocument (the card's edits). The stored-record normalizer is not under test here.
     normalizeProjectDocument: (document: PhoneDocument) => document, synchronizeSharedReferenceDocumentMetadata,
     deleteOwnedProjectDocument: async () => {

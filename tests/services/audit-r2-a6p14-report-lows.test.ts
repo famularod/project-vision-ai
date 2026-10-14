@@ -317,9 +317,10 @@ describe('A6 p14 L2: a note made on the other device before the report, received
     expect(snapshot.version).toBe('dave-report-snapshot/1.0');
     expect(snapshot.tasks.map(task => [task.taskName, task.contentKey]))
       .toEqual([['Framing', 'task-content/1:03e0aa72'], ['Pour slab', 'task-content/1:3cf9048f']]);
-    // R4 item 4a (deliberate): the 1.0 fingerprint is still worked out, to the same value, beside today's 2.0.
+    // R4 item 4a (deliberate): the 1.0 fingerprint is still worked out, to the same value, beside today's version
+    // (3.0 since HIGH item 1).
     expect(buildDAVELegacyReportSourceFingerprint([truthOf(received, NOW)])).toBe('dave-report-source/1.0:4678986f');
-    expect(buildDAVEReportSourceFingerprint([truthOf(received, NOW)])).toMatch(/^dave-report-source\/2\.0:[0-9a-f]{8}$/);
+    expect(buildDAVEReportSourceFingerprint([truthOf(received, NOW)])).toMatch(/^dave-report-source\/3\.0:[0-9a-f]{8}$/);
   });
 });
 

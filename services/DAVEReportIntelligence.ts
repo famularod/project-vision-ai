@@ -4,30 +4,42 @@ import {
   buildScheduleTaskAccounting,
   scheduleTaskDurationWeight,
 } from './dave-project-schedule-rollup';
-import type { ScheduleItem } from '../types';
+import type { ReferenceDocument, ScheduleItem } from '../types';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import {
   buildDAVEReportSnapshot,
   compareDAVEReportSnapshots,
   rememberLegacyReportSource,
+  rememberVersion2ReportSource,
+  reportBaselineSnapshot,
+  sameReportSource,
   daveReportSnapshotScopeKey,
   reportPeriodWaitingForOtherDevice,
   reportTaskEarlierRows,
   reportTasksAddedByLookahead,
   reportTasksLeftByLookahead,
+  type DAVEReportFormat,
   type DAVEReportPeriodComparison,
   type DAVEReportSnapshot,
 } from './DAVEReportSnapshot';
 
 export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/2.0' as const;
 /**
+ * 3.0 (HIGH item 1, the owner's instruction of 13 Oct 2026, the three high
+ * items): of Project Truth, what a report prints, and every record it is made
+ * from; no longer what Project Truth counts from "now" and no output prints
+ * (reportSourceFactsOf3, below). Then what the phone's written report prints
+ * that Project Truth does not hold (writtenReportFacts). HIGH item 1d: of the
+ * report's chosen format (reportAsPrinted).
  * 2.0 (R4 item 4a): the fingerprint no longer follows the order the tasks
- * were saved in, nor the id each device files the project under. 1.0 is
- * still worked out beside it for reports made under it (DAVEReportSnapshot,
- * sameReportSource).
+ * were saved in, nor the id each device files the project under. It is still
+ * worked out beside 3.0, and a report made under it is known by it for the
+ * same facts (DAVEReportSnapshot, sameReportSource). 1.0 is still worked out
+ * for R7's rule, and none of its names stands (R10).
  */
-export const DAVE_REPORT_SOURCE_VERSION = 'dave-report-source/2.0' as const;
+export const DAVE_REPORT_SOURCE_VERSION = 'dave-report-source/3.0' as const;
+const DAVE_VERSION_2_REPORT_SOURCE_VERSION = 'dave-report-source/2.0' as const;
 const DAVE_LEGACY_REPORT_SOURCE_VERSION = 'dave-report-source/1.0' as const;
 
 export type DAVEReportAction = Readonly<{
@@ -156,16 +168,33 @@ export type DAVEReportBriefing = Readonly<{
  */
 export function buildDAVEReportSourceFingerprint(
   truths: readonly DAVEProjectTruth[],
+  /**
+   * HIGH item 1c: the report this one counts "since the last report" from (none: a first report). Its lines, and
+   * Completed Work's, are where a task's saved time prints; 3.0 holds them as printed against it. On a screen, ask
+   * buildDAVEReportSourceOnPeriod, which chooses it as the screen does.
+   */
+  countedFrom: DAVEReportSnapshot | null = null,
+  /**
+   * HIGH item 1d (open item 7.55): the report's format. Each format has its own period (owner answer Q17) and prints
+   * its own report; 3.0 holds what THAT report prints, on the phone and on the desktop.
+   */
+  format: DAVEReportFormat = 'project_manager',
 ): string {
-  const truthFingerprints = truths
-    .map(truth => ({
-      projectName: normalized(truth.projectName),
-      fingerprint: stableHash(stableStringify(canonicalizeReportSourceValue(
-        withoutVolatileReportSourceFields(reportSourceFactsOf(truth), LEFT_OUT_OF_REPORT_SOURCE_2_0),
-      ))),
-    }))
-    .sort((left, right) => left.projectName.localeCompare(right.projectName));
-  const fingerprint = `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify(truthFingerprints))}`;
+  // HIGH items 1b, 1c and 1d: what the report of this format prints, on every device, counted from `countedFrom`
+  // (reportAsPrinted: the "since the last report" lines and Completed Work, where saved times print, and every other
+  // part a device shows of it); for the Project Manager report, beside it, the records its WORK AREAS / PHOTO NOTES
+  // section is written from, which no device but the phone can write (reportSourceFactsOf3). And WHICH report it
+  // counts from (its own fingerprint and send): the report prints it ("Since the report sent Oct 13, 2026"), and two
+  // reports counted from two reports are two reports, even where both say "+0 completed; +0 open; +0 overdue." and no
+  // more (else the period's next report, counted from the last one, could take that one's name).
+  const fingerprint = `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify({
+    format,
+    projects: format === 'executive'
+      ? hashOfProjects(truths, executiveReportFilesOf, LEFT_OUT_OF_REPORT_SOURCE_3_0)
+      : hashOfProjects(truths, reportSourceFactsOf3, LEFT_OUT_OF_REPORT_SOURCE_3_0),
+    printed: reportAsPrinted(truths, countedFrom, format),
+    countedFrom: countedFrom ? { report: countedFrom.sourceFingerprint, sentAt: countedFrom.deliveredAt ?? null } : null,
+  }))}`;
   // R7 item A (the coordinator's decision on review pass 1, F0): a 1.0 fingerprint is a name of these facts only
   // where this build's report counts the same field updates as Build 230's did for the same saved data. Where it
   // counts even one that Build 230 left out, the 1.0 fingerprint is of a report without it, blind to whatever
@@ -174,7 +203,101 @@ export function buildDAVEReportSourceFingerprint(
   // The 1.0 fingerprint of the same facts, so a report made under it is still known (R4 item 4a).
   // R10: no longer offered (EARLIER_VERSION_NAMES_STAND). This is the one place today's facts are given a 1.0 name.
   rememberLegacyReportSource(fingerprint, EARLIER_VERSION_NAMES_STAND && countsWhatBuild230Counted ? buildDAVELegacyReportSourceFingerprint(truths) : null);
+  // HIGH item 1 (d): the 2.0 fingerprint of the same facts, so that a report approved or sent under 2.0 (Builds 231
+  // and 232) is known for exactly what 2.0 itself knew it, until the next report replaces it. Its name stands
+  // (unlike 1.0's): this version changes when a report is offered, not one word of it. HIGH item 1e: except for a
+  // combined report, whose projects 2.0's builds printed in the order they were ticked and this build prints by name:
+  // the same facts may read in another order, so, as R10 decided for 1.0, it is offered once after the update.
+  rememberVersion2ReportSource(fingerprint, truths.length > 1 ? '' : buildDAVEVersion2ReportSourceFingerprint(truths));
   return fingerprint;
+}
+
+/**
+ * HIGH item 1c (the coordinator's decision on reports review H1R-1 and H1R-2): today's fingerprint of a report on a
+ * screen whose last report is `period` (the period's last approved or sent report, the one report_snapshots shares
+ * between the devices), and the report it counts from.
+ *
+ * A task's saved time prints only through the "since the last report" lines (and Completed Work), and which lines
+ * print depends on the report this one counts from; so 3.0 is worked out against it. Which report that is depends on
+ * whether this report IS the period's last one (then it counts from what that one counted from, `supersedes`, as it
+ * did when it was approved), or another (then from the period's last send). So it is asked in that order, as
+ * reportBaselineSnapshot answers it: first against what the period's last report counted from; if that is the
+ * period's last report's own fingerprint, this is that report; if not, against the report the period now runs from.
+ * Every device reading the same period (the shared record) and holding the same records works out the same value.
+ * HIGH item 1d: of the report's format, the period's own (each format has its own period). And it is that report only
+ * where, that report being sent, a report counted from it would say nothing of what has happened since (no line of
+ * "since the last report", no count moved): a change that report itself prints nowhere but the next one says (an
+ * owner moved after a first report: "Set roof owner changed from Dana to Eli.") is news to send, not the report sent.
+ */
+export function buildDAVEReportSourceOnPeriod(
+  truths: readonly DAVEProjectTruth[],
+  period: DAVEReportSnapshot | null | undefined,
+  format: DAVEReportFormat = 'project_manager',
+): Readonly<{ fingerprint: string; countedFrom: DAVEReportSnapshot | null }> {
+  if (!period) return { fingerprint: buildDAVEReportSourceFingerprint(truths, null, format), countedFrom: null };
+  // As the period's last report was counted (reportBaselineSnapshot of the same report).
+  const asThatReport = reportBaselineSnapshot(period, period.sourceFingerprint);
+  const same = buildDAVEReportSourceFingerprint(truths, asThatReport, format);
+  if (sameReportSource(period.sourceFingerprint, same) && (typeof period.deliveredAt !== 'string' || nothingSaidSince(truths, period))) {
+    return { fingerprint: same, countedFrom: asThatReport };
+  }
+  // Another report: counted from the period's last send (reportBaselineSnapshot of another report).
+  const countedFrom = reportBaselineSnapshot(period, '');
+  return { fingerprint: buildDAVEReportSourceFingerprint(truths, countedFrom, format), countedFrom };
+}
+
+/**
+ * HIGH item 1d: whether a report of `truths` counted from `sent` would say nothing in "since the last report": no task
+ * completed, opened or overdue more or less, and no line (a change, an activity, "<task> was updated."). Worked out by
+ * the briefing's own code, with the projects by name as everywhere in 3.0.
+ */
+function nothingSaidSince(selected: readonly DAVEProjectTruth[], sent: DAVEReportSnapshot): boolean {
+  const truths = [...selected].sort((left, right) => normalized(left.projectName).localeCompare(normalized(right.projectName)));
+  const current = buildDAVEReportSnapshot({
+    truths,
+    scopeKey: daveReportSnapshotScopeKey(unique(truths.map(truth => truth.projectName))),
+    sourceFingerprint: '',
+    capturedAt: truths.map(truth => truth.generatedAt).sort().at(-1),
+  });
+  const period = compareDAVEReportSnapshots({
+    current,
+    previous: sent,
+    tasksLeftByLookahead: reportTasksLeftByLookahead(truths),
+    earlierRows: reportTaskEarlierRows(truths),
+    lookaheadAddedTaskIds: reportTasksAddedByLookahead(truths),
+  });
+  if (period.completeDelta !== 0 || period.openDelta !== 0 || period.overdueDelta !== 0 || (period.changeCount ?? 0) > 0) return false;
+  return buildRecentChanges({ truths, reportingPeriod: period }).length === 0;
+}
+
+/**
+ * The fingerprint as version 2.0 wrote it, unchanged (Builds 231 and 232): of
+ * every fact of each truth but the time it was worked out, Project Truth's own
+ * summary lines and its links. A report truth's `writtenReportFacts` came with
+ * 3.0 and is left out by name, so this is still 2.0 to the byte. Only to know a
+ * report made under 2.0 for the same facts.
+ */
+export function buildDAVEVersion2ReportSourceFingerprint(
+  truths: readonly DAVEProjectTruth[],
+): string {
+  return `${DAVE_VERSION_2_REPORT_SOURCE_VERSION}:${hashOfProjects(truths, reportSourceFactsOf, LEFT_OUT_OF_REPORT_SOURCE_2_0)}`;
+}
+
+/** Each project's facts hashed, in the order of the projects' names, and hashed together. */
+function hashOfProjects(
+  truths: readonly DAVEProjectTruth[],
+  factsOf: (truth: DAVEProjectTruth) => unknown,
+  leftOut: ReadonlySet<string>,
+): string {
+  const truthFingerprints = truths
+    .map(truth => ({
+      projectName: normalized(truth.projectName),
+      fingerprint: stableHash(stableStringify(canonicalizeReportSourceValue(
+        withoutVolatileReportSourceFields(factsOf(truth), leftOut),
+      ))),
+    }))
+    .sort((left, right) => left.projectName.localeCompare(right.projectName));
+  return stableHash(stableStringify(truthFingerprints));
 }
 
 /**
@@ -229,6 +352,183 @@ export function buildDAVELegacyReportSourceFingerprint(
  */
 function reportSourceFactsOf(truth: DAVEProjectTruth): unknown {
   const { briefing: _briefing, entityLinks: _entityLinks, ...facts } = truth as DAVEProjectTruth & Record<string, unknown>;
+  return withoutReportProjectId(truth, facts);
+}
+
+/**
+ * What version 3.0 hashes of a truth for the Project Manager report (HIGH item 1, the owner's instruction of 13 Oct
+ * 2026; reports review pass 3, P3-4; HIGH item 1d): the records its WORK AREAS / PHOTO NOTES section is written from.
+ * The phone's writer prints that section from the project's own field updates, photos and tasks (services/
+ * PIEReporter.ts), and no other device can write it: so its records are held as records, as 2.0 held them: the
+ * evidence ledger (every field update, photo, GPS fix, photo analysis, task and memory), the photo comparisons, the
+ * correlations of the updates to the tasks, the tasks, the lookahead facts, the drawings cited, and what the section
+ * prints of them that Project Truth does not hold (writtenReportFacts). A task due in 8 to 21 days is "upcoming", and
+ * one due later "not urgent": no output prints the difference.
+ *
+ * Everything else the report prints, Project Truth's own reading of the project included (its risk and "what changed"
+ * lines, the decisions the report lists), is held as the report prints it (reportAsPrinted), not here. HIGH item 1d
+ * (open item 7.55, the coordinator's decision on the 19 kinds of record fact a report was offered again for with no
+ * word changed): of these records, nothing that prints elsewhere or nowhere. Of a task: its start date, contractor,
+ * owner (or, with none, its contractor), next action and baseline finish print only through the report's actions,
+ * position and task lines; its notes, milestone name and priority only through its schedule line and the section's
+ * "Schedule focus" sentence (writtenReportFacts); its import time, who confirmed its percent and where the percent
+ * came from only through what the app works out from them (when its record was made, the record's summary and
+ * reasons, the correlation's conclusion, confidence and explanation, what verifies it): each held where it prints.
+ * Of an earlier row of a task: it prints only in "since the last report", held as printed. A document (a schedule
+ * file among them: R7 item C held its facts) prints only in Project Truth's "what changed" lines ("Schedules document
+ * added: <name>"), held as printed; which tasks a schedule file shows is held by the tasks themselves; its import time
+ * and file name print nowhere. (HIGH items 1b and 1c: a task's saved time, who saved its settings, a document's notes,
+ * likewise.)
+ */
+function reportSourceFactsOf3(truth: DAVEProjectTruth): unknown {
+  const {
+    briefing: _heldAsPrinted, entityLinks: _entityLinks, intelligence: _itsReadingHeldAsPrinted, reasoning: _listedAsPrinted, verificationQueue: _verificationQueue,
+    schedule, evidence, correlations, completedWorkConfirmedAt: _heldAsCompletedWorkPrintsIt, earlierRows: _heldAsSinceLinesPrintThem,
+    ...facts
+  } = truth as DAVEProjectTruth & Record<string, unknown>;
+  const tasks = new Set((schedule ?? []).map(task => task.taskId));
+  const recordAsPrinted = (record: DAVEProjectTruth['evidence']['records'][number]) => {
+    if (record.kind === 'schedule' && tasks.has(record.taskId ?? '')) {
+      // A task's own record: the task (held below). Its time, summary, reasons and the words of its text are its
+      // import, confirmation, progress source, notes, milestone name, owner and contractor.
+      const { id, kind, sourceRecordId, projectName, areaName, taskId, disposition } = record;
+      return { id, kind, sourceRecordId, projectName, areaName, taskId, disposition };
+    }
+    return record;
+  };
+  const notADocument = (record: DAVEProjectTruth['evidence']['records'][number]) => record.kind !== 'document';
+  // (A truth made by hand, as some tests make one, may lack a part: it is read as empty.)
+  return withoutReportProjectId(truth, {
+    ...facts,
+    schedule: (schedule ?? []).map(task => {
+      const {
+        updatedBy: _savedBy, updatedAt: _savedAt, startDate: _start, contractor: _contractor, owner: _owner, nextAction: _nextAction,
+        baselineFinishDate: _baselineFinish, relatedEvidenceIds: _related, completionState: _state, needsVerification: _verify,
+        contradiction: _contradiction, ...kept
+      } = task;
+      return { ...kept, urgency: task.urgency === 'upcoming' ? 'not_urgent' as const : task.urgency };
+    }),
+    evidence: evidence
+      // The records; not their counts, which count the documents too and print nowhere.
+      ? {
+          records: (evidence.records ?? []).filter(notADocument).map(recordAsPrinted),
+          unresolvedRecords: (evidence.unresolvedRecords ?? []).filter(notADocument).map(recordAsPrinted),
+        }
+      : evidence,
+    correlations: correlations
+      ? {
+          // Which field updates and photos answer to which task. What the app concludes from them, and from the task's
+          // own row (and how many of each it counts), is held where the report prints it.
+          tasks: (correlations.tasks ?? []).map(correlation => ({
+            taskId: correlation.taskId,
+            taskName: correlation.taskName,
+            areaName: correlation.areaName,
+            evidence: correlation.evidence.map(claim => {
+              if (claim.id !== `correlation:schedule:${correlation.taskId}`) return claim;
+              return { id: claim.id, sourceRecordId: claim.sourceRecordId, stance: claim.stance };
+            }),
+          })),
+        }
+      : correlations,
+  });
+}
+
+/**
+ * HIGH item 1f (the final review's F1, the coordinator's decision): what the Executive report prints in its files and on
+ * its screens beside what its briefing writes. Every Word file of a report (Download Word Report, Outlook; the phone's
+ * and the desktop's) carries the drawings it cites ("Current Drawing References"), and so does the phone's Reports
+ * screen (its Drawing References panel); the desktop's Word file carries every photo of the report's updates, each with
+ * its caption, where and when it was recorded and the task (ReportWordMediaDescription). The Executive report holds
+ * them as those files print them: each drawing's citation and the part of the page its picture shows (`wordDrawings`).
+ * (The Project Manager report holds them with its records: `drawingCitations`, and `wordDrawings` and `wordPhotos` in
+ * writtenReportFacts.) Its e-mail and text attach no photo: its body numbers none.
+ */
+function executiveReportFilesOf(truth: DAVEProjectTruth): unknown {
+  return withoutReportProjectId(truth, {
+    projectName: truth.projectName,
+    drawingCitations: truth.drawingCitations ?? [],
+    wordDrawings: truth.writtenReportFacts?.wordDrawings ?? [],
+    wordPhotos: truth.writtenReportFacts?.wordPhotos ?? [],
+  });
+}
+
+/**
+ * HIGH items 1c and 1d: what the report of `format` prints, counted from `countedFrom`, on every device: the phone's
+ * written report (Copy, Email, Text, Outlook, the Word file) and its Reports screen in that format, and the desktop's
+ * report in that format. Worked out by the briefing's own code from the same truths, then read as each of them reads
+ * it, each part as far as any of them prints it:
+ *  - "since the last report": its counts and label, its lines, how many; where a task's saved time prints (1c);
+ *  - Completed Work, every line; where a task's confirmation prints (1c);
+ *  - the condition and its snapshot line, each project's position (percent, current reality, schedule, forecast and
+ *    baseline finish, variance), the schedule's health, its position, the risks, the decisions and "what changed"
+ *    (the phone's screen shows the first ones in both formats; the desktop's report "what changed");
+ *  - the actions, each with what any device prints of it (the Executive report prints four, and how many): a task's
+ *    contractor, owner and next action print there; the milestones (each field of one prints in "since the last
+ *    report" too when it changes);
+ *  - for the Project Manager report only: Current Work, the tasks by status, the controls, each work area's progress.
+ * The date the report is read on (its "Reporting date", the desktop's "Generated") is not a fact of the project and
+ * is not held, as before.
+ */
+function reportAsPrinted(selected: readonly DAVEProjectTruth[], countedFrom: DAVEReportSnapshot | null, format: DAVEReportFormat): unknown {
+  // The projects by name, not in the order they were ticked: as everywhere in 3.0, a combined report keeps one value
+  // and its edits and approval whichever order its projects were ticked in (A6 pass 6 #6; review pass 3's B).
+  const truths = [...selected].sort((left, right) => normalized(left.projectName).localeCompare(normalized(right.projectName)));
+  const confirmedAt = new Map(truths.flatMap(truth => Object.entries(truth.completedWorkConfirmedAt ?? {})));
+  const briefing = briefingOf({
+    truths,
+    previousSnapshot: countedFrom,
+    lastUpdatedAt: task => latestDate([task.latestActivityAt, confirmedAt.get(task.taskId)]) || latestDate([task.updatedAt]),
+  });
+  const executive = format === 'executive';
+  const upTo = <T,>(items: readonly T[], limit: number) => (executive ? items.slice(0, limit) : items);
+  const period = briefing.reportingPeriod;
+  const health = briefing.dashboard.scheduleHealth;
+  const status = briefing.dashboard.taskStatus;
+  const controls = briefing.dashboard.controls;
+  return {
+    scope: briefing.scopeLabel,
+    condition: briefing.conditionLabel,
+    snapshot: briefing.executiveSnapshot,
+    since: {
+      basis: period.basis,
+      label: period.label,
+      counts: [period.completeDelta, period.openDelta, period.overdueDelta],
+      lines: briefing.recentChanges.map(change => change.summary),
+      count: Math.max(briefing.recentChangeCount ?? 0, briefing.recentChanges.length),
+    },
+    completedWork: briefing.completedWork,
+    positions: briefing.projectConditions.map(condition => [
+      condition.projectName, condition.percentComplete, condition.currentReality, condition.schedule,
+      condition.forecastFinish, condition.baselineFinish, condition.forecastVarianceDays,
+    ]),
+    health: [health.onTrack, health.blocked, health.dueSoon, health.overdue],
+    schedulePosition: briefing.schedulePosition,
+    risks: briefing.criticalRisks,
+    decisions: briefing.decisionsRequired,
+    whatChanged: briefing.whatChanged,
+    actions: {
+      lines: upTo(briefing.nextActions, 4).map(action => [
+        action.projectName, action.areaName, action.taskName, action.dueDate, action.issue, action.impact, action.action,
+        action.owner, action.timing, action.scheduleImpactDays,
+      ]),
+      count: briefing.nextActions.length,
+    },
+    milestones: briefing.milestones.map(milestone => [
+      milestone.projectName, milestone.taskName, milestone.areaName, milestone.finishDate, milestone.state,
+    ]),
+    ...(executive ? {} : {
+      currentWork: briefing.currentWork,
+      status: [status.total, status.complete, status.inProgress, status.waiting, status.notStarted],
+      controls: [controls.pendingApprovals, controls.responsesDue, controls.unassignedOpenWork, controls.incompleteChecklistItems],
+      workAreas: briefing.dashboard.workAreas.map(area => [
+        area.projectName, area.areaName, area.averagePercent, area.completeTaskCount, area.taskCount, area.completed,
+      ]),
+    }),
+  };
+}
+
+/** `facts` without the id the truth is filed under, wherever an id carries it (see reportSourceFactsOf). */
+function withoutReportProjectId(truth: DAVEProjectTruth, facts: Record<string, unknown>): unknown {
   const projectId = typeof truth.projectId === 'string' ? truth.projectId : '';
   if (!projectId) return facts;
   // As written, and as an id inside an id carries it: encoded once, twice ("report%253Aalpha") or three times.
@@ -281,6 +581,36 @@ export function buildDAVEReportBriefing({
    */
   scheduleItems?: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>[];
 }): DAVEReportBriefing {
+  return briefingOf({
+    truths,
+    selectedProjectNames,
+    previousSnapshot,
+    readAsEarlierVersionReport,
+    waitingForOtherDevice,
+    lastUpdatedAt: completedTaskLastUpdatedAt(scheduleItems),
+  });
+}
+
+/** The briefing (buildDAVEReportBriefing), with Completed Work's "Last updated" as `lastUpdatedAt` reads it. */
+function briefingOf({
+  truths: ticked,
+  selectedProjectNames,
+  previousSnapshot,
+  readAsEarlierVersionReport = false,
+  waitingForOtherDevice = false,
+  lastUpdatedAt,
+}: {
+  truths: readonly DAVEProjectTruth[];
+  selectedProjectNames?: readonly string[];
+  previousSnapshot?: DAVEReportSnapshot | null;
+  readAsEarlierVersionReport?: boolean;
+  waitingForOtherDevice?: boolean;
+  lastUpdatedAt: CompletedTaskLastUpdatedAt;
+}): DAVEReportBriefing {
+  // HIGH item 1e (the coordinator's decision on review pass 3's case B and A6 pass 6 #6): a combined report prints its
+  // projects by name, as its fingerprint works them out (1c), not in the order they were ticked: the same text, in the
+  // same order, under the same value, on every device and in every body written from this briefing.
+  const truths = [...ticked].sort((left, right) => normalized(left.projectName).localeCompare(normalized(right.projectName)));
   const projectNames = unique(
     (selectedProjectNames?.length ? selectedProjectNames : truths.map(truth => truth.projectName))
       .map(clean)
@@ -288,10 +618,11 @@ export function buildDAVEReportBriefing({
   );
   const generatedAt = truths.map(truth => truth.generatedAt).sort().at(-1) || new Date().toISOString();
   const snapshotScopeKey = daveReportSnapshotScopeKey(projectNames);
+  // The comparison reads no fingerprint of this report (HIGH item 1d: the fingerprint holds this briefing as printed).
   const currentSnapshot = buildDAVEReportSnapshot({
     truths,
     scopeKey: snapshotScopeKey,
-    sourceFingerprint: buildDAVEReportSourceFingerprint(truths),
+    sourceFingerprint: '',
     capturedAt: generatedAt,
   });
   const comparison = compareDAVEReportSnapshots({
@@ -311,11 +642,7 @@ export function buildDAVEReportBriefing({
     ...criticalDecisions,
     ...truths.flatMap(truth => truth.reasoning.decisions),
   ], decision => `${truthProjectName(truths, decision.taskId)}|${decision.taskId}`);
-  const reportableActionDecisions = actionDecisions.filter(decision =>
-    decision.confidence !== 'low' &&
-    isReportableCurrentState(decision.recommendation.action) &&
-    !isVerificationOnlyAction(decision.recommendation.action),
-  );
+  const reportableActionDecisions = actionDecisions.filter(listedDecision);
   const reasoningActions = reportableActionDecisions.map(decision => ({
       id: `report-action:${decision.taskId}`,
       projectName: truthProjectName(truths, decision.taskId),
@@ -356,17 +683,7 @@ export function buildDAVEReportBriefing({
   const recentChangeCount = allRecentChanges.length +
     Math.max(0, (reportingPeriod.changeCount ?? 0) - reportingPeriod.changes.length);
   const milestones = buildReportMilestones(truths);
-  const lastUpdatedAt = completedTaskLastUpdatedAt(scheduleItems);
-  const completedTasks = truths.flatMap(truth => truth.schedule
-    .filter(scheduleProgressIsComplete)
-    .sort((left, right) => reportCompletedTaskRank(left, lastUpdatedAt) - reportCompletedTaskRank(right, lastUpdatedAt))
-    .map(task => ({ truth, task, line: clean(reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt)) })));
-  // Two different tasks on one line say how many (A6 pass 19 L4); the same task twice says it once.
-  const tasksOnLine = new Map<string, Set<string>>();
-  completedTasks.forEach(({ task, line }) => tasksOnLine.set(line, new Set([...(tasksOnLine.get(line) || []), task.taskId])));
-  const completedWork = unique(completedTasks.map(({ truth, task, line }) =>
-    reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt, tasksOnLine.get(line)!.size)),
-  ).slice(0, 12);
+  const completedWork = completedWorkLines(truths, lastUpdatedAt);
   // Whole-app audit A6 pass 20 L1 (1 Oct 2026): two same-named open tasks in one area with the same status,
   // percent and due date printed one Current Work line. They say how many, as Completed Work does (A6 pass 19 L4).
   const currentTasks = truths.flatMap(truth => truth.schedule
@@ -443,6 +760,16 @@ export function buildDAVEReportBriefing({
     decisionsRequired,
     nextActions,
   });
+}
+
+/**
+ * Whether the report lists a decision of Project Truth's reasoning (its action plan, its decisions required). Version
+ * 3.0 of the fingerprint holds what is listed as the report prints it (HIGH item 1d: reportAsPrinted) and nothing else.
+ */
+function listedDecision(decision: DAVEProjectTruth['reasoning']['decisions'][number]): boolean {
+  return decision.confidence !== 'low' &&
+    isReportableCurrentState(decision.recommendation.action) &&
+    !isVerificationOnlyAction(decision.recommendation.action);
 }
 
 function projectConditionFromTruth(
@@ -548,11 +875,34 @@ type CompletedTaskLastUpdatedAt = (task: DAVEProjectTruth['schedule'][number]) =
  * (fileProgressPeak, Build 231). A task a master completed on an earlier
  * build has no such record and reads as before.
  */
+/** Completed Work's lines, in their order (one function for the briefing and for the fingerprint, HIGH item 1c). */
+function completedWorkLines(truths: readonly DAVEProjectTruth[], lastUpdatedAt: CompletedTaskLastUpdatedAt): string[] {
+  const completedTasks = truths.flatMap(truth => truth.schedule
+    .filter(scheduleProgressIsComplete)
+    .sort((left, right) => reportCompletedTaskRank(left, lastUpdatedAt) - reportCompletedTaskRank(right, lastUpdatedAt))
+    .map(task => ({ truth, task, line: clean(reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt)) })));
+  // Two different tasks on one line say how many (A6 pass 19 L4); the same task twice says it once.
+  const tasksOnLine = new Map<string, Set<string>>();
+  completedTasks.forEach(({ task, line }) => tasksOnLine.set(line, new Set([...(tasksOnLine.get(line) || []), task.taskId])));
+  return unique(completedTasks.map(({ truth, task, line }) =>
+    reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt, tasksOnLine.get(line)!.size)),
+  ).slice(0, 12);
+}
+
+/**
+ * When the manager confirmed a task's progress, or a master's file completed it: what Completed Work's "Last updated"
+ * reads beside the task's activity (A6 pass 14 L4, R5 item 3). The report truth carries it for each completed task
+ * (completedWorkConfirmedAt), so the fingerprint reads it as the briefing does (HIGH item 1c).
+ */
+export function reportTaskConfirmedAt(item: Pick<ScheduleItem, 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>): string | null {
+  return latestDate([scheduleProgressJudgedAt(item as ScheduleItem), completedByMasterAt(item)]);
+}
+
 function completedTaskLastUpdatedAt(
   scheduleItems: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>[] | undefined,
 ): CompletedTaskLastUpdatedAt {
   if (!scheduleItems) return task => latestDate([task.latestActivityAt, task.updatedAt]);
-  const confirmedAt = new Map(scheduleItems.map(item => [item.id, latestDate([scheduleProgressJudgedAt(item), completedByMasterAt(item)])]));
+  const confirmedAt = new Map(scheduleItems.map(item => [item.id, reportTaskConfirmedAt(item)]));
   return task => latestDate([task.latestActivityAt, confirmedAt.get(task.taskId)]) || latestDate([task.updatedAt]);
 }
 
@@ -1429,8 +1779,10 @@ const VOLATILE_REPORT_SOURCE_FIELDS = new Set([
 /**
  * R8 items 3 and 4 (the coordinator's decisions on review pass 2): what
  * version 2.0 of the fingerprint leaves out, by name: only the time the
- * truth was worked out. Version 1.0 leaves out the whole list above, as the
- * released build did, and must go on doing so.
+ * truth was worked out (and, since 3.0, the written report's facts, which no
+ * truth had under 2.0: so 2.0 is what Builds 231 and 232 wrote). Version 1.0
+ * leaves out the whole list above, as the released build did, and must go on
+ * doing so.
  *
  * The rule (the guard: r8-report-fingerprint-moves-whenever-the-report-does):
  * whenever a change to what the report is made from moves the written report,
@@ -1449,7 +1801,9 @@ const VOLATILE_REPORT_SOURCE_FIELDS = new Set([
  * Each is worked out from the saved tasks and schedules alone, the same on
  * the phone and on the web.
  */
-const LEFT_OUT_OF_REPORT_SOURCE_2_0: ReadonlySet<string> = new Set(['generatedAt']);
+const LEFT_OUT_OF_REPORT_SOURCE_2_0: ReadonlySet<string> = new Set(['generatedAt', 'writtenReportFacts', 'completedWorkConfirmedAt']);
+/** What version 3.0 leaves out by name (HIGH item 1); what it leaves out of Project Truth is in reportSourceFactsOf3. */
+const LEFT_OUT_OF_REPORT_SOURCE_3_0: ReadonlySet<string> = new Set(['generatedAt']);
 
 function withoutVolatileReportSourceFields(value: unknown, leftOut: ReadonlySet<string> = VOLATILE_REPORT_SOURCE_FIELDS): unknown {
   if (Array.isArray(value)) return value.map(item => withoutVolatileReportSourceFields(item, leftOut));

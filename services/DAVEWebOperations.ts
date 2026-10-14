@@ -13,20 +13,23 @@ import {
 } from './DAVEProjectTruth';
 import {
   buildDAVEReportBriefing,
-  buildDAVEReportSourceFingerprint,
+  buildDAVEReportSourceOnPeriod,
   type DAVEReportBriefing,
 } from './DAVEReportIntelligence';
 import { sameReportSource, type DAVEReportSnapshot } from './DAVEReportSnapshot';
 import {
   bindPIEScheduleImportBatchProvenance,
   dedupeScheduleImportItems,
+  scheduleImportItemIdentity,
   type PIEScheduleImportBatch,
 } from './PIEScheduleImportBatch';
 import {
+  bestScheduleProjectMatch,
   normalizeMicrosoftProjectWebPdfPages,
   normalizeScheduleImport,
 } from './PIEScheduleIntelligence';
-import { currentScheduleDocumentWinners, scheduleDocumentAddsToMaster, scheduleDocumentIsScheduleLike, scheduleItemAsSaved } from './PIEScheduleReconciliation';
+import { currentScheduleDocumentWinners, scheduleDocumentAddsToMaster, scheduleDocumentIsScheduleLike, scheduleItemAsSaved, scheduleProjectScopeKey } from './PIEScheduleReconciliation';
+import { SCHEDULE_IMPORT_NEEDS_PROJECT, validateScheduleImportScope } from './ScheduleImportScopeGuard';
 import {
   findExactScheduleTaskForCompletionClaim,
   mergeReportedCompletionClaim,
@@ -41,13 +44,14 @@ import {
   type ScheduleImportRole,
   type ScheduleImportRoleSuggestion,
 } from './ScheduleLookahead';
-import { scheduleDocumentsAfterApproval } from './ScheduleDocumentLabels';
+import { scheduleDocumentsAfterApproval, scheduleRowProjectNames } from './ScheduleDocumentLabels';
 import { scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { scheduleItemIdsDeletedWithTask } from './DAVEDeletedTaskEvidence';
 import { dependencyChangesForDeletedTask } from './VitruviusScheduleEngine';
 import { daveWebTaskUpdatedAtIsCloudRowTime, scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
 import { buildDAVEReportProjectTruths } from './DAVEReportProjectTruths';
 import { daveWebListedDocuments } from './DAVEWebDocumentManagement';
+import { referenceDocumentsCitedAsListed, withoutListedPageIndexes } from './ECOSDocumentIndexPersistence';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
 import type { GoogleDriveLinkedSource } from './GoogleDriveWebProvider';
 
@@ -148,6 +152,34 @@ export type DAVEWebPreparedUpload = Readonly<{
   extractionStatus: 'not_applicable' | 'ready' | 'needs_manual_review';
   /** David's answers at the upload review to which same-named task each row is (owner answer Q30, review N1). */
   pairingChoices?: Readonly<Record<string, string | null>> | null;
+  /** Whether every row the file gave named a project itself (a row that named none waits for one: open item 4.88). */
+  everyRowNamedAProject?: boolean;
+  /**
+   * The project a row's own Project cell named, by row id, where that is not one of his ticked projects as the app
+   * spells it (High item 2): the row is listed under the project's own name, or waits for one ("Needs Project").
+   * '' for a row that named no project (open item 4.88). Absent when every row named a ticked project exactly.
+   */
+  fileProjectNames?: Readonly<Record<string, string>>;
+  /**
+   * For each name the file gives that waits for a project (High item 2, review passes 1 and 2): the projects of his
+   * it IS by the strict rule (scheduleProjectScopeKey; two or more, else none; open item 4.88: the ONE project of his
+   * it is when that project is not ticked), and whether it may stand for another project of his (the app's guess
+   * from a name, bestScheduleProjectMatch, points to an unticked project and reads none of the ticked ones). The
+   * guessed project itself is not kept: the page never states a guess. Absent when no task waits.
+   */
+  waitingProjectNames?: Readonly<Record<string, Readonly<{ fitsEqually: readonly string[]; mayBeAnother: boolean }>>>;
+  /**
+   * The schedule parent a row's file gave (a Microsoft Project PDF's root), by row id, where the row does not keep it
+   * as written (open item 2.35: kept only where it is a ticked project, under its own name), or where the row's own
+   * project is not the file's. Read only by the "Full schedule or Lookahead" suggestion, which is Build 231's. Absent
+   * when every row keeps what its file gave.
+   */
+  fileScheduleProjectNames?: Readonly<Record<string, string>>;
+  /**
+   * The rows whose project the file gives only by its top line (a PDF root that is a project of his not ticked; review
+   * pass H4, H4S-2): listed as naming it, and read by the suggestion as Build 231 read them (no project). Absent if none.
+   */
+  fileTopLineProjectRows?: readonly string[];
 }>;
 
 type DAVEWebDocumentPreparationInput = Readonly<{
@@ -160,6 +192,8 @@ type DAVEWebDocumentPreparationInput = Readonly<{
   projectName?: string;
   projectNames?: readonly string[];
   projects: readonly string[];
+  /** His open projects in the cloud (the snapshot's openCloudProjects); without them, `projects` (High item 2). */
+  openProjectNames?: readonly string[];
   fingerprint: string;
   versionGroupId?: string | null;
   now?: string;
@@ -214,6 +248,7 @@ export function prepareDAVEWebDocumentUpload({
   projectName,
   projectNames,
   projects,
+  openProjectNames,
   fingerprint,
   versionGroupId,
   now = new Date().toISOString(),
@@ -304,14 +339,62 @@ export function prepareDAVEWebDocumentUpload({
         projectAreas: [],
         now: new Date(now),
       });
-  const items = dedupeScheduleImportItems(
-    (pdfSchedule ? positionedPdfItems : normalizedImport?.items || []).map(item => ({
-      ...item,
-      scheduleProjectName: item.scheduleProjectName || item.projectName || selectedProjectNames[0],
-      projectName: item.projectName || selectedProjectNames[0],
-      importedFrom: cleanName,
-    })),
-  );
+  const readItems = pdfSchedule ? positionedPdfItems : normalizedImport?.items || [];
+  // High item 2: each row's project as the phone resolves it, among his projects (daveWebRowProjects). The cloud's
+  // list of his open projects when the page has it, even empty (review pass 1, L-4: the page's own list also holds
+  // names known only from saved tasks); without it (an older caller), the page's list.
+  const ownProjects = uniqueNames([...selectedProjectNames, ...(openProjectNames ?? projects)]);
+  // Open item 2.35: a row's schedule parent (a PDF's root) only where it is a ticked project, as on the phone.
+  const parents = daveWebRowParents(readItems, selectedProjectNames);
+  // Review pass H4, H4S-2: a row that names no project, under a top line that is one of his projects NOT ticked (by the
+  // strict rule: the phone's comparison or scheduleProjectScopeKey), is read as a spreadsheet row naming that project:
+  // it waits with the unticked-project words, the line names the project, and there is no one button. (It said "the
+  // file names no project", and with one tick a button filed it under the ticked project.)
+  const fileTopLineProjectRows: string[] = [];
+  const asNamed = readItems.map((item, index) => {
+    const root = item.scheduleProjectName?.trim() || '';
+    const his = root && ownProjects.some(project => normalized(project) === normalized(root) || scheduleProjectScopeKey(project) === scheduleProjectScopeKey(root));
+    if (item.projectName?.trim() || parents[index] || !his) return item;
+    fileTopLineProjectRows.push(item.id);
+    return { ...item, projectName: root };
+  });
+  const rowProjects = daveWebRowProjects(asNamed, ownProjects, selectedProjectNames);
+  const fileScheduleProjectNames: Record<string, string> = {};
+  // The duplicate check compares a waiting row by the name the FILE gives, so two names the app does not know stay two
+  // rows (review pass 1, H1S-1: two "Needs Project" rows of one task on one day were one); then the row waits. Two
+  // spellings of one name by scheduleProjectScopeKey are one name there (review pass 2, L2S-3: "Shed Annex" and
+  // "Shed-Annex" for one task on one day are one row): daveWebRowProjects hands such a row its first spelling.
+  // Open item 4.88: a row that names no project no longer takes the first ticked project (with several ticked, a full
+  // schedule was then saved for every one of them, and Make Current hid the others' tasks). It takes a ticked schedule
+  // parent, as on the phone (validateScheduleImportScope), else it waits for one like "Needs Project" (its file name:
+  // '', said in its own words), compared as such in the duplicate check.
+  const listed = dedupeScheduleImportItems(
+    rowProjects.items.map((item, index) => {
+      const fileParent = item.scheduleProjectName?.trim() || '';
+      const named = Boolean(item.projectName?.trim());
+      if (!named) rowProjects.fileProjectNames[item.id] = '';
+      if (fileParent && (parents[index] !== fileParent || rowProjects.fileProjectNames[item.id] !== undefined)) fileScheduleProjectNames[item.id] = fileParent;
+      const projectName = named ? item.projectName : parents[index] || '';
+      return {
+        ...item,
+        scheduleProjectName: parents[index] || projectName,
+        projectName,
+        importedFrom: cleanName,
+      };
+    }),
+  ).map(item => (rowProjects.waiting.has(item.id) || !item.projectName ? {
+    ...item,
+    projectName: SCHEDULE_IMPORT_NEEDS_PROJECT,
+    scheduleProjectName: item.scheduleProjectName === item.projectName ? SCHEDULE_IMPORT_NEEDS_PROJECT : item.scheduleProjectName,
+  } : item));
+  // Review pass H4, H4S-3: one task the file gives twice, once naming a ticked project and once naming none, is one task
+  // (before 4.88 the blank row took the first ticked project and the duplicate check merged them). A row that names no
+  // project goes where it is the same as ONE row with a project by the duplicate check in all but the project; with two
+  // or more such rows (two projects) it cannot be told which, and it waits. (The phone's own import keeps both.)
+  const sameTask = (item: ScheduleItem) => scheduleImportItemIdentity({ ...item, projectName: '' });
+  const withProject = new Map<string, number>();
+  listed.filter(item => !daveWebScheduleUploadRowNeedsProject(item)).forEach(item => withProject.set(sameTask(item), (withProject.get(sameTask(item)) ?? 0) + 1));
+  const items = listed.filter(item => !(daveWebScheduleUploadRowNeedsProject(item) && rowProjects.fileProjectNames[item.id] === '' && withProject.get(sameTask(item)) === 1));
   if (items.length === 0) {
     return Object.freeze({
       document,
@@ -336,7 +419,112 @@ export function prepareDAVEWebDocumentUpload({
     scheduleItems: Object.freeze(batch.items),
     reviewMessage: `${batch.items.length} schedule ${batch.items.length === 1 ? 'activity' : 'activities'} extracted for ${selectedProjectNames.length} selected project${selectedProjectNames.length === 1 ? '' : 's'}. Review each task's project, dates, area, status, and percent complete before upload.`,
     extractionStatus: 'ready',
+    everyRowNamedAProject: readItems.every(item => Boolean(item.projectName?.trim())),
+    ...(Object.keys(rowProjects.fileProjectNames).length > 0 ? { fileProjectNames: Object.freeze(rowProjects.fileProjectNames) } : {}),
+    ...(Object.keys(rowProjects.waitingProjectNames).length > 0 ? { waitingProjectNames: Object.freeze(rowProjects.waitingProjectNames) } : {}),
+    ...(Object.keys(fileScheduleProjectNames).length > 0 ? { fileScheduleProjectNames: Object.freeze(fileScheduleProjectNames) } : {}),
+    ...(fileTopLineProjectRows.length > 0 ? { fileTopLineProjectRows: Object.freeze(fileTopLineProjectRows) } : {}),
   });
+}
+
+/**
+ * Open item 2.35 (the 2.33 fixer's R-2, "the PDF root door"; 13 Oct 2026). A Microsoft Project PDF's root (the top line,
+ * scheduleProjectNameFromGanttRoot) was saved as every task's schedule parent as written; where it was none of his
+ * projects, the next phone or iPad that loaded made a project of that name (App.tsx, ensureScheduleParentProjects).
+ * The phone's own import keeps a parent only where it is one of the projects picked, under that project's own name,
+ * and clears it otherwise (guardScheduleParent). So here: the phone's function, given the TICKED projects; first by
+ * the phone's comparison, then, as a row's project is read on the desktop (High item 2), with each ticked project's
+ * spellings by scheduleProjectScopeKey. Null where the row keeps no parent (it then stands under its own project).
+ */
+function daveWebRowParents(items: readonly ScheduleItem[], ticked: readonly string[]): (string | null)[] {
+  const parentsOnly = items.map(item => ({ ...item, projectName: '' }));
+  const spellings = [...new Set(items.map(item => item.scheduleProjectName?.trim() || '').filter(Boolean))];
+  if (spellings.length === 0) return items.map(() => null);
+  const kept = (aliases: boolean) => validateScheduleImportScope({
+    items: parentsOnly,
+    selectedProjects: ticked.map(name => ({
+      id: name,
+      name,
+      ...(aliases ? { aliases: spellings.filter(spelling => scheduleProjectScopeKey(spelling) === scheduleProjectScopeKey(name)) } : {}),
+    })),
+  }).items.map(item => item.scheduleProjectName || null);
+  const exact = kept(false);
+  const respelled = kept(true);
+  return items.map((_, index) => exact[index] || respelled[index]);
+}
+
+/**
+ * High item 2 (the owner's instruction of 13 Oct 2026, the three high items; review pass 4, O-4). The desktop saved
+ * each row under the file's own spelling of its project: a file saying "6101" for the project "6101 Quay Works"
+ * filed its tasks under a second project called "6101" (as a lookahead they were listed twice; as a full schedule
+ * made current the real project showed no tasks). A row's project is now resolved as the phone's import
+ * resolves it (validateScheduleImportScope), among his projects (the ticked ones and his other open projects):
+ * other capitals and spaces are the project, under its own name. Where the phone's comparison finds none, the same
+ * function is given, as each project's other spellings, those the app files under that project when a project
+ * finds its schedule (scheduleProjectScopeKey: "Garden-shed" is Garden shed; the coordinator's decision). A row
+ * that is still none of his projects is "Needs Project", as on the phone, and the upload waits until he gives it
+ * one (daveWebScheduleUploadProjectReview); so is a row that is one of his projects not ticked (open item 4.88). A
+ * row that named no project is left to the caller (it waits too: open item 4.88).
+ * Such a row keeps the file's name here (in `waiting`), so the duplicate check compares what the file said; the
+ * caller marks it "Needs Project" after that check. For each waiting name: the projects it fits equally by the same
+ * comparison (two or more), or the one the app's own guess from a name points to (review pass 1, L-1 and L-3).
+ */
+function daveWebRowProjects(items: readonly ScheduleItem[], ownProjects: readonly string[], ticked: readonly string[]): {
+  items: ScheduleItem[];
+  waiting: Set<string>;
+  fileProjectNames: Record<string, string>;
+  waitingProjectNames: Record<string, { fitsEqually: string[]; mayBeAnother: boolean }>;
+} {
+  const named = items.filter(item => item.projectName?.trim());
+  const spellings = [...new Set(named.map(item => item.projectName.trim()))];
+  const byScopeKey = (projects: readonly string[]) => validateScheduleImportScope({
+    items: named,
+    selectedProjects: projects.map(name => ({
+      id: name,
+      name,
+      aliases: spellings.filter(spelling => scheduleProjectScopeKey(spelling) === scheduleProjectScopeKey(name)),
+    })),
+  }).itemResults;
+  const exact = validateScheduleImportScope({ items: named, selectedProjects: ownProjects.map(name => ({ id: name, name })) }).itemResults;
+  // Review pass 2, L2S-2: by the scope key the ticked projects are read first, so a name that fits two of his
+  // projects, one of them ticked, is the ticked one (where the page told him to tick one of them, that one).
+  const respelledTicked = byScopeKey(ticked);
+  const respelled = byScopeKey(ownProjects);
+  const fileProjectNames: Record<string, string> = {};
+  const waiting = new Set<string>();
+  const waitingProjectNames: Record<string, { fitsEqually: string[]; mayBeAnother: boolean }> = {};
+  const firstSpelling = new Map<string, string>();
+  const tickedKeys = new Set(ticked.map(normalized));
+  const resolved = new Map(named.map((item, index) => {
+    const result = [exact[index], respelledTicked[index], respelled[index]].find(each => each.assignment === 'selected_project') ?? respelled[index];
+    // Open item 4.88: a row naming a project of his that is NOT ticked waits too, as on the phone (it resolves among
+    // the projects picked only); the page names that project and how to tick it, and offers no one button for it.
+    const notTicked = result.assignment === 'selected_project' && !tickedKeys.has(normalized(result.item.projectName)) ? result.item.projectName : null;
+    if (result.assignment !== 'selected_project' || notTicked) {
+      const fileName = item.projectName.trim();
+      waiting.add(item.id);
+      if (fileName !== SCHEDULE_IMPORT_NEEDS_PROJECT) fileProjectNames[item.id] = fileName;
+      const fitsEqually = ownProjects.filter(project => scheduleProjectScopeKey(project) === scheduleProjectScopeKey(fileName));
+      // Review pass 2, H2S-1: the guess only says "may be another project"; it never names one (it read a year, a
+      // street number, a short name inside a longer one as a project), and not where it also reads a ticked one.
+      const guess = bestScheduleProjectMatch(fileName, [...ownProjects]);
+      waitingProjectNames[fileName] ??= notTicked ? { fitsEqually: [notTicked], mayBeAnother: false } : {
+        fitsEqually: fitsEqually.length > 1 ? fitsEqually : [],
+        mayBeAnother: fitsEqually.length < 2 && Boolean(guess) && !tickedKeys.has(normalized(guess)) && !bestScheduleProjectMatch(fileName, [...ticked]),
+      };
+      const key = scheduleProjectScopeKey(fileName);
+      if (!firstSpelling.has(key)) firstSpelling.set(key, item.projectName);
+      return [item, firstSpelling.get(key)!] as const;
+    }
+    if (result.item.projectName !== item.projectName) fileProjectNames[item.id] = item.projectName.trim();
+    return [item, result.item.projectName] as const;
+  }));
+  return {
+    items: items.map(item => (resolved.has(item) && resolved.get(item) !== item.projectName ? { ...item, projectName: resolved.get(item)! } : item)),
+    waiting,
+    fileProjectNames,
+    waitingProjectNames,
+  };
 }
 
 export function prepareDAVEWebLinkedDocument(
@@ -483,12 +671,29 @@ export function daveWebScheduleUploadRoleSuggestion({
   prepared,
 }: {
   snapshot: DAVEWebImportSnapshot | null | undefined;
-  prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'extractionStatus'> | null | undefined;
+  prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'extractionStatus' | 'fileProjectNames' | 'fileScheduleProjectNames' | 'fileTopLineProjectRows'> | null | undefined;
 }): ScheduleImportRoleSuggestion | null {
   if (!snapshot || !prepared || prepared.extractionStatus !== 'ready' || normalized(prepared.document.category) !== 'schedules') return null;
   const { scheduleRole: _role, ...file } = prepared.document;
+  // High item 2: the rows as the file names their projects, as before; the suggestion is Build 231's, not changed.
+  // Open item 2.35: and with the schedule parent (a PDF's root) the file gave.
+  // Open item 4.88: a row that named no project ('') is read as the first ticked project, as Build 231 filed it.
+  const named = prepared.fileProjectNames ?? {};
+  const parents = prepared.fileScheduleProjectNames ?? {};
+  const first = prepared.document.projectNames?.[0] || prepared.document.projectName || '';
+  // Review pass H4, H4S-2: a row named only by the file's top line, too.
+  const topLine = new Set(prepared.fileTopLineProjectRows ?? []);
+  const items = prepared.scheduleItems.map(item => {
+    if (named[item.id] === undefined && parents[item.id] === undefined) return item;
+    const projectName = named[item.id] === undefined ? item.projectName : (!topLine.has(item.id) && named[item.id]) || first;
+    return {
+      ...item,
+      projectName,
+      scheduleProjectName: parents[item.id] ?? (item.scheduleProjectName === item.projectName ? projectName : item.scheduleProjectName),
+    };
+  });
   return suggestScheduleImportRole({
-    batch: { documents: [file as ReferenceDocument], items: [...prepared.scheduleItems] },
+    batch: { documents: [file as ReferenceDocument], items },
     documents: snapshot.referenceDocuments ?? [],
     scheduleItems: snapshot.knownScheduleItems ?? snapshot.scheduleItems,
   });
@@ -496,6 +701,47 @@ export function daveWebScheduleUploadRoleSuggestion({
 
 export const DAVE_WEB_LOOKAHEAD_NEEDS_TASK_TEXT =
   'A lookahead needs at least one task from the file. Keep a task in the list above, or choose Full schedule.';
+
+/**
+ * Build 232 round, item 10b (review pass 4, O-3; the coordinator's decision,
+ * 13 Oct 2026): the projects a full schedule is saved for when they are
+ * fewer than the ticked ones, else null (its label stays every ticked
+ * project, as before). With three projects ticked and a file whose rows were
+ * all one project's, the full schedule was saved for all three: Make Current
+ * Schedule asked nothing, the other two projects' masters stopped being
+ * current and those projects showed no tasks on any device. Only when every
+ * row the file gave named a project itself, each row names one project (its
+ * schedule project is that same project) and every project so named is
+ * ticked. The names are compared as the phone compares them when it narrows
+ * such a label on its next load (narrowScheduleDocumentLabels), so that
+ * repair then finds nothing to do. No saved schedule is rewritten.
+ * Open item 4.88 (review pass 6, what is left of O-3; 13 Oct 2026): the
+ * rows as he leaves them in the review decide, whatever the file named. A
+ * file with no Project column or a blank cell, or a row under a ticked
+ * schedule parent, was saved for every ticked project (Make Current then
+ * hid the others' tasks). Now every row has a ticked project before the
+ * upload (a row with none, or with an unticked one, waits), and the full
+ * schedule is saved for the ticked projects the rows name as the phone's
+ * approval names them (scheduleRowProjectNames: a row's schedule parent,
+ * else its project), so it is never saved for a project none of its rows
+ * names. While a task waits, nothing is said.
+ */
+function daveWebFullScheduleProjects(prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems'>): string[] | null {
+  const nameKey = (name: string | null | undefined) => (name || '').trim().toLowerCase();
+  const ticked = prepared.document.projectNames || [];
+  if (prepared.scheduleItems.some(item => !nameKey(item.projectName) || daveWebScheduleUploadRowNeedsProject(item))) return null;
+  const named = new Set(scheduleRowProjectNames(prepared.scheduleItems).map(nameKey));
+  const kept = ticked.filter(name => named.has(nameKey(name)));
+  return kept.length > 0 && kept.length === named.size && kept.length < ticked.length ? kept : null;
+}
+
+/** What the review says, in one line, before a full schedule is saved for fewer projects than are ticked; else null. */
+export function daveWebFullScheduleProjectsLine(prepared: DAVEWebPreparedUpload | null, role: ScheduleImportRole | null): string | null {
+  const names = prepared && role === 'master' ? daveWebFullScheduleProjects(prepared)?.join(' and ') : null;
+  // Open item 4.88: where the file itself did not name a project on every row, the line speaks of the tasks as listed.
+  const tasks = prepared?.everyRowNamedAProject === false ? 'Every task as listed above' : 'Every task in this file';
+  return names ? `${tasks} is for ${names}, so as a full schedule it will be saved for ${names} only, not for every project ticked above.` : null;
+}
 
 /**
  * The reviewed upload as the role David chose (WS1 item 2). "Lookahead": the
@@ -509,14 +755,19 @@ export const DAVE_WEB_LOOKAHEAD_NEEDS_TASK_TEXT =
  * lookahead ADDS carries once saved, importedAsLookahead, stays: the phone's
  * merge writes it, because such a task outlives its file, which can be
  * deleted on its own while the task is kept.)
- * "Full schedule": the upload as every schedule uploaded before.
+ * "Full schedule": the upload as every schedule uploaded before, but for
+ * its label in one case (daveWebFullScheduleProjects, below).
  */
 export function withDAVEWebScheduleUploadRole<T extends DAVEWebPreparedUpload>(prepared: T, role: ScheduleImportRole): T {
   if (normalized(prepared.document.category) !== 'schedules') return prepared;
   if (role !== 'lookahead') {
-    if (prepared.document.scheduleRole !== 'lookahead') return prepared;
-    const { scheduleRole: _role, ...document } = prepared.document;
-    return { ...prepared, document: { ...document, webContentReview: 'Schedule activities must be reviewed before this file can become current.' } };
+    const projectNames = daveWebFullScheduleProjects(prepared);
+    const full = projectNames
+      ? { ...prepared, document: { ...prepared.document, projectNames, projectName: projectNames.length === 1 ? projectNames[0] : null } }
+      : prepared;
+    if (full.document.scheduleRole !== 'lookahead') return full;
+    const { scheduleRole: _role, ...document } = full.document;
+    return { ...full, document: { ...document, webContentReview: 'Schedule activities must be reviewed before this file can become current.' } };
   }
   const scheduleItems = prepared.scheduleItems;
   const marked = withScheduleImportRole({ documents: [prepared.document] }, 'lookahead').documents;
@@ -539,6 +790,168 @@ export function daveWebScheduleUploadRoleRefusal(
     : null;
 }
 
+/**
+ * Review pass 2 (an older race, the same on the build before): the review is made with the ticks of the moment the
+ * file was chosen, and a photo or PDF is read for seconds. Whether the review was made with the projects ticked now;
+ * where it was not, the page clears it and says so, and he chooses the file again.
+ */
+export function daveWebUploadMadeWithTicks(prepared: Pick<DAVEWebPreparedUpload, 'document'>, ticked: readonly string[]): boolean {
+  const made = new Set((prepared.document.projectNames ?? []).map(normalized));
+  const now = new Set(ticked.map(normalized).filter(Boolean));
+  return made.size === now.size && [...now].every(name => made.has(name));
+}
+
+export const DAVE_WEB_UPLOAD_TICKS_CHANGED_TEXT =
+  'The ticked projects changed while the file was being read, so its review was cleared. Choose the file again.';
+
+/**
+ * Review pass H3, H3S-4 (Low, older; the same on Build 231): the review is also made under the document type of the
+ * moment the file was chosen. Switched to "Permit Card" while a schedule file was read, the page showed the schedule's
+ * tasks under Permit Card, and Upload saved a schedule. As for the ticks: where the type shown is not the one the
+ * review was made under, the page clears the review and says so.
+ */
+export function daveWebUploadMadeAsType(prepared: Pick<DAVEWebPreparedUpload, 'document'>, category: string): boolean {
+  return normalized(prepared.document.category) === normalized(category);
+}
+
+export const DAVE_WEB_UPLOAD_TYPE_CHANGED_TEXT =
+  'The document type changed while the file was being read, so its review was cleared. Choose the file again.';
+
+/** A task the review lists as waiting for one of his projects (High item 2). */
+export function daveWebScheduleUploadRowNeedsProject(item: Pick<ScheduleItem, 'projectName'>): boolean {
+  return (item.projectName || '').trim() === SCHEDULE_IMPORT_NEEDS_PROJECT;
+}
+
+/** What the review lists as a task's project: a task waiting for one says what the file named, or that it named none. */
+export function daveWebScheduleUploadRowProject(prepared: Pick<DAVEWebPreparedUpload, 'fileProjectNames'>, item: Pick<ScheduleItem, 'id' | 'projectName'>): string {
+  const named = prepared.fileProjectNames?.[item.id];
+  if (!daveWebScheduleUploadRowNeedsProject(item) || named === undefined) return item.projectName;
+  return named ? `${SCHEDULE_IMPORT_NEEDS_PROJECT} (the file names "${named}")` : `${SCHEDULE_IMPORT_NEEDS_PROJECT} (the file names no project)`;
+}
+
+/** Said by the upload itself if a task waiting for a project ever reaches it (High item 2). */
+export const DAVE_WEB_UPLOAD_NEEDS_PROJECT_TEXT =
+  `Every task needs one of your projects before this file can be uploaded. Choose a project for each task marked "${SCHEDULE_IMPORT_NEEDS_PROJECT}".`;
+
+export type DAVEWebScheduleUploadProjectReview = Readonly<{
+  /** While a task waits for a project the upload is held, and this says how many and why; else null. */
+  heldLine: string | null;
+  /** One project ticked and every waiting task named alike by the file (or each named nothing): the one button; else null. */
+  useForAll: Readonly<{ project: string; label: string }> | null;
+  /** Tasks the file names otherwise, once each has one of his projects: where they will be saved; else null. */
+  savedUnderLine: string | null;
+}>;
+
+const listedNames = (names: readonly string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names.join(''));
+const quotedNames = (names: readonly string[]) => listedNames(names.map(name => `"${name}"`));
+
+type DAVEWebUploadWaiting = Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'fileProjectNames' | 'waitingProjectNames'>;
+
+/** The tasks still waiting for a project, by the name the file gives them ('' for none), in the file's order. */
+function daveWebUploadWaitingNames(prepared: DAVEWebUploadWaiting | null) {
+  const byName = new Map<string, number>();
+  (prepared?.scheduleItems ?? []).filter(daveWebScheduleUploadRowNeedsProject).forEach(item => {
+    const name = prepared?.fileProjectNames?.[item.id] ?? item.projectName.trim();
+    byName.set(name, (byName.get(name) ?? 0) + 1);
+  });
+  return byName;
+}
+
+/**
+ * Where a waiting name may belong to a project of his that is not ticked (review passes 1 and 2): the projects it IS
+ * by the strict rule when none of them is ticked (named on the page; open item 4.88: also where it is ONE such
+ * project), or, from the guess alone, none named (the page stays neutral). Null when it points to no other project.
+ */
+function daveWebUploadNamePointsElsewhere(prepared: DAVEWebUploadWaiting | null, name: string): Readonly<{ named: readonly string[] }> | null {
+  const pointer = prepared?.waitingProjectNames?.[name];
+  const ticked = new Set((prepared?.document.projectNames ?? []).map(normalized));
+  if (pointer && pointer.fitsEqually.length > 0) return pointer.fitsEqually.some(project => ticked.has(normalized(project))) ? null : { named: pointer.fitsEqually };
+  return pointer?.mayBeAnother ? { named: [] } : null;
+}
+
+/**
+ * High item 2: what the upload review says about the tasks' projects, from the rows as he leaves them. Nothing is
+ * given a project without his press: the one button (exactly one project ticked, every waiting task named alike
+ * by the file) says in its own words what it does, and the line under it says where they will be saved.
+ */
+export function daveWebScheduleUploadProjectReview(prepared: DAVEWebUploadWaiting | null): DAVEWebScheduleUploadProjectReview {
+  const waitingNames = daveWebUploadWaitingNames(prepared);
+  // Open item 4.88: the tasks the file names no project for ('') are said apart, in their own words.
+  const blank = waitingNames.get('') ?? 0;
+  const names = [...waitingNames.keys()].filter(Boolean);
+  const count = names.reduce((total, name) => total + (waitingNames.get(name) ?? 0), 0);
+  // Review pass 1, L-3: a name that fits two or more of his projects equally is said to, not "not one of them".
+  const fits = (name: string) => prepared?.waitingProjectNames?.[name]?.fitsEqually.length ?? 0;
+  const several = names.filter(name => fits(name) > 1);
+  // Open item 4.88: a name that is one project of his, not ticked.
+  const notTicked = names.filter(name => fits(name) === 1);
+  const none = names.filter(name => fits(name) === 0);
+  const reasons = [
+    none.length > 0 ? `${quotedNames(none)}, which ${none.length === 1 ? 'is not one of your open projects' : 'are not among your open projects'}` : '',
+    several.length > 0 ? `${quotedNames(several)}, which ${several.length === 1 ? 'matches' : 'each match'} more than one of your open projects` : '',
+    notTicked.length > 0 ? `${quotedNames(notTicked)}, which ${notTicked.length === 1 ? 'is one of your projects but is not ticked' : 'are projects of yours but are not ticked'}` : '',
+  ].filter(Boolean).join(', and ');
+  const namedLine = count === 0 ? null : `${count} ${count === 1 ? 'task needs' : 'tasks need'} a project before you can upload: the file names ${count === 1 ? 'its project' : names.length === 1 ? 'their project' : 'their projects'} ${reasons}. Choose a project for ${count === 1 ? 'it' : 'each of them'} above.`;
+  const blankLine = blank === 0 ? null
+    : `${blank}${count > 0 ? ' more' : ''} ${blank === 1 ? 'task needs' : 'tasks need'} a project${count > 0 ? '' : ' before you can upload'}: the file names no project for ${blank === 1 ? 'it' : 'them'}. Choose a project for ${blank === 1 ? 'it' : 'each of them'} above.`;
+  const heldLine = [namedLine, blankLine].filter(Boolean).join(' ') || null;
+  const ticked = prepared?.document.projectNames ?? [];
+  // Review pass 1, L-1: never for a name that points to another of his projects (a wrong tick must not be one press).
+  // Open item 4.88: with one project ticked, also for the tasks the file names no project for.
+  const useForAll = count === 0 && blank > 0 && ticked.length === 1
+    ? { project: ticked[0], label: blank === 1 ? `Use ${ticked[0]} for the task with no project in the file` : `Use ${ticked[0]} for all ${blank} tasks with no project in the file` }
+    : blank === 0 && count > 0 && names.length === 1 && ticked.length === 1 && !daveWebUploadNamePointsElsewhere(prepared, names[0])
+      ? { project: ticked[0], label: count === 1 ? `Use ${ticked[0]} for the task named "${names[0]}"` : `Use ${ticked[0]} for all ${count} tasks named "${names[0]}"` }
+      : null;
+  const given = new Map<string, number>();
+  (prepared?.scheduleItems ?? []).forEach(item => {
+    const file = prepared?.fileProjectNames?.[item.id];
+    if (file === undefined || daveWebScheduleUploadRowNeedsProject(item)) return;
+    const key = JSON.stringify([file, item.projectName]);
+    given.set(key, (given.get(key) ?? 0) + 1);
+  });
+  const savedUnderLine = [...given].map(([key, total]) => {
+    const [file, project] = JSON.parse(key) as [string, string];
+    return file
+      ? `${total} ${total === 1 ? 'task' : 'tasks'} named "${file}" in the file will be saved under ${project}.`
+      : `${total} ${total === 1 ? 'task' : 'tasks'} with no project in the file will be saved under ${project}.`;
+  }).join(' ') || null;
+  return { heldLine, useForAll, savedUnderLine };
+}
+
+/**
+ * In place of the one button, where a waiting name may belong to a project of his that is not ticked (review passes
+ * 1 and 2); else null. Projects are named only where the file's name IS them by the strict rule (none of them
+ * ticked): then ticking one of them and choosing the file again files the tasks under it. From the guess alone the
+ * line names no project (review pass 2, H2S-1), and says it only where it is why there is no one button (one tick).
+ */
+export function daveWebScheduleUploadOtherProjectLine(prepared: DAVEWebUploadWaiting | null): string | null {
+  const oneTick = (prepared?.document.projectNames ?? []).length === 1;
+  return [...daveWebUploadWaitingNames(prepared)].flatMap(([name, tasks]) => {
+    const elsewhere = daveWebUploadNamePointsElsewhere(prepared, name);
+    const these = tasks === 1 ? 'this task' : 'these tasks';
+    if (!elsewhere) return [];
+    if (elsewhere.named.length > 1) {
+      return [`"${name}" in the file matches your projects ${listedNames(elsewhere.named)}, and ${elsewhere.named.length === 2 ? 'neither is' : 'none of them is'} ticked. To file ${these} under one of them, tick it under Projects above and choose the file again.`];
+    }
+    // Open item 4.88: the file names one project of his that is not ticked.
+    if (elsewhere.named.length === 1) {
+      return [`"${name}" in the file is your project ${elsewhere.named[0]}, which is not ticked. To file ${these} under it, tick it under Projects above and choose the file again.`];
+    }
+    return oneTick
+      ? [`"${name}" in the file may stand for one of your other projects, so there is no button for ${tasks === 1 ? 'it' : 'all of them'}. Choose the project on ${tasks === 1 ? 'this task' : 'each of these tasks'} above; if the right project is not offered, tick it under Projects above and choose the file again.`]
+      : [];
+  }).join(' ') || null;
+}
+
+/** The one button: every task still waiting for a project is given that project, as the review's own choice does. */
+export function daveWebScheduleUploadUseProject<T extends DAVEWebPreparedUpload>(prepared: T, project: string): T {
+  return {
+    ...prepared,
+    scheduleItems: prepared.scheduleItems.map(item => (daveWebScheduleUploadRowNeedsProject(item) ? { ...item, projectName: project, scheduleProjectName: project } : item)),
+  };
+}
+
 export function planDAVEWebScheduleImport({
   snapshot,
   importedScheduleItems,
@@ -558,6 +971,8 @@ export function planDAVEWebScheduleImport({
   if (importedScheduleItems.length === 0) {
     return Object.freeze({ additions: Object.freeze([]), revisions: Object.freeze([]) });
   }
+  // High item 2: never saved under "Needs Project"; the review holds the upload until each task has a project.
+  if (importedScheduleItems.some(daveWebScheduleUploadRowNeedsProject)) throw new Error(DAVE_WEB_UPLOAD_NEEDS_PROJECT_TEXT);
   // WS1 item 2: the rows of a file he chose "Lookahead" for at the review (withDAVEWebScheduleUploadRole) are merged
   // as the phone's approval merges a lookahead: it restates the master's tasks in place, adds its own, and is in
   // effect at once (owner answer Q22), so nothing waits for Make Current. The file's own role says so (WS2).
@@ -660,7 +1075,10 @@ export function planDAVEWebScheduleDocumentDelete({
   snapshot: Pick<DAVEWebReadOnlySnapshot, 'scheduleItems' | 'knownScheduleItems' | 'referenceDocuments'>;
   document: DAVEWebReferenceDocument;
   updatedAt?: string;
-  /** "Delete Document" / "Delete Document Only": no task is removed. */
+  /**
+   * "Delete Document": no task is removed. (Up to Build 231 also "Delete Document Only"; the owner's answer to
+   * question 46, 13 Oct 2026, removed it, so the web asks this only for a file with no task of its own.)
+   */
   keepTasks?: boolean;
 }): readonly DAVEWebScheduleImportRevision[] {
   const removedIds = new Set(keepTasks ? [] : document.linkedScheduleItems.map(item => item.id));
@@ -742,6 +1160,53 @@ export function daveWebScheduleDocumentDeleteNote({
     snapshot.referenceDocuments,
     count === 0 ? DAVE_WEB_DELETE_WITH_CHANGES_LABEL : `Delete Document + ${count} Task${count === 1 ? '' : 's'}`,
   );
+}
+
+/**
+ * Open item 2.34 (review pass 6, O-8; 13 Oct 2026). Edit Project Document Details offered every schedule file that
+ * is not in effect a new Category. Filed as a Report, say, an OLDER schedule file is no longer a schedule by the
+ * app's own test (scheduleDocumentIsScheduleLike), so its tasks were listed again on every device at once: each task
+ * the newer schedule had moved, twice, and a task it had dropped, back. Nothing asked first. Of the two ways the
+ * brief allows, the smaller and safer: the Category of a schedule file with tasks (or of a lookahead, whose tasks it
+ * is) is not changed on the computer; the rest of the form is saved as before. A schedule file with no task, and any
+ * document that is not a schedule, keep every choice.
+ * Review pass H4, H4S-1 (Medium, older; open item 2.42; 14 Oct 2026): its PROJECTS stay too. A replaced lookahead
+ * moved to another project counted again (the newest lookahead for the project it then named), so its old dates and
+ * the detail task the newer lookahead had dropped came back on every device, with no card; an older master moved to
+ * another project hid that project's tasks at Make Current, with no question. Refused rather than carried: carrying
+ * it would mean teaching every device's choice of the schedule in effect, and Make Current's retirement, what a
+ * relabelled file stands for; refusing is the form alone, and the file can still be deleted with its tasks and
+ * uploaded again under the right ticks.
+ */
+export function daveWebScheduleCategoryStays(
+  document: ReferenceDocument & Partial<Pick<DAVEWebReferenceDocument, 'linkedScheduleItems' | 'importedScheduleItemCount'>>,
+): boolean {
+  if (!scheduleDocumentIsScheduleLike(document)) return false;
+  return (document.importedScheduleItemCount ?? 0) > 0 || (document.linkedScheduleItems?.length ?? 0) > 0 || scheduleDocumentAddsToMaster(document);
+}
+
+/** What the form says for such a file, under its Category and Projects (open item 2.34; review pass H4, H4S-1). */
+export const DAVE_WEB_SCHEDULE_DETAILS_STAY_TEXT =
+  'This schedule file has tasks, so its category and projects stay as they are. Changed, its tasks could show again on every device (some twice, or on old dates), and Make Current on it could hide another project\'s tasks. To file it differently, delete it with its tasks, then upload it again.';
+
+/** The projects a document names, as one comparable value (trimmed, lower case, each once, in any order). */
+function documentProjectsKey(projectName: string | null | undefined, projectNames: readonly string[] | null | undefined): string {
+  return [...new Set([projectName ?? '', ...(projectNames ?? [])].map(normalized).filter(Boolean))].sort().join('|');
+}
+
+/**
+ * Why Save Document Details is refused, or null: another Category, or other Projects, for a schedule file with tasks
+ * (open item 2.34; review pass H4, H4S-1).
+ */
+export function daveWebDocumentDetailsRefusal(
+  document: Parameters<typeof daveWebScheduleCategoryStays>[0],
+  next: Partial<ReferenceDocument>,
+): string | null {
+  if (!daveWebScheduleCategoryStays(document)) return null;
+  const categoryChanged = next.category !== undefined && normalized(next.category) !== normalized(document.category);
+  const projectsChanged = (next.projectName !== undefined || next.projectNames !== undefined) &&
+    documentProjectsKey(next.projectName, next.projectNames) !== documentProjectsKey(document.projectName, document.projectNames);
+  return categoryChanged || projectsChanged ? DAVE_WEB_SCHEDULE_DETAILS_STAY_TEXT : null;
 }
 
 /**
@@ -890,12 +1355,19 @@ export function buildDAVEWebReportSource(
    * arrived the page called that draft current, and it was approved and sent.
    */
   periodNotCounted = false,
+  /**
+   * HIGH item 1c: the period's last report (the shared record), which the report's facts are fingerprinted against
+   * (buildDAVEReportSourceOnPeriod), as the page's own fingerprint is. None: a first report.
+   */
+  period: DAVEReportSnapshot | null = null,
+  /** HIGH item 1d: the report's format (the period's own); its facts are held as that report prints them. */
+  format: DAVEWebReportAudience = 'project_manager',
 ): DAVEWebReportSource {
   const truths = buildDAVEWebProjectTruths(snapshot, selectedProject);
   const evidenceRecords = truths.flatMap(truth => truth.evidence.records);
   const scopeNames = truths.map(truth => normalized(truth.projectName)).sort();
   const scopeKey = scopeNames.length > 0 ? scopeNames.join('|') : 'empty-scope';
-  const truthFingerprint = buildDAVEReportSourceFingerprint(truths);
+  const truthFingerprint = buildDAVEReportSourceOnPeriod(truths, period, format).fingerprint;
   const mediaFingerprint = stableWebReportSourceHash(
     canonicalWebReportSourceValue(
       snapshot.projectUpdates
@@ -1010,10 +1482,11 @@ function buildDAVEWebProjectTruths(
     knownScheduleItems,
     ...(handedAsBefore ? { asBuiltBefore: { scheduleItems: snapshot.scheduleItems, knownScheduleItems: snapshot.knownScheduleItems } } : {}),
     // The web's Word report cites drawings from every document downloaded (the Reports page), so the fingerprint does (R8 item 2).
-    drawingDocuments: snapshot.referenceDocuments,
+    // High item 3: a drawing piece only from the list's copy of its index (the phone's rule); the documents as before.
+    drawingDocuments: referenceDocumentsCitedAsListed([...snapshot.referenceDocuments] as ReferenceDocument[]),
     knownScheduleDocuments: snapshot.referenceDocuments,
     // A document the cloud marks archived is not counted (owner answer Q44; review of D1, L10); with none, this is the list itself.
-    referenceDocuments: daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds),
+    referenceDocuments: withoutListedPageIndexes(daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds) as unknown as ReferenceDocument[]),
     now: snapshot.refreshedAt,
   });
 }

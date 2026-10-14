@@ -17,6 +17,7 @@ import type {
 } from './ReportWordDocument';
 import { reportPictureFit } from './ReportWordMediaLimits';
 import type { ReportDrawingReference } from './ReportDrawingReferences';
+import { reportWordDrawingDescription, reportWordPhotoDescription } from './ReportWordMediaDescription';
 
 type ArtifactUrlResolver = (
   bucket: 'project-photos' | 'project-documents',
@@ -88,7 +89,8 @@ async function resolvePhoto(
   getArtifactUrl: ArtifactUrlResolver,
 ): Promise<{ media: ReportWordMedia } | { unavailable: ReportWordUnavailableMedia }> {
   const path = photo.cloudStoragePath?.trim();
-  const label = photo.caption?.trim() || `Project photo from ${photo.selectedAreaName || update.selectedAreaName || update.projectName}`;
+  const described = reportWordPhotoDescription(photo, update);
+  const label = described.caption;
   const numberedLabel = `Photo ${displayNumber} — ${label}`;
   if (!path) {
     return {
@@ -116,11 +118,11 @@ async function resolvePhoto(
         mimeType: raster.mimeType,
         width: raster.width,
         height: raster.height,
-        projectName: update.projectName,
-        areaName: photo.selectedAreaName || update.selectedAreaName,
-        linkedTaskName: update.scheduleTaskName,
-        recordedAt: update.date,
-        reasonForInclusion: photoReasonForInclusion(update, photo),
+        projectName: described.projectName,
+        areaName: described.areaName,
+        linkedTaskName: described.linkedTaskName,
+        recordedAt: described.recordedAt,
+        reasonForInclusion: described.reasonForInclusion,
       },
     };
   } catch (error) {
@@ -141,7 +143,8 @@ async function resolveDrawing(
   loadPdfJs: PdfJsLoader,
 ): Promise<{ media: ReportWordMedia } | { unavailable: ReportWordUnavailableMedia }> {
   const document = reference.excerpt.document;
-  const label = `${reference.projectName} · ${reference.areaName} · ${reference.citation.label}`;
+  const described = reportWordDrawingDescription(reference);
+  const label = described.label;
   const path = document.storagePath?.trim();
   if (!path) {
     return {
@@ -167,17 +170,15 @@ async function resolveDrawing(
       media: {
         id: reference.id,
         kind: 'drawing',
-        caption: `${reference.projectName} — ${reference.areaName}`,
+        caption: described.caption,
         data: raster.data,
         mimeType: raster.mimeType,
         width: raster.width,
         height: raster.height,
-        projectName: reference.projectName,
-        areaName: reference.areaName,
-        reasonForInclusion:
-          `This excerpt comes from the current drawing reference mapped to ${reference.areaName} ` +
-          'and is included so the reader can verify the reported work location.',
-        citation: reference.citation.label,
+        projectName: described.projectName,
+        areaName: described.areaName,
+        reasonForInclusion: described.reasonForInclusion,
+        citation: described.citation,
       },
     };
   } catch (error) {
@@ -192,19 +193,6 @@ async function resolveDrawing(
   }
 }
 
-function photoReasonForInclusion(
-  update: ProjectUpdate,
-  photo: UpdatePhoto,
-): string {
-  const area = photo.selectedAreaName?.trim() || update.selectedAreaName?.trim();
-  const task = update.scheduleTaskName?.trim();
-  if (task) {
-    return `This photo is attached to the field update for ${task}` +
-      `${area ? ` in ${area}` : ''} and supports the recorded project condition.`;
-  }
-  return `This photo is attached to a field update for ${area || update.projectName} ` +
-    'and supports the recorded project condition.';
-}
 
 export async function resolveProtectedImageWithRetry(args: {
   bucket: 'project-photos' | 'project-documents';

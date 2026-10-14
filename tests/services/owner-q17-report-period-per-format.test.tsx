@@ -378,6 +378,28 @@ describe('each report format keeps its own period on the Reports screen (owner a
 });
 
 describe('the combined report\'s memory ignores selection order (whole-app audit A6 pass 6 #6)', () => {
+  // HIGH item 1e (the coordinator's decision on review pass 3's case B): the report PRINTS its projects by name, as it
+  // is worked out: ticked in another order, the same written report, word for word and in the same order.
+  it('the written report reads the same, its projects in name order, whichever order they were ticked', async () => {
+    const facts = [...tower(1), task('grade', 'Grade site', false, 'Annex')];
+    const combined = (selectedProjectNames: string[]): Visit =>
+      ({ format: 'project_manager', scheduleItems: facts, reportType: 'combined_project_update', selectedProjectNames });
+    const read = async (names: string[]) => {
+      visit(combined(names));
+      fireEvent.press(await screen.findByRole('button', { name: 'Full written report' }, SLOW));
+      const body = String((await screen.findByText(/CURRENT WORK/, {}, SLOW)).props.children);
+      const subtitle = String(screen.getByText(/Current task status, recent field updates, and next steps\./).props.children);
+      return { body, subtitle };
+    };
+    const towerFirst = await read(['Tower', 'Annex']);
+    const annexFirst = await read(['Annex', 'Tower']);
+    expect(annexFirst).toEqual(towerFirst);
+    expect(towerFirst.subtitle).toBe('Annex, Tower · Current task status, recent field updates, and next steps.');
+    const work = towerFirst.body.slice(towerFirst.body.indexOf('CURRENT WORK'));
+    expect(work.indexOf('Annex — ')).toBeGreaterThan(0);
+    expect(work.indexOf('Annex — ')).toBeLessThan(work.indexOf('Tower — '));
+  });
+
   it('toggling a project off and on restores the edits, review marks and approval for that set', async () => {
     mockAuthority = {
       ...mockAuthority,

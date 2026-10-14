@@ -36,6 +36,8 @@ import { normalizeProjectControls } from './VitruviusProjectControls';
 import type { DAVEOperationalCollectionName } from './DAVEOperationalRefresh';
 import { isGoogleDriveLinkedSource } from './GoogleDriveWebProvider';
 import { ecosClosedProjectNames } from './ECOSProjectQuestion';
+import { canonicalReferenceCategory } from './AuthoritativeDocumentSystem';
+import { listedPageIndexOfTheListRow } from './ECOSDocumentIndexPersistence';
 
 export type DAVEWebReadOnlySnapshot = Readonly<{
   projects: readonly CloudProject[];
@@ -427,7 +429,8 @@ function normalizeDocument(value: unknown): DAVEWebReferenceDocument | null {
   const id = readString(data.id) ?? readString(row.id);
   const name = readString(data.name) ?? readString(row.name);
   if (!id || !name) return null;
-  const { retiredForProjectNames: _retired, ...shared } = data as Partial<ReferenceDocument>;
+  // High item 3 (b2): the row's citation slice is read by the one reader as the list's copy, never kept as a field.
+  const { retiredForProjectNames: _retired, citationPageIndex: _listed, ...shared } = data as Partial<ReferenceDocument>;
   const retiredForProjectNames = readStringArray(data.retiredForProjectNames);
 
   return {
@@ -465,6 +468,9 @@ function normalizeDocument(value: unknown): DAVEWebReferenceDocument | null {
     cloudUpdatedAt: readString(row.updated_at),
     linkedScheduleItems: Object.freeze([]),
     importedScheduleItemCount: 0,
+    ...(canonicalReferenceCategory({ category: readString(data.category) ?? readString(row.category) ?? '' }) === 'drawing'
+      ? { listedPageIndex: listedPageIndexOfTheListRow(data as Partial<ReferenceDocument>) }
+      : {}),
   };
 }
 

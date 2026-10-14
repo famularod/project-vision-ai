@@ -63,7 +63,11 @@ assert(shell.includes('<TaskStatusBadge task={task} />'), 'Task cards must use t
 assert(shell.includes("const label = isComplete ? 'Completed' : task.status;"), 'Completed tasks must use a clear past-tense status label.');
 assert(shell.includes("isNotStarted ? 'notStarted' : 'inProgress'"), 'Not-started work must be visually distinct from work in progress.');
 assert(shell.includes('taskStatusBadge: { minWidth: 116'), 'Task status pills must be large enough to scan quickly.');
-assert(shell.includes('Delete Document Only') && shell.includes('Delete Document +'), 'Document deletion must distinguish keeping or deleting linked tasks.');
+// The owner's answer to question 46 (13 Oct 2026): a schedule file is never deleted without its tasks, so the page has
+// no "Delete Document Only" for one (it had to offer both). Changed by review pass 4, C-4 (the coordinator's decision,
+// 13 Oct 2026): it required the words to be nowhere on the page; a message screenshot, which is not a schedule by the
+// app's own test, has the button again, so the page must offer it behind that test and nowhere else.
+assert(shell.includes('const keepsDocumentOnlyDelete = Boolean(deleteCandidate && !scheduleDocumentIsScheduleLike(deleteCandidate));') && shell.split("'Delete Document Only'").length === 2 && shell.includes('Delete Document +'), 'Document deletion must delete linked tasks with their schedule file, and offer to keep them only for a document that is not a schedule.');
 assert(shell.includes('Current schedule · protected from deletion'), 'The current schedule must be protected from accidental deletion.');
 assert(shell.includes('Prior schedule versions ('), 'Schedule history must be separated from the authoritative current schedule.');
 assert(shell.includes('groupDAVEWebDocuments'), 'Document management must use the tested schedule-version grouping contract.');

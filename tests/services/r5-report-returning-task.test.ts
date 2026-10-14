@@ -233,7 +233,7 @@ describe('R5 item 1: a task a report said was removed, that a later master lists
     sameOnTheWeb(state, whileOut.sent, '2026-09-10T17:00:00.000Z', back);
   });
 
-  it('back on its own row after two reports, a row that itself answers to an older row: "added", never compared with that older row (found by the taught text driver)', () => {
+  it('back on its own row after two reports, a row that itself answers to an older row: back as the first report listed it, never compared with that older row (found by the taught text driver; 7.17)', () => {
     // Master 1 lists Paint; master 2 moves it, on a new row that answers to master 1's; he sets 60% and Sam; a report goes out.
     let state = approve({ items: [], documents: [] }, schedule('MASTER 1', '2026-09-05T12:00:00.000Z'), [...OTHERS, PAINT]);
     state = approve(state, schedule('MASTER 2', '2026-09-07T12:00:00.000Z'), [...OTHERS, PAINT_MOVED]);
@@ -252,11 +252,13 @@ describe('R5 item 1: a task a report said was removed, that a later master lists
     expect(one(state, 'Paint').map(item => [item.id, item.percentComplete, item.owner])).toEqual([['MASTER 2-4', 60, 'Sam']]);
     state = set(state, 'Paint', { percentComplete: 70 }, '2026-09-20T16:00:00.000Z');
     const back = report(state, secondWhileOut.sent, '2026-09-20T17:00:00.000Z');
-    // The row it left on is the row shown: nothing saved tells how it stood in the last report that listed it. Master
-    // 1's row is older than that report, and what it holds was never what a report said. (It read: back, "moved from
-    // 0% to 70% complete", "finish changed from 10/05/2026 to 10/07/2026", "owner changed from unassigned to Sam".)
-    expect(back.paint).toEqual([ADDED]);
-    expect(back.onceApproved.paint).toEqual([ADDED]);
+    // The row it left on is the row shown. Master 1's row is older than that report, and what it holds was never what
+    // a report said. (It read: back, "moved from 0% to 70% complete", "finish changed from 10/05/2026 to 10/07/2026",
+    // "owner changed from unassigned to Sam".) It then read "added" (reports review pass 5, F6).
+    // Open item 7.17 (13 Oct 2026): the reports kept since record how the first one listed Paint (60%, Sam): it is
+    // back, compared with that, and never with master 1's row. Expectation moved deliberately.
+    expect(back.paint).toEqual([BACK, 'Paint moved from 60% to 70% complete.']);
+    expect(back.onceApproved.paint).toEqual([BACK, 'Paint moved from 60% to 70% complete.']);
     sameOnTheWeb(state, secondWhileOut.sent, '2026-09-20T17:00:00.000Z', back);
   });
 
@@ -425,13 +427,16 @@ describe('R5 item 1: the report\'s fingerprint does not move', () => {
   // R8 item 3 (the coordinator's decision on review pass 2, P2-3). This test said the earlier rows "are in neither
   // version of the fingerprint". The sentences of a task that is back read them, so a late change to such a row
   // changed the report under one fingerprint. They are in today's version now, and still not in 1.0.
-  it('the earlier rows handed to the comparison are in today\'s version of the fingerprint, and not in 1.0', () => {
+  // HIGH item 1d (open item 7.55, the coordinator's decision): today's version holds them where they print, in the
+  // returning-task sentences of "since the last report" as counted from the report it counts from (R8 item 3's own
+  // test asks that rule); not as rows. A first report (counted from none) prints nothing of them.
+  it('the earlier rows handed to the comparison are held in today\'s version where they print (a first report prints none of them), and not in 1.0', () => {
     const { state: out } = paintLeftOut();
     const state = approve(out, schedule('MASTER 3', '2026-09-10T12:00:00.000Z'), [...OTHERS, PAINT_MOVED], PLAIN, SAME_TASK);
     const truths = phoneTruths(state, '2026-09-10T15:00:00.000Z');
     expect((truths[0].earlierRows ?? []).map(row => [row.taskId, row.earlierTaskId, row.percentComplete, row.owner, row.finishDate])).toEqual([['MASTER 3-4', 'MASTER 1-4', 60, 'Sam', '10/05/2026']]);
     const without = truths.map(truth => { const { earlierRows: _rows, ...rest } = truth; return rest as typeof truth; });
-    expect(buildDAVEReportSourceFingerprint(truths)).not.toBe(buildDAVEReportSourceFingerprint(without));
+    expect(buildDAVEReportSourceFingerprint(truths)).toBe(buildDAVEReportSourceFingerprint(without));
     // 1.0 is worked out from the truth as it was built, which carries the rows too: without them there, as before.
     const asBuilt = daveProjectTruthAsBuilt(truths[0]);
     expect(asBuilt.earlierRows).toHaveLength(1);

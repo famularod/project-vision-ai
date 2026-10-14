@@ -82,14 +82,20 @@ function phoneDeleteWithItems(state: State, id: string, at: string): State {
 }
 const APP_SOURCE = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
 /**
- * The phone's "Delete PDF Only" (review P6-5): what App.tsx's own handler saves before it removes the file, compiled
- * from its source, with App.tsx's own updateScheduleItem (compiled from its source too) doing each save.
+ * What the phone's "Delete PDF Only" saved before it removed the file, as App.tsx had it up to Build 231 (review P6-5).
+ * The owner's answer to question 46 (13 Oct 2026) removed that button from every schedule file; its save is kept
+ * here, word for word but for the type casts. (Review pass 4, C-4, the coordinator's decision: App.tsx has the button
+ * again for a message screenshot alone, with this same save; no schedule file is offered it, which is what is pinned.)
+ */
+const SAVES_OF_THE_REMOVED_DELETE_PDF_ONLY = 'scheduleItemsAfterScheduleDeleted({ items: scheduleItemsCurrentRef.current, removed: [], document, documents: referenceDocumentsCurrentRef.current, fileOnly: true, withWhatHeSet: true }).forEach(item => updateScheduleItem(item.id, item, undefined, true));';
+/**
+ * An earlier build's "Delete PDF Only" on the phone (review P6-5): that save, with App.tsx's own updateScheduleItem
+ * (compiled from its source) doing each one. No screen does this now; the state it left must keep working.
  */
 function phoneDeletePdfOnly(state: State, id: string, at: string): State {
   const document = state.documents.find(saved => saved.id === id)!;
-  const handler = APP_SOURCE.slice(APP_SOURCE.indexOf("text: 'Delete PDF Only'"));
-  const saves = handler.slice(handler.indexOf('scheduleItemsAfterScheduleDeleted({'), handler.indexOf('void removeReferenceDocumentEverywhere('));
-  expect(saves).toContain('fileOnly: true');
+  expect(APP_SOURCE).toContain('const pdfOnly = !scheduleDocumentIsScheduleLike(document);'); // review pass 4, C-4: it pinned that App.tsx had no "Delete PDF Only" at all; the button is back for a message screenshot alone, so what is pinned is that no schedule file is offered it
+  const saves = SAVES_OF_THE_REMOVED_DELETE_PDF_ONLY;
   const from = APP_SOURCE.indexOf('\n  function updateScheduleItem(');
   const to = APP_SOURCE.indexOf('\n  async function saveScheduleItemChanges(', from);
   const js = ts.transpileModule(`module.exports = () => { ${APP_SOURCE.slice(from, to)}\n ${saves}\n };`,
@@ -110,7 +116,10 @@ function phoneDeletePdfOnly(state: State, id: string, at: string): State {
   try { (mod.exports as () => void)(); } finally { jest.useRealTimers(); }
   return { items: ref.current, documents: state.documents.filter(other => other.id !== id) };
 }
-/** The web's "Delete Document + Tasks" / "Delete Document Only": its plan's tasks saved whole, then the file gone. */
+/**
+ * The web's "Delete Document + Tasks", or with keepTasks its plan for a file kept without its tasks ("Delete Document
+ * Only" up to Build 231; not offered since owner answer 46): the plan's tasks saved whole, then the file gone.
+ */
 function webDelete(state: State, id: string, at: string, keepTasks: boolean): State {
   const document = state.documents.find(saved => saved.id === id)!;
   const linked = scheduleItemsOnlyInImportBatch(state.items, document, state.documents.filter(scheduleDocumentIsScheduleLike));
@@ -158,9 +167,9 @@ describe('Review P5 R-A: a schedule\'s delete that changes the row shown for a t
   it.each([
     ['the phone\'s Delete PDF + Items', (state: State) => phoneDeleteWithItems(state, 'LOOKAHEAD 1', AT)],
     // (Review P6-5; until then the phone's file-only delete took the two dates alone of each task the helper returned.)
-    ['the phone\'s Delete PDF Only', (state: State) => phoneDeletePdfOnly(state, 'LOOKAHEAD 1', AT)],
+    ['an earlier build\'s Delete PDF Only on the phone (removed: owner answer 46)', (state: State) => phoneDeletePdfOnly(state, 'LOOKAHEAD 1', AT)],
     ['the web\'s Delete Document + Tasks', (state: State) => webDelete(state, 'LOOKAHEAD 1', AT, false)],
-    ['the web\'s Delete Document Only', (state: State) => webDelete(state, 'LOOKAHEAD 1', AT, true)],
+    ['an earlier build\'s Delete Document Only on the web (removed: owner answer 46)', (state: State) => webDelete(state, 'LOOKAHEAD 1', AT, true)],
   ] as const)('%s on the old lookahead: master 1\'s row is shown with his owner, approval and schedule impact, and the report says nothing about them', (_door, deleteIt) => {
     const { state, sent } = afterSetActiveOnTheOlderMaster();
     const after = deleteIt(state);
@@ -186,7 +195,7 @@ describe('Review P5 R-A: a schedule\'s delete that changes the row shown for a t
     expect(saved.map(item => item.taskName)).not.toContain('Sitework');
   });
 
-  it('the file-only delete returns the row it shows only to a caller that asks for it, as the phone and the web both do now; and the phone keeps his percent as he stated it', () => {
+  it('the file-only delete returns the row it shows only to a caller that asks for it, as the phone and the web both did (no screen asks since owner answer 46); and the phone kept his percent as he stated it', () => {
     const { state } = afterSetActiveOnTheOlderMaster();
     const document = state.documents.find(saved => saved.id === 'LOOKAHEAD 1')!;
     const withoutAsking = scheduleItemsAfterScheduleDeleted({ items: state.items, removed: [], document, documents: state.documents, fileOnly: true, updatedAt: AT });

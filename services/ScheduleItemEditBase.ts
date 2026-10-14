@@ -184,6 +184,36 @@ export function scheduleItemStampAfter(...stamps: Array<string | null | undefine
 }
 
 /**
+ * The owner's answer to question 47 (13 Oct 2026). A newer master turns a
+ * task it leaves on its dates High when its file marks the task Critical or
+ * lists its finish within the week (mergeApprovedScheduleImportItems). The
+ * row then holds High as its own import's word (priorityAsImported), with no
+ * mark of his. That High is the file's, never an edit of his, so it is never
+ * asked about where two copies of the row meet: a priority he set stands
+ * over it, whichever device syncs first.
+ *
+ * Whether `row` holds such a High, where the copy the weighing started from
+ * (`was`: a base's fields) did not hold High. Only a row a later import
+ * restated can have been raised (it belongs to that import too): any other
+ * row is weighed as before.
+ */
+function priorityIsItsFilesRaise(row: ScheduleItem, was: unknown): boolean {
+  const high = fieldValue({ priority: 'High' }, 'priority');
+  const restated = Array.isArray(row.alsoImportedInBatchIds) && row.alsoImportedInBatchIds.length > 0;
+  return restated && fieldValue(row, 'priority') === high && fieldValue(was, 'priority') !== high && schedulePriorityIsItsImports(row);
+}
+
+/**
+ * The row's word of what its import gave it goes with a High its file raised
+ * (above), wherever that High is taken from one copy onto another: beside
+ * the other copy's older word the High would read as one he set, and would
+ * then follow the task as his.
+ */
+function withWordOfItsFilesRaise(next: Record<string, unknown>, field: string, source: ScheduleItem, was: unknown) {
+  if (field === 'priority' && priorityIsItsFilesRaise(source, was)) setField(next, 'priorityAsImported', source);
+}
+
+/**
  * A whole copy as the sync merge made it with the cloud's row, weighed on its
  * base's fields (owner answer Q28): one this device left as it was keeps the
  * cloud's value, one only this device changed keeps this device's, and one
@@ -215,7 +245,13 @@ export function scheduleItemWholeCopyAgainstCloud(
     // task: his, each naming the row the cloud's copy names for its task.
     const [wasBy, hereBy, cloudBy] = !byIds && field === 'dependencies' && taskOf ? [base.fields, local, remote].map(source => byTask(source, field)) : [];
     const hisByTask = !byIds && wasBy !== undefined && cloudBy === wasBy && hereBy !== wasBy;
-    const source = byIds ?? (wasBy === undefined ? null : hereBy === wasBy || cloudBy === hereBy ? remote : hisByTask ? local : null);
+    const weighed = byIds ?? (wasBy === undefined ? null : hereBy === wasBy || cloudBy === hereBy ? remote : hisByTask ? local : null);
+    // The owner's answer to question 47: the High this copy holds is the one its master's file gave the task it left on
+    // its dates, and the cloud's row holds a priority he set on another device meanwhile. His stands, and nothing is
+    // asked: the app's own raise is no edit of his. Also where his reads as the copy this one started from (he set it
+    // and set it back: the mark his edit left says it is his, and "nobody changed it" would put the raise over it).
+    const overHis = field === 'priority' && cloud !== here && priorityIsItsFilesRaise(local, base.fields) && (!weighed || schedulePriorityIsHis(remote));
+    const source = overHis ? remote : weighed;
     const companions = FIELD_COMPANIONS[field] ?? [];
     if (!source) {
       asked.push(field);
@@ -225,6 +261,7 @@ export function scheduleItemWholeCopyAgainstCloud(
     }
     if (here !== was && source === local) sentHere.push(field);
     [field, ...companions].forEach(name => setField(next, name, source));
+    withWordOfItsFilesRaise(next, field, source, base.fields);
     if (hisByTask) next.dependencies = scheduleItemLinksAsNamedIn(local, remote, taskOf!);
     setRecordEntry(next, field, source);
   });
@@ -315,6 +352,7 @@ export function scheduleItemWholeCopyOverCloud(
   WHOLE_COPY_FIELDS_WEIGHED.forEach(field => {
     if (Object.prototype.hasOwnProperty.call(base.fields, field) && fieldValue(local, field) === fieldValue(base.fields, field)) {
       [field, ...(FIELD_COMPANIONS[field] ?? [])].forEach(name => setField(next, name, cloud));
+      withWordOfItsFilesRaise(next, field, cloud, base.fields);
       setRecordEntry(next, field, cloud);
     }
   });
@@ -675,6 +713,10 @@ export function scheduleItemEditAgainstCloud(
       return;
     }
     if (FIELDS_NEVER_ASKED.has(field)) return;
+    // The owner's answer to question 47: the cloud's row was turned High meanwhile by a newer master's file (the task
+    // left on its dates, approved on another device). That is no edit of his to weigh this one against: the priority
+    // he set here goes up over it, and nothing is asked.
+    if (field === 'priority' && priorityIsItsFilesRaise(remote, base.fields) && schedulePriorityIsHis(itemData)) return;
     if (here === was) keptFromCloud.push(field);
     else asked.push(field);
   });

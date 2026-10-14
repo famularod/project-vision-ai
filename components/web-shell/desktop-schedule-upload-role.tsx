@@ -20,12 +20,15 @@ import { desktopSurfaces } from './desktop-surface-palette';
 export function DesktopScheduleUploadRole({
   suggestion,
   chosen,
+  savedFor,
   disabled,
   onChoose,
 }: {
   suggestion: ScheduleImportRoleSuggestion;
   /** What he picked, or null while the suggestion stands. */
   chosen: ScheduleImportRole | null;
+  /** Said when a full schedule will be saved for fewer projects than are ticked (Build 232 item 10b); else null. */
+  savedFor?: string | null;
   disabled: boolean;
   onChoose: (role: ScheduleImportRole) => void;
 }) {
@@ -57,6 +60,7 @@ export function DesktopScheduleUploadRole({
       <Text style={styles.suggestion}>
         {`Suggested: ${suggested?.title || ''}, because ${suggestion.reason}. You can change this before uploading.`}
       </Text>
+      {savedFor ? <Text style={styles.suggestion}>{savedFor}</Text> : null}
     </View>
   );
 }

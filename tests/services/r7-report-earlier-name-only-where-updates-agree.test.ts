@@ -114,7 +114,7 @@ const webSnapshot = (state: State, updates: ProjectUpdate[]): DAVEWebReadOnlySna
 /** The web's report source for the same saved data, and the source fingerprint Build 230 saved with a report of it. */
 function web(state: State, updates: ProjectUpdate[]) {
   const source = buildDAVEWebReportSource(webSnapshot(state, updates), 'Alpha');
-  const onBuild230 = String(source.fingerprint).replace(/^dave-report-source\/2\.0:[0-9a-f]+/, buildDAVELegacyReportSourceFingerprint(buildDAVEWebReportTruths(webSnapshot(state, updates), 'Alpha')));
+  const onBuild230 = String(source.fingerprint).replace(/^dave-report-source\/3\.0:[0-9a-f]+/, buildDAVELegacyReportSourceFingerprint(buildDAVEWebReportTruths(webSnapshot(state, updates), 'Alpha')));
   return { source, onBuild230 };
 }
 const snapshotOf = (source: ReturnType<typeof phone>, fingerprint: string) => buildDAVEReportSnapshot({

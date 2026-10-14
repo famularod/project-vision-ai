@@ -54,6 +54,7 @@ export function buildVitruviusLookahead({
   today = new Date(),
   projectTimeZone,
   groupBy = 'scheduleRoot',
+  linkedTasksElsewhere = [],
 }: {
   items: readonly ScheduleItem[];
   weeks: VitruviusLookaheadWeeks;
@@ -62,12 +63,17 @@ export function buildVitruviusLookahead({
   projectTimeZone?: string | null;
   /** The schedule's root (the default, the phone) or the app project (the web; A5 pass 13). */
   groupBy?: VitruviusScheduleGrouping;
+  /**
+   * Tasks not listed here that the listed tasks are linked with, filed elsewhere (open item 3.4): the critical path
+   * is worked out with them, as the computer's Gantt view does. They are not rows.
+   */
+  linkedTasksElsewhere?: readonly ScheduleItem[];
 }): VitruviusLookahead {
   const windowTimeZone = scheduleTimeZone(items, projectTimeZone);
   const todayDate = projectScheduleToday(today, windowTimeZone);
   const rangeFinishDate = addDays(todayDate, weeks * 7 - 1);
   const itemsById = new Map(items.map(item => [item.id, item]));
-  const criticalIds = analyzeVitruviusCriticalPath(items).criticalItemIds;
+  const criticalIds = analyzeVitruviusCriticalPath([...items, ...linkedTasksElsewhere]).criticalItemIds;
   const rows = items
     .filter(item => item.isSummary !== true)
     .filter(item => !scheduleTaskIsComplete(item))

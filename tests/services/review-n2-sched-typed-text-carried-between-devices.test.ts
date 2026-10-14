@@ -5508,3 +5508,930 @@ describe('S5 item 2: a lookahead deleted on the iPad, heard by the phone after i
     expect([await conflictsOf(phone), await conflictsOf(ipad), await queueOf(phone), await queueOf(ipad)]).toEqual([[], [], [], []]);
   });
 });
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * GUARDS ON WHAT BUILD 231 DOES RIGHT, kept from the Build 232 round's items 1, 1b and 1c (13 Oct 2026).
+ *
+ * Those items changed how a save of the whole task ("Delete PDF + Items" putting a task back, Set Active's carry)
+ * joins an edit of that task still waiting to go up, to cure the schedules reviewer's P3-1. Each fix caused a rarer
+ * fault beside it (review pass 2's M1, review pass 3's S3-1, then the fixer's own finding "2.1e"), every one of them
+ * beside the sync's carry of a value from a task's earlier row, which goes by the ROW's last-changed time. The
+ * coordinator's decision on the design note (notes/sync-design/NOTE.txt): the four commits are taken back out, and
+ * services/SyncService.ts is Build 231's again.
+ *
+ * SO P3-1 IS OPEN AGAIN, EXACTLY AS ON BUILD 231. He edits a task and, before the cloud has confirmed that edit,
+ * deletes on the same device the lookahead that moved it, with "Delete PDF + Items". The task stays on the deleted
+ * lookahead's dates (and on its percent, where the lookahead stated one) on the phone, the iPad and the web, with no
+ * card. No test here says that is right. The tests that state its cure (15 of item 1's, and the three of items 1b
+ * and 1c that look at what the delete put back) left with the fix, and so did the two that read the list item 1b
+ * kept in the queue. They are the acceptance tests of the round that brings the cure back.
+ *
+ * What stays below passes on Build 231's sync, and nothing stated it before that round:
+ *  - item 1's two controls: nothing waits for the task when it is saved whole (2 tests);
+ *  - what he typed with no signal still follows the task when he then deletes the lookahead with no signal and
+ *    another device changes the master: the shapes of M1 (13 tests);
+ *  - what the sync itself had carried to the task still goes up when he then deletes the lookahead: the shapes of
+ *    S3-1 (6 tests);
+ *  - what another device set on the task's earlier row still reaches the task, whichever device syncs first: the
+ *    hand probe that found 2.1e (10 tests).
+ */
+describe('Kept from Build 232 item 1, as Build 231 does it: nothing waits for the task when "Delete PDF + Items" or Set Active saves it whole', () => {
+  const LOOK = scheduleDoc('LOOKAHEAD B232', '2026-09-09T12:00:00.000Z', 'lookahead');
+  /** The lookahead moves Framing, stating 70% for it, and Survey. */
+  const BOTH_TASKS = ['Framing,Alpha,Lot,10/18/2026,10/28/2026,70', 'Survey,Alpha,Lot,10/13/2026,10/16/2026,'];
+  const ON_THE_LOOKAHEAD = '10/18/2026 - 10/28/2026';
+  const ON_THE_MASTER = '10/15/2026 - 10/25/2026';
+  const taskIn = (items: readonly ScheduleItem[], name: string) => items.filter(item => item.taskName === name);
+
+  /** What a place shows of a task: its dates, percent, owner, priority and hand links, and whether a lookahead's note is on it. */
+  const shownIn = (items: readonly ScheduleItem[], name: string) => taskIn(items, name).map(item => ({
+    dates: `${item.startDate} - ${item.finishDate}`, percent: item.percentComplete, owner: item.owner || '', priority: item.priority,
+    links: (item.dependencies ?? []).map(link => link.predecessorItemId), lookaheadNote: Boolean(item.lookaheadOverlay),
+  }));
+  /** The phone, the iPad and the web. */
+  const places = (phone: Device, ipad: Device, name: string) => [shownIn(deviceShown(phone), name), shownIn(deviceShown(ipad), name), shownIn(webShown(), name)];
+  const ending = async (phone: Device, ipad: Device) => ({
+    framing: places(phone, ipad, 'Framing'), survey: places(phone, ipad, 'Survey'),
+    cards: [(await conflictsOf(phone)).length, (await conflictsOf(ipad)).length],
+    waiting: [(await queueOf(phone)).length, (await queueOf(ipad)).length],
+  });
+  const everythingSynced = async (phone: Device, ipad: Device) => {
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await settle(phone, ipad);
+    await refresh(phone); await refresh(ipad);
+  };
+
+  it('the control: with his owner confirmed before the delete, Framing is back on the master\'s dates and percent in all three places, with his owner', async () => {
+    const { phone, ipad } = await start();
+    at(LOOK.importedAt!);
+    await approve(phone, LOOK, BOTH_TASKS, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    await settle(phone, ipad);
+    expect(places(phone, ipad, 'Framing').map(place => [place[0]?.dates, place[0]?.lookaheadNote])).toEqual(Array(3).fill([ON_THE_LOOKAHEAD, true]));
+    const id = theRow(phone).id;
+    at('2026-09-10T09:00:00.000Z');
+    await edit(phone, id, { owner: 'Mike' });
+    await backgroundUpload(phone);
+    // His edit is confirmed: nothing of the task waits on the phone when he deletes the lookahead.
+    expect((await queueOf(phone)).map(waiting => waiting.entity)).toEqual([]);
+    at('2026-09-10T12:00:00.000Z');
+    await deleteWithItems(phone, LOOK);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    at('2026-09-10T15:00:00.000Z');
+    await everythingSynced(phone, ipad);
+    // Framing on the master's dates at the master's percent with his owner, Survey on the master's dates, no note of the lookahead, no card, nothing waiting.
+    expect(await ending(phone, ipad)).toMatchObject({
+      framing: Array(3).fill([{ dates: ON_THE_MASTER, percent: 0, owner: 'Mike', lookaheadNote: false }]),
+      survey: Array(3).fill([{ dates: '10/12/2026 - 10/14/2026', lookaheadNote: false }]),
+      cards: [0, 0], waiting: [0, 0],
+    });
+  });
+
+  /**
+   * The other save of a whole task through the same lines: Set Active's carry of his percent to the row now shown.
+   * Here his owner edit on that row has gone up before Set Active saves it, so nothing waits.
+   */
+  it('Set Active\'s carry onto a row whose owner edit goes up at once (the control): his percent and his owner are on the row shown in all three places', async () => {
+    const { phone, ipad } = await start();
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    await settle(phone, ipad);
+    const newId = theRow(phone).id;
+    at('2026-09-11T08:00:00.000Z');
+    await edit(phone, newId, { percentComplete: 40 });
+    await settle(phone, ipad);
+    at('2026-09-11T09:00:00.000Z');
+    await edit(phone, newId, { owner: 'Mike' });
+    at('2026-09-11T10:00:00.000Z');
+    await setActiveOn(phone, F);
+    const oldId = theRow(phone).id;
+    expect(oldId).not.toBe(newId);
+    at('2026-09-11T11:00:00.000Z');
+    await edit(phone, oldId, { percentComplete: 55 });
+    expect((await queueOf(phone)).map(waiting => (waiting.payload as { id?: string }).id)).toEqual([]);
+    at('2026-09-11T12:00:00.000Z');
+    await setActiveOn(phone, G);
+    // Set Active's own save, before anything else syncs: the cloud's row has his percent and his owner.
+    expect(cloudRow(newId)).toMatchObject({ percentComplete: 55, owner: 'Mike' });
+    at('2026-09-11T15:00:00.000Z');
+    await everythingSynced(phone, ipad);
+    const end = await ending(phone, ipad);
+    expect(end).toMatchObject({ framing: Array(3).fill([{ dates: '10/20/2026 - 10/30/2026', percent: 55, owner: 'Mike' }]), cards: [0, 0], waiting: [0, 0] });
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Kept from Build 232 item 1b (the shapes of review pass 2's M1). The iPad has no signal. On it he types a note on a
+ * task (or makes a hand link, sets an owner, a priority or a percent). Still with no signal he deletes, on the iPad,
+ * the lookahead that holds that task, with "Delete PDF + Items". Meanwhile another device approves a new master, or
+ * makes another one current, so the task has a new row.
+ *
+ * As Build 231 does it: the delete's save of the whole task takes over the waiting edit's list of fields, so what
+ * waits is still a list, and a list is sent on to the row the task lives on now (review N3 R3) exactly as when the
+ * edit waits alone: the same rule, the same card when another device changed the same field there, the same write
+ * the cloud can refuse. What he typed follows the task. (What the delete itself put back is then in no write: that
+ * is P3-1, open, and no test here looks at it.)
+ */
+describe('Kept from Build 232 item 1b, as Build 231 does it: an edit made with no signal, then the lookahead deleted with no signal too, while another device changes the master', () => {
+  const LOOK = scheduleDoc('LOOKAHEAD B232B', '2026-09-09T12:00:00.000Z', 'lookahead');
+  const OLD_ROW = 'MASTER F-1';
+  const NEW_ROW = 'MASTER G-1';
+  type Kind = 'a note' | 'a hand link' | 'an owner' | 'a priority' | 'a percent';
+  const KINDS: Kind[] = ['a note', 'a hand link', 'an owner', 'a priority', 'a percent'];
+  const EDIT: Record<Kind, Partial<ScheduleItem>> = {
+    'a note': { notes: NOTE }, 'an owner': { owner: 'Mike' }, 'a priority': { priority: 'Low' }, 'a percent': { percentComplete: 30 },
+    'a hand link': { dependencies: [{ predecessorItemId: 'MASTER F-2', type: 'FS', lagDays: 0 }] } as unknown as Partial<ScheduleItem>,
+  };
+  /** What he set, as it reads on the row a place shows for Framing (a link by the task it names). */
+  const HIS: Record<Kind, unknown> = { 'a note': NOTE, 'an owner': 'Mike', 'a priority': 'Low', 'a percent': 30, 'a hand link': ['Survey'] };
+  /**
+   * How the task comes by its new row while the iPad has no signal:
+   *  - the phone approves master G (the shape of the generator's seed 5311);
+   *  - master G was approved earlier, under the lookahead, and F made current again; the phone now makes G current
+   *    again (seed 6261). The iPad's delete then puts G's row back as well, since the lookahead had moved it too.
+   */
+  type Elsewhere = 'approves a new master' | 'makes the other master current again';
+  const ELSEWHERE: Elsewhere[] = ['approves a new master', 'makes the other master current again'];
+  /** Framing as a place shows it: the row, its dates, and what he can set on it. */
+  const framingIn = (shown: readonly ScheduleItem[], all: readonly ScheduleItem[]) => framingOf(shown).map(item => ({
+    row: item.id, dates: `${item.startDate} - ${item.finishDate}`,
+    'a note': item.notes || '', 'an owner': item.owner || '', 'a priority': item.priority, 'a percent': item.percentComplete,
+    'a hand link': (item.dependencies ?? []).map(link => all.find(row => row.id === link.predecessorItemId)?.taskName ?? link.predecessorItemId),
+  }));
+  /** The phone, the iPad and the web. */
+  const places = (phone: Device, ipad: Device) => [framingIn(deviceShown(phone), phone.state), framingIn(deviceShown(ipad), ipad.state), framingIn(webShown(), cloudItems())];
+  const asked = async (device: Device) => (await conflictsOf(device)).map(conflict => {
+    const mine = conflict.localPayload as { askedFields?: string[]; itemData?: Record<string, unknown> };
+    const fields = mine.askedFields ?? [];
+    return { row: conflict.localId, fields, here: fields.map(field => mine.itemData?.[field]), cloud: fields.map(field => (conflict.remotePayload as Record<string, unknown>)[field]) };
+  });
+  const nothingWaitsOrIsAsked = async (phone: Device, ipad: Device) =>
+    expect([await conflictsOf(phone), await conflictsOf(ipad), await queueOf(phone), await queueOf(ipad)]).toEqual([[], [], [], []]);
+  async function everythingSyncs(phone: Device, ipad: Device) {
+    setOnline(ipad, true);
+    shareDocuments(ipad);
+    await settle(phone, ipad);
+    await refresh(phone); await refresh(ipad);
+  }
+  const heardEverywhere = async (phone: Device, ipad: Device) => { shareDocuments(phone); await backgroundUpload(phone); await settle(phone, ipad); };
+  /**
+   * The lookahead that moves Framing is in effect under master F, heard everywhere. With no signal, on the iPad: he
+   * makes the edit and (`deletes`) deletes the lookahead with its items. Meanwhile, on the phone, the task comes by
+   * its new row (`elsewhere`). The iPad has heard nothing of that and has sent nothing.
+   */
+  async function editedWithNoSignal(kind: Kind, deletes: boolean, elsewhere: Elsewhere = 'approves a new master', afterTheDelete?: Partial<ScheduleItem>) {
+    const { phone, ipad } = await start();
+    at(LOOK.importedAt!);
+    await approve(phone, LOOK, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true);
+    await heardEverywhere(phone, ipad);
+    if (elsewhere === 'makes the other master current again') {
+      at(G.importedAt!);
+      await approve(phone, G, [G_ROW, SURVEY]);
+      await heardEverywhere(phone, ipad);
+      at('2026-09-11T08:00:00.000Z');
+      await setActiveOn(phone, F);
+      await heardEverywhere(phone, ipad);
+    }
+    expect(places(phone, ipad).map(place => place[0]?.row)).toEqual(Array(3).fill(OLD_ROW));
+    setOnline(ipad, false);
+    at('2026-09-12T09:00:00.000Z');
+    await edit(ipad, OLD_ROW, EDIT[kind]);
+    at('2026-09-12T12:00:00.000Z');
+    if (deletes) await deleteWithItems(ipad, LOOK);
+    at('2026-09-12T15:00:00.000Z');
+    if (afterTheDelete) await edit(ipad, OLD_ROW, afterTheDelete);
+    at('2026-09-12T18:00:00.000Z');
+    if (elsewhere === 'approves a new master') await approve(phone, scheduleDoc('MASTER G', '2026-09-12T18:00:00.000Z'), [G_ROW, SURVEY]);
+    else await setActiveOn(phone, G);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    expect(cloudRow(NEW_ROW)).toMatchObject({ taskName: 'Framing' });
+    at('2026-09-13T08:00:00.000Z');
+    return { phone, ipad };
+  }
+
+  describe.each(ELSEWHERE)('meanwhile the phone %s', elsewhere => {
+    it.each(KINDS)('%s: it is on the row every place shows for the task, as when the edit waits alone, and nothing is asked', async kind => {
+      // The same steps without the delete: the edit waits alone, as a list of fields, and is sent on to the new row.
+      const alone = await editedWithNoSignal(kind, false, elsewhere);
+      await everythingSyncs(alone.phone, alone.ipad);
+      const whenAlone = places(alone.phone, alone.ipad).map(place => [place[0]?.row, place[0]?.[kind]]);
+      expect(whenAlone).toEqual(Array(3).fill([NEW_ROW, HIS[kind]]));
+      const { phone, ipad } = await editedWithNoSignal(kind, true, elsewhere);
+      await everythingSyncs(phone, ipad);
+      expect(places(phone, ipad).map(place => [place[0]?.row, place[0]?.[kind]])).toEqual(whenAlone);
+      await nothingWaitsOrIsAsked(phone, ipad);
+    });
+  });
+
+  it('a hand link he makes after the delete, still with no signal, joins the same record (seed 5311 links again after its delete): his note and his link are both on the row every place shows', async () => {
+    const { phone, ipad } = await editedWithNoSignal('a note', true, 'approves a new master', EDIT['a hand link']);
+    await everythingSyncs(phone, ipad);
+    // (With the whole task queued as one whole copy and no list of his fields kept, item 1 without 1b: the note, and no link.)
+    expect(places(phone, ipad).map(place => [place[0]?.row, place[0]?.['a note'], place[0]?.['a hand link']])).toEqual(Array(3).fill([NEW_ROW, NOTE, ['Survey']]));
+    await nothingWaitsOrIsAsked(phone, ipad);
+  });
+
+  it('another device typed a note on the new row meanwhile: he is asked as for any edit of his, and that note is not written over', async () => {
+    const { phone, ipad } = await editedWithNoSignal('a note', true);
+    await edit(phone, NEW_ROW, { notes: IPAD_NOTE });
+    await backgroundUpload(phone);
+    at('2026-09-13T12:00:00.000Z');
+    await everythingSyncs(phone, ipad);
+    // (Item 1 without 1b: no card. His note was on the hidden row alone, and there was nothing to choose.)
+    expect(await asked(ipad)).toEqual([{ row: NEW_ROW, fields: ['notes'], here: [NOTE], cloud: [IPAD_NOTE] }]);
+    expect([cloudRow(NEW_ROW)!.notes, await conflictsOf(phone)]).toEqual([IPAD_NOTE, []]);
+  });
+
+  describe('with a cloud that refuses a write made against a row changed since it was read', () => {
+    /** The iPad has signal again and has sent nothing yet. */
+    async function aboutToSend() {
+      const rig = await editedWithNoSignal('a note', true);
+      setOnline(rig.ipad, true);
+      shareDocuments(rig.ipad);
+      mockCloud.versioned = true;
+      return rig;
+    }
+
+    it('a note lands on the new row in the moment before his is written there: refused, read again, asked; nothing is written over', async () => {
+      const { phone, ipad } = await aboutToSend();
+      mockCloud.beforeNextTaskWrite = () => webWrite(webEdited(cloudRow(NEW_ROW)!, { notes: IPAD_NOTE }));
+      await backgroundUpload(ipad);
+      // (Item 1 without 1b: nothing written to the new row at all, so nothing refused and nothing asked.)
+      expect(mockCloud.refused).toEqual([`ipad:${NEW_ROW}`]);
+      expect(cloudRow(NEW_ROW)).toMatchObject({ notes: IPAD_NOTE });
+      expect(await asked(ipad)).toEqual([{ row: NEW_ROW, fields: ['notes'], here: [NOTE], cloud: [IPAD_NOTE] }]);
+      await settle(phone, ipad);
+      expect([cloudRow(NEW_ROW)!.notes, mockCloud.refused]).toEqual([IPAD_NOTE, [`ipad:${NEW_ROW}`]]);
+    });
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Kept from Build 232 item 1c (the shapes of review pass 3's S3-1), and the fixture the hand probe below shares:
+ * what "Delete PDF + Items" does with the record that waits for the task when it comes. The steps and what the
+ * tests read. ('his percent' is the shape of the tests that left with the fix; nothing kept uses it.)
+ */
+const ITEM_1C = (() => {
+  const LOOK = scheduleDoc('LOOKAHEAD B232C', '2026-09-09T12:00:00.000Z', 'lookahead');
+  const OLD_ROW = 'MASTER F-1';
+  const NEW_ROW = 'MASTER G-1';
+  const later = (minutes: number) => jest.setSystemTime(Date.now() + minutes * 60_000);
+  /** Framing as a place shows it: the row, its dates, and what he can set on it (a link by the task it names). */
+  const framingIn = (shown: readonly ScheduleItem[], all: readonly ScheduleItem[]) => framingOf(shown).map(item => ({
+    row: item.id, dates: `${item.startDate} - ${item.finishDate}`, note: item.notes || '', owner: item.owner || '', priority: item.priority,
+    links: (item.dependencies ?? []).map(link => all.find(row => row.id === link.predecessorItemId)?.taskName ?? link.predecessorItemId),
+  }));
+  /** The phone, the iPad and the web. */
+  const places = (phone: Device, ipad: Device) => [framingIn(deviceShown(phone), phone.state), framingIn(deviceShown(ipad), ipad.state), framingIn(webShown(), cloudItems())];
+  const asked = async (device: Device) => (await conflictsOf(device)).map(conflict => {
+    const mine = conflict.localPayload as { askedFields?: string[]; itemData?: Record<string, unknown> };
+    const fields = mine.askedFields ?? [];
+    return { row: conflict.localId, fields, here: fields.map(field => mine.itemData?.[field]), cloud: fields.map(field => (conflict.remotePayload as Record<string, unknown>)[field]) };
+  });
+  type Waiting = { id?: string; changedFields?: string[]; carriedText?: string[]; carriedProgress?: boolean };
+  /** What waits to go up on a device, record by record. */
+  const waiting = async (device: Device) => (await queueOf(device)).map(item => item.payload as Waiting);
+  const nothingWaitsOrIsAsked = async (phone: Device, ipad: Device) =>
+    expect([await conflictsOf(phone), await conflictsOf(ipad), await queueOf(phone), await queueOf(ipad)]).toEqual([[], [], [], []]);
+  const heardEverywhere = async (phone: Device, ipad: Device) => { shareDocuments(phone); await backgroundUpload(phone); await settle(phone, ipad); };
+  /** The lookahead that moves Framing is approved on the phone under master F and heard everywhere. */
+  async function underTheLookahead() {
+    const { phone, ipad } = await start();
+    at(LOOK.importedAt!);
+    await approve(phone, LOOK, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true);
+    await heardEverywhere(phone, ipad);
+    return { phone, ipad };
+  }
+  /**
+   * What the SYNC ITSELF carried waits to go up on the phone (the reviewer's C1 / C2). The phone, with no signal,
+   * approves master G under the lookahead; with `rowsAsBuild229` its rows are saved as Build 229 saved them (no record
+   * of what they took: only such a row has his owner and note brought forward later by the sync). On the iPad, which
+   * has not heard of G, he sets `what` on Framing; it reaches the cloud. The phone gets signal, sends master G and
+   * refreshes: its sync carries what he set to the task's new row, and that carry does not go up (weak signal). The
+   * phone is left with no signal.
+   */
+  async function carriedAndWaitingOnThePhone(what: 'his owner and note' | 'his percent', rowsAsBuild229 = true) {
+    const { phone, ipad } = await underTheLookahead();
+    at('2026-09-10T08:00:00.000Z');
+    setOnline(phone, false);
+    at(G.importedAt!);
+    await approve(phone, G, [G_ROW, SURVEY]);
+    if (what === 'his owner and note' && rowsAsBuild229) masterRowsAsBuild229SavedThem(phone);
+    at('2026-09-11T09:00:00.000Z');
+    if (what === 'his owner and note') { await edit(ipad, OLD_ROW, { notes: NOTE }); at('2026-09-11T09:05:00.000Z'); await edit(ipad, OLD_ROW, { owner: 'Mike' }); }
+    else await edit(ipad, OLD_ROW, { percentComplete: 30 });
+    await backgroundUpload(ipad);
+    setOnline(ipad, false); // the iPad is put away: it carries nothing itself until the end
+    at('2026-09-12T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    at('2026-09-12T10:00:00.000Z');
+    await refresh(phone, false); // the refresh merges; what the sync carried is queued and does not go up yet
+    setOnline(phone, false);
+    at('2026-09-12T12:00:00.000Z');
+    return { phone, ipad };
+  }
+  /** The phone has signal again and sends what waits. */
+  async function thePhoneSends(phone: Device) {
+    at('2026-09-13T08:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+  }
+  /** Then: the phone refreshes twice, the iPad comes back, everything syncs twice, and a Full Sync on both. */
+  async function everythingSyncsAndFullSync(phone: Device, ipad: Device) {
+    await refresh(phone);
+    later(60);
+    await refresh(phone); await backgroundUpload(phone);
+    later(60);
+    setOnline(ipad, true);
+    await settle(phone, ipad);
+    await refresh(phone); await refresh(ipad);
+    later(60);
+    await fullSync(phone); await fullSync(ipad); await settle(phone, ipad);
+  }
+  return { LOOK, OLD_ROW, NEW_ROW, later, places, asked, waiting, nothingWaitsOrIsAsked, heardEverywhere, underTheLookahead, carriedAndWaitingOnThePhone, thePhoneSends, everythingSyncsAndFullSync };
+})();
+
+/**
+ * The record that waits is the SYNC'S OWN CARRY of his owner and note to a row a Build 229 master made (such a row
+ * keeps no record of what it took, so the sync itself brings his owner and note forward to it later). He then
+ * deletes the lookahead with its items, with no signal.
+ *
+ * As Build 231 does it: the delete's save takes over the carry's list of fields, so the carried fields still go up by
+ * the carry's own rule (each only fills a blank in the cloud's row; over another device's value the cloud's stands
+ * and nothing is asked), in a write the cloud can refuse.
+ */
+describe('Kept from Build 232 item 1c part A, as Build 231 does it: what the sync itself carried still goes up when a lookahead is then deleted with no signal', () => {
+  const { LOOK, OLD_ROW, NEW_ROW, places, asked, waiting, nothingWaitsOrIsAsked, carriedAndWaitingOnThePhone, thePhoneSends, everythingSyncsAndFullSync } = ITEM_1C;
+  const shown = (phone: Device, ipad: Device) => places(phone, ipad).map(place => [place[0]?.row, place[0]?.note, place[0]?.owner]);
+
+  it('his carried owner and note are on the task in all three places, as when the carry goes up by itself (the reviewer\'s C1 and C1c)', async () => {
+    // The control: the same steps without the delete.
+    const alone = await carriedAndWaitingOnThePhone('his owner and note');
+    expect(await waiting(alone.phone)).toMatchObject([{ id: NEW_ROW, carriedText: ['owner', 'notes'] }]);
+    await thePhoneSends(alone.phone);
+    await everythingSyncsAndFullSync(alone.phone, alone.ipad);
+    const whenAlone = shown(alone.phone, alone.ipad);
+    expect(whenAlone).toEqual(Array(3).fill([NEW_ROW, NOTE, 'Mike']));
+    const { phone, ipad } = await carriedAndWaitingOnThePhone('his owner and note');
+    await deleteWithItems(phone, LOOK);
+    await thePhoneSends(phone);
+    // (With the whole task queued as one whole copy, item 1 without 1c: the cloud's row left blank by that upload, and at the phone's next refresh no note and no owner on any device.)
+    expect(cloudRow(NEW_ROW)).toMatchObject({ notes: NOTE, owner: 'Mike' });
+    await everythingSyncsAndFullSync(phone, ipad);
+    expect(shown(phone, ipad)).toEqual(whenAlone);
+    await nothingWaitsOrIsAsked(phone, ipad);
+  });
+
+  it('he sets a next step on that row after the delete, still with no signal: his carried owner and note still go up, and the next step with them', async () => {
+    const { phone, ipad } = await carriedAndWaitingOnThePhone('his owner and note');
+    await deleteWithItems(phone, LOOK);
+    at('2026-09-12T12:30:00.000Z');
+    await edit(phone, NEW_ROW, { nextAction: 'Call the inspector' });
+    await thePhoneSends(phone);
+    expect(cloudRow(NEW_ROW)).toMatchObject({ notes: NOTE, owner: 'Mike', nextAction: 'Call the inspector' });
+    await everythingSyncsAndFullSync(phone, ipad);
+    expect([shown(phone, ipad), cloudRow(NEW_ROW)!.nextAction]).toEqual([Array(3).fill([NEW_ROW, NOTE, 'Mike']), 'Call the inspector']);
+    await nothingWaitsOrIsAsked(phone, ipad);
+  });
+
+  it('with rows saved as today\'s build saves them no carry waits, and the same steps end right, as before (C3)', async () => {
+    const { phone, ipad } = await carriedAndWaitingOnThePhone('his owner and note', false);
+    expect(await waiting(phone)).toEqual([]);
+    await deleteWithItems(phone, LOOK);
+    await thePhoneSends(phone);
+    await everythingSyncsAndFullSync(phone, ipad);
+    expect(shown(phone, ipad)).toEqual(Array(3).fill([NEW_ROW, NOTE, 'Mike']));
+    await nothingWaitsOrIsAsked(phone, ipad);
+  });
+
+  it('another device set the owner of that row meanwhile: its owner stands, his carried note still fills the blank, and nothing is asked, as when the carry goes up by itself', async () => {
+    const meanwhileOnTheWeb = () => { at('2026-09-12T13:00:00.000Z'); webWrite(webEdited(cloudRow(NEW_ROW)!, { owner: 'Ana' })); };
+    const alone = await carriedAndWaitingOnThePhone('his owner and note');
+    meanwhileOnTheWeb();
+    await thePhoneSends(alone.phone);
+    await everythingSyncsAndFullSync(alone.phone, alone.ipad);
+    const whenAlone = [shown(alone.phone, alone.ipad), await asked(alone.phone), await asked(alone.ipad)];
+    expect(whenAlone).toEqual([Array(3).fill([NEW_ROW, NOTE, 'Ana']), [], []]);
+    const { phone, ipad } = await carriedAndWaitingOnThePhone('his owner and note');
+    await deleteWithItems(phone, LOOK);
+    meanwhileOnTheWeb();
+    await thePhoneSends(phone);
+    await everythingSyncsAndFullSync(phone, ipad);
+    expect([shown(phone, ipad), await asked(phone), await asked(ipad)]).toEqual(whenAlone);
+  });
+
+  describe('with a cloud that refuses a write made against a row changed since it was read', () => {
+    it('nobody else writing: the task\'s row and the old row are each written once, nothing is refused, and his carried owner and note are on the task\'s row', async () => {
+      const { phone } = await carriedAndWaitingOnThePhone('his owner and note');
+      await deleteWithItems(phone, LOOK);
+      mockCloud.versioned = true;
+      const writes = cloudWrites();
+      await thePhoneSends(phone);
+      expect([mockCloud.refused, mockCloud.writes.slice(writes).sort()]).toEqual([[], [`phone:${OLD_ROW}`, `phone:${NEW_ROW}`]]);
+      expect([cloudRow(NEW_ROW)!.notes, cloudRow(NEW_ROW)!.owner]).toEqual([NOTE, 'Mike']);
+    });
+
+    it('an owner lands on that row in the moment before: the write is refused, the row read again; that owner stands, his note fills its blank, nothing is asked', async () => {
+      const { phone } = await carriedAndWaitingOnThePhone('his owner and note');
+      await deleteWithItems(phone, LOOK);
+      mockCloud.versioned = true;
+      mockCloud.beforeNextTaskWrite = () => webWrite(webEdited(cloudRow(NEW_ROW)!, { owner: 'Ana' }));
+      await thePhoneSends(phone);
+      expect(mockCloud.refused).toEqual([`phone:${NEW_ROW}`]);
+      expect([cloudRow(NEW_ROW)!.notes, cloudRow(NEW_ROW)!.owner, await asked(phone)]).toEqual([NOTE, 'Ana', []]);
+    });
+  });
+});
+
+/**
+ * The hand probe that found "2.1e" (notes/impl-b232/runs-1c/probe-and-seed-6389/; the generator's seed 6389 by hand),
+ * kept as a guard. An owner that ANOTHER device set on the task's earlier row must still reach the task once the
+ * master has changed, whichever device syncs first and whatever he did to the task meanwhile with no signal.
+ *
+ * With items 1 and 1b in, "an edit, then Delete PDF + Items" ended with NO owner on the phone, the iPad and the web
+ * when the device holding his edit synced first, and nothing asked: the write that sent his edit on had stamped the
+ * task's new row later than its old row, and the sync's carry only fills from a row changed after the new row last
+ * was. On Build 231's sync, and so here, every line below ends with that owner on the task.
+ *
+ * One line is not stated in full. "The delete, THEN a priority" with the phone syncing first ends with the web's
+ * owner and WITHOUT his priority, on Build 231 as with the fix in: an older loss of the same family as review pass
+ * 3's S3-O1, recorded in the design note. Only its owner is looked at.
+ */
+describe('Kept as a guard, the hand probe that found 2.1e: what another device set on the task\'s earlier row still reaches the task, whichever device syncs first', () => {
+  const { LOOK, OLD_ROW, NEW_ROW, places, heardEverywhere, underTheLookahead, later } = ITEM_1C;
+  type Step = 'delete' | Partial<ScheduleItem>;
+  const LOW: Partial<ScheduleItem> = { priority: 'Low' };
+  /**
+   * Master G is approved and heard, then master F made current again; the lookahead moves Framing under F, heard
+   * everywhere. With no signal, on the iPad: `steps`, in order (an edit of the task; "Delete PDF + Items" on the
+   * lookahead). Meanwhile the web sets the task's owner on the row it still shows, the old one, and the phone makes
+   * master G current, so the task has a new row. The iPad gets signal; with `ipadFirst` it syncs before the phone
+   * has refreshed. Then everything syncs.
+   */
+  async function run(steps: Step[], ipadFirst: boolean) {
+    const { phone, ipad } = await underTheLookahead();
+    at(G.importedAt!); await approve(phone, G, [G_ROW, SURVEY]); await heardEverywhere(phone, ipad);
+    at('2026-09-11T08:00:00.000Z'); await setActiveOn(phone, F); await heardEverywhere(phone, ipad);
+    setOnline(ipad, false);
+    at('2026-09-12T09:00:00.000Z');
+    for (const step of steps) { if (step === 'delete') await deleteWithItems(ipad, LOOK); else await edit(ipad, OLD_ROW, step); later(30); }
+    at('2026-09-12T12:00:00.000Z'); webWrite(webEdited(cloudRow(OLD_ROW)!, { owner: 'Ana' }));
+    at('2026-09-12T18:00:00.000Z'); await setActiveOn(phone, G); shareDocuments(phone); await backgroundUpload(phone);
+    at('2026-09-13T08:00:00.000Z');
+    setOnline(ipad, true); shareDocuments(ipad);
+    if (ipadFirst) { await backgroundUpload(ipad); await refresh(ipad); }
+    await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+    return places(phone, ipad);
+  }
+  /** What he does on the iPad with no signal, the priority Framing then has, and whether that priority is lost when the phone syncs first (the older loss above). */
+  const CASES: Array<[string, Step[], ScheduleItem['priority'], boolean]> = [
+    ['nothing of his at all (the web\'s owner alone)', [], 'Medium', false],
+    ['a priority alone, no delete (an edit waiting alone)', [LOW], 'Low', false],
+    ['a priority, THEN the delete (the order of 2.1e)', [LOW, 'delete'], 'Low', false],
+    ['the delete, THEN a priority', ['delete', LOW], 'Low', true],
+    ['the delete alone', ['delete'], 'Medium', false],
+  ];
+
+  describe.each([['the iPad, which holds what he did,', true], ['the phone', false]] as const)('%s syncs first', (_who, ipadFirst) => {
+    it.each(CASES)('%s: Framing is on its new row with the web\'s owner in all three places', async (_label, steps, priority, lostWhenThePhoneIsFirst) => {
+      const shown = await run(steps, ipadFirst);
+      const priorityStated = ipadFirst || !lostWhenThePhoneIsFirst;
+      expect(shown.map(place => place.map(framing => [framing.row, framing.owner, ...(priorityStated ? [framing.priority] : [])])))
+        .toEqual(Array(3).fill([[NEW_ROW, 'Ana', ...(priorityStated ? [priority] : [])]]));
+    });
+  });
+});
+
+/**
+ * The owner's answer to question 47 (13 Oct 2026), "47 A"; the schedules reviewer's P1-8 (Medium, older). A newer
+ * master turns a task High (its file marks it Critical, or its finish comes within the week) also when it leaves the
+ * task on its dates, unless he set that task's priority himself. Here: two devices and the web with one cloud. A
+ * device that hears of the master from another device ends on the same priorities, and a priority the app itself
+ * raised is never asked about: his own stands over it, whichever device syncs first.
+ * (The rule on the records alone: owner-answer-q47-critical-raises-unmoved-task.)
+ */
+describe('Q47: a master turns a task it leaves on its dates High, between two devices', () => {
+  // N is approved five days before Survey's finish (10/14) and moves nothing: its file's Survey row reads High, its
+  // Framing row (10/25) Medium. P, a day later, moves Survey a month out: Medium.
+  const N = scheduleDoc('MASTER N', '2026-10-09T12:00:00.000Z');
+  const P = scheduleDoc('MASTER P', '2026-10-10T12:00:00.000Z');
+  const SURVEY_FAR = 'Survey,Alpha,Lot,11/12/2026,11/14/2026,';
+  const surveyOf = (items: readonly ScheduleItem[]) => items.filter(item => item.taskName === 'Survey');
+  const priorities = (items: readonly ScheduleItem[]) => [surveyOf(items).map(item => item.priority), framingOf(items).map(item => item.priority)];
+  const everywhere = async (phone: Device, ipad: Device) => {
+    await refresh(phone); await refresh(ipad);
+    return [priorities(deviceShown(phone)), priorities(deviceShown(ipad)), priorities(webShown())];
+  };
+  const ALL = (survey: string, framing = 'Medium') => Array(3).fill([[survey], [framing]]);
+  const nothingAskedOrWaiting = async (phone: Device, ipad: Device) =>
+    expect([await conflictsOf(phone), await conflictsOf(ipad), await queueOf(phone), await queueOf(ipad)]).toEqual([[], [], [], []]);
+  const started = async () => {
+    const { phone, ipad } = await start();
+    const surveyId = surveyOf(deviceShown(phone))[0].id;
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Medium'));
+    return { phone, ipad, surveyId };
+  };
+  const phoneApprovesN = async (phone: Device) => {
+    at(N.importedAt!);
+    await approve(phone, N, [F_ROW, SURVEY]);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+  };
+  const word = (item: ScheduleItem | undefined) => [item?.priority, item?.priorityAsImported, item?.prioritySetByHand?.priority ?? null];
+
+  it('the phone approves it; the iPad and the web hear of it: High in all three places on the same row, nothing asked, and more syncing writes nothing', async () => {
+    const { phone, ipad, surveyId } = await started();
+    await phoneApprovesN(phone);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('High'));
+    expect([surveyOf(deviceShown(phone))[0].id, surveyOf(deviceShown(ipad))[0].id, surveyOf(webShown())[0].id]).toEqual([surveyId, surveyId, surveyId]);
+    // The file's word, not his: no mark anywhere.
+    expect([word(cloudRow(surveyId)), word(surveyOf(deviceShown(phone))[0]), word(surveyOf(deviceShown(ipad))[0])]).toEqual(Array(3).fill(['High', 'High', null]));
+    await nothingAskedOrWaiting(phone, ipad);
+    const writes = cloudWrites();
+    await settle(phone, ipad);
+    await fullSync(phone);
+    await fullSync(ipad);
+    expect(cloudWrites()).toBe(writes);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('High'));
+  });
+
+  it.each(['the automatic upload', 'Sync Now'])('he had set it Low on the iPad, which had no signal and had not heard of the master: his Low in all three places, nothing asked (%s)', async (path) => {
+    const { phone, ipad, surveyId } = await started();
+    setOnline(ipad, false);
+    at('2026-10-09T09:00:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Low' });
+    await phoneApprovesN(phone);
+    expect(word(cloudRow(surveyId))).toEqual(['High', 'High', null]);
+    at('2026-10-09T15:00:00.000Z');
+    setOnline(ipad, true);
+    if (path === 'Sync Now') await fullSync(ipad); else { await backgroundUpload(ipad); await refresh(ipad); }
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Low'));
+    expect(word(cloudRow(surveyId))[2]).toBe('Low');
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('...and set after the phone approved, still not having heard: his Low all the same', async () => {
+    const { phone, ipad, surveyId } = await started();
+    setOnline(ipad, false);
+    await phoneApprovesN(phone);
+    at('2026-10-09T14:00:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Low' });
+    at('2026-10-09T15:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    await refresh(ipad);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Low'));
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('the other order: the phone, with no signal and not having heard of the Low he set on the iPad, approves the master: his Low in all three places, nothing asked', async () => {
+    const { phone, ipad, surveyId } = await started();
+    setOnline(phone, false);
+    at('2026-10-09T09:00:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Low' });
+    await backgroundUpload(ipad);
+    at(N.importedAt!);
+    await approve(phone, N, [F_ROW, SURVEY]);
+    // On the phone, which has not heard, the task reads High until it syncs.
+    expect(priorities(deviceShown(phone))).toEqual([['High'], ['Medium']]);
+    at('2026-10-09T15:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Low'));
+    expect(word(cloudRow(surveyId))[2]).toBe('Low');
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('...and when the Low was set on the web desktop meanwhile', async () => {
+    const { phone, ipad, surveyId } = await started();
+    setOnline(phone, false);
+    at('2026-10-09T09:00:00.000Z');
+    webWrite(webEdited(cloudRow(surveyId)!, { priority: 'Low' }));
+    at(N.importedAt!);
+    await approve(phone, N, [F_ROW, SURVEY]);
+    at('2026-10-09T15:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Low'));
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('a Low he set before, heard everywhere: the master leaves it Low in all three places', async () => {
+    const { phone, ipad, surveyId } = await started();
+    at('2026-10-08T09:00:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Low' });
+    await backgroundUpload(ipad);
+    await settle(phone, ipad);
+    await phoneApprovesN(phone);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Low'));
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('the desktop uploads the master and makes it current; the phone and the iPad hear of it: High in all three places, nothing asked', async () => {
+    const { phone, ipad, surveyId } = await started();
+    at(N.importedAt!);
+    webUploadsAndMakesCurrent('MASTER N', [F_ROW, SURVEY]);
+    expect(word(cloudRow(surveyId))).toEqual(['High', 'High', null]);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('High'));
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('...while the iPad, with no signal, had set it Low: his Low in all three places, nothing asked', async () => {
+    const { phone, ipad, surveyId } = await started();
+    setOnline(ipad, false);
+    at('2026-10-09T09:00:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Low' });
+    at(N.importedAt!);
+    webUploadsAndMakesCurrent('MASTER N', [F_ROW, SURVEY]);
+    at('2026-10-09T15:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    await refresh(ipad);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Low'));
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  // (The schedules reviewer's P2-4, as it would meet this rule: his priority reads as the row did before, so "nobody
+  // changed it"; the mark his edit left says it is his.)
+  it('he set it Low and then Medium again on the iPad, heard by the cloud; the phone, with no signal, approves the master: his Medium in all three places, nothing asked', async () => {
+    const { phone, ipad, surveyId } = await started();
+    setOnline(phone, false);
+    at('2026-10-09T09:00:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Low' });
+    at('2026-10-09T09:30:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Medium' });
+    await backgroundUpload(ipad);
+    expect(word(cloudRow(surveyId))).toEqual(['Medium', 'Medium', 'Medium']);
+    at(N.importedAt!);
+    await approve(phone, N, [F_ROW, SURVEY]);
+    at('2026-10-09T15:00:00.000Z');
+    setOnline(phone, true);
+    shareDocuments(phone);
+    await backgroundUpload(phone);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Medium'));
+    expect(word(cloudRow(surveyId))[2]).toBe('Medium');
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('...and the other order: set Low and Medium again on the iPad with no signal, after which the phone approves: his Medium in all three places, nothing asked', async () => {
+    const { phone, ipad, surveyId } = await started();
+    setOnline(ipad, false);
+    at('2026-10-09T09:00:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Low' });
+    at('2026-10-09T09:30:00.000Z');
+    await edit(ipad, surveyId, { priority: 'Medium' });
+    await phoneApprovesN(phone);
+    at('2026-10-09T15:00:00.000Z');
+    setOnline(ipad, true);
+    await backgroundUpload(ipad);
+    await refresh(ipad);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Medium'));
+    expect(word(cloudRow(surveyId))[2]).toBe('Medium');
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('Set Active back to the older master and forward again, on the phone: High each way in all three places, and nothing asked', async () => {
+    const { phone, ipad } = await started();
+    await phoneApprovesN(phone);
+    await settle(phone, ipad);
+    at('2026-10-09T16:00:00.000Z');
+    await setActiveOn(phone, F);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('High'));
+    at('2026-10-09T17:00:00.000Z');
+    await setActiveOn(phone, N);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('High'));
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  it('the High is the file\'s word and not his: the next master, approved on the iPad that only heard of it, moves the task a month out and it reads Medium in all three places', async () => {
+    const { phone, ipad, surveyId } = await started();
+    await phoneApprovesN(phone);
+    await settle(phone, ipad);
+    at(P.importedAt!);
+    await approve(ipad, P, [F_ROW, SURVEY_FAR]);
+    shareDocuments(ipad);
+    await backgroundUpload(ipad);
+    await settle(phone, ipad);
+    expect(await everywhere(phone, ipad)).toEqual(ALL('Medium'));
+    expect(surveyOf(webShown())[0].id).not.toBe(surveyId);
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+});
+
+/* ============================================================================================================== */
+/* Review pass 10, O-9 (older: the same on Build 231). A newer schedule is deleted WITH its items ("Delete PDF +     */
+/* Items") on the phone with no signal, while the iPad, with no signal, has a note waiting on a task that schedule  */
+/* moved. The phone gets signal first: its restored row of the task goes up, its deletion records wait for its next */
+/* Sync Now. The restored row and the deleted row then each name the other as an earlier row of the task, and the   */
+/* iPad's upload sent his note on from one to the other for ever: it never finished, and memory grew without end.  */
+/* Now his note is sent on to each row of the task once, and stops: it lands on the restored row, the row the task  */
+/* lives on after the delete (and, until the phone's deletion records arrive, on the deleted row, never shown).     */
+/* Every upload here is bounded: one that runs away fails the test at once instead of eating memory.               */
+/* ============================================================================================================== */
+const O9_J_ROWS = ['Framing,Alpha,Lot,10/06/2026,10/16/2026,', SURVEY];
+/** The memory and the processor time an upload may add before it counts as running away (the rig's clock is fake, and a
+ * loop of promises never lets a timer fire, so the bound is checked from inside: at every 10,000th list filter). */
+const O9_HEAP_LIMIT = 400_000_000;
+const O9_CPU_LIMIT_MICROSECONDS = 30_000_000;
+let o9FilterCalls = 0;
+async function o9Bounded(run: () => Promise<unknown>): Promise<'finished' | 'RUN-AWAY'> {
+  const filter = Array.prototype.filter;
+  const heapAtStart = process.memoryUsage().heapUsed;
+  const cpuAtStart = process.cpuUsage();
+  let ranAway = false;
+  (Array.prototype as unknown as { filter: unknown }).filter = function bounded(this: unknown[], ...args: unknown[]) {
+    o9FilterCalls += 1;
+    if (ranAway || (o9FilterCalls % 10_000 === 0 && (process.memoryUsage().heapUsed > heapAtStart + O9_HEAP_LIMIT ||
+      process.cpuUsage(cpuAtStart).user > O9_CPU_LIMIT_MICROSECONDS))) {
+      ranAway = true;
+      throw new Error('O-9: the upload did not finish');
+    }
+    return (filter as (...a: unknown[]) => unknown).apply(this, args);
+  };
+  try { await run(); } catch (error) { if (!ranAway) throw error; } finally { Array.prototype.filter = filter; }
+  return ranAway ? 'RUN-AWAY' : 'finished';
+}
+const o9IdOf = (device: Device, name: string) => deviceShown(device).find(item => item.taskName === name)!.id;
+async function o9ApproveOn(device: Device, doc: ReferenceDocument, lines: string[], lookahead = false) {
+  at(doc.importedAt as string);
+  await approve(device, doc, lines, lookahead);
+  shareDocuments(device);
+  await backgroundUpload(device);
+}
+const o9Row = (item: ScheduleItem) => [item.id, item.taskName, item.startDate, item.finishDate, item.notes || ''];
+async function o9Places(phone: Device, ipad: Device) {
+  return {
+    phone: deviceShown(phone).map(o9Row), ipad: deviceShown(ipad).map(o9Row), web: webShown().map(o9Row),
+    cards: (await conflictsOf(phone)).length + (await conflictsOf(ipad)).length,
+    waiting: (await queueOf(phone)).length + (await queueOf(ipad)).length,
+  };
+}
+/** The cloud's rows that hold his note, and the rows that name another as an earlier row of the task. */
+const o9Cloud = () => ({
+  withNote: cloudItems().filter(row => row.notes === NOTE).map(row => row.id).sort(),
+  naming: cloudItems().filter(row => (row.revisedFromTaskIds || []).length > 0).map(row => `${row.id}<-${(row.revisedFromTaskIds || []).join('/')}`).sort(),
+});
+/** The phone's waiting deletion records go up (Sync Now), everything is heard and sent, then a Full Sync on both. */
+async function o9Finish(phone: Device, ipad: Device) {
+  const phoneFull = await o9Bounded(() => fullSync(phone));
+  const settled = await o9Bounded(() => settle(phone, ipad));
+  const afterSettle = await o9Places(phone, ipad);
+  const synced = await o9Bounded(async () => { await fullSync(phone); await fullSync(ipad); await settle(phone, ipad); });
+  const w0 = cloudWrites();
+  const again = await o9Bounded(async () => { await settle(phone, ipad); await fullSync(phone); await fullSync(ipad); await settle(phone, ipad); });
+  return { runs: [phoneFull, settled, synced, again], afterSettle, end: await o9Places(phone, ipad), writesWhenNothingHappens: cloudWrites() - w0, cloud: o9Cloud() };
+}
+const O9_RESULTS: Record<string, unknown> = {};
+afterAll(() => { if (process.env.O9_OUT) fs.writeFileSync(process.env.O9_OUT, `${JSON.stringify(O9_RESULTS, null, 1)}\n`); });
+/** Framing on F's row with his note, Survey on F's, in every place; nothing asked, nothing waiting. */
+const O9_LANDED = [['MASTER F-1', 'Framing', '10/15/2026', '10/25/2026', NOTE], ['MASTER F-2', 'Survey', '10/12/2026', '10/14/2026', '']];
+const O9_SETTLED = { phone: O9_LANDED, ipad: O9_LANDED, web: O9_LANDED, cards: 0, waiting: 0 };
+const O9_SURVEY_ROWS = [['MASTER F-1', 'Framing', '10/15/2026', '10/25/2026', ''], ['MASTER F-2', 'Survey', '10/12/2026', '10/14/2026', 'Stakes out']];
+const O9_SURVEY_NOTE = { phone: O9_SURVEY_ROWS, ipad: O9_SURVEY_ROWS, web: O9_SURVEY_ROWS, cards: 0, waiting: 0 };
+
+describe('Review pass 10, O-9: a note waiting on the iPad while the phone deletes the newer schedule with its items', () => {
+  it('O9a: a master the web uploaded and never made current: the iPad\'s upload finishes, and his note lands on F\'s row at once', async () => {
+    const { phone, ipad } = await start();
+    at('2026-09-12T09:00:00.000Z'); webUploads('MASTER J', O9_J_ROWS); await settle(phone, ipad);
+    setOnline(phone, false); setOnline(ipad, false);
+    at('2026-09-12T10:00:00.000Z'); const typedOn = o9IdOf(ipad, 'Framing'); await edit(ipad, typedOn, { notes: NOTE });
+    at('2026-09-12T11:00:00.000Z'); await deleteWithItems(phone, { id: 'MASTER J' } as ReferenceDocument);
+    at('2026-09-12T12:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    const phoneUp = await o9Bounded(() => backgroundUpload(phone)); await refresh(phone);
+    at('2026-09-12T12:30:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+    const ipadUp = await o9Bounded(() => backgroundUpload(ipad));
+    const atOnce = o9Cloud();
+    const ipadAgain = await o9Bounded(() => backgroundUpload(ipad));
+    at('2026-09-12T13:00:00.000Z');
+    const end = await o9Finish(phone, ipad);
+    O9_RESULTS.O9a = { typedOn, phoneUp, ipadUp, atOnce, ipadAgain, ...end };
+    expect([phoneUp, ipadUp, ipadAgain]).toEqual(['finished', 'finished', 'finished']);
+    expect(typedOn).toBe('MASTER F-1');
+    expect(atOnce.naming).toEqual(['MASTER F-1<-MASTER J-1', 'MASTER J-1<-MASTER F-1']);
+    expect(atOnce.withNote).toEqual(['MASTER F-1', 'MASTER J-1']);
+    expect(end.runs).toEqual(['finished', 'finished', 'finished', 'finished']);
+    expect(end.afterSettle).toEqual(O9_SETTLED);
+    expect(end.end).toEqual(O9_SETTLED);
+    expect(end.writesWhenNothingHappens).toBe(0);
+    expect(end.cloud.withNote).toEqual(['MASTER F-1']);
+  });
+
+  it('O9c: the master in use: the iPad\'s upload finishes, and his note, typed on G\'s row, lands on F\'s row at once', async () => {
+    const { phone, ipad } = await start();
+    await o9ApproveOn(phone, G, [G_ROW, SURVEY]); await settle(phone, ipad);
+    setOnline(phone, false); setOnline(ipad, false);
+    at('2026-09-12T10:00:00.000Z'); const typedOn = o9IdOf(ipad, 'Framing'); await edit(ipad, typedOn, { notes: NOTE });
+    at('2026-09-12T11:00:00.000Z'); await deleteWithItems(phone, G);
+    at('2026-09-12T12:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    const phoneUp = await o9Bounded(() => backgroundUpload(phone)); await refresh(phone);
+    at('2026-09-12T12:30:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+    const ipadUp = await o9Bounded(() => backgroundUpload(ipad));
+    const atOnce = o9Cloud();
+    at('2026-09-12T13:00:00.000Z');
+    const end = await o9Finish(phone, ipad);
+    // The master in use is gone, so no master is current until he makes F current again (as before this fix).
+    at('2026-09-12T14:00:00.000Z'); await setActiveOn(phone, F);
+    const afterSetActive = await o9Bounded(async () => { await backgroundUpload(phone); await settle(phone, ipad); });
+    const shownAgain = await o9Places(phone, ipad);
+    O9_RESULTS.O9c = { typedOn, phoneUp, ipadUp, atOnce, ...end, afterSetActive, shownAgain, cloudAfterSetActive: o9Cloud() };
+    expect([phoneUp, ipadUp]).toEqual(['finished', 'finished']);
+    expect(typedOn).toBe('MASTER G-1');
+    expect(atOnce.naming).toEqual(['MASTER F-1<-MASTER G-1', 'MASTER G-1<-MASTER F-1']);
+    expect(atOnce.withNote).toEqual(['MASTER F-1', 'MASTER G-1']);
+    expect(end.runs).toEqual(['finished', 'finished', 'finished', 'finished']);
+    expect(end.afterSettle).toEqual({ phone: [], ipad: [], web: [], cards: 0, waiting: 0 });
+    expect(end.end).toEqual({ phone: [], ipad: [], web: [], cards: 0, waiting: 0 });
+    expect(end.writesWhenNothingHappens).toBe(0);
+    expect(end.cloud.withNote).toEqual(['MASTER F-1']);
+    expect(afterSetActive).toBe('finished');
+    expect(shownAgain).toEqual(O9_SETTLED);
+  });
+
+  // The reviewer's four controls, which never ran away: they end as they did before.
+  it('O9b: the phone HAS signal when it deletes J (its deletion records go up at once)', async () => {
+    const { phone, ipad } = await start();
+    at('2026-09-12T09:00:00.000Z'); webUploads('MASTER J', O9_J_ROWS); await settle(phone, ipad);
+    setOnline(ipad, false);
+    at('2026-09-12T10:00:00.000Z'); await edit(ipad, o9IdOf(ipad, 'Framing'), { notes: NOTE });
+    at('2026-09-12T11:00:00.000Z'); await deleteWithItems(phone, { id: 'MASTER J' } as ReferenceDocument); shareDocuments(phone);
+    const phoneUp = await o9Bounded(() => backgroundUpload(phone)); await refresh(phone);
+    at('2026-09-12T12:30:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+    const ipadUp = await o9Bounded(() => backgroundUpload(ipad));
+    const end = await o9Finish(phone, ipad);
+    O9_RESULTS.O9b = { phoneUp, ipadUp, ...end };
+    expect([phoneUp, ipadUp, ...end.runs]).toEqual(Array(6).fill('finished'));
+    expect([end.afterSettle, end.end, end.writesWhenNothingHappens, end.cloud.withNote]).toEqual([O9_SETTLED, O9_SETTLED, 0, ['MASTER F-1']]);
+  });
+
+  it('O9d: a lookahead moved Framing, and the phone deletes the lookahead with its items', async () => {
+    const { phone, ipad } = await start();
+    await o9ApproveOn(phone, L, [L_ROW], true); await settle(phone, ipad);
+    setOnline(phone, false); setOnline(ipad, false);
+    at('2026-09-12T10:00:00.000Z'); await edit(ipad, o9IdOf(ipad, 'Framing'), { notes: NOTE });
+    at('2026-09-12T11:00:00.000Z'); await deleteWithItems(phone, L);
+    at('2026-09-12T12:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    const phoneUp = await o9Bounded(() => backgroundUpload(phone)); await refresh(phone);
+    at('2026-09-12T12:30:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+    const ipadUp = await o9Bounded(() => backgroundUpload(ipad));
+    const end = await o9Finish(phone, ipad);
+    O9_RESULTS.O9d = { phoneUp, ipadUp, ...end };
+    expect([phoneUp, ipadUp, ...end.runs]).toEqual(Array(6).fill('finished'));
+    expect([end.afterSettle, end.end, end.writesWhenNothingHappens, end.cloud.withNote]).toEqual([O9_SETTLED, O9_SETTLED, 0, ['MASTER F-1']]);
+  });
+
+  it('O9e: as O9a, but the iPad\'s waiting note is on a task J did not move (Survey)', async () => {
+    const { phone, ipad } = await start();
+    at('2026-09-12T09:00:00.000Z'); webUploads('MASTER J', O9_J_ROWS); await settle(phone, ipad);
+    setOnline(phone, false); setOnline(ipad, false);
+    at('2026-09-12T10:00:00.000Z'); await edit(ipad, o9IdOf(ipad, 'Survey'), { notes: 'Stakes out' });
+    at('2026-09-12T11:00:00.000Z'); await deleteWithItems(phone, { id: 'MASTER J' } as ReferenceDocument);
+    at('2026-09-12T12:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    const phoneUp = await o9Bounded(() => backgroundUpload(phone)); await refresh(phone);
+    at('2026-09-12T12:30:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+    const ipadUp = await o9Bounded(() => backgroundUpload(ipad));
+    const end = await o9Finish(phone, ipad);
+    O9_RESULTS.O9e = { phoneUp, ipadUp, ...end };
+    expect([phoneUp, ipadUp, ...end.runs]).toEqual(Array(6).fill('finished'));
+    expect([end.afterSettle, end.end, end.writesWhenNothingHappens, end.cloud.withNote]).toEqual([O9_SURVEY_NOTE, O9_SURVEY_NOTE, 0, []]);
+  });
+
+  it('O9f: as O9a, but the phone, which deletes J, has the note waiting (typed before the delete)', async () => {
+    const { phone, ipad } = await start();
+    at('2026-09-12T09:00:00.000Z'); webUploads('MASTER J', O9_J_ROWS); await settle(phone, ipad);
+    setOnline(phone, false);
+    at('2026-09-12T10:00:00.000Z'); await edit(phone, o9IdOf(phone, 'Framing'), { notes: NOTE });
+    at('2026-09-12T11:00:00.000Z'); await deleteWithItems(phone, { id: 'MASTER J' } as ReferenceDocument);
+    at('2026-09-12T12:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    const phoneUp = await o9Bounded(() => backgroundUpload(phone));
+    const end = await o9Finish(phone, ipad);
+    O9_RESULTS.O9f = { phoneUp, ...end };
+    expect([phoneUp, ...end.runs]).toEqual(Array(5).fill('finished'));
+    expect([end.afterSettle, end.end, end.writesWhenNothingHappens, end.cloud.withNote]).toEqual([O9_SETTLED, O9_SETTLED, 0, ['MASTER F-1']]);
+  });
+});

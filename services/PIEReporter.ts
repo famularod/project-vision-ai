@@ -93,6 +93,8 @@ import type { PIERecommendationChallengeResult } from './PIERecommendationChalle
 import type { PIEJarvisReasoningValidation } from './PIEJarvisReasoningValidation';
 import type { PIEConfidenceDecomposition } from './PIEConfidenceDecomposition';
 import type { PIEEvidenceValuePrioritization } from './PIEEvidenceValuePrioritization';
+import { fieldUpdatesNewestFirst, scheduleTasksInReportOrder, whatChangedForWrittenReport } from './PIEEvidenceFusion';
+import { confirmedComparisonQuoted, isEmptyRuntimeSummary, noteIsAcceptedPhotoSuggestion } from './ReportWrittenFacts';
 import { resolvePIEReportProjectNames } from './PIEReportScope';
 import type { PIEScheduleReconciliationResult } from './PIEScheduleReconciliation';
 import {
@@ -157,7 +159,14 @@ export type PIEWorkAreaUnderstanding = {
   id: string;
   projectName: string;
   locationTitle: string;
+  /** The name the area's lines are FILED under: each such group has its own three lines of the report. */
   workAreaName: string;
+  /**
+   * The name the area is PRINTED under (Build 232 item 3 part 2): its name
+   * without the year of a date one of its lines prints ("2026 Site" is
+   * "Site"). Missing where it is the name it is filed under.
+   */
+  printedName?: string;
   status: PIEWorkAreaStatus;
   whatWorkIsAbout: string;
   whatChanged: string[];
@@ -205,6 +214,14 @@ export type PIEReportSourceEvidence = {
   sourceUpdateId?: string | null;
   actionRequired?: string | null;
   status?: string | null;
+  /**
+   * The words the work area's name is worked out from when not the summary
+   * (Build 232 item 2 part B): the "Schedule focus" sentence without the
+   * task's date. The name is read off the summary, and takes any four-digit
+   * number in it for a building number: the year of the date would have
+   * filed the sentence under "2026 <area>".
+   */
+  workAreaNameFrom?: string;
 };
 
 export type PIEReportImageReference = {
@@ -324,6 +341,10 @@ export type PIEReporterRuntimeInput = {
   };
   fusedEvidence?: {
     scheduleReconciliation?: PIEScheduleReconciliationResult;
+    /** What the written report's "Latest update / Latest photo / Schedule focus" sentence is made from. */
+    userUpdateEvidence?: Parameters<typeof whatChangedForWrittenReport>[0]['userUpdateEvidence'];
+    photoEvidence?: Parameters<typeof whatChangedForWrittenReport>[0]['photoEvidence'];
+    scheduleEvidence?: Parameters<typeof whatChangedForWrittenReport>[0]['scheduleEvidence'];
   } | null;
   photoProgressSummary?: string;
   photoProgress?: { acceptedEvidence: PIEPhotoProgressEvidence[] } | null;
@@ -554,16 +575,13 @@ export function collectReportEvidence(
 ): PIEReportSourceEvidence[] {
   const selectedProjects = selectedProjectsFromInput(input);
   const updates = selectedUpdates(input, selectedProjects);
+  const scheduleItems = reportScheduleItems(input);
   const evidence: PIEReportSourceEvidence[] = [];
 
   updates.forEach(update => {
-    const context = reportContextForUpdate(update, input.scheduleItems || []);
-    const suggestedNote = update.pieSuggestedNote?.trim() || '';
-    const noteWasGeneratedFromPhotoAnalysis = Boolean(
-      update.pieSuggestedNoteAccepted &&
-      suggestedNote &&
-      suggestedNote === update.notes.trim(),
-    );
+    const context = reportContextForUpdate(update, scheduleItems, selectedProjects.length > 1);
+    // The rule the report's fingerprint reads too (ReportWrittenFacts, HIGH item 1: F6).
+    const noteWasGeneratedFromPhotoAnalysis = noteIsAcceptedPhotoSuggestion(update);
 
     if (
       update.notes.trim() &&
@@ -586,8 +604,8 @@ export function collectReportEvidence(
     });
   });
 
-  input.scheduleItems
-    ?.filter(item =>
+  scheduleItems
+    .filter(item =>
       [item.scheduleProjectName, item.projectName, item.locationName]
         .some(name => selectedProjects.includes(normalizeName(name || ''))),
     )
@@ -615,7 +633,7 @@ export function collectReportEvidence(
   const situation = runtime?.situationIntelligence;
   if (situation?.situationSummary.headline) {
     evidence.push({
-      id: 'runtime-current-situation',
+      id: SAVED_MODEL_EVIDENCE_ID,
       source: 'runtime',
       projectName: input.currentUpdate?.projectName || selectedProjects[0] || '',
       areaName: input.currentUpdate?.selectedAreaName || '',
@@ -631,7 +649,7 @@ export function collectReportEvidence(
       status: situation.situationReadiness.readiness,
     });
   }
-  const runtimeChanged = runtime?.intelligentSummary?.whatChanged;
+  const runtimeChanged = writtenReportWhatChanged(runtime);
   if (runtimeChanged && !isEmptyRuntimeSummary(runtimeChanged)) {
     evidence.push({
       id: 'runtime-what-changed',
@@ -639,6 +657,7 @@ export function collectReportEvidence(
       projectName: input.currentUpdate?.projectName || selectedProjects[0] || '',
       areaName: input.currentUpdate?.selectedAreaName || '',
       summary: cleanReportBulletText(runtimeChanged),
+      workAreaNameFrom: cleanReportBulletText(writtenReportWhatChanged(runtime, { taskDate: false }) || runtimeChanged),
       confidence: 'medium',
     });
   }
@@ -658,29 +677,46 @@ export function collectReportEvidence(
   );
 }
 
-// A confirmed comparison older than this is history, not today's photo note
-// (the same 7 days ProjectIntelligenceEngine treats as recent activity).
-const REPORT_CURRENT_PHOTO_NOTE_DAYS = 7;
+/**
+ * The "Latest update / Latest photo / Schedule focus" sentence of the written
+ * report, made for it from the evidence the runtime fused (Build 232 item 2):
+ * by the updates' own dates, never by the order this device's list holds
+ * them in. A runtime handed over without that evidence keeps the sentence it
+ * came with.
+ */
+function writtenReportWhatChanged(
+  runtime: PIEReporterRuntimeInput | null | undefined,
+  options?: Parameters<typeof whatChangedForWrittenReport>[1],
+) {
+  const fused = runtime?.fusedEvidence;
+  if (fused?.userUpdateEvidence && fused.photoEvidence && fused.scheduleEvidence) {
+    return whatChangedForWrittenReport({
+      userUpdateEvidence: fused.userUpdateEvidence,
+      photoEvidence: fused.photoEvidence,
+      scheduleEvidence: fused.scheduleEvidence,
+    }, options);
+  }
+  return runtime?.intelligentSummary?.whatChanged;
+}
 
+/**
+ * The confirmed comparison quoted as today's photo note: the newest confirmed one, about the work, of this report's
+ * updates, at most 7 days old. Chosen by the rule the report's fingerprint reads too (ReportWrittenFacts, HIGH item
+ * 1: F4, F6b).
+ */
 function recentConfirmedPhotoNote(
   input: PIEReportDraftInput,
   updates: ProjectUpdate[],
 ): PIEReportSourceEvidence | null {
   // Newest first, so [0] is the newest confirmed comparison.
-  const confirmed = input.runtime?.photoProgress?.acceptedEvidence?.[0];
-  if (!confirmed?.summary || isEmptyRuntimeSummary(confirmed.summary)) return null;
-  if (!isConstructionRelevantObservation(confirmed.summary)) return null;
-  // Its photo must belong to this report's updates; project and area come
-  // from that update, never from the open draft.
-  const source = updates.find(update =>
-    update.photos.some(photo => photo.id === confirmed.currentPhotoId),
+  const quoted = confirmedComparisonQuoted(
+    input.runtime?.photoProgress?.acceptedEvidence,
+    updates,
+    (input.generatedAt || new Date()).getTime(),
   );
-  if (!source) return null;
-  const seenAt = Date.parse(confirmed.acceptedAt || '');
-  const reportAt = (input.generatedAt || new Date()).getTime();
-  if (!Number.isFinite(seenAt)) return null;
-  if (reportAt - seenAt > REPORT_CURRENT_PHOTO_NOTE_DAYS * 24 * 60 * 60 * 1000) return null;
-  const context = reportContextForUpdate(source, input.scheduleItems || []);
+  if (!quoted) return null;
+  const { confirmed, source } = quoted;
+  const context = reportContextForUpdate(source, reportScheduleItems(input), selectedProjectsFromInput(input).length > 1);
   return {
     id: `runtime-photo-progress-${confirmed.currentPhotoId}`,
     source: 'photo',
@@ -692,7 +728,11 @@ function recentConfirmedPhotoNote(
 }
 
 function isIncidentalReportEvidence(item: PIEReportSourceEvidence) {
-  if (!['note', 'photo', 'runtime'].includes(item.source)) return false;
+  // Not his field notes (Build 232 item 4 part B): the filter is for what a
+  // photo's analysis sees in passing (a dog, a desk, a chair). A note he
+  // typed with such a word and no construction word ("Conference table and
+  // chairs were delivered to the trailer.") was dropped here, unseen.
+  if (!['photo', 'runtime'].includes(item.source)) return false;
   return isIncidentalVisualObservation(item.summary);
 }
 
@@ -712,7 +752,7 @@ export function buildConstructionUnderstanding(
     const workAreaName = cleanReportWorkAreaName(
       item.projectName,
       item.areaName,
-      item.summary,
+      item.workAreaNameFrom ?? item.summary,
     );
     const key = `${locationTitle(item.projectName, item.areaName)}|${workAreaName}`;
     byArea.set(key, [...(byArea.get(key) || []), item]);
@@ -762,13 +802,22 @@ export function buildConstructionUnderstanding(
         sourceEvidenceIds: item.sourceEvidenceIds,
       }));
     const status = resolveWorkAreaStatus(items, issues, nextSteps);
-    const changed = progress.map(item => item.summary);
+    // The area's progress LINES: the verified progress, and with it, in the
+    // same order, his field notes of none of the three kinds (item 4 part B).
+    // Only verified construction evidence still COUNTS as progress above.
+    const changed = items
+      .filter(item => isVerifiedConstructionProgressEvidence(item) || isPlainFieldNote(item))
+      .map(item => cleanReportBulletText(item.summary))
+      .filter(Boolean);
+
+    const printedName = printedNameOfFiledWorkArea(areaName, items);
 
     return {
       id: slug(`understanding-${location}-${areaName}`),
       projectName,
       locationTitle: location,
       workAreaName: areaName,
+      ...(printedName !== areaName ? { printedName } : {}),
       status,
       whatWorkIsAbout: areaName,
       whatChanged: uniqueText(changed).slice(0, 4),
@@ -790,7 +839,9 @@ export function buildConstructionUnderstanding(
     };
   });
 
-  const numberedWorkAreas = renumberWorkAreaImageReferences(workAreas);
+  const numberedWorkAreas = renumberWorkAreaImageReferences(
+    withEveryPhotoAttached(input, workAreas, Array.from(byArea.values()), imageReferences, rawEvidence),
+  );
   const locationGroups = groupUnderstandingByLocation(numberedWorkAreas);
   const reviewFlags = buildReportReviewFlags({
     evidence,
@@ -859,6 +910,134 @@ function imageReferenceMatchesWorkArea(
   );
 }
 
+/**
+ * Open item 4.87 (review pass 7, R7-4; the owner's authorisation of 13 Oct
+ * 2026): EVERY PHOTO OF THE REPORT IS NUMBERED AND ATTACHED. A work area took
+ * a photo only through a line made from the photo itself, or from a note or
+ * photo of the same update in the same area (imageReferenceMatchesWorkArea),
+ * and never a photo with no area of its own. So a photo recorded alone whose
+ * caption has no word of the writer's building vocabulary (it makes no line),
+ * and a photo taken with a note that has no area, had no number, no line, no
+ * place in the e-mail or the Word file.
+ *
+ * A photo no area took goes, in this order (but a photo whose own records
+ * name two different areas stays out, as decided, until he classifies it):
+ * to the area of the line made from the photo itself; to its own area (same
+ * project, same name); to the first
+ * area holding a line of the update it was recorded with; else to an area of
+ * its own (its own area's name, or else its update's), whose line is its
+ * caption where the writer would print it (else "See Image N." alone). Such
+ * an area is put among the others by its update's place in the report's
+ * order, so every area that was there keeps its place. A report in which
+ * every photo was taken already is returned as it was.
+ */
+function withEveryPhotoAttached(
+  input: PIEReportDraftInput,
+  workAreas: PIEWorkAreaUnderstanding[],
+  itemsOfArea: PIEReportSourceEvidence[][],
+  imageReferences: PIEReportImageReference[],
+  rawEvidence: PIEReportSourceEvidence[],
+): PIEWorkAreaUnderstanding[] {
+  const taken = new Set(workAreas.flatMap(area => area.imageReferences.map(reference => reference.photoId)));
+  // A photo whose own records name two areas stays out until he classifies it, as it was decided (review flag "N
+  // photos need area classification"); a photo with no area at all is not that, and goes with its update.
+  const untaken = imageReferences.filter(reference => !taken.has(reference.photoId) &&
+    (reference.classificationStatus !== 'needs_classification' || reference.classificationReason === PHOTO_WITH_NO_AREA));
+  if (untaken.length === 0) return workAreas;
+
+  const selectedProjects = selectedProjectsFromInput(input);
+  const updates = selectedUpdates(input, selectedProjects);
+  const placeOfUpdate = new Map(updates.map((update, index) => [update.id, index] as const));
+  const areas = workAreas.map(area => ({ ...area, imageReferences: [...area.imageReferences] }));
+  const items = itemsOfArea.map(list => [...list]);
+  const keyOf = (location: string, workAreaName: string) => `${normalizeName(location)}|${normalizeName(workAreaName)}`;
+  const firstAreaHolding = (holds: (item: PIEReportSourceEvidence) => boolean) =>
+    items.findIndex(list => list.some(holds));
+  // An area's place in the report's order: its first line's update (areas are
+  // made in the order of their first line; lines of updates come first).
+  const placeOfArea = (index: number) => Math.min(
+    ...items[index].map(item => placeOfUpdate.get(item.sourceUpdateId || '') ?? Number.POSITIVE_INFINITY),
+  );
+
+  untaken.forEach(reference => {
+    const ownNames = reference.classificationStatus === 'classified'
+      ? new Set([
+        cleanReportWorkAreaName(reference.projectName, reference.areaName, reference.caption),
+        cleanReportWorkAreaName(reference.projectName, reference.areaName),
+      ].map(normalizeName))
+      : new Set<string>();
+    const place = [
+      firstAreaHolding(item => item.photoId === reference.photoId),
+      areas.findIndex(area =>
+        normalizeName(area.projectName) === normalizeName(reference.projectName) &&
+        ownNames.has(normalizeName(area.workAreaName))),
+      reference.sourceUpdateId
+        ? firstAreaHolding(item => item.sourceUpdateId === reference.sourceUpdateId)
+        : -1,
+    ].find(index => index >= 0);
+    if (place !== undefined) {
+      areas[place].imageReferences.push(reference);
+      return;
+    }
+
+    // A line of its own.
+    const update = updates.find(candidate => candidate.id === reference.sourceUpdateId);
+    if (!update) return;
+    const context = reportContextForUpdate(update, reportScheduleItems(input), selectedProjects.length > 1);
+    const caption = cleanReportBulletText(reference.caption);
+    const [photoLine] = withCanonicalProjectNames(input, [...rawEvidence, {
+      id: `photo-${reference.photoId}`,
+      source: 'photo',
+      projectName: context.projectName,
+      areaName: reference.classificationStatus === 'classified' ? reference.areaName : context.areaName,
+      summary: caption,
+      confidence: 'medium',
+      photoId: reference.photoId,
+      sourceUpdateId: update.id,
+    }]).slice(-1);
+    const printable = Boolean(caption) &&
+      !shouldSuppressReportBullet(caption) &&
+      !isIncidentalReportEvidence(photoLine) &&
+      !containsGenericAiWording(caption);
+    const location = locationTitle(photoLine.projectName, photoLine.areaName);
+    const workAreaName = cleanReportWorkAreaName(photoLine.projectName, photoLine.areaName, caption);
+    const same = areas.findIndex(area => keyOf(area.locationTitle, area.workAreaName) === keyOf(location, workAreaName));
+    if (same >= 0) {
+      areas[same].imageReferences.push(reference);
+      areas[same].whatChanged = uniqueText([...areas[same].whatChanged, ...(printable ? [caption] : [])]).slice(0, 4);
+      items[same].push(photoLine);
+      return;
+    }
+    const printedName = printedNameOfFiledWorkArea(workAreaName, [photoLine]);
+    const ownPlace = placeOfUpdate.get(update.id) ?? Number.POSITIVE_INFINITY;
+    const before = areas.findIndex((_, index) => placeOfArea(index) > ownPlace);
+    const at = before >= 0 ? before : areas.length;
+    areas.splice(at, 0, {
+      id: slug(`understanding-${location}-${workAreaName}-photos`),
+      projectName: photoLine.projectName,
+      locationTitle: location,
+      workAreaName,
+      ...(printedName !== workAreaName ? { printedName } : {}),
+      status: 'On Track',
+      whatWorkIsAbout: workAreaName,
+      whatChanged: printable ? [caption] : [],
+      progress: [],
+      issues: [],
+      decisions: [],
+      nextSteps: [],
+      affectsSchedule: false,
+      hasSafetyConcern: false,
+      hasInspectionDependency: false,
+      readerTakeaway: buildReaderTakeaway(workAreaName, 'On Track', [], [], []),
+      imageReferences: [reference],
+      sourceEvidenceIds: [photoLine.id],
+    });
+    items.splice(at, 0, [photoLine]);
+  });
+
+  return areas;
+}
+
 function renumberWorkAreaImageReferences(
   workAreas: PIEWorkAreaUnderstanding[],
 ): PIEWorkAreaUnderstanding[] {
@@ -891,13 +1070,13 @@ export function buildProjectNarrative(
   const locationGroups = understanding.locationGroups.map(group => ({
     id: group.id,
     title: group.title,
-    workAreas: group.workAreas.map(area => {
+    workAreas: workAreasPrintedOncePerName(group.workAreas.map(area => {
       const actionItems = buildReportActionItems(area);
       const bullets = buildReportBulletsFromUnderstanding(area, actionItems);
       const risks = area.issues.map(issue => ({
         id: slug(`risk-${area.id}-${issue.summary}`),
         projectName: area.projectName,
-        areaName: area.workAreaName,
+        areaName: printedWorkAreaName(area),
         summary: issue.summary,
         severity: issue.severity,
         sourceEvidenceIds: issue.sourceEvidenceIds,
@@ -905,7 +1084,7 @@ export function buildProjectNarrative(
       const decisionsNeeded = area.decisions.map(decision => ({
         id: slug(`decision-${area.id}-${decision.summary}`),
         projectName: area.projectName,
-        areaName: area.workAreaName,
+        areaName: printedWorkAreaName(area),
         question: decision.summary,
         owner: decision.owner || 'Action Required',
         sourceEvidenceIds: decision.sourceEvidenceIds,
@@ -913,16 +1092,16 @@ export function buildProjectNarrative(
 
       return {
         id: area.id,
-        title: area.workAreaName,
+        title: printedWorkAreaName(area),
         projectName: area.projectName,
-        areaName: area.workAreaName,
+        areaName: printedWorkAreaName(area),
         bullets,
         actionItems,
         imageReferences: area.imageReferences,
         risks,
         decisionsNeeded,
       };
-    }),
+    })),
   }));
 
   const actionItems = locationGroups.flatMap(group =>
@@ -942,6 +1121,61 @@ export function buildProjectNarrative(
     risks,
     decisionsNeeded,
   };
+}
+
+/**
+ * Build 232 item 3 part 2 (the coordinator's decision): the heading is
+ * corrected and NOT ONE LINE LEAVES OR COMES.
+ *
+ * A work area prints at most three lines (selectConciseAreaBullets). The
+ * lines that print a date were filed under "2026 <area>", a work area of
+ * their own with its own three, beside "<area>" with the field notes' three.
+ * They are filed exactly as before, so each group keeps its own three lines
+ * and its own photos, and the groups one name is printed for are joined
+ * here, when the report is written: the first group's lines, then the
+ * other's, under the one heading. The Reports screen lists the area once.
+ */
+function workAreasPrintedOncePerName(areas: PIEReportWorkArea[]): PIEReportWorkArea[] {
+  const printed: PIEReportWorkArea[] = [];
+  const placeOf = new Map<string, number>();
+  areas.forEach(area => {
+    const key = `${normalizeName(area.projectName)}|${normalizeName(area.title)}`;
+    const place = placeOf.get(key);
+    if (place === undefined) {
+      placeOf.set(key, printed.length);
+      printed.push(area);
+      return;
+    }
+    const first = printed[place];
+    const photoIds = new Set(first.imageReferences.map(reference => reference.photoId));
+    printed[place] = {
+      ...first,
+      bullets: [...first.bullets, ...area.bullets],
+      actionItems: [...first.actionItems, ...area.actionItems],
+      imageReferences: [...first.imageReferences, ...area.imageReferences.filter(reference => !photoIds.has(reference.photoId))],
+      risks: [...first.risks, ...area.risks],
+      decisionsNeeded: [...first.decisionsNeeded, ...area.decisionsNeeded],
+    };
+  });
+  return printed;
+}
+
+/** The name a work area is printed under: its own, without the year of a date (see `printedName`). */
+function printedWorkAreaName(area: PIEWorkAreaUnderstanding) {
+  return area.printedName ?? area.workAreaName;
+}
+
+/**
+ * The name the lines filed under `filedUnder` are printed under. Each line
+ * is named again without the dates it prints; if that gives another name for
+ * all of them, the number in the name was only ever a date's year, and the
+ * area is printed under the name without it. A number that is any line's
+ * own (a building in the task's name) names the area as before.
+ */
+function printedNameOfFiledWorkArea(filedUnder: string, items: PIEReportSourceEvidence[]) {
+  const named = items.map(item =>
+    printedReportWorkAreaName(item.projectName, item.areaName, item.workAreaNameFrom ?? item.summary));
+  return named.length === 0 || named.includes(filedUnder) ? filedUnder : named[0] || filedUnder;
 }
 
 export function buildDavidStyleReport({
@@ -1017,7 +1251,7 @@ export function buildReportActionItems(
         owner: step.owner || 'Action Required',
         action: step.summary,
         projectName: area.projectName,
-        areaName: area.workAreaName,
+        areaName: printedWorkAreaName(area),
         needsOwner: !step.owner,
         sourceEvidenceIds: step.sourceEvidenceIds,
       }));
@@ -1034,9 +1268,19 @@ export function buildReportImageReferences(
   const seenPhotoIds = new Set<string>();
 
   updates.forEach(update => {
+    // Open item 7.54: an update saved from a sub-project's task carries the
+    // sub-project's own name and names its parent in scheduleProjectName. The
+    // parent's report carries its lines (selectedUpdates), and its photos were
+    // left out here, so they had no number and went nowhere. They are numbered
+    // with the parent's, filed under the parent its lines are printed under.
+    const parent = update.scheduleProjectName?.trim() || '';
+    const savedUnderItsParent = selected.length > 0 &&
+      !selected.includes(normalizeName(update.projectName)) &&
+      Boolean(parent) && selected.includes(normalizeName(parent));
     if (
       selected.length > 0 &&
-      !selected.includes(normalizeName(update.projectName))
+      !selected.includes(normalizeName(update.projectName)) &&
+      !savedUnderItsParent
     ) {
       return;
     }
@@ -1048,7 +1292,7 @@ export function buildReportImageReferences(
       references.push({
         imageNumber: references.length + 1,
         photoId: photo.id,
-        projectName: update.projectName,
+        projectName: savedUnderItsParent ? parent : update.projectName,
         areaName: areaResolution.areaName,
         caption: cleanReportBulletText(photo.caption),
         sourceUpdateId: update.id,
@@ -1060,6 +1304,9 @@ export function buildReportImageReferences(
 
   return references;
 }
+
+/** Why a photo with no area of its own anywhere needs classification (open item 4.87 reads it). */
+const PHOTO_WITH_NO_AREA = 'No project area is recorded for this photo.';
 
 function resolveReportPhotoAreaName(
   update: ProjectUpdate,
@@ -1101,7 +1348,7 @@ function resolveReportPhotoArea(
     return {
       areaName: 'Needs Classification',
       status: 'needs_classification',
-      reason: 'No project area is recorded for this photo.',
+      reason: PHOTO_WITH_NO_AREA,
     };
   }
 
@@ -1152,6 +1399,41 @@ export function buildReportReviewFlags({
   ].filter(Boolean) as string[];
 
   return Array.from(new Set(flags));
+}
+
+const REPORT_MONTH_NAME =
+  '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?';
+/** The dates a line can print: 10/08/2026, 2026-10-08, Oct 8, 2026, 8 Oct 2026, October 2026. */
+const REPORT_LINE_DATES = new RegExp([
+  '\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b',
+  '\\b\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}\\b',
+  `\\b${REPORT_MONTH_NAME}\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}\\b`,
+  `\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${REPORT_MONTH_NAME},?\\s+\\d{4}\\b`,
+  `\\b${REPORT_MONTH_NAME},?\\s+\\d{4}\\b`,
+].join('|'), 'gi');
+
+/**
+ * The name one line's work area is PRINTED under (Build 232 item 3 part 2,
+ * the coordinator's decision): a date printed in a line is never a building
+ * number. `cleanReportWorkAreaName` names a work area from the project's
+ * name, the area's name and the line's own words, and takes a four-digit
+ * number among them for a building number ("Building 2321 East Driveway" is
+ * "2321 East Driveway"). It took the year of a date the same way, so every
+ * schedule line that prints its due date read "<project> — 2026 <area>".
+ * This is that name with the line's dates left out of its words. A number
+ * in the project's, the area's or the task's own name still names the area.
+ * (How a line is FILED is `cleanReportWorkAreaName`, unchanged.)
+ */
+export function printedReportWorkAreaName(
+  projectName: string,
+  areaName: string,
+  lineWords = '',
+) {
+  return cleanReportWorkAreaName(
+    projectName,
+    areaName,
+    lineWords.replace(REPORT_LINE_DATES, ' ').replace(/\s+/g, ' ').trim(),
+  );
 }
 
 export function cleanReportWorkAreaName(
@@ -1269,7 +1551,7 @@ export function buildReportRisks(
     .map(item => ({
       id: slug(`risk-${item.id}`),
       projectName: item.projectName,
-      areaName: cleanReportWorkAreaName(item.projectName, item.areaName, item.summary),
+      areaName: cleanReportWorkAreaName(item.projectName, item.areaName, item.workAreaNameFrom ?? item.summary),
       summary: cleanReportBulletText(item.summary),
       severity:
         item.source === 'safety' ||
@@ -1432,13 +1714,99 @@ function buildReport(
   };
 }
 
+/**
+ * The one piece of the report's evidence that comes from the model the app
+ * SAVES: the Core's "situation" (its summary sentence and the first action
+ * it advises), built on the reality model the live Core keeps on the device
+ * and reads back.
+ *
+ * Build 232 item 4 part A (the owner's answer to question 49, 13 Oct 2026):
+ * its lines are not part of the written report. They followed the device's
+ * own history and not today's records: a field update he had deleted was
+ * still quoted a month later ("Collect current evidence for <its words>"),
+ * and two devices holding the same records wrote two reports under one
+ * fingerprint. The evidence stays in the draft: the app's own screens read
+ * the model's advice from it (the draft's action items, risks and
+ * decisions). Only the lines that are written leave.
+ *
+ * Item 4b (the coordinator's decision, 13 Oct 2026; review pass 5, R1 and
+ * R2): it takes NO PLACE among a work area's lines either. An area prints at
+ * most three lines (selectConciseAreaBullets: its first progress line, its
+ * first problem, its first next step, then the rest). The model's line was
+ * chosen with the others and THEN left out, so its place stood empty: of
+ * three field notes recorded with no area, one that Build 231 printed was
+ * gone (the model's sentence read as a problem and held the "first problem"
+ * place), and two devices with two saved models still wrote two texts (on
+ * the other the model's advice held the "first next step" place). The three
+ * lines are now chosen as if that evidence were not there.
+ */
+const SAVED_MODEL_EVIDENCE_ID = 'runtime-current-situation';
+
+function onlyFromTheSavedModel(sourceEvidenceIds: readonly string[]) {
+  return sourceEvidenceIds.length > 0 && sourceEvidenceIds.every(id => id === SAVED_MODEL_EVIDENCE_ID);
+}
+
+/**
+ * Item 4c (the coordinator's decision, 13 Oct 2026; review pass 9, R9-1): a
+ * plain note takes only a place Build 231 left empty. His plain notes (item 4
+ * part B: in whatChanged and not verified progress) were filed with the
+ * progress lines, so a plain note of any age took the "first progress" place
+ * and pushed out a newer problem or request that Build 231 printed. Now the
+ * area's lines are chosen as Build 231 chose them, the plain notes not
+ * counted; then the plain notes fill the places left, newest first
+ * (whatChanged is in the updates' own date order, items 2 and 3), after those
+ * lines. "See Image N" stays where Build 231 put it; a plain note carries it
+ * only as the area's ONLY line.
+ */
 function buildReportBulletsFromUnderstanding(
   area: PIEWorkAreaUnderstanding,
   actionItems: PIEReportActionItem[],
 ): PIEReportBullet[] {
-  const bullets: PIEReportBullet[] = [];
+  const chosen = linesAsBuild231ChoseThem(area, actionItems);
+  const progressKeys = new Set(area.progress.map(item => normalizeName(item.summary)));
+  const printedKeys = new Set(chosen.map(bullet => normalizeName(bullet.text)));
+  const filling = area.whatChanged
+    .filter(summary => summary && !progressKeys.has(normalizeName(summary)) && !shouldSuppressReportBullet(summary))
+    .map(ensureSentence)
+    .filter(text => {
+      const key = normalizeName(text);
+      if (printedKeys.has(key)) return false;
+      printedKeys.add(key);
+      return true;
+    })
+    .slice(0, Math.max(0, 3 - chosen.length))
+    .map((text, index): PIEReportBullet => ({
+      id: slug(`bullet-${area.id}-plain-${index}`),
+      text,
+      kind: 'progress',
+      sourceEvidenceIds: area.sourceEvidenceIds,
+      needsReview: area.status === 'Needs Review',
+    }));
 
-  area.whatChanged.slice(0, 3).forEach((summary, index) => {
+  if (chosen.length === 1 && chosen[0].kind === 'image_reference' && filling.length === 1) {
+    return [{ ...filling[0], text: `${stripTerminalPunctuation(filling[0].text)}. ${chosen[0].text}` }];
+  }
+
+  return [...chosen, ...filling];
+}
+
+function linesAsBuild231ChoseThem(
+  area: PIEWorkAreaUnderstanding,
+  actionItems: PIEReportActionItem[],
+): PIEReportBullet[] {
+  const bullets: PIEReportBullet[] = [];
+  // What the lines are chosen from: the area's progress lines, problems and
+  // next steps WITHOUT the ones made from the saved model alone (item 4b), in
+  // each of its forms. A line of his own with the same words stays: it has
+  // evidence of his. The progress lines are his verified progress only, as on
+  // Build 231 (item 4c): his plain notes are not counted here.
+  const progressLines = uniqueText(area.progress.map(item => item.summary)).filter(summary => !onlyFromTheSavedModel(area.progress
+    .filter(item => normalizeName(item.summary) === normalizeName(summary))
+    .flatMap(item => item.sourceEvidenceIds)));
+  const issues = area.issues.filter(issue => !onlyFromTheSavedModel(issue.sourceEvidenceIds));
+  const nextSteps = actionItems.filter(item => !onlyFromTheSavedModel(item.sourceEvidenceIds));
+
+  progressLines.slice(0, 3).forEach((summary, index) => {
     if (!summary || shouldSuppressReportBullet(summary)) return;
     bullets.push({
       id: slug(`bullet-${area.id}-progress-${index}`),
@@ -1449,7 +1817,7 @@ function buildReportBulletsFromUnderstanding(
     });
   });
 
-  area.issues.slice(0, 2).forEach((issue, index) => {
+  issues.slice(0, 2).forEach((issue, index) => {
     bullets.push({
       id: slug(`bullet-${area.id}-issue-${index}`),
       text: ensureSentence(issue.summary),
@@ -1459,7 +1827,7 @@ function buildReportBulletsFromUnderstanding(
     });
   });
 
-  actionItems.forEach(item => {
+  nextSteps.forEach(item => {
     bullets.push({
       id: slug(`bullet-action-${item.id}`),
       text: formatActionItem(item),
@@ -1504,7 +1872,7 @@ function actionItemsFromEvidence(
       owner: item.owner || ownerFromText(item.summary) || 'Action Required',
       action: actionFromEvidence(item),
       projectName: item.projectName,
-      areaName: cleanReportWorkAreaName(item.projectName, item.areaName, item.summary),
+      areaName: cleanReportWorkAreaName(item.projectName, item.areaName, item.workAreaNameFrom ?? item.summary),
       needsOwner: !(item.owner || ownerFromText(item.summary)),
       sourceEvidenceIds: [item.id],
     }))
@@ -1591,7 +1959,7 @@ function buildExecutiveSummaryBullets(
 
 function executiveAreaLabel(area: PIEWorkAreaUnderstanding) {
   const projectName = area.projectName.trim();
-  const workAreaName = area.workAreaName.trim();
+  const workAreaName = printedWorkAreaName(area).trim();
 
   if (!workAreaName || normalizeName(workAreaName) === normalizeName(projectName)) {
     return projectName || 'Project';
@@ -2218,13 +2586,28 @@ function groupUnderstandingByLocation(
 }
 
 function selectedProjectsFromInput(input: PIEReportDraftInput) {
+  // HIGH item 1e: by name, not in the order they were ticked: a combined report's line filed under its first project
+  // (the open update's project, else the first selected) is the same however he ticked them, as the report's own order is.
+  const byName = (name: string) => name.replace(/[^a-z0-9]+/g, ' ').trim();
   return resolvePIEReportProjectNames({
     selectedProjectNames: input.selectedProjectNames,
     fallbackProjectNames: [
       input.currentUpdate?.projectName,
       ...(input.savedUpdates || []).map(update => update.projectName),
     ],
-  }).map(normalizeName);
+  }).map(normalizeName).sort((left, right) => byName(left).localeCompare(byName(right)));
+}
+
+/**
+ * The report's tasks, in the report's own order: the one place the writer
+ * takes its tasks (Build 232 item 3 part 1, the coordinator's decision). The
+ * schedule lines of the section, and the task an update is matched to by
+ * its names, followed the order this device's list held the tasks in, and
+ * two devices hold the same tasks in different orders. The same tasks are
+ * read as before; none is added or left out by the order.
+ */
+function reportScheduleItems(input: PIEReportDraftInput) {
+  return scheduleTasksInReportOrder(input.scheduleItems || []);
 }
 
 function selectedUpdates(
@@ -2239,18 +2622,27 @@ function selectedUpdates(
   // A note logged from a sub-project's schedule task is saved under the
   // sub-project name and names its parent in scheduleProjectName; the report
   // for the parent must still carry it.
-  return updates.filter(update =>
+  //
+  // Build 232 item 2 part A (the coordinator's decision): NEWEST FIRST BY THE
+  // UPDATES' OWN DATES, the one place the report's updates are put in order.
+  // Which notes lead each work area, and the numbers of the images, followed
+  // the order this device's list held them in, and two devices hold the same
+  // updates in different orders. The same updates are read as before; none is
+  // added or left out by the order.
+  return fieldUpdatesNewestFirst(updates.filter(update =>
     selectedProjects.includes(normalizeName(update.projectName)) ||
     Boolean(
       update.scheduleProjectName?.trim() &&
       selectedProjects.includes(normalizeName(update.scheduleProjectName)),
     ),
-  );
+  ));
 }
 
 function reportContextForUpdate(
   update: ProjectUpdate,
   scheduleItems: ScheduleItem[],
+  /** The report covers more than one project (a combined report). */
+  severalProjects = false,
 ) {
   const updateNames = [
     update.projectName,
@@ -2259,8 +2651,26 @@ function reportContextForUpdate(
   ]
     .filter((value): value is string => Boolean(value?.trim()))
     .map(normalizeName);
+  // Build 232 item 4 part C (the coordinator's decision): IN A REPORT OF
+  // SEVERAL PROJECTS A FIELD UPDATE BELONGS TO ITS OWN PROJECT. An update
+  // that names no schedule project took the first matching task's, and a
+  // task matches by its project name or by its AREA name: two projects that
+  // each have a "Site" printed both projects' notes under one of them, the
+  // other's own note could be cut by the three-line limit, and its photos
+  // were left out. A task that names another schedule project than the one
+  // the update was recorded in, and has only an area name in common with
+  // it, claims nothing; the update is then the project it was recorded in.
+  // A report of one project is handed that project's tasks and is read as
+  // before, to the word.
+  const recordedIn = normalizeName(update.projectName);
+  const ofAnotherProject = (item: ScheduleItem) => {
+    const scheduleProject = normalizeName(item.scheduleProjectName);
+    return Boolean(scheduleProject) && scheduleProject !== recordedIn &&
+      ![item.projectName, item.locationName].some(name => normalizeName(name) === recordedIn);
+  };
   const scheduleMatch = scheduleItems.find(item =>
-    [item.projectName, item.locationName].some(name => updateNames.includes(normalizeName(name))),
+    [item.projectName, item.locationName].some(name => updateNames.includes(normalizeName(name))) &&
+    !(severalProjects && ofAnotherProject(item)),
   );
   const projectName =
     update.scheduleProjectName?.trim() ||
@@ -2361,6 +2771,31 @@ function isVerifiedConstructionProgressEvidence(item: PIEReportSourceEvidence) {
   return isConstructionRelevantObservation(item.summary);
 }
 
+/**
+ * A field note that is neither progress, nor a problem, nor a next step
+ * (Build 232 item 4 part B, the coordinator's decision): no field note
+ * falls through.
+ *
+ * A work area's lines are made from three lists. A note was "progress" only
+ * with a word of the writer's construction vocabulary
+ * (dave-construction-relevance), a problem only if it read as an issue or a
+ * blocker, a next step only with an action word. A note of none of the
+ * three was in no list, so in no line of the report: "Glazing shop drawings
+ * are approved.", "Sprinkler main is hung in Bay B.", "Anchor bolts were
+ * surveyed at the dock.", "Plumber found a broken cleanout at the site
+ * lateral. Dana to call the city." It is listed with the progress notes, a
+ * plain observation: in the same order (newest first) and under the same
+ * allowance of lines. It is printed among the progress lines and is not
+ * counted as verified construction progress. Item 4c: it is printed only in a
+ * place the area's other lines leave empty (buildReportBulletsFromUnderstanding).
+ */
+function isPlainFieldNote(item: PIEReportSourceEvidence) {
+  return item.source === 'note' &&
+    !isActionEvidence(item) &&
+    !isRiskText(item.summary) &&
+    !isConstructionRelevantObservation(item.summary);
+}
+
 function resolveWorkAreaStatus(
   evidence: PIEReportSourceEvidence[],
   issues: PIEWorkAreaIssue[],
@@ -2441,10 +2876,6 @@ function isRiskText(value: string) {
 
 function isUnclearText(value: string) {
   return value.trim().length < 8 || /\b(todo|tbd|\?{2,}|asdf)\b/i.test(value);
-}
-
-function isEmptyRuntimeSummary(value: string) {
-  return /no .*summarize|no .*evidence|not enough/i.test(value);
 }
 
 function ownerFromText(value: string) {
@@ -2563,6 +2994,14 @@ function selectConciseAreaBullets(
     ...preferred,
     ...bullets.filter(bullet => !selectedIds.has(bullet.id)),
   ].slice(0, 3);
+  // Open item 4.87: an area with no progress line cites its photos on a line
+  // of their own, after its problems and requests; where those already fill
+  // the area's three lines, that line was cut and the photos, numbered and
+  // attached, were cited nowhere. They are cited on the area's first line.
+  const citation = bullets.find(bullet => bullet.kind === 'image_reference');
+  if (citation && selected.length > 0 && !selected.includes(citation)) {
+    selected[0] = { ...selected[0], text: `${stripTerminalPunctuation(selected[0].text)}. ${citation.text}` };
+  }
 
   return selected;
 }

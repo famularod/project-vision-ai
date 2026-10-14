@@ -29,7 +29,7 @@
  */
 import { buildDAVEProjectTruth, daveProjectTruthAsBuilt, type DAVEProjectTruth } from '../../services/DAVEProjectTruth';
 import {
-  buildDAVELegacyReportSourceFingerprint, buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, enhanceDAVEReportDraft,
+  buildDAVELegacyReportSourceFingerprint, buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, buildDAVEVersion2ReportSourceFingerprint, enhanceDAVEReportDraft,
 } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
 import {
@@ -338,13 +338,27 @@ describe('R7 item C: what version 2.0 leaves out, and that no written report can
   it.each([
     ['its name', { name: 'MASTER M1 rev B' }],
     ['its file\'s name', { originalFileName: 'MASTER M1 rev B.csv' }],
-    ['its notes', { notes: 'Issued for construction.' }],
     ['when it was imported', { importedAt: '2026-09-21T15:00:00.000Z' }],
     ['its category', { category: 'Specifications' }],
     ['that it is a lookahead', { scheduleRole: 'lookahead' }],
-  ])('guard: a fact of the document still moves the fingerprint: %s', (_what, change) => {
-    expect(buildDAVEReportSourceFingerprint(deviceTruths(ITEMS, { ...PHONE_DOCUMENT, ...change } as ReferenceDocument)))
-      .not.toBe(buildDAVEReportSourceFingerprint(deviceTruths(ITEMS, PHONE_DOCUMENT)));
+  ])('guard: a fact of the document moves the fingerprint exactly where a word of the report moves: %s', (_what, change) => {
+    // HIGH item 1d (open item 7.55, the coordinator's decision): a document is held where the report prints it
+    // ("Schedules document added: <name>"), not as a record: its file's name and when it was imported print nowhere;
+    // which tasks it shows is held by the tasks. (This guard said every fact of it moved the fingerprint.)
+    const document = { ...PHONE_DOCUMENT, ...change } as ReferenceDocument;
+    const shownWith = (saved: ReferenceDocument) => selectAuthoritativeScheduleItems({ scheduleItems: ITEMS, scheduleDocuments: [saved] }) as ScheduleItem[];
+    const wordsMoved = written(deviceTruths(ITEMS, document), shownWith(document)) !== written(deviceTruths(ITEMS, PHONE_DOCUMENT), shownWith(PHONE_DOCUMENT));
+    expect(buildDAVEReportSourceFingerprint(deviceTruths(ITEMS, document)) !== buildDAVEReportSourceFingerprint(deviceTruths(ITEMS, PHONE_DOCUMENT))).toBe(wordsMoved);
+  });
+
+  // HIGH item 1b (the coordinator's decision, open item 7.46): a schedule file's notes are printed by no report, so
+  // they no longer move today's fingerprint (3.0); the 2.0 one, worked out beside it for reports made under 2.0, still
+  // holds them as Build 231 did.
+  it('a schedule file\'s notes move today\'s fingerprint no more (no report prints them); the 2.0 one still', () => {
+    const noted = deviceTruths(ITEMS, { ...PHONE_DOCUMENT, notes: 'Issued for construction.' } as ReferenceDocument);
+    const plain = deviceTruths(ITEMS, PHONE_DOCUMENT);
+    expect(buildDAVEReportSourceFingerprint(noted)).toBe(buildDAVEReportSourceFingerprint(plain));
+    expect(buildDAVEVersion2ReportSourceFingerprint(noted)).not.toBe(buildDAVEVersion2ReportSourceFingerprint(plain));
   });
 
   it('guard: and every fact of a task: its percent, a date, a note typed on it', () => {

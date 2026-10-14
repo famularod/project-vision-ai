@@ -74,7 +74,7 @@ jest.mock('@react-native-community/datetimepicker', () => {
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 import { ReportsScreen } from '../../screens/ReportsScreen';
-import { describeReportSendTime, isLegacyReportSource, legacyReportSourcesOf, type DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
+import { describeReportSendTime, earlierReportSourcesOf, isLegacyReportSource, isVersion2ReportSource, legacyReportSourcesOf, type DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
 import { forgetAllReportSessionState } from '../../services/ReportSessionState';
 import {
   recordScheduleCloudPull,
@@ -127,7 +127,7 @@ const onCopyReport = jest.fn(async () => 'completed' as const);
 // Mail "Saved" (a draft), and Outlook "Not yet": neither is a send.
 const onEmailReport = jest.fn(async () => 'unknown' as const);
 const onOutlookReport = jest.fn(async () => 'unknown' as const);
-const reportsScreen = (scheduleItems: ScheduleItem[]) => (
+const reportsScreen = (scheduleItems: ScheduleItem[], format: 'project_manager' | 'executive' = 'project_manager') => (
   <ReportsScreen
     projectName="Tower"
     reportType="daily_project_update"
@@ -135,7 +135,7 @@ const reportsScreen = (scheduleItems: ScheduleItem[]) => (
     availableProjectNames={['Tower']}
     selectedProjectNames={['Tower']}
     onToggleProject={() => undefined}
-    reportFormat="project_manager"
+    reportFormat={format}
     onReportFormatChange={() => undefined}
     updates={[]}
     scheduleItems={scheduleItems}
@@ -150,11 +150,11 @@ const reportsScreen = (scheduleItems: ScheduleItem[]) => (
 
 let current: ReturnType<typeof render> | null = null;
 /** Opens Reports afresh on `device` (a new app session there). */
-const visit = (device: string, scheduleItems: ScheduleItem[]) => {
+const visit = (device: string, scheduleItems: ScheduleItem[], format: 'project_manager' | 'executive' = 'project_manager') => {
   current?.unmount();
   forgetAllReportSessionState();
   mockDevice = device;
-  current = render(reportsScreen(scheduleItems));
+  current = render(reportsScreen(scheduleItems, format));
   return current;
 };
 afterEach(() => {
@@ -328,7 +328,7 @@ describe('R5 item 2 (phone), reversed by R10: a report made under the earlier fi
     await settle();
     await settle();
     // This phone's own approval, under today's fingerprint, recorded as sent; not an approval written over the send.
-    expect(local('phone')?.sourceFingerprint).toMatch(/^dave-report-source\/2\.0:/);
+    expect(local('phone')?.sourceFingerprint).toMatch(/^dave-report-source\/3\.0:/);
     expect(local('phone')?.sourceFingerprint).not.toBe(approval.sourceFingerprint);
     expect(local('phone')).toMatchObject({ deliveredAt: expect.any(String) });
     await waitFor(() => expect(cloudRow()?.deliveredAt).toBe(local('phone')?.deliveredAt), SLOW);
@@ -352,7 +352,7 @@ describe('R5 item 2 (phone), reversed by R10: a report made under the earlier fi
     await approvable();
     await approveAnyway();
     await settle();
-    await waitFor(() => expect(local('phone')?.sourceFingerprint).toMatch(/^dave-report-source\/2\.0:/), SLOW);
+    await waitFor(() => expect(local('phone')?.sourceFingerprint).toMatch(/^dave-report-source\/3\.0:/), SLOW);
     expect(local('phone')?.sourceFingerprint).not.toBe(approval.sourceFingerprint);
     expect(local('phone')).toMatchObject({ deliveredAt: null });
     setClock('2026-10-05T14:20:00.000Z');
@@ -363,5 +363,119 @@ describe('R5 item 2 (phone), reversed by R10: a report made under the earlier fi
     expect(screen.getByRole('button', { name: 'Share Report' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Approve Report' })).toBeNull();
     expect(screen.queryByRole('button', MARK_AS_SENT)).toBeNull();
+  });
+});
+
+/**
+ * HIGH item 1 (d) (the owner's instruction of 13 Oct 2026, the three high items). The fingerprint's version 3.0 came
+ * with an update, and a report the other device approved or sent on Builds 231 or 232 carries a 2.0 fingerprint. For
+ * the same facts today it IS the report on screen, exactly where 2.0 itself said so: the update offers nothing again
+ * that the build before would not have offered. (1.0 is untouched: R10 above.)
+ */
+describe('HIGH item 1 (phone): a report made under 2.0 is today\'s report for the same facts, and only for them', () => {
+  /** The iPad, on Build 232, sends the report: the shared period is its send, under the 2.0 fingerprint of the same facts. */
+  const sentFromTheIpadUnderVersion2 = async () => {
+    visit('ipad', tower(0));
+    await approve();
+    await share('Copy Report');
+    await waitFor(() => expect(cloudRow()?.deliveredAt).toEqual(expect.any(String)), SLOW);
+    const row = cloudRow() as { snapshot: DAVEReportSnapshot; deliveredAt: string | null };
+    // The 2.0 fingerprint the app works out beside today's for these very facts (the 2.0 code, unchanged).
+    const version2 = earlierReportSourcesOf(row.snapshot.sourceFingerprint).find(isVersion2ReportSource) as string;
+    expect(version2).toMatch(/^dave-report-source\/2\.0:[0-9a-f]{8}$/);
+    const snapshot = { ...row.snapshot, sourceFingerprint: version2 };
+    mockCloud.set('tower|project_manager', { snapshot, deliveredAt: row.deliveredAt });
+    return snapshot;
+  };
+
+  it('the "already sent" notice: the report the iPad sent on the build before, the same facts today, is the report on screen, and the screen says so', async () => {
+    const sent = await sentFromTheIpadUnderVersion2();
+    onCopyReport.mockClear();
+    visit('phone', tower(0));
+    expect(await screen.findByText(ALREADY_SENT(sent.deliveredAt as string), {}, SLOW)).toBeTruthy();
+  });
+
+  it('guard: once a task changes it is another report, and the notice is not shown', async () => {
+    await sentFromTheIpadUnderVersion2();
+    visit('phone', tower(1));
+    await approvable();
+    await settle();
+    expect(screen.queryByText(/already sent this report/)).toBeNull();
+  });
+});
+
+/**
+ * HIGH item 1c (reports review pass 1, H1R-2): a task saved again with nothing changed, on another device, after the
+ * period's last report: no line of "since the last report" prints for it, so the report on screen IS that report. The
+ * phone works its fingerprint out against the report the period's last one counted from (the shared period), as every
+ * device does.
+ */
+describe('HIGH item 1c (phone): a task saved again with nothing changed after a real period', () => {
+  // Tasks a master brought in (so a task saved again does not refresh what its record is "as of": a task entered by
+  // hand is dated by its saved time, and saving it again takes "Old project record ..." off SCHEDULE RISKS: a word).
+  const imported = (items: ScheduleItem[]) => items.map(item => ({ ...item, importedAt: '2026-09-01T12:00:00.000Z' } as ScheduleItem));
+  const resaved = (items: ScheduleItem[]) => items.map(item => (item.id === 'roof' ? { ...item, updatedAt: new Date(Date.now() + 120_000).toISOString() } as ScheduleItem : item));
+  /** The iPad sends R1 (nothing completed), then R2 with Frame walls completed, counting from R1. */
+  const twoReportsFromTheIpad = async () => {
+    visit('ipad', imported(tower(0)));
+    await approve();
+    await share('Copy Report');
+    await waitFor(() => expect(cloudRow()?.deliveredAt).toEqual(expect.any(String)), SLOW);
+    visit('ipad', imported(tower(1)));
+    await approve();
+    await share('Copy Report');
+    await waitFor(() => expect(cloudRow()?.snapshot.supersedes?.deliveredAt).toEqual(expect.any(String)), SLOW);
+    return cloudRow() as { snapshot: DAVEReportSnapshot; deliveredAt: string };
+  };
+
+  it('Set roof saved again on another device, nothing changed: the phone says the other device already sent this report', async () => {
+    const r2 = await twoReportsFromTheIpad();
+    visit('phone', resaved(imported(tower(1))));
+    expect(await screen.findByText(ALREADY_SENT(r2.deliveredAt), {}, SLOW)).toBeTruthy();
+  });
+
+  it('guard: a task completed since: not the report sent, and the notice is not shown', async () => {
+    await twoReportsFromTheIpad();
+    visit('phone', imported(tower(2)));
+    await approvable();
+    await settle();
+    expect(screen.queryByText(/already sent this report/)).toBeNull();
+  });
+});
+
+/**
+ * HIGH item 1d (open item 7.55): each format's report is held as it prints. A task made High priority prints only in
+ * the Project Manager report (its WORK AREAS section: "<owner> - Please confirm the current status of <task>."), not in
+ * the Executive report. The phone asks for the fingerprint of the report in the format on screen, against that
+ * format's own period.
+ */
+describe('HIGH item 1d (phone): the report of the format on screen', () => {
+  const imported = (items: ScheduleItem[]) => items.map(item => ({ ...item, importedAt: '2026-09-01T12:00:00.000Z' } as ScheduleItem));
+  const highPriority = (items: ScheduleItem[]) => items.map(item => (item.id === 'roof' ? { ...item, priority: 'High' } as ScheduleItem : item));
+  const rowOf = (format: string) => mockCloud.get(`tower|${format}`) as { snapshot: DAVEReportSnapshot; deliveredAt: string | null } | undefined;
+  const twoReportsFromTheIpad = async (format: 'project_manager' | 'executive') => {
+    visit('ipad', imported(tower(0)), format);
+    await approve();
+    await share('Copy Report');
+    await waitFor(() => expect(rowOf(format)?.deliveredAt).toEqual(expect.any(String)), SLOW);
+    visit('ipad', imported(tower(1)), format);
+    await approve();
+    await share('Copy Report');
+    await waitFor(() => expect(rowOf(format)?.snapshot.supersedes?.deliveredAt).toEqual(expect.any(String)), SLOW);
+    return rowOf(format) as { snapshot: DAVEReportSnapshot; deliveredAt: string };
+  };
+
+  it('Executive: Set roof made High priority on another device: no word of the Executive report moves, and the phone says the other device already sent it', async () => {
+    const r2 = await twoReportsFromTheIpad('executive');
+    visit('phone', highPriority(imported(tower(1))), 'executive');
+    expect(await screen.findByText(ALREADY_SENT(r2.deliveredAt), {}, SLOW)).toBeTruthy();
+  });
+
+  it('Project Manager: the same change prints a line in its WORK AREAS section: not the report sent, and the notice is not shown', async () => {
+    await twoReportsFromTheIpad('project_manager');
+    visit('phone', highPriority(imported(tower(1))), 'project_manager');
+    await approvable();
+    await settle();
+    expect(screen.queryByText(/already sent this report/)).toBeNull();
   });
 });

@@ -110,7 +110,9 @@ describe('VitruviusScheduleAnalytics', () => {
     expect(analysis.safe).toBe(false);
     expect(analysis.available).toBe(false);
     expect(analysis.criticalItemIds.size).toBe(0);
-    expect(analysis.issues[0]).toMatch(/dependency cycle/i);
+    // T1b (14 Oct 2026): a circle is named task by task ("b starts after a, and a starts after b: that is a
+    // circle ..."); it read "dependency cycle includes a, b".
+    expect(analysis.issues[0]).toMatch(/b starts after a, and a starts after b: that is a circle/);
   });
 
   test('reports current date movement against the saved baseline', () => {

@@ -33,7 +33,7 @@
  */
 import { daveProjectTruthAsBuilt, type DAVEProjectTruth } from '../../services/DAVEProjectTruth';
 import {
-  buildDAVELegacyReportSourceFingerprint, buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, enhanceDAVEReportDraft, reportPeriodMovementLines,
+  buildDAVELegacyReportSourceFingerprint, buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, buildDAVEReportSourceOnPeriod, enhanceDAVEReportDraft, reportPeriodMovementLines,
 } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
 import {
@@ -47,11 +47,16 @@ import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence'
 import { selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import { buildDailyReportAuthorityScope } from '../../services/ReportAuthorityScope';
 import { buildAutomaticReportDrawingReferences } from '../../services/ReportDrawingReferences';
+import {
+  compactECOSDocumentIndexForCloud, listedPageIndexOfTheListRow, referenceDocumentsCitedAsListed, withoutListedPageIndexes,
+} from '../../services/ECOSDocumentIndexPersistence';
 import { mergeApprovedScheduleImportItems, scheduleImportReviewPairingQuestions, scheduleItemsVisibleBeforeImport } from '../../services/ScheduleImportMerge';
 import { scheduleSavedTasksOfProjects, scheduleTaskEarlierIds } from '../../services/ScheduleTaskRevisions';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
 import { normalizeProjectControls } from '../../services/VitruviusProjectControls';
 import type { ProjectArea, ProjectItemActivity, ProjectUpdate, ReferenceDocument, ScheduleItem } from '../../types';
+import { buildPIEReportDraft } from '../../services/PIEReporter';
+import { desktopOutputs, phoneOutputs, type ReportOutputDraft, type ReportOutputFormat } from '../fixtures/report-every-output';
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -138,45 +143,77 @@ const written = (briefing: ReturnType<typeof buildDAVEReportBriefing>): string =
     String(formatDAVEWebReport(briefing, format, period)).split('\n').filter(line => !line.startsWith('Generated: ')).join('\n'),
   ]).join('\n=====\n');
 };
-function phoneScreen(world: World, period: DAVEReportSnapshot | null, now: string) {
+/**
+ * High item 3 (c, b2): every device cites a drawing only from the copy the document list gives: the citation key of
+ * the drawing's row as its writers send it. Each world's documents as a device holds them after a list.
+ */
+const asListed = (documents: readonly ReferenceDocument[]): ReferenceDocument[] => documents.map(document => (document.category === 'Plans'
+  ? { ...document, listedPageIndex: listedPageIndexOfTheListRow(compactECOSDocumentIndexForCloud(document)) }
+  : document));
+/**
+ * HIGH item 1f (the final review's F1, the coordinator's decision): the guard is run for each format, the report's
+ * value worked out in that format, and "the report" is EVERY output that format produces on the device
+ * (tests/fixtures/report-every-output: the written report, the Reports screen with its Drawing References and Work
+ * Areas & Photos panels, the Word file with its photos and drawings, the photos e-mail and text attach; the desktop's
+ * report and its Word file with every photo), with the drawings cited and what an approval saves as before.
+ */
+const FORMATS: readonly ReportOutputFormat[] = ['project_manager', 'executive'];
+function phoneScreen(world: World, period: DAVEReportSnapshot | null, now: string, format: ReportOutputFormat = 'project_manager') {
   // App.tsx: the live authority input for a daily report, then the Reports screen's props.
   const scope = buildDailyReportAuthorityScope({
     selectedProjectName: 'Alpha', selectedProjectNames: ['Alpha'], projectRecords: [{ id: 'project-alpha-id', name: 'Alpha' }], updates: world.updates,
-    scheduleItems: shown(world), currentUpdate: null, projectAreas: world.areas, knownScheduleItems: world.items, referenceDocuments: world.documents,
+    scheduleItems: shown(world), currentUpdate: null, projectAreas: world.areas, knownScheduleItems: world.items, referenceDocuments: asListed(world.documents),
     projectDocuments: [], captureMemories: [], contacts: { contacts: [] },
   } as never);
   const truths = buildDAVEReportProjectTruths({
     projects: [{ name: 'Alpha', projectId: 'report:alpha' }], projectRecords: [{ name: 'Alpha' }] as never, updates: scope.updates, scheduleItems: scope.scheduleItems,
     knownScheduleItems: scheduleSavedTasksOfProjects(world.items, scope.scheduleItems, scope.projectNames), knownScheduleDocuments: world.documents,
-    projectAreas: scope.projectAreas, referenceDocuments: scope.referenceDocuments, now,
+    // As the Reports screen hands them (high item 3).
+    projectAreas: scope.projectAreas, referenceDocuments: withoutListedPageIndexes([...scope.referenceDocuments]), drawingDocuments: referenceDocumentsCitedAsListed([...scope.referenceDocuments]), now,
   });
-  const fingerprint = buildDAVEReportSourceFingerprint(truths);
+  // As the Reports screen works it out since HIGH item 1c: against the report it counts from (the saved period).
+  const fingerprint = buildDAVEReportSourceOnPeriod(truths, period, format).fingerprint;
   const briefing = buildDAVEReportBriefing({
     truths, selectedProjectNames: ['Alpha'], previousSnapshot: reportBaselineSnapshot(period, fingerprint),
     readAsEarlierVersionReport: reportReadAsEarlierVersionReport(period, fingerprint), scheduleItems: scope.scheduleItems,
   });
-  const cited = buildAutomaticReportDrawingReferences({ documents: [...scope.referenceDocuments], scheduleItems: [...scope.scheduleItems], selectedProjectNames: ['Alpha'] });
+  const cited = buildAutomaticReportDrawingReferences({ documents: referenceDocumentsCitedAsListed([...scope.referenceDocuments]), scheduleItems: [...scope.scheduleItems], selectedProjectNames: ['Alpha'] });
   const snapshot = buildDAVEReportSnapshot({
-    truths, scopeKey: SCOPE, sourceFingerprint: fingerprint, capturedAt: now, reportFormat: 'project_manager',
+    truths, scopeKey: SCOPE, sourceFingerprint: fingerprint, capturedAt: now, reportFormat: format,
     sourceReferences: cited.map(reference => ({ ...reference.citation, projectName: reference.projectName, areaName: reference.areaName })),
   });
-  // What is saved with an approval, without the fingerprint itself.
-  const saved = JSON.stringify({ ...snapshot, sourceFingerprint: null, supersedes: null });
-  return { truths, fingerprint, snapshot, report: `${written(briefing)}\n=====CITES\n${cited.map(reference => `${reference.areaName}: ${reference.citation.label}`).join('\n')}\n=====SAVED\n${saved}` };
+  // What is saved with an approval, without the fingerprint itself. HIGH item 1d (open item 7.55, the coordinator's
+  // decision: a fact is held where the report prints it): without what it saves of a task that no report prints, its
+  // start date and the key of what can be edited on it (which carries its contractor, next action, start and baseline).
+  // A later report reads them only to say "<task> was updated." of a task changed after the facts it counts from, which
+  // is true; holding them would offer the report again with no word changed.
+  const saved = JSON.stringify({
+    ...snapshot, sourceFingerprint: null, supersedes: null,
+    tasks: snapshot.tasks.map(task => { const { startDate: _start, contentKey: _key, ...kept } = task; return kept; }),
+  });
+  // The writer's own draft for this scope (the Reports screen's: no open update).
+  const draft = buildPIEReportDraft({
+    reportType: 'daily_project_update', selectedProjectNames: ['Alpha'], savedUpdates: [...scope.updates], scheduleItems: [...scope.scheduleItems],
+    currentUpdate: null, projectAreas: [], generatedAt: new Date(now),
+  } as never) as unknown as ReportOutputDraft;
+  const outputs = phoneOutputs({ briefing, draft, format, drawingReferences: cited, updates: scope.updates });
+  return { truths, fingerprint, snapshot, report: `${outputs}\n=====CITES\n${cited.map(reference => `${reference.areaName}: ${reference.citation.label}`).join('\n')}\n=====SAVED\n${saved}` };
 }
-function webPage(world: World, period: DAVEReportSnapshot | null, now: string) {
+function webPage(world: World, period: DAVEReportSnapshot | null, now: string, format: ReportOutputFormat = 'project_manager') {
   const snapshot = {
     projects: [{ id: 'project-alpha-id', name: 'Alpha' }], scheduleItems: shown(world), knownScheduleItems: world.items,
     // As the cloud keeps an update: the uploading device's own file path, and each photo's cloud path.
     projectUpdates: world.updates.map(update => ({ id: update.id, updateData: { ...update, photos: (update.photos ?? []).map(entry => ({ ...entry, uri: `file:///ipad/photos/${entry.id}.jpg`, cloudStoragePath: `Alpha/${update.id}/${entry.id}.jpg` })) } })),
-    referenceDocuments: world.documents, refreshedAt: now,
+    referenceDocuments: asListed(world.documents), refreshedAt: now,
   } as unknown as DAVEWebReadOnlySnapshot;
-  const fingerprint = buildDAVEReportSourceFingerprint(buildDAVEWebReportTruths(snapshot, 'Alpha'));
+  const fingerprint = buildDAVEReportSourceOnPeriod(buildDAVEWebReportTruths(snapshot, 'Alpha'), period, format).fingerprint;
   const briefing = buildDAVEWebReportDraft(snapshot, 'Alpha', {
     previousSnapshot: reportBaselineSnapshot(period, fingerprint), readAsEarlierVersionReport: reportReadAsEarlierVersionReport(period, fingerprint), waitingForOtherDevice: false,
   });
-  const cited = buildAutomaticReportDrawingReferences({ documents: [...snapshot.referenceDocuments], scheduleItems: [...snapshot.scheduleItems], selectedProjectNames: ['Alpha'] });
-  return { fingerprint, report: `${written(briefing)}\n=====CITES\n${cited.map(reference => `${reference.areaName}: ${reference.citation.label}`).join('\n')}` };
+  const cited = buildAutomaticReportDrawingReferences({ documents: referenceDocumentsCitedAsListed([...snapshot.referenceDocuments] as ReferenceDocument[]), scheduleItems: [...snapshot.scheduleItems], selectedProjectNames: ['Alpha'] });
+  const updates = snapshot.projectUpdates.map(record => record.updateData).filter(update => update.projectName === 'Alpha');
+  const outputs = desktopOutputs({ briefing, format, drawingReferences: cited, updates });
+  return { fingerprint, report: `${outputs}\n=====CITES\n${cited.map(reference => `${reference.areaName}: ${reference.citation.label}`).join('\n')}` };
 }
 
 // ---- the generator ----
@@ -402,21 +439,22 @@ const SEEDS = Math.max(1, Number(process.env.R8_SEEDS) || 5);
 const TIME_FOR_A_PROJECT = 240_000;
 const FIRST = Math.max(1, Number(process.env.R8_FIRST) || 1);
 
-describe('R8 item 4: whenever one change to an input moves the written report or what an approval saves, the fingerprint moves', () => {
+describe.each(FORMATS)('R8 item 4: whenever one change to an input moves any output of the report or what an approval saves, the fingerprint moves (%s)', format => {
   const tally = { projects: 0, tried: 0, movedTheReport: 0, movedOnlyTheFingerprint: 0, movedNothing: 0 };
   const byFamily = new Map<string, { tried: number; movedTheReport: number }>();
   const onlyTheFingerprint = new Map<string, number>();
   const falseMatches: string[] = [];
   const road230 = { tried: 0, stillTheSavedReport: 0 };
+  const savedOnly: string[] = [];
 
   it.each(Array.from({ length: SEEDS }, (_, index) => FIRST + index))('project %i', seed => {
     const { world, period, period230, now } = project(seed);
-    const before = { phone: phoneScreen(world, period, now), web: webPage(world, period, now) };
+    const before = { phone: phoneScreen(world, period, now, format), web: webPage(world, period, now, format) };
     // R9, the 1.0 road: today's report as Build 230 saved it, counted from a report this build sent, and from one Build 230 sent.
     const today230 = { ...before.phone.snapshot, sourceFingerprint: buildDAVELegacyReportSourceFingerprint(before.phone.truths) } as DAVEReportSnapshot;
     const savedOn230 = [period, period230].map(countedFrom => markReportSnapshotDelivered((reportSnapshotToSave(today230, countedFrom) ?? today230) as DAVEReportSnapshot, now, 'phone'));
     const before230 = savedOn230.map(saved => ({
-      phone: phoneScreen(world, saved, now).report, web: webPage(world, saved, now).report,
+      phone: phoneScreen(world, saved, now, format).report, web: webPage(world, saved, now, format).report,
       // Not where today's report counts other field updates than Build 230's did: no 1.0 name stands there (R7 item A).
       taken: sameReportSource(saved.sourceFingerprint, before.phone.fingerprint),
     }));
@@ -428,13 +466,18 @@ describe('R8 item 4: whenever one change to an input moves the written report or
     for (const [family, what, make] of CHANGES) {
       const changed = make(world, rand);
       if (!changed) continue;
-      const after = { phone: phoneScreen(changed, period, now), web: webPage(changed, period, now) };
+      const after = { phone: phoneScreen(changed, period, now, format), web: webPage(changed, period, now, format) };
       tally.tried += 1;
       const counts = byFamily.get(family) ?? { tried: 0, movedTheReport: 0 };
       counts.tried += 1;
       let reportMoved = false; let fingerprintMoved = false;
       for (const side of ['phone', 'web'] as const) {
-        const report = after[side].report !== before[side].report;
+        // HIGH item 1f: the Executive report holds what it prints (1d, accepted); what its approval saves of facts it prints
+        // nowhere (a task's earlier rows, a row he said it is not, a reworded old note, a lookahead's rows) is counted
+        // apart, as the final review counted it ("savedOnly"), not as a report moved.
+        const outputsOf = (value: string) => (format === 'executive' ? value.split('\n=====SAVED\n')[0] : value);
+        const report = outputsOf(after[side].report) !== outputsOf(before[side].report);
+        if (!report && after[side].report !== before[side].report && after[side].fingerprint === before[side].fingerprint) savedOnly.push(`project ${seed}, ${side}: ${family}: ${what}`);
         const fingerprint = after[side].fingerprint !== before[side].fingerprint;
         reportMoved = reportMoved || report; fingerprintMoved = fingerprintMoved || fingerprint;
         if (report && !fingerprint) {
@@ -445,7 +488,7 @@ describe('R8 item 4: whenever one change to an input moves the written report or
       }
       if (family === 'earlier rows') {
         savedOn230.forEach((saved, road) => (['phone', 'web'] as const).forEach(side => {
-          const is = (side === 'phone' ? phoneScreen : webPage)(changed, saved, now);
+          const is = (side === 'phone' ? phoneScreen : webPage)(changed, saved, now, format);
           road230.tried += 1;
           // Taken for the report Build 230 saved, before the change and after it (the 1.0 name does not hold the row):
           // then not a word may differ.
@@ -466,9 +509,9 @@ describe('R8 item 4: whenever one change to an input moves the written report or
 
   it('no change moved the report under one fingerprint, and every kind of input was put to the test', () => {
     if (process.env.R8_OUT) {
-      require('fs').writeFileSync(process.env.R8_OUT, JSON.stringify({
+      require('fs').writeFileSync(`${process.env.R8_OUT}`.replace(/\.json$/, `-${format}.json`), JSON.stringify({ format,
         ...tally, changesOfAKind: CHANGES.length, byFamily: Object.fromEntries(byFamily), road230,
-        movedOnlyTheFingerprint_byChange: Object.fromEntries([...onlyTheFingerprint].sort((left, right) => right[1] - left[1])), falseMatches,
+        movedOnlyTheFingerprint_byChange: Object.fromEntries([...onlyTheFingerprint].sort((left, right) => right[1] - left[1])), falseMatches, savedOnly,
       }, null, 1));
     }
     expect(falseMatches).toEqual([]);
@@ -476,7 +519,11 @@ describe('R8 item 4: whenever one change to an input moves the written report or
     // areas moved the report somewhere. (A work area decides nothing a report says, so the links worked out from
     // them stay out of the fingerprint, as R4 left them: the web does not have them.)
     expect([...byFamily.keys()].sort()).toEqual(['activity notes', 'approvals', 'areas', 'comparisons', 'documents', 'drawings', 'earlier rows', 'field updates', 'lookaheads', 'photos', 'tasks']);
-    expect([...byFamily].filter(([, counts]) => counts.movedTheReport === 0).map(([family]) => family)).toEqual(['areas']);
+    // Open item 7.17 (13 Oct 2026): a task that is back is read from how the last report that listed it had it, kept
+    // with the reports saved since; its hidden earlier rows are read only for a report counted from one saved before
+    // that record began. In this rig every report is saved with it, so a change to an earlier row moves no report
+    // (the fingerprint still holds them: such a change offers the report once more, the safe side). Moved deliberately.
+    expect([...byFamily].filter(([, counts]) => counts.movedTheReport === 0).map(([family]) => family).sort()).toEqual(['areas', 'earlier rows']);
     expect(tally.movedTheReport).toBeGreaterThan(tally.projects * 20);
     // R9: the 1.0 road was walked. R10 (the coordinator's decision on review pass 3, P3-2) closed it: no 1.0 name
     // stands, so today's report is never taken for one Build 230 saved and there is nothing on that road to move.
@@ -499,7 +546,12 @@ describe('R8 items 3 and 4: what today\'s fingerprint version holds that the ear
     ? (truth as unknown as Record<string, unknown>)[field] !== undefined
     : truth.schedule.some(task => (task as unknown as Record<string, unknown>)[field] !== undefined);
 
-  it('each of them moves today\'s version when it is taken away, and never the version an earlier build wrote', () => {
+  // HIGH item 1d (open item 7.55): the earlier rows are held where they print ("since the last report", counted from the
+  // report it counts from; R8 item 3's own test asks that rule), not as records: taking them away from a truth moves
+  // today's version only where a word moves. The others are records the Project Manager report's WORK AREAS section is
+  // written from, held as such.
+  const HELD_WHERE_PRINTED = ['earlierRows'];
+  it('each of them moves today\'s version when it is taken away (the earlier rows: where they print), and never the version an earlier build wrote', () => {
     const met = new Set<string>();
     for (let seed = 1; seed <= 14; seed += 1) {
       const { world, period, now } = project(seed);
@@ -509,7 +561,9 @@ describe('R8 items 3 and 4: what today\'s fingerprint version holds that the ear
       for (const field of [...ON_THE_TRUTH, ...ON_A_TASK]) {
         if (!holds(truth, field)) continue;
         met.add(field);
-        expect([field, buildDAVEReportSourceFingerprint([without(truth, field)]) === buildDAVEReportSourceFingerprint([truth])]).toEqual([field, false]);
+        if (!HELD_WHERE_PRINTED.includes(field)) {
+          expect([field, buildDAVEReportSourceFingerprint([without(truth, field)]) === buildDAVEReportSourceFingerprint([truth])]).toEqual([field, false]);
+        }
         const asBuilt = daveProjectTruthAsBuilt(truth);
         expect([field, buildDAVELegacyReportSourceFingerprint([without(asBuilt, field)])]).toEqual([field, buildDAVELegacyReportSourceFingerprint([asBuilt])]);
       }

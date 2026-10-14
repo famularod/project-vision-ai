@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type {
   StyleProp,
   ViewStyle,
@@ -20,6 +20,7 @@ import { ScreenCard } from '../components/layout/ScreenCard';
 import { ScreenHeader } from '../components/layout/ScreenHeader';
 import { ReportsWideWorkspace } from '../components/reports-workspace-layout';
 import { ReportMarkSentPanel } from '../components/report-mark-sent';
+import { ReportRecipientsPanel } from '../components/report-recipients';
 import { useAppShellLayout } from '../components/app-shell-layout';
 import {
   colors,
@@ -56,7 +57,7 @@ import type { PIEDecisionSyncMetadata } from '../services/PIEDecisionLedgerSync'
 import { buildDAVEReportProjectTruths } from '../services/DAVEReportProjectTruths';
 import {
   buildDAVEReportBriefing,
-  buildDAVEReportSourceFingerprint,
+  buildDAVEReportSourceOnPeriod,
   buildPMReportReviewWarnings,
   enhanceDAVEReportDraft,
   REPORT_PERIOD_WAITING_LINE,
@@ -66,9 +67,19 @@ import {
 import {
   buildDAVEReportSnapshot,
   daveReportSnapshotScopeKey,
+  type DAVEReportEditedText,
   type DAVEReportSnapshot,
+  reportSentText,
   sameReportSource,
+  withReportEditedText,
 } from '../services/DAVEReportSnapshot';
+import {
+  pickReportRecipient,
+  reportRecipientPickMessage,
+  withReportRecipient,
+  withReportRecipients,
+  type ReportRecipient,
+} from '../services/ReportRecipients';
 import {
   loadDAVEReportPeriod,
   loadDAVEReportSnapshot,
@@ -159,6 +170,7 @@ import {
 } from '../services/ReportDrawingReferences';
 
 import { useListedSharedDocuments } from '../hooks/use-listed-shared-documents';
+import { referenceDocumentsCitedAsListed, withoutListedPageIndexes } from '../services/ECOSDocumentIndexPersistence';
 
 const EMPTY_REVIEW_IDS: readonly string[] = Object.freeze([]);
 
@@ -205,8 +217,8 @@ export function ReportsScreen({
   onMilestoneReport,
   onSavedUpdates,
   onCopyReport,
-  onEmailReport,
-  onTextReport,
+  onEmailReport: emailReportFromTheApp,
+  onTextReport: textReportFromTheApp,
   onDownloadWordReport,
   onOutlookReport,
   onResolveDrawingPreview,
@@ -295,6 +307,8 @@ export function ReportsScreen({
   // The one place shared documents are handed to the report (owner answer Q44; review of D1, L10): an archived one
   // is not counted. With nothing archived this is the supplied list itself, and the report's fingerprint does not move.
   const referenceDocuments = useListedSharedDocuments(suppliedReferenceDocuments);
+  // High item 3 (c): a drawing piece is cited only from the drawing's index as the document list gave it.
+  const citedDocuments = useMemo(() => referenceDocumentsCitedAsListed(referenceDocuments || []), [referenceDocuments]);
   const { sizeClass } = useAppShellLayout();
   const [reportApproved, setReportApproved] = useState(false);
   const [reportEditing, setReportEditing] = useState(false);
@@ -324,6 +338,10 @@ export function ReportsScreen({
   const [approvalSavedHereCheckedKey, setApprovalSavedHereCheckedKey] = useState<string | null>(null);
   const [markSentRecording, setMarkSentRecording] = useState(false);
   const [markSentMessage, setMarkSentMessage] = useState('');
+  // Open item 7.21, part two: who Email Report and Text Report open with (chosen from his contacts; none: as before).
+  const [reportRecipients, setReportRecipients] = useState<ReportRecipient[]>([]);
+  const [recipientPicking, setRecipientPicking] = useState(false);
+  const [recipientMessage, setRecipientMessage] = useState('');
   const liveAuthority = usePIELiveAuthority();
   const runtime = liveAuthority.runtime;
   const reportGenerationAllowed = liveAuthority.policy.reportGenerationAllowed;
@@ -361,8 +379,11 @@ export function ReportsScreen({
     knownScheduleItems,
     knownScheduleDocuments,
     projectAreas,
-    referenceDocuments,
+    // High item 3: the documents are held as before (the 1.0 fingerprint does not move); the drawings are cited as listed.
+    referenceDocuments: referenceDocuments && withoutListedPageIndexes(referenceDocuments),
+    drawingDocuments: citedDocuments,
   }), [
+    citedDocuments,
     knownScheduleDocuments,
     knownScheduleItems,
     projectAreas,
@@ -371,9 +392,12 @@ export function ReportsScreen({
     selectedProjectNames,
     updates,
   ]);
+  // HIGH item 1c: worked out against the report this one counts from (the period's last report, as shared), where a
+  // task's saved time prints ("since the last report"); the same on every device that reads the same period. HIGH
+  // item 1d: of the report in its format, as that report prints it.
   const reportSourceFingerprint = useMemo(
-    () => buildDAVEReportSourceFingerprint(reportTruths),
-    [reportTruths],
+    () => buildDAVEReportSourceOnPeriod(reportTruths, snapshotScopeLoaded ? previousReportSnapshot : null, reportFormat).fingerprint,
+    [previousReportSnapshot, reportFormat, reportTruths, snapshotScopeLoaded],
   );
   const reportSnapshotScopeKey = useMemo(
     () => daveReportSnapshotScopeKey(selectedProjectNames),
@@ -384,11 +408,11 @@ export function ReportsScreen({
   // audience's report runs from the last report of that format it was sent.
   const currentReportPeriodKey = reportPeriodKey({ scopeKey: reportSnapshotScopeKey, reportFormat });
   const drawingReferences = useMemo(() => buildAutomaticReportDrawingReferences({
-    documents: referenceDocuments || [],
+    documents: citedDocuments,
     scheduleItems,
     selectedProjectNames,
   }), [
-    referenceDocuments,
+    citedDocuments,
     scheduleItems,
     selectedProjectNames,
   ]);
@@ -467,9 +491,18 @@ export function ReportsScreen({
     selectedProjectNames,
     updates,
   ]);
-  const pieReportDraft = useMemo(
+  const builtReportDraft = useMemo(
     () => enhanceDAVEReportDraft(baseReportDraft, reportBriefing, reportFormat),
     [baseReportDraft, reportBriefing, reportFormat],
+  );
+  // Open item 7.44 (review pass 9, E9-1): the report of these facts that was sent with his own words is shown
+  // with them, here after a restart and on the other device, not as the app writes it without his change.
+  const sentReportText = snapshotScopeLoaded ? reportSentText(previousReportSnapshot, reportSourceFingerprint) : null;
+  const pieReportDraft = useMemo<PIEReportDraft>(
+    () => sentReportText
+      ? { ...builtReportDraft, title: sentReportText.title, subject: sentReportText.title, body: sentReportText.body }
+      : builtReportDraft,
+    [builtReportDraft, sentReportText],
   );
   const effectiveReportDraft = useMemo<PIEReportDraft>(
     () => reportEdits
@@ -557,7 +590,9 @@ export function ReportsScreen({
     reportEditsPeriodIsCurrent &&
     !reportDeviceBehind &&
     snapshotScopeLoaded;
-  const reportApprovalMessage = !reportFactsAreCurrent
+  // HIGH item 1c: the report's fingerprint is worked out against the report it counts from, so a period that moved
+  // moves it too; where the period moved, that is the reason said (as before 1c), not "project facts changed".
+  const reportApprovalMessage = !reportFactsAreCurrent && reportEditsPeriodIsCurrent
       ? 'Project facts changed after you edited this report. Discard your edits to use the current report before approval.'
       : !snapshotScopeLoaded
         ? 'The reporting period is still loading.'
@@ -584,6 +619,10 @@ export function ReportsScreen({
   const reportApprovalAllowedRef = useRef(reportApprovalAllowed);
   const reportApprovedRef = useRef(reportApproved);
   const pendingCommunicationTokenRef = useRef<symbol | null>(null);
+  // The share whose composer or share sheet has opened (H2R-1): the one Stop Waiting can no longer call back.
+  const openedCommunicationTokenRef = useRef<symbol | null>(null);
+  // The shares he stopped with Stop Waiting (H2R-1): one stopped before it opened never opens.
+  const stoppedCommunicationTokensRef = useRef(new Set<symbol>());
   const mountedRef = useRef(true);
   reportIdentityRef.current = reportCommunicationIdentityKey;
   reportApprovalAllowedRef.current = reportApprovalAllowed;
@@ -804,7 +843,26 @@ export function ReportsScreen({
     setApprovalChecking(false);
     approvalCheckRef.current = null;
     pendingCommunicationTokenRef.current = null;
+    // Another report (projects, type or format): its own recipients.
+    setReportRecipients([]);
+    setRecipientMessage('');
   }, [reportStateIdentityKey]);
+
+  /** Add from Contacts: contacts access is asked for here and only here (open item 7.21, part two). */
+  const addReportRecipient = () => {
+    if (recipientPicking) return;
+    setRecipientPicking(true);
+    setRecipientMessage('');
+    void pickReportRecipient().then(pick => {
+      if (!mountedRef.current) return;
+      setRecipientPicking(false);
+      if (pick.status === 'picked') setReportRecipients(list => withReportRecipient(list, pick.recipient));
+      else setRecipientMessage(reportRecipientPickMessage(pick));
+    });
+  };
+  // Email Report and Text Report carry the people he chose (none: Mail and Messages open as before).
+  const onEmailReport = (report: PIEReportDraft) => emailReportFromTheApp(withReportRecipients(report, reportRecipients));
+  const onTextReport = (report: PIEReportDraft) => textReportFromTheApp(withReportRecipients(report, reportRecipients));
 
   const completeCommunication = (
     communicate: (report: PIEReportDraft) => Promise<ReportCommunicationOutcome>,
@@ -823,6 +881,8 @@ export function ReportsScreen({
 
     const startedReportIdentity = reportCommunicationIdentityKey;
     const startedReport = effectiveReportDraft;
+    // His words, if they are not the app's own for these facts: recorded with the send (7.44).
+    const startedText = reportEditedText(effectiveReportDraft, builtReportDraft);
     // The facts the approval was given on, so a change the report text does
     // not show (stage, checklist, next action) or a sync landing between
     // Approve and Share still records the approved report as sent (whole-app
@@ -857,15 +917,21 @@ export function ReportsScreen({
         // Word review copy is not a send.
         if (requireApproval) {
           const loaded = await loadDAVEReportPeriod(startedPeriod.scopeKey, startedPeriod.reportFormat).catch(() => null);
+          // Review pass 2 of the report fixes, H2R-1: he stopped waiting while this read was on its way (up to four
+          // seconds on a slow connection). The share he stopped never opens: it opened anyway, and a share he
+          // started at once after stopping opened too, two of one report. (A share whose screen moved to the other
+          // format or projects meanwhile still opens, as before: he did not stop it; its own period is marked.)
+          if (stoppedCommunicationTokensRef.current.has(communicationToken)) return;
           if (loaded && showLaterSharedPeriod(startedPeriod, loaded, sinceSentAt, 'send')) return;
           if (!mountedRef.current) return;
         }
+        openedCommunicationTokenRef.current = communicationToken;
         const outcome = await communicate(startedReport);
         // The report that went out is the one that started, whatever the
         // screen shows by now (a sync can land while the composer is open);
         // its own fingerprint and format's period scope the mark (audit A6
         // pass 3; owner answer Q17).
-        if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod, startedStateKey);
+        if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod, startedStateKey, startedText);
         if (
           mountedRef.current &&
           pendingCommunicationTokenRef.current === communicationToken &&
@@ -894,6 +960,22 @@ export function ReportsScreen({
         }
       }
     })();
+  };
+
+  /**
+   * Open item 7.21: a share that never comes back (a share sheet or composer that stalled) held Reports in
+   * "Waiting for the selected share action to finish." with every send button off until he left the screen. He
+   * can stop waiting. Nothing is recorded by stopping: a share that finishes later is still recorded as sent (it
+   * went out); one that never does is not, and Mark as Sent records a report he sent another way.
+   */
+  const stopWaitingForShare = () => {
+    const stopped = pendingCommunicationTokenRef.current;
+    if (!stopped) return;
+    stoppedCommunicationTokensRef.current.add(stopped);
+    pendingCommunicationTokenRef.current = null;
+    setCommunicationPending(false);
+    // H2R-1: stopped before its composer or share sheet opened, the share never opens (see completeCommunication).
+    setCommunicationError(openedCommunicationTokenRef.current === stopped ? STOPPED_WAITING_FOR_SHARE : STOPPED_BEFORE_THE_SHARE_OPENED);
   };
 
   const markReportApproved = () => {
@@ -975,8 +1057,10 @@ export function ReportsScreen({
     // Approving the same content again saves nothing; otherwise the saved
     // snapshot, not yet sent, remembers the report the owner has, so this
     // report is never compared against itself or against an approval that
-    // never went out (audit A6).
-    const snapshotToSave = reportSnapshotToSave(currentReportSnapshot, previousReportSnapshot);
+    // never went out (audit A6). Open item 7.44: it keeps his words when he
+    // changed the report, so a send recorded later (Mark as Sent) has them.
+    const approvedText = reportEditedText(effectiveReportDraft, builtReportDraft);
+    const snapshotToSave = reportSnapshotToSave(withReportEditedText(currentReportSnapshot, approvedText), previousReportSnapshot);
     if (!snapshotToSave) {
       // Review N2 (5 Oct 2026): the same report is already the approval waiting in the shared period, saved by
       // the other device, and this device holds no copy of it. Approved on the iPad and emailed (Mail said
@@ -985,16 +1069,28 @@ export function ReportsScreen({
       // Mark as Sent. Reading the other device's approval without approving still offers nothing (everyday item 1).
       const waiting = approvalAwaitingSend;
       const waitingKey = approvalAwaitingSendKey;
-      if (!waiting || !waitingKey || approvalSavedHereKey === waitingKey) return;
+      if (!waiting || !waitingKey) return;
+      // 7.44: approved again with other words (edited, or edits discarded), the approval waiting keeps the words
+      // approved now.
+      const toKeep = sameReportSource(waiting.sourceFingerprint, reportSourceFingerprint)
+        ? withReportEditedText(waiting, approvedText)
+        : waiting;
+      if (approvalSavedHereKey === waitingKey && toKeep === waiting) return;
       // A send can complete before this lands, as below: the delivered mark waits for it, and is never held up
       // by its failing (the send is then recorded as it was before, from the approval on screen).
-      const kept = reportApprovalSavedHere(waiting)
-        .then(here => (here ? undefined : saveDAVEReportSnapshot(waiting)))
+      const kept = (toKeep !== waiting
+        ? saveDAVEReportSnapshot(toKeep)
+        : reportApprovalSavedHere(waiting).then(here => (here ? undefined : saveDAVEReportSnapshot(waiting))))
         .then(() => {
-          if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(waiting)) setApprovalSavedHereKey(waitingKey);
+          if (!mountedRef.current || reportPeriodKeyRef.current !== reportPeriodKey(waiting)) return;
+          if (toKeep !== waiting) {
+            previousReportSnapshotRef.current = toKeep;
+            setPreviousReportSnapshot(toKeep);
+          }
+          setApprovalSavedHereKey(waitingKey);
         })
         .catch(() => undefined);
-      pendingReportSnapshotSaveRef.current = { snapshot: waiting, save: kept };
+      pendingReportSnapshotSaveRef.current = { snapshot: toKeep, save: kept };
       void kept.finally(() => {
         if (pendingReportSnapshotSaveRef.current?.save === kept) pendingReportSnapshotSaveRef.current = null;
       });
@@ -1052,28 +1148,30 @@ export function ReportsScreen({
     sentFingerprint: string,
     sentPeriod: Readonly<{ scopeKey: string; reportFormat: ReportFormat }>,
     sentStateKey: string,
+    sentText: DAVEReportEditedText | null,
   ) => {
     const sentPeriodKey = reportPeriodKey(sentPeriod);
     const pending = pendingReportSnapshotSaveRef.current;
     if (pending && sameReportSource(pending.snapshot.sourceFingerprint, sentFingerprint) && reportPeriodKey(pending.snapshot) === sentPeriodKey) {
-      void pending.save.then(() => markSavedReportDelivered(pending.snapshot, sentFingerprint, sentStateKey), () => undefined);
+      void pending.save.then(() => markSavedReportDelivered(pending.snapshot, sentFingerprint, sentStateKey, undefined, null, sentText), () => undefined);
       return;
     }
     const shown = previousReportSnapshotRef.current;
     if (shown && reportPeriodKey(shown) === sentPeriodKey) {
-      void markSavedReportDelivered(shown, sentFingerprint, sentStateKey);
+      void markSavedReportDelivered(shown, sentFingerprint, sentStateKey, undefined, null, sentText);
       return;
     }
     // The screen moved to the other format (or other projects) while the send
     // was open. Both formats of the same projects share a fingerprint, so the
     // shown snapshot is never marked for it; the sent period's own is (Q17).
     void loadDAVEReportSnapshot(sentPeriod.scopeKey, sentPeriod.reportFormat)
-      .then(saved => markSavedReportDelivered(saved, sentFingerprint, sentStateKey), () => undefined);
+      .then(saved => markSavedReportDelivered(saved, sentFingerprint, sentStateKey, undefined, null, sentText), () => undefined);
   };
   /**
    * Records `saved` as sent: at `deliveredAt` (now for a send from the app),
    * with `markedSentAt` when the owner recorded it afterwards (everyday item
-   * 1). Resolves true once this device's copy is saved.
+   * 1), and with `sentText`, his words when he changed the report (7.44).
+   * Resolves true once this device's copy is saved.
    */
   const markSavedReportDelivered = (
     saved: DAVEReportSnapshot | null,
@@ -1081,6 +1179,7 @@ export function ReportsScreen({
     sentStateKey: string,
     deliveredAt: string = new Date().toISOString(),
     markedSentAt: string | null = null,
+    sentText: DAVEReportEditedText | null = null,
   ): Promise<boolean> => {
     if (!saved || !sameReportSource(saved.sourceFingerprint, sentFingerprint) || saved.deliveredAt !== null) return Promise.resolve(false);
     // This device's send, kept for the app session so reading it back after
@@ -1095,7 +1194,7 @@ export function ReportsScreen({
     return reportSenderId()
       .catch(() => null)
       .then(sentBy => {
-        const delivered = markReportSnapshotDelivered(saved, deliveredAt, sentBy, markedSentAt);
+        const delivered = markReportSnapshotDelivered(saved, deliveredAt, sentBy, markedSentAt, sentText);
         return saveDAVEReportSnapshot(delivered).then(() => {
           if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(delivered)) {
             previousReportSnapshotRef.current = delivered;
@@ -1176,6 +1275,8 @@ export function ReportsScreen({
           approvalStateKey,
           recorded.sentAt,
           manualReportMarkTime(recorded.sentAt),
+          // Sent another way: the words of the approval he sent (7.44).
+          approval.editedText ?? null,
         );
         if (!mountedRef.current) return;
         if (saved) {
@@ -1191,7 +1292,7 @@ export function ReportsScreen({
   const reportHeader = (
     <ScreenHeader
       title="Reports"
-      subtitle={`${selectedProjectNames.join(', ')} · Current task status, recent field updates, and next steps.`}
+      subtitle={`${[...selectedProjectNames].sort((left, right) => reportProjectKey(left).localeCompare(reportProjectKey(right))).join(', ')} · Current task status, recent field updates, and next steps.`}
     />
   );
   const preparedReport = (
@@ -1243,6 +1344,7 @@ export function ReportsScreen({
             periodNotice={shownPeriodNotice}
             periodNote={sharedPeriodNote}
             communicationPending={communicationPending}
+            onStopWaiting={stopWaitingForShare}
             communicationError={[snapshotSaveError, communicationError].filter(Boolean).join(' ')}
             reportEditing={reportEditing}
             drawingReferences={drawingReferences}
@@ -1297,6 +1399,16 @@ export function ReportsScreen({
             onTextReport={() => {
               completeCommunication(onTextReport);
             }}
+            recipientsPanel={(
+              <ReportRecipientsPanel
+                recipients={reportRecipients}
+                picking={recipientPicking}
+                message={recipientMessage}
+                disabled={communicationPending}
+                onAdd={addReportRecipient}
+                onRemove={key => setReportRecipients(list => list.filter(item => item.key !== key))}
+              />
+            )}
             onDownloadWordReport={() => {
               // A review copy before approval is titled as one (audit A6).
               completeCommunication(report =>
@@ -1499,6 +1611,12 @@ type SharedPeriodMoment = 'refresh' | 'approve' | 'send' | 'mark';
 
 const ALREADY_SENT_NOTICE_START = 'Your other device already sent this report';
 
+/** Said when he stops waiting for a share that has not come back (open item 7.21). */
+const STOPPED_WAITING_FOR_SHARE = 'Stopped waiting. If that share finishes later, the report is still recorded as sent. ' +
+  'If you sent it another way, use Mark as Sent.';
+/** Said when he stops a share that had not opened yet: it never will (review pass 2 of the report fixes, H2R-1). */
+const STOPPED_BEFORE_THE_SHARE_OPENED = 'Stopped. That share had not opened yet, so nothing was sent. Share again when you are ready.';
+
 /**
  * Approval waits for this device to catch up with the other device's changes
  * (whole-app audit A6 pass 9 M2), and says why (pass 10 L2): the other
@@ -1509,6 +1627,17 @@ function reportDeviceBehindMessage(send: DAVEReportSnapshot): string {
   return "This device hasn't received your other device's latest changes yet: your other device sent the last report " +
     `${describeReportSendTime(send.deliveredAt as string)}, after this device last downloaded your tasks. ` +
     'Use Settings › Sync Now, then review.';
+}
+
+/**
+ * Open item 7.44: the title and text of `report` when they are not the app's own report for these facts (`built`):
+ * the owner changed them (Edit Report), or the report shown is one sent with his words. Null when they are the app's.
+ */
+function reportEditedText(
+  report: Pick<PIEReportDraft, 'title' | 'body'>,
+  built: Pick<PIEReportDraft, 'title' | 'body'>,
+): DAVEReportEditedText | null {
+  return report.title === built.title && report.body === built.body ? null : { title: report.title, body: report.body };
 }
 
 /** The later of two times, either possibly absent. */
@@ -1592,6 +1721,7 @@ function PIEReporterPreview({
   periodNotice,
   periodNote,
   communicationPending,
+  onStopWaiting,
   communicationError,
   reportEditing,
   drawingReferences,
@@ -1609,6 +1739,7 @@ function PIEReporterPreview({
   onDownloadWordReport,
   onOutlookReport,
   markSent,
+  recipientsPanel,
 }: {
   reportDraft: PIEReportDraft;
   hasManualEdits: boolean;
@@ -1631,6 +1762,8 @@ function PIEReporterPreview({
   /** The other device's last report could not be checked (A6 pass 7). */
   periodNote: string;
   communicationPending: boolean;
+  /** Stops waiting for a share that has not come back (open item 7.21). */
+  onStopWaiting: () => void;
   communicationError: string;
   reportEditing: boolean;
   drawingReferences: readonly ReportDrawingReference[];
@@ -1656,6 +1789,8 @@ function PIEReporterPreview({
     message: string;
     onRecord: (choice: 'now' | Date) => void;
   }> | null;
+  /** Who Email Report and Text Report open with (open item 7.21, part two). */
+  recipientsPanel?: ReactNode;
 }) {
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -1909,6 +2044,7 @@ function PIEReporterPreview({
           <ReportShareButton icon="mail-outline" label="Email Report" onPress={onEmailReport} disabled={communicationPending} />
           <ReportShareButton icon="chatbubble-outline" label="Text Report" onPress={onTextReport} disabled={communicationPending} />
           <ReportShareButton icon="briefcase-outline" label="Email from Outlook (work)" onPress={onOutlookReport} disabled={communicationPending} />
+          {recipientsPanel}
         </View>
       ) : null}
 
@@ -1943,7 +2079,12 @@ function PIEReporterPreview({
       ) : null}
 
       {communicationPending ? (
-        <Text style={styles.approvalBoundaryText}>Waiting for the selected share action to finish.</Text>
+        <View>
+          <Text style={styles.approvalBoundaryText}>Waiting for the selected share action to finish.</Text>
+          <TouchableOpacity onPress={onStopWaiting} accessibilityRole="button" accessibilityLabel="Stop Waiting">
+            <Text style={styles.reportActionText}>Stop Waiting</Text>
+          </TouchableOpacity>
+        </View>
       ) : null}
 
       {communicationError ? (

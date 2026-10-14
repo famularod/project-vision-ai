@@ -39,7 +39,90 @@ export type SharedDocumentActivationOutcome =
   | Readonly<{ status: 'activated'; documents: readonly ReferenceDocument[] | null }>
   | Readonly<{ status: 'refresh_required' }>
   | Readonly<{ status: 'cancelled' }>
-  | Readonly<{ status: 'not_prepared' | 'failed'; message: string }>;
+  | Readonly<{ status: 'not_prepared' | 'failed'; message: string }>
+  /** A schedule the cloud has never had: this device's copy has not finished uploading (open item 3.1). */
+  | Readonly<{ status: 'not_uploaded'; message: string }>;
+
+/**
+ * Open item 3.1 (13 Oct 2026; the A5 / A8 recorded Medium). Just after an import, a schedule this device has not
+ * finished uploading was refused with "Refresh required ... Sign in and refresh the project documents": not true, and
+ * no refresh helps. It is made current only by the cloud, so on every device or on none: it says so.
+ */
+export const SCHEDULE_NOT_UPLOADED_YET =
+  'This schedule has not finished uploading, so your other devices do not have it yet. Nothing was changed on any device. It uploads by itself when this device has signal (Sync Now sends it at once); then try again.';
+
+/**
+ * Review pass 5's H5S-1 (14 Oct 2026, Low, caused by 3.1): with no cloud stamp here, a schedule the cloud has was made
+ * current by the cloud's own revision; a note typed on its card just before was then outranked by the activation's
+ * stamp and never reached the other devices (the protection for text typed before Make Current needs the stamp this
+ * device last saw). Such a schedule is made current only while what this device holds for it reads as the cloud's
+ * copy does; otherwise this.
+ */
+export const SCHEDULE_DETAILS_NOT_HEARD_BACK =
+  'This device has not yet heard back from the cloud about this schedule, and its details here (such as a note just typed) differ from the cloud’s copy. Nothing was changed on any device, and nothing you typed was lost. Try again in a moment.';
+
+/** The details a person types or picks on a document's card. */
+const PERSON_DETAIL_KEYS = ['name', 'notes', 'category', 'drawingNumber', 'drawingRevision', 'drawingDiscipline', 'drawingIssuedAt', 'drawingStatus'] as const;
+
+/** Those details, as text, for comparing two copies of one document. */
+function personDetails(document: ReferenceDocument): string {
+  const record = document as unknown as Record<string, unknown>;
+  const text = (name: string) => (typeof record[name] === 'string' ? (record[name] as string).trim() : '');
+  return JSON.stringify(PERSON_DETAIL_KEYS.map(text));
+}
+
+/** A document's revision as the recovery merge ranks it (DAVECloudRecovery): its own stamp, else the cloud's, else its import. */
+function revisionOf(document: ReferenceDocument): number {
+  for (const value of [document.updatedAt, document.cloudUpdatedAt, document.importedAt]) {
+    const parsed = new Date(value || '').getTime();
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+/**
+ * The details a person types or picks that differ between two copies of one document (`after`'s values): what one
+ * edit of his changed. The card's text sync records them as this device's own (noteOwnEdit; S1e).
+ */
+export function personDetailsChanged(before: ReferenceDocument, after: ReferenceDocument): Record<string, unknown> {
+  const text = (document: ReferenceDocument, name: string) => {
+    const value = (document as unknown as Record<string, unknown>)[name];
+    return typeof value === 'string' ? value.trim() : '';
+  };
+  return Object.fromEntries(PERSON_DETAIL_KEYS.filter(name => text(before, name) !== text(after, name))
+    .map(name => [name, (after as unknown as Record<string, unknown>)[name]]));
+}
+
+/**
+ * Review pass 6's H6S-2 (14 Oct 2026, Low): a note typed on a document's card WHILE Make Current was on its way (after
+ * the press read the cloud, before the cloud answered) stayed on this phone's card only: the activation's answer
+ * outranked the copy typed meanwhile, the press left the shared copy with the old note, and the upload that followed
+ * sent nothing (with no cloud stamp here: caused by 3.1; with the pause in typing after the press: older).
+ * The documents the press leaves on this device (`merged`, the cloud's answer merged in), with what THIS device typed
+ * on any of them during the press (`ownEdits`: document id to the details its card text sync recorded as its own
+ * since the press began) put back, stamped just after the cloud's copy so they outrank it here and on the other
+ * devices; the cloud's current flags stay. `carried` are the ones to send.
+ * The final review's F2 (14 Oct 2026, Low, caused by S1d): S1d took any card whose words changed on this device during
+ * the press as typed here, words received from another device included, and sent another device's OLDER words as the
+ * newest. Only this device's own edits are put back now; a card it did not type on is left as the cloud has it.
+ */
+export function withDetailsTypedDuringActivation<T extends ReferenceDocument>(
+  merged: readonly T[],
+  ownEdits: ReadonlyMap<string, Readonly<Record<string, unknown>>>,
+  now = Date.now(),
+): Readonly<{ documents: T[]; carried: T[] }> {
+  const carried: T[] = [];
+  const documents = merged.map(document => {
+    const mine = ownEdits.get(document.id);
+    if (!mine) return document;
+    const changed = personDetailsChanged(document, { ...document, ...mine } as T);
+    if (Object.keys(changed).length === 0) return document;
+    const next = { ...document, ...changed, updatedAt: new Date(Math.max(now, revisionOf(document) + 1)).toISOString() } as T;
+    carried.push(next);
+    return next;
+  });
+  return { documents, carried };
+}
 
 /** What making a schedule current does to another project's schedule. */
 export type ScheduleRetirementEffect = Readonly<{
@@ -79,7 +162,9 @@ export async function activateSharedReferenceDocument({
   loadRetirementScope?: (client: SupabaseClient) => Promise<ScheduleRetirementScope | null>;
 }>): Promise<SharedDocumentActivationOutcome> {
   const target = documents.find(document => document.id === documentId);
-  if (!client || !target?.cloudUpdatedAt) return { status: 'refresh_required' };
+  // A schedule this device never heard back about is looked for in the cloud below (open item 3.1).
+  if (!client || !target || (!target.cloudUpdatedAt && !isScheduleDocument(target))) return { status: 'refresh_required' };
+  let expectedUpdatedAt = target.cloudUpdatedAt || '';
 
   // What the owner is told comes from the cloud's own current flags. The
   // phone shows one current schedule per project, so an older schedule the
@@ -99,7 +184,15 @@ export async function activateSharedReferenceDocument({
     }
     scope = knownScope;
     const cloudTarget = cloud.find(document => document.id === documentId);
-    if (!cloudTarget) return { status: 'refresh_required' };
+    // Never in the cloud: still uploading from this device (3.1). Once there and gone since: a refresh shows why.
+    if (!cloudTarget) return target.cloudUpdatedAt ? { status: 'refresh_required' } : { status: 'not_uploaded', message: SCHEDULE_NOT_UPLOADED_YET };
+    // Uploaded since this device last heard: made current by the cloud's own revision (3.1), only while nothing typed
+    // here since is missing from the cloud's copy (H5S-1: the activation's stamp would outrank it).
+    if (!target.cloudUpdatedAt && personDetails(target) !== personDetails(cloudTarget)) {
+      return { status: 'not_uploaded', message: SCHEDULE_DETAILS_NOT_HEARD_BACK };
+    }
+    expectedUpdatedAt ||= cloudTarget.cloudUpdatedAt || '';
+    if (!expectedUpdatedAt) return { status: 'refresh_required' };
     retiring = scheduleActivationEffects(cloudTarget, cloud, scope);
   }
   if (retiring.length > 0 && !(await confirmRetiringProjects(retiring))) {
@@ -109,7 +202,7 @@ export async function activateSharedReferenceDocument({
   let activation = await activate({
     client,
     documentId,
-    expectedUpdatedAt: target.cloudUpdatedAt,
+    expectedUpdatedAt,
   });
   if (activation.status === 'conflict') {
     // The record changed first (often this phone's own queued upload). Try
@@ -296,6 +389,28 @@ export function phoneScheduleActivationTarget(
     importedAt: document.importedAt,
     projectName,
   };
+}
+
+/**
+ * Open item 3.1 (13 Oct 2026; the A5 / A8 recorded Medium). Make Current on a phone schedule card with no shared copy
+ * (never shared, or its file still uploading) made a shared record current on this phone only and marked the others
+ * not current here alone; the cloud kept its own flags, so the other devices never changed, and the card's own upload
+ * finishing then linked it to a second copy that was not current. It is now made current only by the cloud. Such a
+ * card is not made current: an uploaded card never shared is shared first (`share`), and the line says what to do.
+ */
+export function phoneScheduleCardNotSharedYet(
+  card: Readonly<{ status?: string | null; storagePath?: string | null; referenceDocumentId?: string | null }>,
+): Readonly<{ share: boolean; message: string }> {
+  if (card.status === 'failed') {
+    return { share: false, message: 'This schedule did not finish uploading from this device, so your other devices do not have it. Nothing was changed on any device. Tap Retry on its card; once it has uploaded, use Make Current again.' };
+  }
+  if (card.status !== 'uploaded' || !card.storagePath?.trim()) {
+    return { share: false, message: 'This schedule has not finished uploading from this device, so your other devices do not have it yet. Nothing was changed on any device. Once it has uploaded, use Make Current again.' };
+  }
+  if (card.referenceDocumentId?.trim()) {
+    return { share: false, message: 'This schedule’s shared copy is no longer on this device, so it cannot be made current on your other devices. Nothing was changed on any device. Add the file again to share it.' };
+  }
+  return { share: true, message: 'This schedule was not yet shared with your other devices. It is being shared now; nothing was changed on any device. Once it has uploaded, use Make Current again (Sync Now sends it at once when you have signal).' };
 }
 
 /**

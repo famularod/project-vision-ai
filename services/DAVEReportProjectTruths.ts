@@ -8,6 +8,9 @@ import { buildDAVEProjectTruth, daveProjectTruthInStableOrder, type DAVEProjectT
 import type { ProjectRecord } from './ProjectCoverPhotoService';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
 import { buildAutomaticReportDrawingReferences } from './ReportDrawingReferences';
+import { buildWrittenReportFacts } from './ReportWrittenFacts';
+import { reportTaskConfirmedAt } from './DAVEReportIntelligence';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type DAVEReportProjectTruthsInput = {
   /** The report's projects in the order shown, each with the id its Project Truth carries. */
@@ -121,18 +124,40 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
     // R8 item 2 (the coordinator's decision on review pass 2, P2-2): the drawings the report cites for this
     // project's work areas, worked out as the Reports screen and the Word report work them out, so that the
     // fingerprint holds exactly what the report prints and saves of a drawing.
-    const drawingCitations = buildAutomaticReportDrawingReferences({
+    const drawingReferences = buildAutomaticReportDrawingReferences({
       documents: [...(input.drawingDocuments ?? input.referenceDocuments ?? [])],
       scheduleItems: [...input.scheduleItems],
       selectedProjectNames: [project.name],
-    }).map(reference => ({ ...reference.citation, projectName: reference.projectName, areaName: reference.areaName }));
+    });
+    const drawingCitations = drawingReferences.map(reference => ({ ...reference.citation, projectName: reference.projectName, areaName: reference.areaName }));
     // As the build before built it, where that differs: it scoped the updates without the saved tasks, and (R7 item
     // C) was handed the tasks as `asBuiltBefore` has them.
     const before = input.asBuiltBefore;
     const builtBefore = before
       ? truthOf(buildDailyReportAuthorityScope({ ...scopeInput, scheduleItems: before.scheduleItems }), before.knownScheduleItems ?? known)
       : sameUpdates ? truth : truthOf(scopeAsBefore);
+    // HIGH item 1 (F2 to F6b): what the phone's written report prints of this project's own updates and tasks that
+    // the truth does not hold, read by the writer's own rules at the truth's own moment, so that the fingerprint
+    // holds it on the phone and on the desktop alike.
+    const writtenReportFacts = {
+      ...buildWrittenReportFacts({
+        projectName: project.name,
+        updates: scope.updates,
+        scheduleItems: scope.scheduleItems,
+        now: truth.generatedAt,
+      }),
+      // HIGH item 1f: what decides each drawing excerpt's picture beside its citation (held above): the part of the page.
+      wordDrawings: drawingReferences.map(reference => ({
+        referenceId: reference.id,
+        pageNumber: reference.excerpt.pageNumber,
+        region: { x: reference.excerpt.region.x, y: reference.excerpt.region.y, width: reference.excerpt.region.width, height: reference.excerpt.region.height },
+      })),
+    };
+    // HIGH item 1c: when each completed task's progress was confirmed, as Completed Work reads it from these tasks.
+    const completedWorkConfirmedAt = Object.fromEntries(scope.scheduleItems
+      .filter(item => scheduleProgressIsComplete(item))
+      .map(item => [item.id, reportTaskConfirmedAt(item)]));
     // In a stable order, so a sync that only reorders the saved rows changes nothing a report says (R4 item 4a).
-    return daveProjectTruthInStableOrder(truth, builtBefore, !sameUpdates, drawingCitations);
+    return daveProjectTruthInStableOrder(truth, builtBefore, !sameUpdates, drawingCitations, writtenReportFacts, completedWorkConfirmedAt);
   });
 }

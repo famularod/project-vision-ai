@@ -12,6 +12,7 @@ import {
   scheduleDocumentsAfterActivation,
   scheduleRetirementMessage,
   scheduleTasksHiddenByActivation,
+  withDetailsTypedDuringActivation,
 } from '../../services/SharedDocumentActivation';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 
@@ -88,13 +89,14 @@ describe('a newer lookahead no longer strands the combined master (A5 pass 4 #2)
       activateSharedReferenceDocument: (input: Parameters<typeof activateSharedReferenceDocument>[0]) => activateSharedReferenceDocument({ ...input, activate }),
       scheduleRetirementMessage, scheduleDocumentIsCurrentEverywhere,
       getSupabaseClient: () => ({ rpc: jest.fn(async () => ({ data: 'project', error: null })) }) as unknown as SupabaseClient,
-      projectDocumentSharedRecordSync: { flush: () => false },
+      projectDocumentSharedRecordSync: { flush: () => false, ownEditsSince: () => new Map() }, // S1e (14 Oct, the final review's F2): what this device typed itself during the press (nothing here)
       listReferenceDocuments: jest.fn().mockResolvedValueOnce({ ok: true, stubbed: false, data: documents })
         .mockResolvedValue({ ok: true, stubbed: false, data: cloudAfter }),
       normalizeReferenceDocuments: (rows: unknown) => rows,
       deletedDAVERecordIds: () => [], operationalSyncTombstonesRef: { current: [] },
       mergeDAVEReferenceDocumentRecoveryRecords: ({ cloud }: { cloud: ReferenceDocument[] }) => cloud,
       reconcileCurrentScheduleDocuments: (next: ReferenceDocument[]) => next,
+      withDetailsTypedDuringActivation, // S1d (14 Oct, review pass 6's H6S-2): text typed on a card during the press is put back after it
       markReferenceDocumentsAuthorityReady: jest.fn(), setReferenceDocuments: jest.fn(),
       scheduleProgressCarriedOnActivation: () => [], scheduleItemsCurrentRef: { current: items },
       // Audit A8 pass 3 M2 (landed alongside): no typed text is waiting here.

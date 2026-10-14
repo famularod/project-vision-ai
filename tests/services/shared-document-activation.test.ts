@@ -14,6 +14,7 @@ import {
   scheduleRetirementMessage,
   scheduleTasksHiddenByActivation,
   scheduleTasksHiddenWarning,
+  SCHEDULE_NOT_UPLOADED_YET,
 } from '../../services/SharedDocumentActivation';
 
 // Owner answer Q15 (30 Sep 2026): the phone asks the cloud how it retires
@@ -91,13 +92,16 @@ describe('making a shared document current (audit A5 F4)', () => {
     });
   });
 
+  // CHANGED by open item 3.1 (13 Oct 2026): a schedule this phone never heard back about was refused "Refresh
+  // required" (sign in and refresh), also when the cloud had it and when it was still uploading. Now the cloud is
+  // asked: not there, it has not finished uploading (its own line); there, it is made current by the cloud's revision.
   it('needs a record the cloud already has, and a signed-in client', async () => {
     const activate = jest.fn(async () => activated('alpha-new'));
     const base = { documentId: 'alpha-new', activate, listDocuments: async () => documents, confirmRetiringProjects: async () => true };
     await expect(activateSharedReferenceDocument({ ...base, client: null, documents }))
       .resolves.toEqual({ status: 'refresh_required' });
-    await expect(activateSharedReferenceDocument({ ...base, client, documents: [combined, { ...alphaNew, cloudUpdatedAt: null }] }))
-      .resolves.toEqual({ status: 'refresh_required' });
+    await expect(activateSharedReferenceDocument({ ...base, client, documents: [combined, { ...alphaNew, cloudUpdatedAt: null }], listDocuments: async () => [combined] }))
+      .resolves.toEqual({ status: 'not_uploaded', message: SCHEDULE_NOT_UPLOADED_YET });
     expect(activate).not.toHaveBeenCalled();
   });
 

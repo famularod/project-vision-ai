@@ -115,7 +115,11 @@ describe('ECOS document index persistence', () => {
       x: 0.12346,
       confidence: 0.9877,
     });
-    expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(document).length);
+    // High item 3 (b2): a drawing's row also carries its citation slice under its own key, which holds no text.
+    const { citationPageIndex, ...row } = compact;
+    expect(JSON.stringify(row).length).toBeLessThan(JSON.stringify(document).length);
+    expect(citationPageIndex?.pages?.[0].regions?.[0]).toEqual({ id: 'line-1', label: null, areaNames: ['North Lot'], confidence: 0.9877, x: 0.12346, y: 0.2, width: 0.4, height: 0.05 });
+    expect(JSON.stringify(citationPageIndex)).not.toContain(text);
   });
 
   it('keeps page text when no trustworthy coordinates are available', () => {

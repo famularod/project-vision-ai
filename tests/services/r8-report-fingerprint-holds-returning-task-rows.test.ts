@@ -13,10 +13,17 @@
  * 2.0 of the fingerprint. A change to any value they read makes it another
  * report, which is offered once.
  *
+ * HIGH item 1d (open item 7.55, the coordinator's decision): the hidden row is held where it prints, in the
+ * returning-task sentences ("since the last report"), as the report counts them. Since open item 7.17 (M2) those
+ * sentences read how report 1 listed the task, kept with the reports, not the hidden row: on reports saved on this
+ * build a change to the row moves no word, and no longer offers the report again with none changed. Each case below
+ * now asks the rule itself: the report is another report exactly where its words, written as report 4 was (counted
+ * from report 3), differ. The value is worked out as the screens work it out (against the report it counts from).
+ *
  * The real CSV reader (with Unique IDs), import merge, shown list, the one
  * report recipe and the report's comparison. Synthetic data.
  */
-import { buildDAVELegacyReportSourceFingerprint, buildDAVEReportBriefing, buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
+import { buildDAVELegacyReportSourceFingerprint, buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, buildDAVEReportSourceOnPeriod } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
 import {
   buildDAVEReportSnapshot, daveReportSnapshotScopeKey, markReportSnapshotDelivered, reportBaselineSnapshot, reportSnapshotToSave, type DAVEReportSnapshot,
@@ -74,7 +81,8 @@ const truthsOf = (state: State, at: string) => buildDAVEReportProjectTruths({
 /** The Reports screen for this saved data and saved period. */
 function report(state: State, saved: DAVEReportSnapshot | null, at: string) {
   const truths = truthsOf(state, at);
-  const fingerprint = buildDAVEReportSourceFingerprint(truths);
+  // As the Reports screen works it out since HIGH item 1c: against the report it counts from (the saved period).
+  const fingerprint = buildDAVEReportSourceOnPeriod(truths, saved).fingerprint;
   const briefing = buildDAVEReportBriefing({ truths, selectedProjectNames: ['Alpha'], previousSnapshot: reportBaselineSnapshot(saved, fingerprint), scheduleItems: shown(state) });
   const snapshot = buildDAVEReportSnapshot({ truths, scopeKey: daveReportSnapshotScopeKey(['Alpha']), sourceFingerprint: fingerprint, capturedAt: at, reportFormat: 'project_manager' });
   const toSave = reportSnapshotToSave(snapshot, saved);
@@ -120,19 +128,20 @@ describe('R8 item 3: what a report says of a task that is back is read from a ro
     expect([again.readsAsAlreadySent, again.ofPaint]).toEqual([true, four.ofPaint]);
   });
 
-  it('the iPad, offline since before master 2, syncs an edit it had made to Paint\'s old row (50%): the report now says "from 50%", and it is another report', () => {
+  it('the iPad, offline since before master 2, syncs an edit it had made to Paint\'s old row (50%): the report still says what report 1 listed, and it is offered once (7.17)', () => {
     const { state, three, four } = paintIsBack();
     const late = withRow(state, 'MASTER M1-1', { percentComplete: 50, progressConfirmedAt: '2026-09-08T09:00:00.000Z', updatedAt: '2026-09-08T09:00:00.000Z' });
     // Nothing he sees in the task list has changed.
     expect(shown(late).map(item => [item.id, item.percentComplete])).toEqual(shown(state).map(item => [item.id, item.percentComplete]));
-    // The sentence is read from that row: written again against the same period as report 4, it says "from 50%".
-    expect(report(late, three.sent, AGAIN).ofPaint).toContain('Paint moved from 50% to 70% complete.');
-    // So it is not the report he sent. (It read as already sent, one fingerprint for the two: review pass 2, P2-3.)
+    // The sentence was read from that row, and said "from 50%" (review pass 2, P2-3). Open item 7.17 (13 Oct 2026):
+    // it is read from how report 1 listed Paint, kept with the reports since (saved, it cannot change under him), so
+    // written again against the same period as report 4 it says what report 4 said. Expectation moved deliberately.
+    expect(report(late, three.sent, AGAIN).ofPaint).toEqual(['Paint is back in the project plan.', 'Paint moved from 60% to 70% complete.', 'Paint finish changed from 09/25/2026 to 10/02/2026.']);
+    // HIGH item 1d: no word of report 4 moves, so it is the report he sent (it was offered once more, with no word
+    // changed, while 3.0 held the row itself).
     const again = report(late, four.sent, AGAIN);
-    expect(again.fingerprint).not.toBe(four.fingerprint);
-    expect(again.readsAsAlreadySent).toBe(false);
-    // It is offered once, counted from the report he sent, and says nothing more of Paint: his list has not changed.
-    expect(again.ofPaint).toEqual([]);
+    expect(again.fingerprint).toBe(four.fingerprint);
+    expect(again.readsAsAlreadySent).toBe(true);
   });
 
   it.each([
@@ -147,19 +156,22 @@ describe('R8 item 3: what a report says of a task that is back is read from a ro
     ['its area', { locationName: 'Deck' }],
     ['when it was imported', { importedAt: '2026-09-06T16:00:00.000Z' }],
     ['that a lookahead had added it', { importedAsLookahead: true }],
-  ])('a change to any value those sentences read on the old row moves the fingerprint: %s', (_what, change) => {
-    const { state, four } = paintIsBack();
-    const changed = report(withRow(state, 'MASTER M1-1', change as Partial<ScheduleItem>), four.sent, AGAIN);
-    expect(changed.fingerprint).not.toBe(four.fingerprint);
-    expect(changed.readsAsAlreadySent).toBe(false);
+  ])('a change to a value those sentences once read on the old row moves the fingerprint exactly where a word of report 4 moves: %s', (_what, change) => {
+    const { state, three, four } = paintIsBack();
+    const changedState = withRow(state, 'MASTER M1-1', change as Partial<ScheduleItem>);
+    const asReport4 = report(changedState, three.sent, AGAIN).ofPaint;
+    const changed = report(changedState, four.sent, AGAIN);
+    expect(changed.readsAsAlreadySent).toBe(JSON.stringify(asReport4) === JSON.stringify(four.ofPaint));
+    // (Since 7.17 the sentences read report 1's listing: no word moves, and it is the report he sent.)
+    expect(asReport4).toEqual(four.ofPaint);
   });
 
-  it('and so does the old row being deleted (its schedule file removed with its tasks)', () => {
-    const { state, four } = paintIsBack();
+  it('and so for the old row being deleted (its schedule file removed with its tasks)', () => {
+    const { state, three, four } = paintIsBack();
     const gone: State = { ...state, items: state.items.filter(item => item.id !== 'MASTER M1-1') };
+    const asReport4 = report(gone, three.sent, AGAIN).ofPaint;
     const changed = report(gone, four.sent, AGAIN);
-    expect(changed.ofPaint).not.toEqual(four.ofPaint);
-    expect(changed.fingerprint).not.toBe(four.fingerprint);
+    expect(changed.readsAsAlreadySent).toBe(JSON.stringify(asReport4) === JSON.stringify(four.ofPaint));
   });
 
   it('guard: what those sentences do not read leaves the report the one already sent: the old row\'s priority, its next action, its notes field, its own last-saved time', () => {
@@ -181,13 +193,14 @@ describe('R8 item 3: what a report says of a task that is back is read from a ro
   });
 
   it('the phone and the web hold the same earlier rows, and give the report one fingerprint', () => {
-    const { state, four } = paintIsBack();
+    const { state, three, four } = paintIsBack();
     const web = buildDAVEWebReportTruths({
       projects: [{ id: 'project-alpha-id', name: 'Alpha' }], scheduleItems: shown(state), knownScheduleItems: state.items,
       projectUpdates: [], referenceDocuments: state.documents, refreshedAt: AGAIN,
     } as unknown as DAVEWebReadOnlySnapshot, 'Alpha');
     expect(web[0].earlierRows).toEqual(four.truths[0].earlierRows);
-    expect(buildDAVEReportSourceFingerprint(web)).toBe(four.fingerprint);
+    // Worked out as the web page works it out: against the period report 4 was counted on.
+    expect(buildDAVEReportSourceOnPeriod(web, three.sent).fingerprint).toBe(four.fingerprint);
   });
 
   it('version 1.0 is as it was: the earlier rows are in today\'s version only', () => {

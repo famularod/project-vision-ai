@@ -74,7 +74,7 @@ import {
 } from './DAVEOperationalRefresh';
 import {
   compactECOSDocumentIndexForCloud,
-  compactECOSReferenceDocumentsForOperationalRead,
+  compactECOSReferenceDocumentsFromTheDocumentList,
 } from './ECOSDocumentIndexPersistence';
 import { replaceECOSDocumentCloudIndex } from './ECOSDocumentCloudIndex';
 import {
@@ -2514,6 +2514,7 @@ export async function upsertReferenceDocument(
   // (by its id) and the index again; and both requests say which account they are sent for, so the last look where
   // they leave refuses them under any other sign-in.
   const asOwner = cloudOwnerExpectedForThisCall();
+  // High item 3 (b2): a drawing's row carries its citation slice under its own key (in the compaction).
   const compactDocument = compactECOSDocumentIndexForCloud(document);
   const { cloudUpdatedAt: _cloudUpdatedAt, cloudDetailsSeen: _cloudDetailsSeen, ...documentData } = compactDocument;
   const payload = {
@@ -2677,7 +2678,8 @@ export async function listReferenceDocuments(): Promise<SupabaseServiceResult<Re
       } as ReferenceDocument;
     })
     .filter((value): value is ReferenceDocument => Boolean(value));
-  const compactDocuments = compactECOSReferenceDocumentsForOperationalRead(documents);
+  // High item 3 (c): a drawing holds the index as this list gives it (null: none), the only one a report cites from.
+  const compactDocuments = compactECOSReferenceDocumentsFromTheDocumentList(documents);
   let statuses: Awaited<ReturnType<typeof loadECOSHostedIndexStatuses>> = [];
   try {
     statuses = await loadECOSHostedIndexStatuses({

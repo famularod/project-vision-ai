@@ -166,7 +166,73 @@ export type DAVEReportSnapshot = Readonly<{
    * this report's changes only once it started after both (`reportSendCountsFrom`).
    */
   markedSentAt?: string;
+  /**
+   * Open item 7.44 (review pass 9, E9-1; the owner's authorisation of 13 Oct
+   * 2026): the words the owner approved or sent when he changed the app's
+   * report before sending it (Edit Report): its title and its text, as they
+   * went out. Absent when the app's own text was sent, and on reports saved
+   * before then. Kept with the approval so that a report sent another way and
+   * recorded later (Mark as Sent) keeps them; replaced at a send from the app
+   * by what that send carried. Every device shows these words for a report of
+   * these facts that was sent (`reportSentText`). Never in the report this
+   * one replaced (`supersedes`), which is read for its tasks only.
+   */
+  editedText?: DAVEReportEditedText;
+  /**
+   * Open items 7.12 and 7.17 (reports review pass 5, F2 and F6; the owner's
+   * authorisation of 13 Oct 2026): the tasks earlier reports listed that this
+   * report's plan does not hold, each as the last report that listed it had
+   * it, carried from report to report until the task is back. A task back in
+   * the plan is "back" and compared with that; one no report listed is
+   * "added". `since`: the report from which the record is whole (the first one
+   * saved with it, or the one it counted from); a task that left the plan
+   * before then is read as before. Absent on reports saved before then.
+   */
+  outOfPlan?: DAVEReportOutOfPlan;
 }>;
+
+/** The tasks earlier reports listed that a report's plan does not hold, as last listed (open items 7.12, 7.17). */
+export type DAVEReportOutOfPlan = Readonly<{ since: string; tasks: readonly DAVEReportSnapshotTask[] }>;
+
+/** A saved report's record of the tasks out of its plan, when it is one (saved by a build that keeps it). */
+function outOfPlanRecord(snapshot: DAVEReportSnapshot | null | undefined): DAVEReportOutOfPlan | null {
+  const record = snapshot?.outOfPlan;
+  return record && typeof record.since === 'string' && Array.isArray(record.tasks) ? record : null;
+}
+
+/** The title and text the owner changed the report to (open item 7.44). */
+export type DAVEReportEditedText = Readonly<{ title: string; body: string }>;
+
+/** `snapshot` holding `editedText` (none for null), the same object when it already does. */
+export function withReportEditedText(
+  snapshot: DAVEReportSnapshot,
+  editedText: DAVEReportEditedText | null,
+): DAVEReportSnapshot {
+  if (sameEditedText(snapshot.editedText ?? null, editedText)) return snapshot;
+  const { editedText: _earlier, ...report } = snapshot;
+  return Object.freeze(editedText ? { ...report, editedText: Object.freeze({ title: editedText.title, body: editedText.body }) } : report);
+}
+
+function sameEditedText(left: DAVEReportEditedText | null, right: DAVEReportEditedText | null): boolean {
+  return left === right || (left !== null && right !== null && left.title === right.title && left.body === right.body);
+}
+
+/**
+ * The words a report of `currentFingerprint` was SENT with, when the owner
+ * changed them before sending (open item 7.44), or null: the period's report
+ * was sent, is of these same facts, and carries his words. The phone, after a
+ * restart, and the iPad then show the report as it went out, under "already
+ * sent", not the app's own text without his change.
+ */
+export function reportSentText(
+  period: DAVEReportSnapshot | null | undefined,
+  currentFingerprint: string,
+): DAVEReportEditedText | null {
+  const text = period?.editedText;
+  if (!period || typeof period.deliveredAt !== 'string' || !text) return null;
+  if (typeof text.title !== 'string' || typeof text.body !== 'string') return null;
+  return sameReportSource(period.sourceFingerprint, currentFingerprint) ? text : null;
+}
 
 /**
  * A saved or shared snapshot of this period, or null: the right version,
@@ -244,8 +310,45 @@ export function legacyReportSourcesOf(current: string | null | undefined): reado
 }
 
 /**
+ * HIGH item 1 (d) (the owner's instruction of 13 Oct 2026, the three high items). Version 3.0 of the fingerprint
+ * came with an update, and every report approved, sent or saved by Builds 231 and 232 carries a 2.0 fingerprint.
+ * Wherever the app works out today's fingerprint it also works out the 2.0 one of the same facts (with the 2.0 code,
+ * unchanged), and remembers it here, ONE per today's fingerprint: the 2.0 value of the facts as last worked out. A
+ * report made under 2.0 is then today's report exactly where 2.0 itself says so, until the next report replaces it:
+ * installing the update offers no report again that the build before would not have offered. Unlike 1.0's (R10),
+ * a 2.0 name stands: 3.0 changes when a report is offered, not one word of it. In memory, as the 1.0 names were.
+ */
+const VERSION_2_REPORT_SOURCE_PREFIX = 'dave-report-source/2.0:';
+const version2ReportSources = new Map<string, string>();
+
+export function isVersion2ReportSource(fingerprint: string | null | undefined): boolean {
+  return typeof fingerprint === 'string' && fingerprint.startsWith(VERSION_2_REPORT_SOURCE_PREFIX);
+}
+
+/** Today's fingerprint of some facts, and the 2.0 fingerprint of the same facts (HIGH item 1). */
+export function rememberVersion2ReportSource(current: string, version2: string): void {
+  if (!current || !version2 || current === version2 || !isVersion2ReportSource(version2)) return;
+  // Most recently worked out last, so the oldest pair is the one dropped.
+  version2ReportSources.delete(current);
+  version2ReportSources.set(current, version2);
+  while (version2ReportSources.size > REMEMBERED_LEGACY_SOURCES) {
+    const oldest = version2ReportSources.keys().next().value;
+    if (oldest === undefined) break;
+    version2ReportSources.delete(oldest);
+  }
+}
+
+/** Every earlier-version fingerprint that names the facts of `current`: its 2.0 one, and any 1.0 one (none stands, R10). */
+export function earlierReportSourcesOf(current: string | null | undefined): readonly string[] {
+  if (!current) return [];
+  const version2 = version2ReportSources.get(current);
+  return [...(version2 ? [version2] : []), ...legacyReportSourcesOf(current)];
+}
+
+/**
  * Whether two fingerprints are of the same facts: the same fingerprint, or
- * one written under 1.0 and the other today's fingerprint of those facts.
+ * one written under 2.0 (HIGH item 1) or 1.0 and the other today's
+ * fingerprint of those facts.
  * The web's longer source fingerprint ("<facts>:media-…") is compared by its
  * facts part, with the rest the same.
  */
@@ -255,6 +358,8 @@ export function sameReportSource(left: string | null | undefined, right: string 
   const [leftFacts, ...leftRest] = left.split(':media-');
   const [rightFacts, ...rightRest] = right.split(':media-');
   if (leftRest.join(':media-') !== rightRest.join(':media-')) return false;
+  // HIGH item 1 (d): a report made under 2.0, by the 2.0 fingerprint of today's facts.
+  if (version2ReportSources.get(leftFacts) === rightFacts || version2ReportSources.get(rightFacts) === leftFacts) return true;
   if (isLegacyReportSource(leftFacts) === isLegacyReportSource(rightFacts)) return false;
   return isLegacyReportSource(leftFacts)
     ? legacyReportSourcesOf(rightFacts).includes(leftFacts)
@@ -327,7 +432,10 @@ export function reportSnapshotToSave(
   if (previous && samePeriod && sameReportSource(previous.sourceFingerprint, current.sourceFingerprint)) {
     return null;
   }
-  const pending = { ...current, deliveredAt: null };
+  // The report this one counts from: the one it keeps as the report before (`supersedes`).
+  const baseline = !previous || !samePeriod ? null : wasDelivered(previous) ? previous : previous.supersedes ?? null;
+  // Open items 7.12, 7.17: the tasks out of its plan, carried on from that report's.
+  const pending = { ...current, deliveredAt: null, outOfPlan: compareReportPeriod({ current, previous: baseline }).outOfPlan };
   if (!previous || !samePeriod) return Object.freeze(pending);
   if (!wasDelivered(previous)) {
     return Object.freeze({ ...pending, supersedes: previous.supersedes ? withReportBefore(previous.supersedes) : null });
@@ -343,28 +451,33 @@ export function reportSnapshotToSave(
  * report was gone and the text changed under the approval (A6 pass 3).
  */
 function withReportBefore(snapshot: DAVEReportSnapshot): DAVEReportSnapshot {
-  const { supersedes: older, ...report } = snapshot;
+  // The owner's words (7.44) are not kept for the report before: it is read for its tasks only.
+  const { supersedes: older, editedText: _text, ...report } = snapshot;
   if (!older) return Object.freeze(report);
-  const { supersedes: _deeper, ...before } = older;
+  const { supersedes: _deeper, editedText: _olderText, ...before } = older;
   return Object.freeze({ ...report, supersedes: Object.freeze(before) });
 }
 
 /**
  * The approved report went out, from the install `sentBy` when it is known (A6 pass 9 L2).
  * `markedSentAt`: the owner recorded the send afterwards, at that time (everyday item 1).
+ * `sentText` (open item 7.44): the words that went out when the owner changed the report; none (the app's own text
+ * went out) when absent. A send records what IT carried, never an approval's words it did not.
  */
 export function markReportSnapshotDelivered(
   snapshot: DAVEReportSnapshot,
   deliveredAt: string,
   sentBy?: string | null,
   markedSentAt?: string | null,
+  sentText?: DAVEReportEditedText | null,
 ): DAVEReportSnapshot {
-  const { sentBy: _earlierSender, markedSentAt: _earlierMark, ...approved } = snapshot;
+  const { sentBy: _earlierSender, markedSentAt: _earlierMark, editedText: _approvedText, ...approved } = snapshot;
   return Object.freeze({
     ...approved,
     deliveredAt,
     ...(sentBy ? { sentBy } : {}),
     ...(markedSentAt ? { markedSentAt } : {}),
+    ...(sentText ? { editedText: Object.freeze({ title: sentText.title, body: sentText.body }) } : {}),
   });
 }
 
@@ -741,7 +854,18 @@ export function buildDAVEReportSnapshot({
   return Object.freeze(snapshot);
 }
 
-export function compareDAVEReportSnapshots({
+export function compareDAVEReportSnapshots(
+  args: Parameters<typeof compareReportPeriod>[0],
+): DAVEReportPeriodComparison {
+  return compareReportPeriod(args).comparison;
+}
+
+/**
+ * The comparison, and (open items 7.12, 7.17) the record of the tasks out of the plan a report of `current` keeps:
+ * what this comparison says removed, as the earlier report listed it, and what that report's own record still
+ * carries, less what is back now.
+ */
+function compareReportPeriod({
   current,
   previous,
   tasksLeftByLookahead = [],
@@ -775,18 +899,22 @@ export function compareDAVEReportSnapshots({
    * before.
    */
   tasksLeftByLookahead?: readonly DAVEReportTaskLeftByLookahead[];
-}): DAVEReportPeriodComparison {
+}): { comparison: DAVEReportPeriodComparison; outOfPlan: DAVEReportOutOfPlan } {
   if (!previous || previous.scopeKey !== current.scopeKey) {
-    return Object.freeze({
-      basis: 'current_snapshot',
-      label: 'Current reporting period',
-      startedAt: null,
-      endedAt: current.capturedAt,
-      completeDelta: 0,
-      openDelta: 0,
-      overdueDelta: 0,
-      changes: Object.freeze([]),
-    });
+    return {
+      comparison: Object.freeze({
+        basis: 'current_snapshot',
+        label: 'Current reporting period',
+        startedAt: null,
+        endedAt: current.capturedAt,
+        completeDelta: 0,
+        openDelta: 0,
+        overdueDelta: 0,
+        changes: Object.freeze([]),
+      }),
+      // No report before this one: none listed a task this one does not hold.
+      outOfPlan: Object.freeze({ since: current.capturedAt, tasks: Object.freeze([]) }),
+    };
   }
 
   const previousById = new Map(previous.tasks.map(task => [task.taskId, task]));
@@ -911,10 +1039,35 @@ export function compareDAVEReportSnapshots({
   // reads as Build 230 wrote it, "was added". What is read from the SAVED report before, above, is untouched:
   // saved data cannot change under him. From the first report sent on this build it reads as before.
   const liveEarlierRowsMayBeRead = !currentReadAsEarlierVersionReport && !isLegacyReportSource(previous.sourceFingerprint);
+  // Open items 7.12 and 7.17 (reports review pass 5, F2 and F6; the owner's authorisation of 13 Oct 2026). The
+  // saved earlier report and the one before it are not enough to say what the client was last told of a task that
+  // comes back. F2: a task put in the plan and taken out again between two reports read "is back", with a change
+  // from a date no report gave, because the row it left on was saved before the last report. F6: a task out for two
+  // reports or more that came back on a row saved before the last report read "added", and what changed was never
+  // said. The earlier report now keeps the tasks reports listed that its plan does not hold, as last listed
+  // (`outOfPlan`): a task back is "back" against that, else, where the record covers the time it left, "added".
+  // Where the record is absent (saved before this change) or does not reach back to the row it left on, as before;
+  // and never against a report known by a 1.0 name, nor for a report read as one (R9: as Build 230 wrote it).
+  const record = currentReadAsEarlierVersionReport || isLegacyReportSource(previous.sourceFingerprint)
+    ? null
+    : outOfPlanRecord(previous);
+  const recordSince = Date.parse(record?.since ?? '');
+  const carriedById = new Map((record?.tasks ?? []).map(task => [task.taskId, task]));
+  const linkedCarried = record ? linkTasksById(record.tasks, [...noPriorNow]) : null;
+  /** The ids of carried tasks that are back now (no longer out of the plan). */
+  const carriedBack = new Set<string>();
   const returnedFrom = (task: DAVEReportSnapshotTask): DAVEReportSnapshotTask | null => {
     if (!noPriorNow.has(task)) return null;
     const before = reportBeforeById.get(task.taskId) ?? linkedBefore?.pairs.get(task);
-    if (before) return isLookaheadDetail(before) ? null : before;
+    if (before) {
+      carriedBack.add(before.taskId);
+      return isLookaheadDetail(before) ? null : before;
+    }
+    const carried = carriedById.get(task.taskId) ?? linkedCarried?.pairs.get(task);
+    if (carried) {
+      carriedBack.add(carried.taskId);
+      return isLookaheadDetail(carried) ? null : carried;
+    }
     if (!reportBefore || !liveEarlierRowsMayBeRead) return null;
     const rows = (earlierRowsOf.get(task.taskId) || []).filter(row => {
       const saved = Date.parse(row.savedAt ?? '');
@@ -923,6 +1076,8 @@ export function compareDAVEReportSnapshots({
         !Number.isNaN(shownSaved) && shownSaved >= earlierReportMade;
     });
     const row = rows.at(-1);
+    // Left on a row saved since the record began, and not in it: no report listed the task (7.12).
+    if (row && record && !(Date.parse(row.savedAt ?? '') < recordSince)) return null;
     return row ? Object.freeze({
       taskId: row.earlierTaskId,
       projectName: task.projectName,
@@ -1064,7 +1219,18 @@ export function compareDAVEReportSnapshots({
 
   const distinctChanges = dedupeChanges(changes);
   const counted = leftCounted.length > 0 ? [...current.tasks, ...leftCounted] : current.tasks;
-  return Object.freeze({
+  // What a report of `current` keeps as out of its plan (7.12, 7.17): the tasks said removed, as the earlier report
+  // listed them, then those the earlier report's record carries that are not back; never a lookahead's detail row
+  // (one that left with its lookahead was never said removed).
+  const outOfPlanTasks = new Map<string, DAVEReportSnapshotTask>();
+  [...removedTasks, ...(record?.tasks ?? []).filter(task => !carriedBack.has(task.taskId) && !currentById.has(task.taskId))]
+    .filter(task => !isLookaheadDetail(task) && !outOfPlanTasks.has(task.taskId))
+    .forEach(task => outOfPlanTasks.set(task.taskId, task));
+  const outOfPlan: DAVEReportOutOfPlan = Object.freeze({
+    since: record?.since ?? previous.capturedAt,
+    tasks: Object.freeze([...outOfPlanTasks.values()]),
+  });
+  return { outOfPlan, comparison: Object.freeze({
     basis: 'previous_approved_report',
     label: reportPeriodLabel(previous),
     startedAt: previous.capturedAt,
@@ -1078,7 +1244,7 @@ export function compareDAVEReportSnapshots({
     unchangedTaskIds: Object.freeze([...unchangedTaskIds]),
     newActivityTaskIds: Object.freeze([...newActivityTaskIds]),
     sameActivityTaskIds: Object.freeze([...sameActivityTaskIds]),
-  });
+  }) };
 }
 
 /**

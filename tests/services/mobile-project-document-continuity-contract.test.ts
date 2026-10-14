@@ -38,7 +38,9 @@ describe('mobile project-document continuity contract', () => {
     expect(source).toContain('const readiness = buildECOSDocumentReadiness(target)');
     expect(source).toContain("canonicalReferenceCategory(target) !== 'schedule' && !readiness.canMakeCurrent");
     expect(source).toContain('await activateSharedReferenceDocument({');
-    expect(activationSource).toContain('expectedUpdatedAt: target.cloudUpdatedAt');
+    // Open item 3.1: the record's revision, or the cloud's for a schedule this phone never heard back about.
+    expect(activationSource).toContain("let expectedUpdatedAt = target.cloudUpdatedAt || '';");
+    expect(activationSource).toContain("expectedUpdatedAt ||= cloudTarget.cloudUpdatedAt || '';");
     expect(activationSource).toContain('activate = activateECOSCurrentReferenceDocument');
     expect(source).toContain('const result = await listReferenceDocuments()');
   });
@@ -61,10 +63,15 @@ describe('mobile project-document continuity contract', () => {
     expect(setActive).toContain('markReferenceDocumentCurrent(documentId)');
     expect(setActive).not.toContain('queueReferenceDocumentRecord');
     expect(setActive).not.toContain('isCurrent');
-    expect(source).toContain(
-      'if (alreadyShared && !(await activateReferenceDocument(selectedReferenceDocument.id))) return;',
-    );
-    expect(source).toContain('    if (alreadyShared) return;\n    referenceDocumentsCurrentRef.current = nextReferenceDocuments;');
+    // CHANGED by open item 3.1 (13 Oct 2026): a card not shared yet was made current on this phone only (a record
+    // marked current here and the others marked not current here alone). Now every card goes through the cloud.
+    const card = source.match(
+      /async function makeProjectScheduleDocumentCurrent\([\s\S]+?\n  async function reviewProjectScheduleDocumentImport/,
+    )?.[0] || '';
+    expect(card).toContain('if (!(await activateReferenceDocument(referenceDocument.id))) return;');
+    expect(card).not.toContain('queueReferenceDocumentRecord');
+    expect(card).not.toContain('isCurrent: true');
+    expect(card).not.toContain('setReferenceDocuments');
   });
 
   // Whole-app audit A8 pass 1 F6 (30 Sep 2026): a schedule with no imported
@@ -110,6 +117,9 @@ describe('mobile project-document continuity contract', () => {
         // Owner answer Q15: the phone asks how the cloud retires schedules first; this is the database before that migration.
         loadECOSScheduleRetirementScope: jest.fn(async () => 'schedule'), getSupabaseClient: () => null,
         activateReferenceDocument: jest.fn(async () => false),
+        // Open item 3.1: a card not shared yet is refused with its line (shared first when uploaded), never made current here.
+        phoneScheduleCardNotSharedYet: jest.fn(activation.phoneScheduleCardNotSharedYet), publishUploadedProjectDocument: jest.fn(async () => undefined),
+        bindProjectDocumentUploadToAccount: () => () => true,
         ensureVerifiedProjectDocumentBytes: jest.fn(async (verified: object) => ({ ...verified, localUri: 'file:///verified/alpha-rev-5.pdf' })),
         prepareScheduleImportFromAsset: jest.fn(async () => ({ id: 'batch' })),
         setIncomingScheduleImportBatch: jest.fn(), setScheduleProjectFilter: jest.fn(), setScreen: jest.fn(),
@@ -149,9 +159,11 @@ describe('mobile project-document continuity contract', () => {
       expect(deps.ensureVerifiedProjectDocumentBytes).not.toHaveBeenCalled();
     });
 
+    // CHANGED by open item 3.1: the path for a card not shared yet no longer copies the file into a record made current
+    // here; it is refused with its line (and shared first when the card has uploaded).
     it.each([
       ['already shared, through cloud activation', 'shared-pdf', 'activateReferenceDocument'],
-      ['not shared yet, shared first', null, 'ensureVerifiedProjectDocumentBytes'],
+      ['not shared yet, refused with its line', null, 'phoneScheduleCardNotSharedYet'],
     ])('%s: Make Current goes ahead once, without asking again', async (_path, referenceDocumentId, pathStep) => {
       const { make, alerts, deps } = load(phonePdf(referenceDocumentId), 'Make Current');
       await make('phone-pdf');

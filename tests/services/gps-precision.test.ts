@@ -366,7 +366,8 @@ describe('GPS wiring in the app', () => {
 
   it('adds photos from the draft as it is when the camera or picker returns', () => {
     expect(app).not.toContain('withDraftPhotoContext(await photoFromAsset(asset), draft)');
-    expect(app).toContain('photos.push(asLibraryPhoto(withDraftPhotoContext(await photoFromAsset(asset), draftRef.current)));');
+    // Open item 3.26: the library photo also gets its own location and the project's areas.
+    expect(app).toMatch(/photos\.push\(asLibraryPhoto\(\n\s+withDraftPhotoContext\(await photoFromAsset\(asset\), draftRef\.current\),\n\s+libraryPhotoGpsFromExif\(asset\.exif\),/);
     expect(app).toContain('...withDraftPhotoContext(await photoFromAsset(asset), draftRef.current),');
     expect(app.match(/const baseDraft = draftRef\.current;/g)).toHaveLength(2);
     expect(app.match(/photos: \[\.\.\.prev\.photos, \.\.\.photos\.map\(photo => withDraftGps\(photo, prev\)\)\]/g)).toHaveLength(2);
@@ -375,7 +376,7 @@ describe('GPS wiring in the app', () => {
     // Review pass 10: no new fix mid-update (it changed the suggestion and
     // could stamp older photos).
     expect(app).not.toContain('refreshStaleDraftFix');
-    expect(app).toContain('photos: prev.photos.map(photo => withDraftLocation(photo, locationFields)),');
+    expect(app).toContain('photos: prev.photos.map(photo => withDraftLocation(photo, locationFields, draftProjectAreas)),');
     expect(app).toContain('...(photo.pickedFromLibrary === true ? { pickedFromLibrary: true } : {}),');
   });
 

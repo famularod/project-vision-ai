@@ -24,9 +24,11 @@ import {
   scheduleActivationEffects,
   scheduleActivationNotice,
   scheduleDocumentsAfterActivation,
+  phoneScheduleCardNotSharedYet,
   scheduleRetirementMessage,
   scheduleTasksHiddenByActivation,
   scheduleTasksHiddenWarning,
+  withDetailsTypedDuringActivation,
 } from '../../services/SharedDocumentActivation';
 import {
   createDAVEOperationalRealtimeApplier,
@@ -234,7 +236,12 @@ describe('a schedule made current on the phone before it is shared follows the s
     expect(next[3]).toBe(gamma);
   });
 
-  it('is what App.tsx does, compiled: only the changed schedules are marked and queued', async () => {
+  // CHANGED by open item 3.1 (13 Oct 2026): App.tsx marked these schedules current or not current on the phone and
+  // queued them, but every merge takes the cloud's current flag, so the other devices never changed and the next
+  // refresh undid it here ("a change on one device only"). A card not shared yet is now made current by nobody here:
+  // it is refused with its line (shared first when it has uploaded), whatever the cloud's rule. The rule above is
+  // the cloud's own, and stays as the reading of what the cloud does.
+  it('is what App.tsx does, compiled: a card not shared yet marks and queues nothing, whatever the cloud\'s rule', async () => {
     const fs = jest.requireActual('fs') as typeof import('fs');
     const path = jest.requireActual('path') as typeof import('path');
     const ts = jest.requireActual('typescript') as typeof import('typescript');
@@ -260,6 +267,7 @@ describe('a schedule made current on the phone before it is shared follows the s
         importedScheduleOfPhoneSchedule: () => null,
         loadECOSScheduleRetirementScope: jest.fn(async () => scope), getSupabaseClient: () => null,
         activateReferenceDocument: jest.fn(async () => true),
+        phoneScheduleCardNotSharedYet, publishUploadedProjectDocument: jest.fn(async () => undefined), bindProjectDocumentUploadToAccount: () => () => true,
         ensureVerifiedProjectDocumentBytes: jest.fn(async (verified: object) => ({ ...verified, localUri: 'file:///verified.pdf' })),
         ensureReferenceDocumentsDirectory: jest.fn(async () => 'file:///docs/'),
         FileSystem: { copyAsync: jest.fn(async () => undefined) }, uid: () => 'new-ref', sanitizeFilename: (name: string) => name,
@@ -284,25 +292,14 @@ describe('a schedule made current on the phone before it is shared follows the s
       return {
         queued: queued.map(document => [document.id, document.isCurrent, document.retiredForProjectNames ?? null]),
         current: (deps.referenceDocumentsCurrentRef as { current: ReferenceDocument[] }).current,
+        marked: (deps.setReferenceDocuments as jest.Mock).mock.calls.length,
+        said: (deps.Alert as { alert: jest.Mock }).alert.mock.calls.map(call => call[0]),
       };
     };
-    const after = await run('project');
-    expect(after.queued).toEqual([
-      ['new-ref', true, null],
-      ['Master', true, ['Alpha']],
-      ['Alpha rev 1', false, null],
-    ]);
-    expect(after.current.find(document => document.id === 'Gamma')).toBe(gamma);
-    // Before the migration, as the old cloud does it: the master is retired, Gamma is not.
-    expect((await run('schedule')).queued).toEqual([
-      ['new-ref', true, null],
-      ['Master', false, null],
-      ['Alpha rev 1', false, null],
-    ]);
-    // Offline (unknown), changed by audit A5 pass 4 #5 (30 Sep 2026): the old rule retired
-    // the master for Beta without asking until the next refresh put it back. Now only the
-    // chosen schedule is marked here; the cloud settles the others.
-    expect((await run(null)).queued).toEqual([['new-ref', true, null]]);
+    for (const scope of ['project', 'schedule', null] as const) {
+      const after = await run(scope);
+      expect([after.queued, after.marked, after.current, after.said]).toEqual([[], 0, [], ['Current schedule not changed']]);
+    }
   });
 });
 
@@ -323,11 +320,12 @@ describe('Set Active is offered again on a combined schedule retired for some of
           activateSharedReferenceDocument({ ...input, activate }),
         scheduleRetirementMessage, scheduleDocumentIsCurrentEverywhere, getSupabaseClient: newDatabase,
         // Audit A8 pass 2 #7: text still waiting for the document is queued first.
-        projectDocumentSharedRecordSync: { flush: () => false },
+        projectDocumentSharedRecordSync: { flush: () => false, ownEditsSince: () => new Map() }, // S1e (14 Oct, the final review's F2): what this device typed itself during the press (nothing here)
         listReferenceDocuments: async () => ({ ok: true, stubbed: false, data: phone }), normalizeReferenceDocuments: (rows: unknown) => rows,
         deletedDAVERecordIds: () => [], operationalSyncTombstonesRef: { current: [] },
         mergeDAVEReferenceDocumentRecoveryRecords: ({ cloud }: { cloud: ReferenceDocument[] }) => cloud,
         reconcileCurrentScheduleDocuments: (documents: ReferenceDocument[]) => documents,
+        withDetailsTypedDuringActivation, // S1d (14 Oct, review pass 6's H6S-2): text typed on a card during the press is put back after it
         markReferenceDocumentsAuthorityReady: jest.fn(), setReferenceDocuments: jest.fn(),
         // Audit A8 pass 3 M2 (landed after this test): queued text outlives the activation; none is queued here.
         requeueReferenceDocumentEditsOutlivingActivation: async () => [],

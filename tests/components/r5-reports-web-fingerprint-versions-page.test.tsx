@@ -223,7 +223,8 @@ describe('R5 item 2 (web page): a report made under the earlier fingerprint vers
     const approval = approvalMadeBeforeTheUpdateWaits();
     await approveTheSameReportHere();
     const approvedHere = sharedSnapshot();
-    expect(String(approvedHere?.sourceFingerprint)).toMatch(/^dave-report-source\/2\.0:/);
+    // Today's version (3.0 since HIGH item 1).
+    expect(String(approvedHere?.sourceFingerprint)).toMatch(/^dave-report-source\/3\.0:/);
     expect(approvedHere?.sourceFingerprint).not.toBe(approval.sourceFingerprint);
     expect(approvedHere).toMatchObject({ deliveredAt: null });
     fireEvent.press(screen.getByText('Share Approved Report'));

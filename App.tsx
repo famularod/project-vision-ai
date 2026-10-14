@@ -274,6 +274,7 @@ import {
 } from './services/GpsPrecision';
 import { createRecentLocationFix } from './services/RecentLocationFix';
 import { asLibraryPhoto, newPhotoGps, withDraftGps, withDraftLocation } from './services/DraftPhotoGps';
+import { libraryPhotoGpsFromExif, libraryPhotoLocationLine } from './services/LibraryPhotoLocation';
 import { applyFixToDraft, areaChangeLocationFields, draftAfterAreaDeleted } from './services/DraftFix';
 import {
   currentDraftAreaSuggestion,
@@ -323,7 +324,7 @@ import {
 } from './services/AuthoritativeDocumentSystem';
 import { buildECOSDocumentReadiness } from './services/ECOSDocumentReadiness';
 import { compactECOSReferenceDocumentsForOperationalRead } from './services/ECOSDocumentIndexPersistence';
-import { activateSharedReferenceDocument, importedScheduleOfPhoneSchedule, loadECOSScheduleRetirementScope, phoneScheduleActivationTarget, phoneScheduleCardIsCurrent, scheduleDocumentsAfterActivation, scheduleImportOfFile, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning } from './services/SharedDocumentActivation';
+import { activateSharedReferenceDocument, importedScheduleOfPhoneSchedule, loadECOSScheduleRetirementScope, phoneScheduleActivationTarget, phoneScheduleCardIsCurrent, phoneScheduleCardNotSharedYet, scheduleImportOfFile, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning, withDetailsTypedDuringActivation } from './services/SharedDocumentActivation';
 import {
   createECOSMobileDrawingControls,
   mobileDrawingMetadataForUpload,
@@ -430,7 +431,7 @@ import {
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as Clipboard from 'expo-clipboard';
-import * as Contacts from 'expo-contacts';
+import { PhoneContactPicker } from './components/phone-contact-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
@@ -458,6 +459,7 @@ import {
   REPORT_TEXT_IMAGE_LIMIT,
   resolveReportImageAttachments,
 } from './services/ReportImageAttachments';
+import { reportEmailRecipients, reportTextRecipients, type PhoneContactRead } from './services/ReportRecipients';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import {
   assertBackupSerializedFits,
@@ -697,6 +699,7 @@ import { useIdentityAliasCleanup } from './hooks/use-identity-alias-cleanup';
 import { useKeptTalkCapture } from './hooks/use-kept-talk-capture';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport, scheduleProgressCarriedOnActivation } from './services/ScheduleImportMerge';
+import { scheduleTurnedHighLineBetween } from './services/ScheduleTurnedHigh';
 import { scheduleDependenciesAfterScheduleDeleted, scheduleFileOnlyDeleteRefusal, scheduleImportAddsToMaster, scheduleItemsAfterScheduleDeleted, scheduleLookaheadDeleteNote, scheduleTasksOnMasterDatesOnceLookaheadGone, type ScheduleLookaheadNotesSeen } from './services/ScheduleLookahead';
 import { narrowScheduleDocumentLabels, scheduleDocumentsAfterApproval } from './services/ScheduleDocumentLabels';
 import {
@@ -2072,40 +2075,14 @@ function expandRecipients(
   return contactBook.contacts.filter(contact => ids.has(contact.id));
 }
 
-function phoneContactDisplayName(contact: Contacts.ExistingContact) {
-  return (
-    contact.name ||
-    [contact.firstName, contact.lastName].filter(Boolean).join(' ') ||
-    contact.company ||
-    'Unnamed Contact'
-  );
-}
-
-function contactEmails(contact: Contacts.ExistingContact) {
-  return uniqueStrings(
-    contact.emails
-      ?.map(item => item.email?.trim() || '')
-      .filter(Boolean) || [],
-  );
-}
-
-function contactPhones(contact: Contacts.ExistingContact) {
-  return uniqueStrings(
-    contact.phoneNumbers
-      ?.map(item => item.number?.trim() || '')
-      .filter(Boolean) || [],
-  );
-}
-
-function phoneContactToProjectContact(
-  contact: Contacts.ExistingContact,
-): ProjectContact {
-  const emails = contactEmails(contact);
-  const phones = contactPhones(contact);
+/** A contact he chose on the phone (open item 4.92: read by services/ReportRecipients), as a recipient. */
+function phoneContactToProjectContact(contact: PhoneContactRead): ProjectContact {
+  const emails = [...contact.emails];
+  const phones = [...contact.phones];
 
   return normalizeContact({
     id: `phone-${contact.id}`,
-    name: phoneContactDisplayName(contact).trim(),
+    name: contact.name.trim() || 'Unnamed Contact',
     email: emails[0] || '',
     phone: phones[0] || '',
     emails,
@@ -6725,7 +6702,7 @@ useEffect(() => {
         ...prev,
         ...locationFields,
         areaStatus: area ? 'confirmed' as const : 'unknown' as const,
-        photos: prev.photos.map(photo => withDraftLocation(photo, locationFields)),
+        photos: prev.photos.map(photo => withDraftLocation(photo, locationFields, draftProjectAreas)),
       };
 
       nextDraftAfterAreaChange = next;
@@ -9422,14 +9399,20 @@ Note: This update was opened through Outlook because PLZ email security may reje
         mediaTypes: ['images'],
         quality: 0.85,
         selectionLimit: 10,
+        exif: true, // the photo's own location places it (open item 3.26)
     });
 
     if (!result.canceled) {
       const photos: UpdatePhoto[] = [];
+      const libraryAreas = draftRef.current.projectName === draft.projectName ? draftProjectAreas : [];
 
       try {
         for (const asset of result.assets) {
-          photos.push(asLibraryPhoto(withDraftPhotoContext(await photoFromAsset(asset), draftRef.current)));
+          photos.push(asLibraryPhoto(
+            withDraftPhotoContext(await photoFromAsset(asset), draftRef.current),
+            libraryPhotoGpsFromExif(asset.exif),
+            libraryAreas,
+          ));
         }
 
         // The draft as it is now, not when the button was tapped: a GPS fix
@@ -10157,6 +10140,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       subject: reportSubjectWithDate(report.subject || report.title, report.generatedAt),
       body: report.body + note,
       attachments,
+      recipients: reportEmailRecipients(report),
     });
     // An unreadable attachment makes the composer throw before it opens; send
     // the text alone then. A real send failure is not retried.
@@ -10207,11 +10191,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
     const images = await reportImageFiles(reportBodyCitesImages(report) ? report : { ...report, locationGroups: [] }, REPORT_TEXT_IMAGE_LIMIT);
     const reportText = `${report.title}\n\n${report.body}`;
-    const textOnly = () => SMS.sendSMSAsync([], `${reportText}\n\n${REPORT_IMAGES_NOT_ATTACHED}`);
+    const textOnly = () => SMS.sendSMSAsync(reportTextRecipients(report), `${reportText}\n\n${REPORT_IMAGES_NOT_ATTACHED}`);
     const attachments = await buildSmsAttachments(images.photos).catch(() => null);
     const { result } = attachments === null
       ? await textOnly()
-      : await SMS.sendSMSAsync([], `${reportText}${images.note}`, { attachments }).catch(error => {
+      : await SMS.sendSMSAsync(reportTextRecipients(report), `${reportText}${images.note}`, { attachments }).catch(error => {
         if (attachments.length === 0 || !isAttachmentReadError(error)) throw error;
         return textOnly();
       });
@@ -11033,6 +11017,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return false;
     }
     currentReferenceActivationIdsRef.current.add(documentId);
+    const pressStartedAt = Date.now(); // what THIS device types on a card while the press is on its way goes on after it (review pass 6 H6S-2; final review F2)
     projectDocumentSharedRecordSync.flush(documentId); // text typed just before goes first (whole-app audit A8 pass 2 #7)
     try {
       const outcome = await activateSharedReferenceDocument({
@@ -11084,17 +11069,19 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'reference_document',
       );
       const kept = await requeueReferenceDocumentEditsOutlivingActivation(outcome.documents).catch(() => []); // text typed first outlives the activation's stamp (whole-app audit A8 pass 3 M2)
-      const mergedDocuments = reconcileCurrentScheduleDocuments(
+      const typedDuring = withDetailsTypedDuringActivation(reconcileCurrentScheduleDocuments(
         mergeDAVEReferenceDocumentRecoveryRecords({
           local: [...referenceDocumentsCurrentRef.current, ...kept],
           cloud: [...outcome.documents],
           deletedIds,
         }),
-      );
+      ), projectDocumentSharedRecordSync.ownEditsSince(pressStartedAt));
+      const mergedDocuments = typedDuring.documents;
       const carried = new Map(scheduleProgressCarriedOnActivation({ items: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], documentsBefore: referenceDocumentsCurrentRef.current, documentsAfter: mergedDocuments }).map(item => [item.id, item as unknown as ScheduleItem])); // progress recorded since the import follows the task now shown (A5 pass 4 #3)
       markReferenceDocumentsAuthorityReady(true);
       referenceDocumentsCurrentRef.current = mergedDocuments;
       setReferenceDocuments(mergedDocuments);
+      typedDuring.carried.forEach(document => projectDocumentSharedRecordSync.queueNow(document.id)); // sent by the card's own text sync, so it reaches the other devices
       if (carried.size > 0) { const shownBefore = new Map(scheduleItemsCurrentRef.current.map(item => [item.id, item])); markScheduleItemsAuthorityReady(true); scheduleItemsCurrentRef.current = scheduleItemsCurrentRef.current.map(item => carried.get(item.id) || item); setScheduleItems(scheduleItemsCurrentRef.current); carried.forEach(item => { void syncScheduleItemRevision(item, advanceScheduleItemSyncGeneration(item.id), undefined, shownBefore.get(item.id)); }); } // with the copy each started from (owner answer Q28)
       return true;
     } catch {
@@ -11334,6 +11321,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     markReferenceDocumentsAuthorityReady(true);
     referenceDocumentsCurrentRef.current = updatedReferences;
     setReferenceDocuments(updatedReferences);
+    projectDocumentSharedRecordSync.noteOwnEdit(synchronizedDocument.id, sharedDocument, synchronizedDocument); // his own edit on this device (S1e)
     projectDocumentSharedRecordSync.queueAfterChange(synchronizedDocument.id, next);
   }
 
@@ -11352,99 +11340,26 @@ Note: This update was opened through Outlook because PLZ email security may reje
       { text: 'Import This Schedule', onPress: () => { void reviewProjectScheduleDocumentImport(document, projectName); } },
       { text: 'Make Current', onPress: () => { void makeProjectScheduleDocumentCurrent(documentId, true); } },
     ]);
-    const referenceUpdatedAt = new Date().toISOString();
-
-    let referenceDocument = importedCopy || (document.referenceDocumentId
+    const referenceDocument = importedCopy || (document.referenceDocumentId
       ? referenceDocuments.find(item => item.id === document.referenceDocumentId)
       : null);
-    const alreadyShared = Boolean(referenceDocument);
-
-    try {
-      if (!referenceDocument) {
-        const readableDocument = await ensureVerifiedProjectDocumentBytes(document);
-        if (!readableDocument.localUri) throw new Error('Verified schedule path is missing.');
-        const directory = await ensureReferenceDocumentsDirectory();
-        const originalFileName = document.name;
-        const targetUri = `${directory}${uid()}-${sanitizeFilename(originalFileName)}`;
-        await FileSystem.copyAsync({ from: readableDocument.localUri, to: targetUri });
-
-        const matchingProjectDocuments = projectDocuments.filter(item =>
-          item.category === 'Schedule' &&
-          item.name === document.name &&
-          item.mimeType === document.mimeType &&
-          item.sizeBytes === document.sizeBytes &&
-          Math.abs(Date.parse(item.importedAt) - Date.parse(document.importedAt)) < 5 * 60 * 1000,
-        );
-        const matchingProjectIds = new Set(
-          matchingProjectDocuments.map(item => item.projectId),
-        );
-        const projectName = matchingProjectIds.size === 1
-          ? projects.find(name => authorityProjectId(name) === document.projectId) || null
-          : null;
-        const ownedRecord = document.ownedFileId
-          ? parseOwnedLocalFileManifest(document.ownedFileManifest).files[document.ownedFileId]
-          : null;
-
-        referenceDocument = normalizeReferenceDocument({
-          id: uid(),
-          name: originalFileName.replace(/\.[^/.]+$/, ''),
-          originalFileName,
-          uri: targetUri,
-          mimeType: document.mimeType,
-          category: 'Schedules',
-          notes: document.note || '',
-          isCurrent: true,
-          importedAt: document.importedAt,
-          projectId: projectName ? document.projectId : null,
-          projectName,
-          storagePath: document.storagePath,
-          sizeBytes: document.sizeBytes,
-          contentSha256: ownedRecord?.sha256 || null,
-          updatedAt: referenceUpdatedAt,
-        });
-
-        const linkedReferenceDocumentId = referenceDocument.id;
-        const linkMatchingUploads = (documents: ProjectDocument[]) =>
-          documents.map(item => matchingProjectDocuments.some(match => match.id === item.id)
-            ? { ...item, referenceDocumentId: linkedReferenceDocumentId }
-            : item);
-        setProjectDocuments(linkMatchingUploads);
-        setDraft(prev => ({
-          ...prev,
-          documents: linkMatchingUploads(prev.documents || []),
-        }));
-        setSavedUpdates(prev => prev.map(update => ({
-          ...update,
-          documents: linkMatchingUploads(update.documents || []),
-        })));
-      }
-    } catch {
-      Alert.alert(
-        'Current schedule not changed',
-        'The schedule file could not be verified and copied into the shared schedule record.',
-      );
-      return;
+    // Open item 3.1: made current only by the cloud, so on every device or on none. A card with no shared copy (never
+    // shared, or still uploading) is shared first and made current by nobody here; the line says what to do.
+    if (!referenceDocument) {
+      const notYet = phoneScheduleCardNotSharedYet(document);
+      if (notYet.share) await publishUploadedProjectDocument(document, bindProjectDocumentUploadToAccount()).catch(() => undefined);
+      return Alert.alert('Current schedule not changed', notYet.message);
     }
-
-    const selectedReferenceDocument = referenceDocument;
     // A schedule already shared is made current by the cloud; a flag flipped
     // here never reached it (audit A5 F4).
-    if (alreadyShared && !(await activateReferenceDocument(selectedReferenceDocument.id))) return;
-    // By the cloud's rule, not every schedule of every project retired (owner answer Q15).
-    const nextReferenceDocuments = alreadyShared ? referenceDocumentsCurrentRef.current
-      : scheduleDocumentsAfterActivation(selectedReferenceDocument, referenceDocuments, retirement, referenceUpdatedAt);
+    if (!(await activateReferenceDocument(referenceDocument.id))) return;
 
-    if (!alreadyShared) {
-      markReferenceDocumentsAuthorityReady(true);
-      setReferenceDocuments(nextReferenceDocuments);
-    }
-
-    const updatedAt = referenceUpdatedAt;
+    const updatedAt = new Date().toISOString();
     const markCurrent = (documents: ProjectDocument[]) =>
       markCurrentProjectScheduleDocument({
         documents,
         documentId,
-        referenceDocumentId: selectedReferenceDocument.id,
+        referenceDocumentId: referenceDocument.id,
         updatedAt,
       });
 
@@ -11459,20 +11374,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
         documents: markCurrent(update.documents || []),
       })),
     );
-
-    if (alreadyShared) return;
-    referenceDocumentsCurrentRef.current = nextReferenceDocuments;
-    const queueResults = await Promise.allSettled(
-      nextReferenceDocuments
-        .filter(item => !referenceDocuments.includes(item))
-        .map(document => queueReferenceDocumentRecord(document)),
-    );
-    if (queueResults.some(result => result.status === 'rejected')) {
-      Alert.alert(
-        'Current schedule saved on this device',
-        'The shared cloud record could not be updated yet. Use Sync Now when connected.',
-      );
-    }
   }
 
   async function reviewProjectScheduleDocumentImport(document: ProjectDocument, projectName: string | null) {
@@ -11666,7 +11567,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ? scheduleItemsForExactImportBatch(scheduleItems, document).length - relatedScheduleItems.length
       : 0;
 
-    const pdfOnly = !scheduleFileOnlyDeleteRefusal(document, referenceDocuments); // not offered for the lookahead or the master in effect (owner answers Q36, Q38)
+    const pdfOnly = !scheduleDocumentIsScheduleLike(document); // a schedule file always goes with its items: none offers a delete of the PDF alone (the owner's answer to question 46, 13 Oct 2026; an older master's file deleted alone listed every task a newer master had moved twice). A message screenshot is not a schedule and keeps both choices: one picture of a set took every activity of the set with it (review pass 4, C-4)
     Alert.alert(
       'Delete uploaded schedule?',
       `${document.name} will be removed${relatedScheduleItems.length === 0 ? '. It has no schedule items of its own' : `${pdfOnly ? '. You can also remove' : ', with'} the ${relatedScheduleItems.length} schedule ${relatedScheduleItems.length === 1 ? 'item' : 'items'} only this PDF contains${pdfOnly ? ' so outdated dates do not confuse Upcoming' : ''}`}.${sharedCount > 0 ? ` ${sharedCount} ${sharedCount === 1 ? 'item another schedule also contains stays' : 'items another schedule also contains stay'}.` : ''}${scheduleLookaheadDeleteNote(scheduleItems as unknown as import('./types').ScheduleItem[], document, relatedScheduleItems as unknown as import('./types').ScheduleItem[], referenceDocuments)}`,
@@ -12455,7 +12356,8 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return null;
     }
   }
-  async function approveScheduleImport(batch: PIEScheduleImportBatch): Promise<void> {
+  async function approveScheduleImport(batch: PIEScheduleImportBatch): Promise<string | null> {
+    const itemsBefore = scheduleItemsCurrentRef.current; // the tasks before it: which it turned High is said at the review (open item 2.38)
     let scheduleSyncItems: ScheduleItem[] = [];
     let referenceDocumentSyncRecords: ReferenceDocument[] = [];
     const archivedKeys = new Set(
@@ -12657,6 +12559,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
         'The reviewed schedule is protected in the local recovery queue. Vitruvius will retry any unfinished cloud work automatically.',
       );
     }
+    return scheduleTurnedHighLineBetween(itemsBefore, appliedSynchronizedItems);
   }
 
   function ensureScheduleParentProjects(
@@ -15517,6 +15420,7 @@ function AddPhotosScreen({
           projectName={update.projectName}
           photo={photo}
           index={index}
+          locationLine={libraryPhotoLocationLine(photo, projectAreas)}
           onUpdate={next => onUpdatePhoto(photo.id, next)}
           onRemove={() => onRemovePhoto(photo.id)}
           onMoveUp={() => onMovePhoto(photo.id, 'up')}
@@ -15835,6 +15739,7 @@ function PhotoCard({
   projectName,
   photo,
   index,
+  locationLine,
   onUpdate,
   onRemove,
   onMoveUp,
@@ -15848,6 +15753,7 @@ function PhotoCard({
   projectName: string;
   photo: UpdatePhoto;
   index: number;
+  locationLine?: string | null;
   onUpdate: (
     next: Partial<UpdatePhoto>,
   ) => void;
@@ -15891,6 +15797,9 @@ function PhotoCard({
               ? 'Ready for update'
               : 'Needs field note'}
           </Text>
+          {locationLine ? (
+            <Text style={styles.bodyText}>{locationLine}</Text>
+          ) : null}
         </View>
 
         <TouchableOpacity
@@ -18449,56 +18358,6 @@ function ContactsScreen({
     next: Partial<ProjectContact>,
   ) => void;
 }) {
-  const [status, setStatus] = useState<
-    'idle' | 'loading' | 'denied' | 'error' | 'unavailable'
-  >('idle');
-
-  async function choosePhoneContact() {
-    setStatus('loading');
-
-    try {
-      if (Platform.OS !== 'ios') {
-        const permission = await Contacts.requestPermissionsAsync();
-
-        if (!permission.granted) {
-          setStatus('denied');
-          return;
-        }
-      }
-
-      const contact = await Contacts.presentContactPickerAsync();
-
-      if (!contact) {
-        setStatus('idle');
-        return;
-      }
-
-      const projectContact = phoneContactToProjectContact(contact);
-
-      if (!projectContact.email && !projectContact.phone) {
-        Alert.alert(
-          'No email or phone',
-          'Choose a contact with an email address or phone number.',
-        );
-        setStatus('idle');
-        return;
-      }
-
-      onTogglePhoneContact(projectContact);
-      setStatus('idle');
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes('presentContactPickerAsync')
-      ) {
-        setStatus('unavailable');
-        return;
-      }
-
-      setStatus('error');
-    }
-  }
-
   const selectedContactIds = useMemo(
     () => new Set(selectedRecipients.contactIds),
     [selectedRecipients.contactIds],
@@ -18541,46 +18400,7 @@ function ContactsScreen({
         Phone Contacts
       </Text>
 
-      <SecondaryButton
-        label="Choose Contact"
-        icon="person-add-outline"
-        onPress={() => {
-          void choosePhoneContact();
-        }}
-      />
-
-      {status === 'idle' ? (
-        <Text style={styles.mutedNote}>
-          Use the phone contact picker to search and choose one recipient at a time.
-        </Text>
-      ) : null}
-
-      {status === 'loading' ? (
-        <Text style={styles.mutedNote}>
-          Opening contacts...
-        </Text>
-      ) : null}
-
-      {status === 'denied' ? (
-        <EmptyState
-          title="Contacts access needed"
-          text="Allow contacts access in Settings, then come back here to choose recipients."
-        />
-      ) : null}
-
-      {status === 'error' ? (
-        <EmptyState
-          title="Contacts unavailable"
-          text="Phone contacts could not be opened right now."
-        />
-      ) : null}
-
-      {status === 'unavailable' ? (
-        <EmptyState
-          title="Rebuild needed"
-          text="The installed app does not include the native contacts picker yet. Rebuild the app, then try again."
-        />
-      ) : null}
+      <PhoneContactPicker onPicked={contact => onTogglePhoneContact(phoneContactToProjectContact(contact))} />
 
       <SecondaryButton
         label={doneLabel}
@@ -19369,7 +19189,7 @@ function ScheduleScreen({
   onDelete: (itemId: string) => void;
   onImport: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
   onImportScreenshot: (onProcessingStart: () => void) => Promise<PIEScheduleImportBatch | null>;
-  onApproveImport: (batch: PIEScheduleImportBatch) => Promise<void>;
+  onApproveImport: (batch: PIEScheduleImportBatch) => Promise<string | null>;
   onCancelImport: (batch: PIEScheduleImportBatch) => void;
   incomingImportBatch: PIEScheduleImportBatch | null;
   onIncomingImportConsumed: () => void;

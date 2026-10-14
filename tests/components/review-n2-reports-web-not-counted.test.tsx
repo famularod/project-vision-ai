@@ -441,8 +441,9 @@ describe('review N2 (Medium): what a prepared report remembers of the wait', () 
     // R4 item 4a (deliberate): the facts part is version 2.0 now. R10 (the coordinator's decision on review pass 3,
     // P3-2) reversed what followed here: a report saved under 1.0 for the same facts is out of date, like any
     // report saved by the build before; one saved under today's version stays current.
-    expect(counted.fingerprint).toMatch(/^dave-report-source\/2\.0:[0-9a-f]+:media-[0-9a-f]{8}:period-sent:2026-10-01T10:00:00\.000Z$/);
-    const savedUnderOne = counted.fingerprint.replace(/^dave-report-source\/2\.0:[0-9a-f]+/, buildDAVELegacyReportSourceFingerprint(buildDAVEWebReportTruths(facts, null)));
+    // Today's version (3.0 since HIGH item 1).
+    expect(counted.fingerprint).toMatch(/^dave-report-source\/3\.0:[0-9a-f]+:media-[0-9a-f]{8}:period-sent:2026-10-01T10:00:00\.000Z$/);
+    const savedUnderOne = counted.fingerprint.replace(/^dave-report-source\/3\.0:[0-9a-f]+/, buildDAVELegacyReportSourceFingerprint(buildDAVEWebReportTruths(facts, null)));
     expect(savedUnderOne).toMatch(/^dave-report-source\/1\.0:[0-9a-f]+:media-/);
     expect(daveWebReportSourceIsCurrent(savedUnderOne, counted)).toBe(false);
     expect(daveWebReportSourceIsCurrent(counted.fingerprint, counted)).toBe(true);

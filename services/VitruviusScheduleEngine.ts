@@ -13,6 +13,7 @@ import {
   SCHEDULE_MAX_DURATION_WORKING_DAYS,
   scheduleDayIsSupported,
 } from './ScheduleInputLimits';
+import { isScheduleWorkingDay, scheduleTaskLengthInWorkingDays } from './ScheduleWorkingDays';
 
 export type VitruviusScheduleIssueCode =
   | 'dependency_cycle'
@@ -20,7 +21,8 @@ export type VitruviusScheduleIssueCode =
   | 'missing_predecessor'
   | 'missing_predecessor_finish'
   | 'completed_task_locked'
-  | 'unsupported_task_duration';
+  | 'unsupported_task_duration'
+  | 'phase_link_circle';
 
 /**
  * An 'error' is a fault in the plan (a circle of links, a link to a task that
@@ -75,11 +77,15 @@ export class VitruviusScheduleCalculationError extends Error {
 export function previewVitruviusFinishToStartSchedule(
   sourceItems: readonly ScheduleItem[],
 ): VitruviusSchedulePreview {
-  const network = buildPIEScheduleDependencyNetwork(sourceItems);
-  const issues: VitruviusScheduleIssue[] = [];
+  // Open item 3.6: a link to a phase is worked out as links to the work in it; a circle through a phase is named.
+  const phaseLinks = scheduleItemsWithPhaseLinksWorkedOut(sourceItems);
+  const calculatedItems = phaseLinks.items;
+  const savedLinks = new Map(sourceItems.map(item => [item.id, normalizeScheduleDependencies(item.dependencies)]));
+  const network = buildPIEScheduleDependencyNetwork(calculatedItems);
+  const issues: VitruviusScheduleIssue[] = [...phaseLinks.issues];
   const changes: VitruviusScheduleDateChange[] = [];
   const itemsById = new Map<string, ScheduleItem>(
-    sourceItems.map(item => [
+    calculatedItems.map(item => [
       item.id,
       {
         ...item,
@@ -93,7 +99,8 @@ export function previewVitruviusFinishToStartSchedule(
       code: 'dependency_cycle',
       severity: 'error',
       itemId: cycle[0] || null,
-      message: `Dependency cycle includes ${cycle.join(', ')}.`,
+      // Named task by task (T1b); it read "Dependency cycle includes <ids>".
+      message: scheduleTaskCircleText(cycle, itemsById),
     }));
   });
   network.nodes.forEach(node => {
@@ -108,7 +115,7 @@ export function previewVitruviusFinishToStartSchedule(
   });
 
   if (network.cycles.length === 0) {
-    topologicalScheduleOrder(sourceItems, network).forEach(itemId => {
+    topologicalScheduleOrder(calculatedItems, network).forEach(itemId => {
       const item = itemsById.get(itemId);
       if (!item) return;
       const dependencies = normalizeScheduleDependencies(item.dependencies);
@@ -164,7 +171,16 @@ export function previewVitruviusFinishToStartSchedule(
         return;
       }
 
-      const durationDays = scheduleDurationDays(item, currentStart);
+      // The task's length by the one rule the critical path uses too (the
+      // owner's answer to question 41, 13 Oct 2026): what he typed, or the
+      // working days its dates span. Worked out, never counted out. (A
+      // record with no finish at all was only ever read when no length was
+      // typed; it still is not read as text here.)
+      const durationDays = scheduleTaskLengthInWorkingDays(
+        item,
+        currentStart,
+        typeof item.finishDate === 'string' ? parseScheduleDate(item.finishDate) : null,
+      );
       // Checked before the duration is walked day by day (independent review
       // R08: a stored or imported duration of a billion days did not finish).
       // It is a note about this one task, which is left as it is; he did not
@@ -200,8 +216,9 @@ export function previewVitruviusFinishToStartSchedule(
       changes.push(Object.freeze({
         itemId,
         taskName: item.taskName,
+        // The links as saved: "After Sitework", not the tasks in it (3.6).
         predecessorItemIds: Object.freeze(
-          dependencies.map(dependency => dependency.predecessorItemId),
+          (savedLinks.get(itemId) ?? dependencies).map(dependency => dependency.predecessorItemId),
         ) as unknown as string[],
         previousStartDate: item.startDate,
         previousFinishDate: item.finishDate,
@@ -215,7 +232,11 @@ export function previewVitruviusFinishToStartSchedule(
   const safeToApply = !issues.some(issue => issue.severity === 'error');
   return Object.freeze({
     items: Object.freeze(
-      sourceItems.map(item => itemsById.get(item.id) || item),
+      sourceItems.map(item => {
+        const calculated = itemsById.get(item.id);
+        // Each with its links as saved (a link to a phase stays a link to the phase, 3.6).
+        return calculated ? { ...calculated, dependencies: normalizeScheduleDependencies(item.dependencies) } : item;
+      }),
     ) as unknown as ScheduleItem[],
     changes: Object.freeze(changes) as unknown as VitruviusScheduleDateChange[],
     issues: Object.freeze(issues) as unknown as VitruviusScheduleIssue[],
@@ -240,6 +261,328 @@ export function applyVitruviusSchedulePreview(
     ...item,
     dependencies: normalizeScheduleDependencies(item.dependencies),
   }));
+}
+
+/**
+ * Open item 3.6 (14 Oct 2026), the coordinator's rule: a task may start after a phase, as in Microsoft Project. A
+ * phase finishes when the last task or milestone under it finishes (at any depth), so a finish-to-start link from a
+ * phase means "starts after every task and milestone in that phase is finished". The calculation takes such a link
+ * as a link to each of them, with the same lag; a phase with nothing under it yet is placed by its own dates, as a
+ * task is. A link to a phase could not be saved on the computer ("this schedule can only place an item after tasks
+ * and milestones"), and the critical path left it out.
+ *
+ * A phase may not follow one of its own tasks, a task in a phase may not start after that phase, and no link may
+ * make a circle through a phase. Such a link is left out of the calculation and named as an error: "Apply dates"
+ * and the critical path are held until it is removed. (A phase starts no later than the work in it, and its own
+ * predecessors come before that work, so a circle is looked for with each phase as a start and a finish.) A circle
+ * of tasks alone is named as before. The items come back with their links worked out, for the calculation only.
+ */
+export function scheduleItemsWithPhaseLinksWorkedOut(
+  sourceItems: readonly ScheduleItem[],
+): Readonly<{ items: readonly ScheduleItem[]; issues: readonly VitruviusScheduleIssue[] }> {
+  const plan = schedulePhasePlan(sourceItems);
+  const linksOf = (item: ScheduleItem) => normalizeScheduleDependencies(item.dependencies);
+  const throughPhase = (item: ScheduleItem, predecessorId: string) =>
+    plan.isPhase(item.id) || plan.isPhase(predecessorId);
+  if (!sourceItems.some(item => linksOf(item).some(link => throughPhase(item, link.predecessorItemId)))) {
+    return Object.freeze({ items: sourceItems, issues: Object.freeze([]) });
+  }
+
+  const issues: VitruviusScheduleIssue[] = [];
+  const circular = new Set<string>();
+  sourceItems.forEach(item => {
+    linksOf(item).forEach(link => {
+      const predecessorId = link.predecessorItemId;
+      if (!plan.has(predecessorId) || !throughPhase(item, predecessorId)) return;
+      if (!plan.finishReachedFrom(item.id).has(predecessorId)) return;
+      circular.add(`${item.id}\u0000${predecessorId}`);
+      issues.push(Object.freeze({
+        code: 'phase_link_circle',
+        severity: 'error',
+        itemId: item.id,
+        message: phaseCircleText(item, plan.item(predecessorId)!, plan),
+      }));
+    });
+  });
+
+  const items = sourceItems.map(item => {
+    const links = linksOf(item);
+    if (!links.some(link => plan.isPhase(link.predecessorItemId) || circular.has(`${item.id}\u0000${link.predecessorItemId}`))) {
+      return item;
+    }
+    const worked = new Map<string, ScheduleDependency>();
+    const add = (predecessorItemId: string, lagDays: number) => {
+      const had = worked.get(predecessorItemId);
+      if (!had || (had.lagDays || 0) < lagDays) {
+        worked.set(predecessorItemId, Object.freeze({ predecessorItemId, type: 'FS', lagDays }));
+      }
+    };
+    links.forEach(link => {
+      if (circular.has(`${item.id}\u0000${link.predecessorItemId}`)) return;
+      const work = plan.isPhase(link.predecessorItemId) ? plan.workUnder(link.predecessorItemId) : [];
+      if (work.length === 0) add(link.predecessorItemId, link.lagDays || 0);
+      else work.forEach(id => add(id, link.lagDays || 0));
+    });
+    return { ...item, dependencies: [...worked.values()] };
+  });
+  return Object.freeze({ items: Object.freeze(items), issues: Object.freeze(issues) });
+}
+
+/**
+ * The items an item may not be set to start after (open item 3.6): each would close a circle. A task or milestone
+ * that already comes after it; a phase it is in; a phase with work in it that comes after it, or that is itself set
+ * to start after it. The item itself is among them. `parentItemId`, when given, is the phase the item is in (or
+ * none), as a form holds it before it is saved; a new item is asked for with a null id.
+ */
+export function scheduleItemsThatWouldCloseACircle(
+  itemId: string | null,
+  sourceItems: readonly ScheduleItem[],
+  parentItemId?: string | null,
+): ReadonlySet<string> {
+  const { selfId, plan } = schedulePlanForForm(itemId, sourceItems, parentItemId);
+  return plan.finishReachedFrom(selfId);
+}
+
+function schedulePlanForForm(itemId: string | null, sourceItems: readonly ScheduleItem[], parentItemId?: string | null) {
+  const selfId = itemId?.trim() || '\u0000new';
+  const self = sourceItems.find(item => item.id === selfId);
+  const items = parentItemId === undefined && self
+    ? sourceItems
+    : [
+        ...sourceItems.filter(item => item.id !== selfId),
+        { ...(self ?? { dependencies: [] }), id: selfId, parentItemId: parentItemId ?? self?.parentItemId ?? null } as ScheduleItem,
+      ];
+  return { selfId, plan: schedulePhasePlan(items) };
+}
+
+type SchedulePhasePlan = Readonly<{
+  has: (id: string) => boolean;
+  item: (id: string) => ScheduleItem | undefined;
+  isPhase: (id: string) => boolean;
+  /** Whether an item is in a phase, at any depth. */
+  isIn: (itemId: string, phaseId: string) => boolean;
+  /** The tasks and milestones under a phase, at any depth. */
+  workUnder: (phaseId: string) => string[];
+  /** The items whose finish cannot come before this item starts: through links, and through the phases they are in. */
+  finishReachedFrom: (itemId: string) => Set<string>;
+  /** The start and finish points from one to another (back to itself: a circle), first and last included; or null. */
+  path: (from: string, to: string) => string[] | null;
+}>;
+
+function schedulePhasePlan(sourceItems: readonly ScheduleItem[]): SchedulePhasePlan {
+  const byId = new Map<string, ScheduleItem>();
+  sourceItems.forEach(item => {
+    const id = item.id?.trim();
+    if (id && !byId.has(id)) byId.set(id, item);
+  });
+  const isPhase = (id: string) => byId.get(id)?.isSummary === true;
+  const phaseOf = (id: string) => {
+    const parentId = byId.get(id)?.parentItemId?.trim();
+    return parentId && parentId !== id && isPhase(parentId) ? parentId : null;
+  };
+  const childrenOf = new Map<string, string[]>();
+  byId.forEach((_item, id) => {
+    const parentId = phaseOf(id);
+    if (!parentId) return;
+    const children = childrenOf.get(parentId);
+    if (children) children.push(id);
+    else childrenOf.set(parentId, [id]);
+  });
+  // Each item is a start and a finish. A phase starts before the work in it and finishes after it; a link joins
+  // the predecessor's finish to the successor's start.
+  let next: Map<string, string[]> | null = null;
+  const graph = () => {
+    if (next) return next;
+    const edges = new Map<string, string[]>();
+    const edge = (from: string, to: string) => {
+      const existing = edges.get(from);
+      if (existing) existing.push(to);
+      else edges.set(from, [to]);
+    };
+    byId.forEach((item, id) => {
+      edge(`s:${id}`, `f:${id}`);
+      const parentId = phaseOf(id);
+      if (parentId) {
+        edge(`s:${parentId}`, `s:${id}`);
+        edge(`f:${id}`, `f:${parentId}`);
+      }
+      normalizeScheduleDependencies(item.dependencies).forEach(link => {
+        if (byId.has(link.predecessorItemId)) edge(`f:${link.predecessorItemId}`, `s:${id}`);
+      });
+    });
+    next = edges;
+    return edges;
+  };
+  return {
+    has: id => byId.has(id),
+    item: id => byId.get(id),
+    isPhase,
+    isIn: (itemId, phaseId) => {
+      const seen = new Set<string>();
+      for (let at = phaseOf(itemId); at && !seen.has(at); at = phaseOf(at)) {
+        if (at === phaseId) return true;
+        seen.add(at);
+      }
+      return false;
+    },
+    workUnder: phaseId => {
+      const work: string[] = [];
+      const seen = new Set<string>([phaseId]);
+      const queue = [...(childrenOf.get(phaseId) || [])];
+      while (queue.length > 0) {
+        const id = queue.shift()!;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        if (isPhase(id)) queue.push(...(childrenOf.get(id) || []));
+        else work.push(id);
+      }
+      return work;
+    },
+    finishReachedFrom: itemId => {
+      const edges = graph();
+      const reached = new Set<string>();
+      const seen = new Set<string>([`s:${itemId}`]);
+      const queue = [`s:${itemId}`];
+      while (queue.length > 0) {
+        const node = queue.shift()!;
+        if (node.startsWith('f:')) reached.add(node.slice(2));
+        (edges.get(node) || []).forEach(to => {
+          if (seen.has(to)) return;
+          seen.add(to);
+          queue.push(to);
+        });
+      }
+      return reached;
+    },
+    path: (from, to) => {
+      const edges = graph();
+      const cameFrom = new Map<string, string>();
+      const queue: string[] = [];
+      (edges.get(from) || []).forEach(node => {
+        if (!cameFrom.has(node)) {
+          cameFrom.set(node, from);
+          queue.push(node);
+        }
+      });
+      while (queue.length > 0) {
+        const node = queue.shift()!;
+        if (node === to) {
+          const nodes = [to];
+          for (let at = cameFrom.get(to)!; at !== from; at = cameFrom.get(at)!) nodes.unshift(at);
+          return [from, ...nodes];
+        }
+        (edges.get(node) || []).forEach(next => {
+          if (cameFrom.has(next)) return;
+          cameFrom.set(next, node);
+          queue.push(next);
+        });
+      }
+      return null;
+    },
+  };
+}
+
+/**
+ * What he reads of a link that would close a circle through a phase (3.6). T1b (review pass 6, H6S-1): a longer
+ * circle is named step by step with every task and phase in it, the task that closed it included; it had named only
+ * the link's two ends ("Paving starts after the phase Sitework, and the phase Sitework also waits for Paving"), so he
+ * could not see which link to remove.
+ */
+function phaseCircleText(item: ScheduleItem, predecessor: ScheduleItem, plan: SchedulePhasePlan): string {
+  const name = (target: ScheduleItem) => target.taskName.trim();
+  const called = (target: ScheduleItem, start = false) =>
+    plan.isPhase(target.id) ? `${start ? 'The' : 'the'} phase ${name(target)}` : name(target);
+  if (plan.isPhase(predecessor.id) && plan.isIn(item.id, predecessor.id)) {
+    return `${called(item, true)} is in the phase ${name(predecessor)}, so it cannot start after ${name(predecessor)} is finished: that is a circle.`;
+  }
+  if (plan.isPhase(item.id) && plan.isIn(predecessor.id, item.id)) {
+    return `The phase ${name(item)} is set to start after ${name(predecessor)}, one of its own ${plan.isPhase(predecessor.id) ? 'phases' : 'tasks'}: that is a circle.`;
+  }
+  const rest = plan.path(`s:${item.id}`, `f:${predecessor.id}`) ?? [];
+  return scheduleCircleText([
+    { kind: 'after', item, predecessor },
+    ...circleStepsOf(rest, plan),
+  ], plan.isPhase);
+}
+
+/** One step of a circle: an item that starts after another, or an item in a phase. */
+export type ScheduleCircleStep = Readonly<
+  | { kind: 'after'; item: ScheduleItem; predecessor: ScheduleItem }
+  | { kind: 'in'; item: ScheduleItem; phase: ScheduleItem }
+>;
+
+/** The steps a run of start and finish points makes: a link, or a phase's start or finish around its work. */
+function circleStepsOf(nodes: readonly string[], plan: SchedulePhasePlan): ScheduleCircleStep[] {
+  const steps: ScheduleCircleStep[] = [];
+  const said = new Set<string>();
+  nodes.slice(1).forEach((to, index) => {
+    const from = nodes[index];
+    const fromItem = plan.item(from.slice(2));
+    const toItem = plan.item(to.slice(2));
+    if (!fromItem || !toItem || fromItem === toItem) return;
+    const step: ScheduleCircleStep | null = from[0] === 'f' && to[0] === 's'
+      ? { kind: 'after', item: toItem, predecessor: fromItem }
+      : from[0] === 's' && to[0] === 's'
+        ? { kind: 'in', item: toItem, phase: fromItem }
+        : from[0] === 'f' && to[0] === 'f'
+          ? { kind: 'in', item: fromItem, phase: toItem }
+          : null;
+    if (!step) return;
+    const key = step.kind === 'after' ? `a:${step.item.id}:${step.predecessor.id}` : `i:${step.item.id}:${step.phase.id}`;
+    if (said.has(key)) return;
+    said.add(key);
+    steps.push(Object.freeze(step));
+  });
+  return steps;
+}
+
+/** A circle, step by step, as the Gantt and the Impact preview say it (T1b). */
+function scheduleCircleText(steps: readonly ScheduleCircleStep[], isPhase: (id: string) => boolean): string {
+  const name = (target: ScheduleItem) => target.taskName.trim();
+  const called = (target: ScheduleItem, start: boolean) =>
+    isPhase(target.id) ? `${start ? 'The' : 'the'} phase ${name(target)}` : name(target);
+  const phrases = steps.map((step, index) => step.kind === 'after'
+    ? `${called(step.item, index === 0)} starts after ${called(step.predecessor, false)}`
+    : `${called(step.item, index === 0)} is in the phase ${name(step.phase)}`);
+  return `${joinedWithAnd(phrases)}: that is a circle, and the schedule cannot place them until one of these is changed.`;
+}
+
+function joinedWithAnd(phrases: readonly string[]) {
+  return phrases.length < 2 ? phrases.join('') : `${phrases.slice(0, -1).join(', ')}, and ${phrases[phrases.length - 1]}`;
+}
+
+/**
+ * A circle of tasks alone, as the network finds it (each id followed by the next, the last by the first), named
+ * task by task (T1b). It read "Dependency cycle includes <ids>".
+ */
+export function scheduleTaskCircleText(
+  cycle: readonly string[],
+  itemsById: ReadonlyMap<string, ScheduleItem>,
+): string {
+  const named = (id: string) => itemsById.get(id) ?? ({ id, taskName: id } as ScheduleItem);
+  const steps = cycle.map((id, index) => Object.freeze({
+    kind: 'after' as const,
+    item: named(cycle[(index + 1) % cycle.length]),
+    predecessor: named(id),
+  }));
+  return cycle.length > 1
+    ? scheduleCircleText(steps, () => false)
+    : `${named(cycle[0]).taskName.trim()} is set to start after itself: that is a circle, and the schedule cannot place it until that link is removed.`;
+}
+
+/**
+ * T1b (review pass 6, H6S-1): the circle an item is in, step by step from the item, through links and through the
+ * phases things are in; or null. A save of the computer's Schedule editor is refused when the item, as it would be
+ * saved, is in one it was not in before.
+ */
+export function scheduleCircleThrough(
+  itemId: string,
+  sourceItems: readonly ScheduleItem[],
+): readonly ScheduleCircleStep[] | null {
+  const plan = schedulePhasePlan(sourceItems);
+  if (!plan.has(itemId)) return null;
+  const nodes = plan.path(`s:${itemId}`, `s:${itemId}`) ?? plan.path(`f:${itemId}`, `f:${itemId}`);
+  return nodes ? Object.freeze(circleStepsOf(nodes, plan)) : null;
 }
 
 /**
@@ -328,61 +671,22 @@ function topologicalScheduleOrder(
   return result;
 }
 
-function scheduleDurationDays(item: ScheduleItem, parsedStart: Date | null) {
-  if (item.isMilestone) return 0;
-  if (
-    typeof item.durationDays === 'number' &&
-    Number.isFinite(item.durationDays) &&
-    item.durationDays > 0
-  ) {
-    return Math.max(1, Math.round(item.durationDays));
-  }
-  const finish = parseScheduleDate(item.finishDate);
-  if (parsedStart && finish && finish.getTime() >= parsedStart.getTime()) {
-    // More calendar days than the longest supported duration covers are not
-    // counted out one by one; the caller refuses the task (review R08).
-    if (finish.getTime() - parsedStart.getTime() > LONGEST_SUPPORTED_SPAN_MS) {
-      return SCHEDULE_MAX_DURATION_WORKING_DAYS + 1;
-    }
-    return Math.max(1, workingDaySpan(parsedStart, finish));
-  }
-  return 1;
-}
-
-/** The calendar time the longest supported duration can cover: seven days for every five worked, and a week over. */
-const LONGEST_SUPPORTED_SPAN_MS = (Math.ceil(SCHEDULE_MAX_DURATION_WORKING_DAYS / 5) * 7 + 7) * 86_400_000;
-
-function workingDaySpan(start: Date, finish: Date) {
-  let count = 0;
-  const cursor = new Date(start.getTime());
-  while (cursor.getTime() <= finish.getTime()) {
-    if (isWorkingDay(cursor)) count += 1;
-    cursor.setUTCDate(cursor.getUTCDate() + 1);
-  }
-  return count;
-}
-
 function nextWorkingDay(value: Date) {
   const next = new Date(value.getTime());
   next.setUTCDate(next.getUTCDate() + 1);
-  while (!isWorkingDay(next)) next.setUTCDate(next.getUTCDate() + 1);
+  while (!isScheduleWorkingDay(next)) next.setUTCDate(next.getUTCDate() + 1);
   return next;
 }
 
 function addWorkingDays(value: Date, days: number) {
   const result = new Date(value.getTime());
-  while (!isWorkingDay(result)) result.setUTCDate(result.getUTCDate() + 1);
+  while (!isScheduleWorkingDay(result)) result.setUTCDate(result.getUTCDate() + 1);
   let remaining = Math.max(0, Math.trunc(days));
   while (remaining > 0) {
     result.setUTCDate(result.getUTCDate() + 1);
-    if (isWorkingDay(result)) remaining -= 1;
+    if (isScheduleWorkingDay(result)) remaining -= 1;
   }
   return result;
-}
-
-function isWorkingDay(value: Date) {
-  const day = value.getUTCDay();
-  return day !== 0 && day !== 6;
 }
 
 function parseScheduleDate(value: string) {
