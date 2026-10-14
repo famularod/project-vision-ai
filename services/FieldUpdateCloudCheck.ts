@@ -56,10 +56,18 @@ function waitingUpdateIds(queue: readonly SyncQueueItem[]): string[] {
     : []));
 }
 
+/**
+ * Review pass 5's H5S-2 (14 Oct 2026, Low, caused by S1b): every update reading "Cloud Synced" the check looked at, by
+ * what it found: in the cloud; not in it and still waiting in this device's upload queue; not in it and named by a
+ * deletion record (deleted on another device, this device not refreshed since). The rest are the ones it lists. The
+ * count line said "All N ... are in the cloud" with the second and third kinds among them.
+ */
+export type FieldUpdateCloudCheckCounts = Readonly<{ checked: number; inCloud: number; waiting: number; deletedElsewhere: number }>;
+
 export type FieldUpdateCloudCheckOutcome =
   | Readonly<{ kind: 'nothing_to_check' }>
-  | Readonly<{ kind: 'none_found'; checked: number }>
-  | Readonly<{ kind: 'found'; checked: number; updates: readonly CheckedUpdate[] }>
+  | Readonly<{ kind: 'none_found' } & FieldUpdateCloudCheckCounts>
+  | Readonly<{ kind: 'found'; updates: readonly CheckedUpdate[] } & FieldUpdateCloudCheckCounts>
   | Readonly<{ kind: 'could_not_run'; reason: 'not_signed_in' | 'no_signal' | 'not_set_up' | 'account_changed' | 'unreadable' }>;
 
 /** Why a cloud read failed, in the check's own terms. */
@@ -119,7 +127,11 @@ async function checkMarked(
   // The lists are this account's: a sign-in to another account meanwhile makes them the wrong lists.
   if (!cloudOwnerUnchanged(account)) return { kind: 'could_not_run', reason: 'account_changed' };
   const found = fieldUpdatesMarkedSyncedMissingFromCloud({ local: marked, cloud: cloud.data, deletedIds, waitingIds });
-  return found.length > 0 ? { kind: 'found', checked: marked.length, updates: found } : { kind: 'none_found', checked: marked.length };
+  const notInCloud = fieldUpdatesMarkedSyncedMissingFromCloud({ local: marked, cloud: cloud.data, deletedIds: [], waitingIds: [] });
+  const waitingKeys = new Set(waitingIds.map(key));
+  const waiting = notInCloud.filter(update => waitingKeys.has(key(update.id))).length;
+  const counts = { checked: marked.length, inCloud: marked.length - notInCloud.length, waiting, deletedElsewhere: notInCloud.length - waiting - found.length };
+  return found.length > 0 ? { kind: 'found', updates: found, ...counts } : { kind: 'none_found', ...counts };
 }
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -150,16 +162,25 @@ export function fieldUpdateCloudCheckText(outcome: FieldUpdateCloudCheckOutcome)
   if (outcome.kind === 'nothing_to_check') {
     return { summary: `No field update on this device reads “Cloud Synced”, so there was nothing to check. ${NOTHING_CHANGED}`, items: [] };
   }
-  if (outcome.kind === 'none_found') {
+  if (outcome.kind === 'none_found' && outcome.inCloud === outcome.checked) {
     const all = outcome.checked === 1 ? 'The 1 field update on this device that reads “Cloud Synced” is' : `All ${outcome.checked} field updates on this device that read “Cloud Synced” are`;
     return { summary: `${all} in the cloud. ${NOTHING_CHANGED}`, items: [] };
   }
-  if (outcome.kind === 'found') {
-    const count = outcome.updates.length;
-    const these = count === 1 ? 'This field update reads' : `These ${count} field updates read`;
+  if (outcome.kind === 'none_found' || outcome.kind === 'found') {
+    // Exactly what it found, each kind in its own words (H5S-2).
+    const listed = outcome.kind === 'found' ? outcome.updates.length : 0;
+    const is = (count: number) => (count === 1 ? 'is' : 'are');
+    const parts = [
+      outcome.inCloud === 0 ? 'none is in the cloud' : `${outcome.inCloud} ${is(outcome.inCloud)} in the cloud`,
+      ...(outcome.waiting > 0 ? [`${outcome.waiting} ${is(outcome.waiting)} not in the cloud yet and ${is(outcome.waiting)} still waiting in this device’s upload queue`] : []),
+      ...(outcome.deletedElsewhere > 0 ? [`${outcome.deletedElsewhere} ${outcome.deletedElsewhere === 1 ? 'was' : 'were'} deleted on another device, and this device has not refreshed since`] : []),
+      ...(listed > 0 ? [`${listed} ${is(listed)} not in the cloud and ${is(listed)} not waiting to upload (listed below)`] : []),
+    ];
+    const send = listed === 0 ? ''
+      : ` Sync Now would send the ${listed === 1 ? 'one' : 'ones'} listed; if ${listed === 1 ? 'it is' : 'one is'} an update you deleted on another device, delete it here first.`;
     return {
-      summary: `${these} “Cloud Synced” on this device but ${count === 1 ? 'is' : 'are'} not in the cloud, and no deletion record names ${count === 1 ? 'it' : 'them'}. ${NOTHING_CHANGED} Sync Now would send ${count === 1 ? 'it' : 'them'}; if ${count === 1 ? 'it is' : 'one is'} an update you deleted on another device, delete it here first.`,
-      items: outcome.updates.map(fieldUpdateCloudCheckItemLine),
+      summary: `Of the ${outcome.checked} field ${outcome.checked === 1 ? 'update on this device that reads' : 'updates on this device that read'} “Cloud Synced”: ${parts.join('; ')}. ${NOTHING_CHANGED}${send}`,
+      items: outcome.kind === 'found' ? outcome.updates.map(fieldUpdateCloudCheckItemLine) : [],
     };
   }
   const why = {

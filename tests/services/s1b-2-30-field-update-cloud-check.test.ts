@@ -66,7 +66,8 @@ describe('2.30: the check (its readers given)', () => {
 
   it('every one in the cloud: none found, and no deletion records asked for', async () => {
     const r = readers({ listCloudUpdates: jest.fn(async () => ok([{ id: 'A' }, { id: 'B' }, { id: 'D' }, { id: 'E' }, { id: 'G' }])) });
-    await expect(checkFieldUpdatesAgainstCloud(device, r)).resolves.toEqual({ kind: 'none_found', checked: 5 });
+    // S1c item 2 (14 Oct, review pass 5's H5S-2): the outcome says how many are in the cloud and of what kind the rest are.
+    await expect(checkFieldUpdatesAgainstCloud(device, r)).resolves.toEqual({ kind: 'none_found', checked: 5, inCloud: 5, waiting: 0, deletedElsewhere: 0 });
     expect(r.listDeletionRecords).not.toHaveBeenCalled();
   });
 
@@ -101,19 +102,20 @@ describe('2.30: the check (its readers given)', () => {
 describe('2.30: the words he reads', () => {
   const say = (outcome: Parameters<typeof fieldUpdateCloudCheckText>[0]) => fieldUpdateCloudCheckText(outcome);
   it('none found; nothing to check', () => {
-    expect(say({ kind: 'none_found', checked: 42 })).toEqual({ summary: 'All 42 field updates on this device that read “Cloud Synced” are in the cloud. Nothing was sent or changed.', items: [] });
-    expect(say({ kind: 'none_found', checked: 1 }).summary).toBe('The 1 field update on this device that reads “Cloud Synced” is in the cloud. Nothing was sent or changed.');
+    expect(say({ kind: 'none_found', checked: 42, inCloud: 42, waiting: 0, deletedElsewhere: 0 })).toEqual({ summary: 'All 42 field updates on this device that read “Cloud Synced” are in the cloud. Nothing was sent or changed.', items: [] });
+    expect(say({ kind: 'none_found', checked: 1, inCloud: 1, waiting: 0, deletedElsewhere: 0 }).summary).toBe('The 1 field update on this device that reads “Cloud Synced” is in the cloud. Nothing was sent or changed.');
     expect(say({ kind: 'nothing_to_check' }).summary).toBe('No field update on this device reads “Cloud Synced”, so there was nothing to check. Nothing was sent or changed.');
   });
 
   it('found: how many, that nothing was sent, and each with its date, project and first words of its note', () => {
     const one = update('B', 'sent', { date: '2026-09-22T15:30:00.000Z', projectName: 'Alpha', notes: 'Poured the footings at the north wall, rebar inspected and passed' });
     const two = update('K', 'sent', { date: 'not a date', projectName: '', notes: '' });
-    const text = say({ kind: 'found', checked: 9, updates: [one, two] });
-    expect(text.summary).toBe('These 2 field updates read “Cloud Synced” on this device but are not in the cloud, and no deletion record names them. Nothing was sent or changed. Sync Now would send them; if one is an update you deleted on another device, delete it here first.');
+    // CHANGED by S1c item 2 (14 Oct, review pass 5's H5S-2): the line says how many are in the cloud and what each other kind is.
+    const text = say({ kind: 'found', checked: 9, inCloud: 7, waiting: 0, deletedElsewhere: 0, updates: [one, two] });
+    expect(text.summary).toBe('Of the 9 field updates on this device that read “Cloud Synced”: 7 are in the cloud; 2 are not in the cloud and are not waiting to upload (listed below). Nothing was sent or changed. Sync Now would send the ones listed; if one is an update you deleted on another device, delete it here first.');
     const day = new Date('2026-09-22T15:30:00.000Z');
     expect(text.items).toEqual([`${day.getDate()} Sep 2026 · Alpha · Poured the footings at the north wall, rebar…`, 'not a date · No project · (no note)']);
-    expect(say({ kind: 'found', checked: 1, updates: [one] }).summary).toBe('This field update reads “Cloud Synced” on this device but is not in the cloud, and no deletion record names it. Nothing was sent or changed. Sync Now would send it; if it is an update you deleted on another device, delete it here first.');
+    expect(say({ kind: 'found', checked: 1, inCloud: 0, waiting: 0, deletedElsewhere: 0, updates: [one] }).summary).toBe('Of the 1 field update on this device that reads “Cloud Synced”: none is in the cloud; 1 is not in the cloud and is not waiting to upload (listed below). Nothing was sent or changed. Sync Now would send the one listed; if it is an update you deleted on another device, delete it here first.');
   });
 
   it('could not run, each reason in plain words', () => {

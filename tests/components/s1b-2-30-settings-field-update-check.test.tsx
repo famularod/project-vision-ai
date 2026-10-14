@@ -87,7 +87,8 @@ describe('2.30: Settings > "Check field updates against the cloud" (read only)',
     expect(Supabase.listProjectUpdates).not.toHaveBeenCalled();
     const writesBefore = (AsyncStorage.setItem as jest.Mock).mock.calls.length + (AsyncStorage.removeItem as jest.Mock).mock.calls.length;
     await act(async () => { fireEvent.press(screen.getByText(ROW)); });
-    expect(await screen.findByText('This field update reads “Cloud Synced” on this device but is not in the cloud, and no deletion record names it. Nothing was sent or changed. Sync Now would send it; if it is an update you deleted on another device, delete it here first.')).toBeTruthy();
+    // CHANGED by S1c item 2 (14 Oct, review pass 5's H5S-2): how many are in the cloud, and what the rest are.
+    expect(await screen.findByText('Of the 2 field updates on this device that read “Cloud Synced”: 1 is in the cloud; 1 is not in the cloud and is not waiting to upload (listed below). Nothing was sent or changed. Sync Now would send the one listed; if it is an update you deleted on another device, delete it here first.')).toBeTruthy();
     const day = new Date('2026-09-22T15:30:00.000Z').getDate();
     expect(screen.getByText(`• ${day} Sep 2026 · Alpha · Poured the footings at the north wall today`)).toBeTruthy();
     expect(Supabase.listProjectUpdates).toHaveBeenCalledTimes(1);
