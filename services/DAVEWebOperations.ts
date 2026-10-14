@@ -20,6 +20,7 @@ import { sameReportSource, type DAVEReportSnapshot } from './DAVEReportSnapshot'
 import {
   bindPIEScheduleImportBatchProvenance,
   dedupeScheduleImportItems,
+  scheduleImportItemIdentity,
   type PIEScheduleImportBatch,
 } from './PIEScheduleImportBatch';
 import {
@@ -367,7 +368,7 @@ export function prepareDAVEWebDocumentUpload({
   // schedule was then saved for every one of them, and Make Current hid the others' tasks). It takes a ticked schedule
   // parent, as on the phone (validateScheduleImportScope), else it waits for one like "Needs Project" (its file name:
   // '', said in its own words), compared as such in the duplicate check.
-  const items = dedupeScheduleImportItems(
+  const listed = dedupeScheduleImportItems(
     rowProjects.items.map((item, index) => {
       const fileParent = item.scheduleProjectName?.trim() || '';
       const named = Boolean(item.projectName?.trim());
@@ -386,6 +387,14 @@ export function prepareDAVEWebDocumentUpload({
     projectName: SCHEDULE_IMPORT_NEEDS_PROJECT,
     scheduleProjectName: item.scheduleProjectName === item.projectName ? SCHEDULE_IMPORT_NEEDS_PROJECT : item.scheduleProjectName,
   } : item));
+  // Review pass H4, H4S-3: one task the file gives twice, once naming a ticked project and once naming none, is one task
+  // (before 4.88 the blank row took the first ticked project and the duplicate check merged them). A row that names no
+  // project goes where it is the same as ONE row with a project by the duplicate check in all but the project; with two
+  // or more such rows (two projects) it cannot be told which, and it waits. (The phone's own import keeps both.)
+  const sameTask = (item: ScheduleItem) => scheduleImportItemIdentity({ ...item, projectName: '' });
+  const withProject = new Map<string, number>();
+  listed.filter(item => !daveWebScheduleUploadRowNeedsProject(item)).forEach(item => withProject.set(sameTask(item), (withProject.get(sameTask(item)) ?? 0) + 1));
+  const items = listed.filter(item => !(daveWebScheduleUploadRowNeedsProject(item) && rowProjects.fileProjectNames[item.id] === '' && withProject.get(sameTask(item)) === 1));
   if (items.length === 0) {
     return Object.freeze({
       document,
