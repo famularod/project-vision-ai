@@ -37,6 +37,7 @@ import {
   type VitruviusLookaheadWeeks,
 } from '../../services/VitruviusLookahead';
 import { buildVitruviusCalendarExport } from '../../services/VitruviusCalendarExport';
+import { schedulePhaseThatWouldCloseACircle } from '../../services/VitruviusScheduleEngine';
 import {
   analyzeVitruviusListedSchedule,
   analyzeVitruviusSchedule,
@@ -231,6 +232,8 @@ export function DesktopSchedulePage({
           numberOrZero(editor.lagDays),
         ),
         isMilestone: editor.kind === 'milestone',
+        // The phase the form puts it in: starting after that phase is a circle (open item 3.6).
+        parentItemId: editor.parentItemId || null,
         status: editor.status,
         // A blank box keeps the stored percent, as Save does (A12 pass 5 L1).
         percentComplete: editor.percentComplete.trim()
@@ -327,6 +330,18 @@ export function DesktopSchedulePage({
     if (form.kind !== 'phase') {
       const limitProblem = scheduleEditorLimitProblem(form, opened);
       if (limitProblem) return { ok: false, message: limitProblem };
+      // Open item 3.6: an item may start after a phase, but never after one it is in or one with work in it that
+      // comes after it (a circle). Neither is offered; one ticked before the item was put in that phase is refused.
+      const circle = schedulePhaseThatWouldCloseACircle(opened?.id ?? null, scheduleTasks, form.parentItemId, form.predecessorItemIds);
+      if (circle) {
+        const name = `“${circle.phase.taskName.trim()}”`;
+        return {
+          ok: false,
+          message: circle.inIt
+            ? `Not saved. This item is in the phase ${name}, so it cannot also start after ${name} is finished: that is a circle. Untick ${name} and save again.`
+            : `Not saved. Work in the phase ${name} comes after this item, so this item cannot also start after ${name}: that is a circle. Untick ${name} and save again.`,
+        };
+      }
     }
     const projectTasks = tasks.filter(task => inProject(task, form.projectName));
     // A new item's cloud project is looked up by its project's name among
@@ -1661,7 +1676,8 @@ function ScheduleEditor({
     ...scheduleParentOptions(editingTask?.id || null, projectTasks),
     ...linksElsewhere.filter(item => item.id === editingTask?.parentItemId?.trim()),
   ];
-  const eligiblePredecessors = schedulePredecessorOptions(editingTask?.id || null, projectTasks);
+  // A phase is offered too (open item 3.6), never one that would close a circle, by the phase the form puts it in.
+  const eligiblePredecessors = schedulePredecessorOptions(editingTask?.id || null, projectTasks, state.parentItemId);
   // Open item, web batch WS1 item 7 (6 Oct 2026): a task that already comes after this item is not offered as a
   // predecessor, so that one editor cannot make a circle. But two links made in opposite directions from two places
   // are both saved, and then each task is the other's predecessor AND comes after it: neither editor listed the
@@ -1669,12 +1685,11 @@ function ScheduleEditor({
   // already has is always listed, so it can always be removed; and so is one he has ticked in this form that the
   // schedule, refreshed under the open editor, now shows coming after the item (the other link was just made
   // elsewhere): it had dropped out of the list while still ticked.
-  const notOffered = editingTask
-    ? projectTasks.filter(item =>
-        item.id !== editingTask.id &&
-        (openedPredecessorIds.includes(item.id) || state.predecessorItemIds.includes(item.id)) &&
-        !eligiblePredecessors.some(option => option.id === item.id))
-    : [];
+  // (A new item too, since open item 3.6: a phase ticked before the item is put in it is no longer offered.)
+  const notOffered = projectTasks.filter(item =>
+    item.id !== editingTask?.id &&
+    (openedPredecessorIds.includes(item.id) || state.predecessorItemIds.includes(item.id)) &&
+    !eligiblePredecessors.some(option => option.id === item.id));
   // Review pass 1, web L4 (6 Oct 2026; caused by WS1 item 7): every one of those was labelled "(circular link)",
   // with the line "... is set to finish before this item and also to start after it. That is a circle ...". The
   // editor does not offer two kinds of task: one that comes after the item (a circle if it is also a predecessor),
@@ -1690,7 +1705,7 @@ function ScheduleEditor({
     ...notOffered,
   ];
   const inCircle = (item: ScheduleItem) => circlePredecessors.some(link => link.id === item.id);
-  /** A predecessor that is a phase, and in no circle (L4). */
+  /** A predecessor that is a phase, and in no circle (L4): it reads "Sitework (a phase)". */
   const isPhaseLink = (item: ScheduleItem) => item.isSummary === true && !inCircle(item);
   const buildingLabel = (item: ScheduleItem) =>
     inCircle(item) ? ' (circular link)'
@@ -1715,13 +1730,11 @@ function ScheduleEditor({
     normalize(taskProjectName(item)) === normalize(state.projectName)
       ? item.scheduleProjectName?.trim() || taskProjectName(item)
       : taskProjectName(item);
-  // The phases this item is ticked to start after, wherever they are listed (L4), for the line that names them. The
-  // web's schedule places an item after tasks and milestones only (its critical path leaves phases out), so the
-  // calculation holds the save while one is ticked: what the line says.
-  const phasesTicked = [
-    ...predecessorOptions.filter(item => isPhaseLink(item) && state.predecessorItemIds.includes(item.id)),
-    ...predecessorsElsewhere.filter(link => link.item.isSummary === true && !link.circular && state.predecessorItemIds.includes(link.id)).map(link => link.item),
-  ];
+  // Open item 3.6 (14 Oct 2026): an item may start after a phase. The line L4 gave a ticked phase ("... this schedule
+  // can only place an item after tasks and milestones ... Untick it below, then save.") is gone, and so is the hold
+  // on the save: the calculation places the item after every task in the phase. A phase link that would close a
+  // circle (the item is in that phase, or work in it comes after the item) is named in the change impact preview,
+  // which holds the save until it is unticked.
   const areaOptions = uniqueText(projectTasks.map(item => item.locationName));
   const canCaptureBaseline = Boolean(
     state.startDate.trim() &&
@@ -1834,11 +1847,6 @@ function ScheduleEditor({
           {circleNames.length > 0 ? (
             <Text style={styles.scenarioIssue} accessibilityRole="alert">
               {`${circleNames.join(' and ')} ${circleNames.length === 1 ? 'is' : 'are'} set to finish before this item and also to start after it. That is a circle, and the schedule cannot place it. Untick ${circleNames.length === 1 ? 'it' : 'one'} below, then save.`}
-            </Text>
-          ) : null}
-          {phasesTicked.length > 0 ? (
-            <Text style={styles.scenarioIssue} accessibilityRole="alert">
-              {`${phasesTicked.map(item => `“${item.taskName}”`).join(' and ')} ${phasesTicked.length === 1 ? 'is a phase' : 'are phases'}, and this schedule can only place an item after tasks and milestones: it cannot place this item while it starts after a phase. Untick ${phasesTicked.length === 1 ? 'it' : 'them'} below, then save. To keep the order, tick the ${phasesTicked.length === 1 ? 'task' : 'tasks'} this item should follow instead.`}
             </Text>
           ) : null}
           {missingPredecessorIds.length > 0 ? (

@@ -11,6 +11,11 @@ import { scheduleTasksForParentProject } from '../../services/dave-project-sched
 // That is a circle ...". The editor does not offer a phase (a summary row) either, and a task that starts after a
 // phase is in no circle. A phase is now called a phase, with a line that says what is true of it.
 // Synthetic data; the harness of web-ws3-schedule-editor-live-predecessor.test.tsx.
+//
+// Open item 3.6 (14 Oct 2026), the coordinator's rule, in place of L4's line: a task MAY start after a phase (it then
+// starts after every task in the phase is finished), so a phase is offered, the line telling him to untick it is
+// gone, and the save is not held for it. A phase is still called a phase, and a circle is still called a circle.
+// The tests below that asserted L4's rule now assert 3.6's (t1-3-6-phase-link-page has the rest).
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 jest.mock('@react-native-async-storage/async-storage', () => ({ getItem: jest.fn(), setItem: jest.fn(), removeItem: jest.fn() }));
@@ -122,7 +127,7 @@ describe('a predecessor that is a phase (review pass 1, web L4)', () => {
   // As a Microsoft Project file links them, or as set on another device: Paving starts after the phase Sitework.
   const paving = () => [phase('sitework', 'Sitework'), task('grading', 'Grading', [], { parentItemId: 'sitework', startDate: '2026-10-05', finishDate: '2026-10-09' }), task('paving', 'Paving', ['sitework'])];
 
-  it('is listed as a phase, ticked, with a line that says what is true of it; nothing calls it a circle', () => {
+  it('is listed as a phase, ticked; nothing calls it a circle, and (3.6) nothing tells him to untick it: Save is free', () => {
     const screen = page(paving());
     fireEvent.press(screen.getByLabelText('Edit Paving'));
 
@@ -130,19 +135,19 @@ describe('a predecessor that is a phase (review pass 1, web L4)', () => {
       { text: 'Grading', checked: false },
       { text: 'Sitework (a phase)', checked: true },
     ]);
-    expect(screen.getByText(PHASE_LINE)).toBeTruthy();
+    expect(screen.queryAllByText(PHASE_LINE).length).toBe(0);
     expect(screen.queryAllByText(CIRCLE).length).toBe(0);
     expect(screen.queryAllByLabelText('Sitework, circular link').length).toBe(0);
-    // What the line says is so: the save is held while the item starts after the phase.
-    expect(saveButton(screen)).toEqual(['Correct Schedule Issues']);
+    expect(saveButton(screen)).toEqual(['Save Changes']);
   });
 
-  it('the "Change impact preview" box says the same of it: a phase, by its name, not a "missing predecessor" with an id', () => {
+  it('the "Change impact preview" box: no "missing predecessor" with an id, and (3.6) nothing about the critical path leaving phases out', () => {
     const screen = page(paving());
     fireEvent.press(screen.getByLabelText('Edit Paving'));
 
-    expect(screen.getByText(/Paving starts after the phase Sitework, and the critical path counts tasks and milestones only\./)).toBeTruthy();
+    expect(screen.queryAllByText(/counts tasks and milestones only/).length).toBe(0);
     expect(screen.queryAllByText(/missing predecessor/).length).toBe(0);
+    expect(screen.getByText('Ready to review')).toBeTruthy();
   });
 
   it('unticking it frees Save and takes the line away; the task is saved without the link', async () => {
@@ -162,12 +167,17 @@ describe('a predecessor that is a phase (review pass 1, web L4)', () => {
     expect([saved().id, linksOf(saved())]).toEqual(['paving', ['grading']]);
   });
 
-  it('two phases: the line names both, and says "them"', () => {
+  it('two phases (3.6): both listed as phases, ticked, no line, and Save is free', () => {
     const screen = page([phase('sitework', 'Sitework'), phase('utilities', 'Utilities'), task('paving', 'Paving', ['sitework', 'utilities'])]);
     fireEvent.press(screen.getByLabelText('Edit Paving'));
 
-    expect(screen.getByText('“Sitework” and “Utilities” are phases, and this schedule can only place an item after tasks and milestones: it cannot place this item while it starts after a phase. Untick them below, then save. To keep the order, tick the tasks this item should follow instead.')).toBeTruthy();
+    expect(predecessorChoices(screen)).toEqual([
+      { text: 'Sitework (a phase)', checked: true },
+      { text: 'Utilities (a phase)', checked: true },
+    ]);
+    expect(screen.queryAllByText(/are phases/).length).toBe(0);
     expect(screen.queryAllByText(CIRCLE).length).toBe(0);
+    expect(saveButton(screen)).toEqual(['Save Changes']);
   });
 
   it('a phase filed outside the project chosen at the top is a phase too, with where it is filed', () => {
@@ -176,11 +186,13 @@ describe('a predecessor that is a phase (review pass 1, web L4)', () => {
     fireEvent.press(screen.getByLabelText('Edit Paving'));
 
     expect(predecessorChoices(screen)).toEqual([{ text: `Sitework (a phase, ${ROOT})`, checked: true }]);
-    expect(screen.getByText(PHASE_LINE)).toBeTruthy();
+    // 3.6: no line, and Save is free; he can still untick it.
+    expect(screen.queryAllByText(PHASE_LINE).length).toBe(0);
     expect(screen.queryAllByText(CIRCLE).length).toBe(0);
-    expect(saveButton(screen)).toEqual(['Correct Schedule Issues']);
+    expect(saveButton(screen)).toEqual(['Save Changes']);
 
     fireEvent.press(screen.getByLabelText('Sitework, a phase'));
+    expect(predecessorChoices(screen)).toEqual([{ text: `Sitework (a phase, ${ROOT})`, checked: false }]);
     expect(saveButton(screen)).toEqual(['Save Changes']);
   });
 
@@ -194,9 +206,9 @@ describe('a predecessor that is a phase (review pass 1, web L4)', () => {
     fireEvent.press(screen.getByLabelText('Edit Paving'));
 
     expect(predecessorChoices(screen)).toEqual([{ text: 'Sitework (a phase, Harbor South)', checked: true }]);
-    expect(screen.getByText(PHASE_LINE)).toBeTruthy();
+    expect(screen.queryAllByText(PHASE_LINE).length).toBe(0);
     expect(screen.queryAllByText(CIRCLE).length).toBe(0);
-    expect(saveButton(screen)).toEqual(['Correct Schedule Issues']);
+    expect(saveButton(screen)).toEqual(['Save Changes']);
   });
 
   it('guard: a phase that also comes after the item IS a circle, and is called one', () => {
@@ -217,11 +229,11 @@ describe('a predecessor that is a phase (review pass 1, web L4)', () => {
     expect(screen.queryAllByText(/a phase/).length).toBe(0);
   });
 
-  it('guard: a phase is still not offered as a new predecessor', () => {
+  it('3.6: a phase is now offered as a new predecessor, called a phase', () => {
     const screen = page([phase('sitework', 'Sitework'), task('grading', 'Grading'), task('paving', 'Paving')]);
     fireEvent.press(screen.getByLabelText('Edit Paving'));
 
-    expect(predecessorChoices(screen)).toEqual([{ text: 'Grading', checked: false }]);
+    expect(predecessorChoices(screen)).toEqual([{ text: 'Sitework (a phase)', checked: false }, { text: 'Grading', checked: false }]);
     expect(screen.queryAllByText(/is a phase/).length).toBe(0);
   });
 });

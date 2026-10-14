@@ -5,6 +5,7 @@ import {
 } from './VitruviusScheduleAnalytics';
 import {
   normalizeScheduleDependencies,
+  scheduleItemsWithPhaseLinksWorkedOut,
   type VitruviusScheduleIssueCode,
 } from './VitruviusScheduleEngine';
 import { parseVitruviusScheduleDate } from './VitruviusGanttModel';
@@ -24,6 +25,7 @@ export type VitruviusScheduleChangeDraft = Readonly<
       | 'durationDays'
       | 'dependencies'
       | 'isMilestone'
+      | 'parentItemId'
       | 'status'
       | 'percentComplete'
     >
@@ -183,12 +185,16 @@ export function buildVitruviusScheduleChangeScenario({
   );
   // Predecessors the schedule shows under another schedule name: there for the calculation, never returned (M1).
   const elsewhere = shownTaskOf
-    ? predecessorsFiledElsewhere([...currentProjectItems, draftedItem], editedItem, shownTaskOf)
+    ? predecessorsFiledElsewhere([...currentProjectItems, draftedItem], editedItem, shownTaskOf, items)
     : [];
   const elsewhereIds = new Set(elsewhere.map(item => item.id));
   const currentAnalytics = analyzeVitruviusSchedule([...currentProjectItems, ...elsewhere]);
   const candidateAnalytics = analyzeVitruviusSchedule([...candidateProjectItems, ...elsewhere]);
-  const descendantIds = dependencyDescendantIds(itemId, candidateProjectItems);
+  // A task that starts after a phase comes after the work in it (open item 3.6).
+  const descendantIds = dependencyDescendantIds(
+    itemId,
+    scheduleItemsWithPhaseLinksWorkedOut([...candidateProjectItems, ...elsewhere]).items,
+  );
   const downstreamChanges = candidateAnalytics.impactPreview.changes
     .filter(change => descendantIds.has(change.itemId))
     .map(change => Object.freeze({
@@ -258,27 +264,57 @@ export function buildVitruviusScheduleChangeScenario({
  * before, so still "missing": a predecessor no schedule shows (deleted, or
  * only on a schedule that is not the current one), and a link that names an
  * earlier row of one of this schedule's own tasks, the task itself included.
+ *
+ * Open item 3.6 (14 Oct 2026): a task may start after a phase, and then starts after every task and milestone in
+ * it. A phase filed elsewhere comes with the work under it (from the tasks given), each a fixed row as above.
  */
 function predecessorsFiledElsewhere(
   projectItems: readonly ScheduleItem[],
   editedItem: ScheduleItem,
   shownTaskOf: (predecessorId: string) => ScheduleItem | null | undefined,
+  items: readonly ScheduleItem[],
 ): ScheduleItem[] {
   const own = new Set(projectItems.map(item => item.id));
   const elsewhere = new Map<string, ScheduleItem>();
+  const fixed = (shown: ScheduleItem, id: string, parentItemId = shown.parentItemId) => elsewhere.set(id, cloneScheduleItem({
+    ...shown,
+    id,
+    parentItemId,
+    scheduleProjectName: editedItem.scheduleProjectName,
+    projectName: editedItem.projectName,
+    dependencies: [],
+  }));
+  let childrenOf: Map<string, ScheduleItem[]> | null = null;
+  const childrenUnder = (parentId: string) => {
+    if (!childrenOf) {
+      const map = new Map<string, ScheduleItem[]>();
+      items.forEach(child => {
+        const at = child.parentItemId?.trim();
+        if (!at) return;
+        const siblings = map.get(at);
+        if (siblings) siblings.push(child);
+        else map.set(at, [child]);
+      });
+      childrenOf = map;
+    }
+    return childrenOf.get(parentId) ?? [];
+  };
   projectItems.forEach(item => {
     normalizeScheduleDependencies(item.dependencies).forEach(dependency => {
       const id = dependency.predecessorItemId;
       if (own.has(id) || elsewhere.has(id)) return;
       const shown = shownTaskOf(id);
       if (!shown || own.has(shown.id)) return;
-      elsewhere.set(id, cloneScheduleItem({
-        ...shown,
-        id,
-        scheduleProjectName: editedItem.scheduleProjectName,
-        projectName: editedItem.projectName,
-        dependencies: [],
-      }));
+      fixed(shown, id);
+      if (shown.isSummary !== true) return;
+      // The work in the phase, at any depth; under the id the link names.
+      const queue = childrenUnder(shown.id).map(child => ({ child, parentItemId: id }));
+      while (queue.length > 0) {
+        const { child, parentItemId } = queue.shift()!;
+        if (own.has(child.id) || elsewhere.has(child.id)) continue;
+        fixed(child, child.id, parentItemId);
+        childrenUnder(child.id).forEach(next => queue.push({ child: next, parentItemId: child.id }));
+      }
     });
   });
   return [...elsewhere.values()];

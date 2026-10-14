@@ -6,6 +6,7 @@ import { parseVitruviusScheduleDate } from './VitruviusGanttModel';
 import {
   normalizeScheduleDependencies,
   previewVitruviusFinishToStartSchedule,
+  scheduleItemsWithPhaseLinksWorkedOut,
   type VitruviusSchedulePreview,
 } from './VitruviusScheduleEngine';
 
@@ -90,6 +91,11 @@ export function scheduleTasksLinkedWith(
       link(dependency.predecessorItemId, item.id);
     });
   });
+  // A phase finishes with the work in it (open item 3.6): a task linked to a phase is linked to that work too.
+  shown.forEach(item => {
+    const parentId = item.parentItemId?.trim();
+    if (parentId && shownById.get(parentId)?.isSummary === true) link(parentId, item.id);
+  });
   const linked = new Map<string, ScheduleItem>();
   const queue = [...listedIds];
   while (queue.length > 0) {
@@ -135,13 +141,22 @@ export function analyzeVitruviusListedSchedule(
 export function analyzeVitruviusCriticalPath(
   sourceItems: readonly ScheduleItem[],
 ): VitruviusCriticalPathAnalysis {
+  // Open item 3.6 (14 Oct 2026): a task may start after a phase. The phase is the work in it (its tasks and
+  // milestones), so a link to it is worked out as links to each of them; a phase with nothing under it yet that a
+  // task waits for is counted on its own dates, as a task is. Phases are otherwise no part of the critical path. A
+  // link that would make a circle through a phase is named, and holds the critical path. Before, a task that started
+  // after a phase held it: "... starts after the phase Sitework, and the critical path counts tasks and milestones only."
+  const phaseLinks = scheduleItemsWithPhaseLinksWorkedOut(sourceItems);
+  const waitedFor = new Set(phaseLinks.items.flatMap(item =>
+    normalizeScheduleDependencies(item.dependencies).map(dependency => dependency.predecessorItemId)));
   const groups = groupProjectTasks(
-    sourceItems.filter(item => item.isSummary !== true),
+    phaseLinks.items.filter(item => item.isSummary !== true || waitedFor.has(item.id)),
   );
   const results: VitruviusCriticalPathItem[] = [];
-  const issues: string[] = [];
   const projectDurationDays: Record<string, number> = {};
   const sourceItemsById = new Map(sourceItems.map(item => [item.id, item]));
+  const issues: string[] = phaseLinks.issues.map(issue =>
+    `${scheduleNameOf(sourceItemsById.get(issue.itemId ?? ''))}: ${issue.message}`);
   let calculatedProjectCount = 0;
 
   groups.forEach(items => {
@@ -153,13 +168,7 @@ export function analyzeVitruviusCriticalPath(
     });
     network.nodes.forEach(node => {
       node.unresolvedPredecessors.forEach(predecessorId => {
-        // Review pass 1, web L4 (6 Oct 2026): a phase is left out of the critical path (above), so a task that
-        // starts after one read "references missing predecessor <the phase's id>". The phase is not missing.
-        const phase = sourceItemsById.get(predecessorId);
-        const projectName = nameOf(node.scheduleItemId);
-        issues.push(phase?.isSummary === true
-          ? `${projectName}: ${node.taskName} starts after the phase ${phase.taskName}, and the critical path counts tasks and milestones only.`
-          : `${projectName}: ${node.taskName} references missing predecessor ${predecessorId}.`);
+        issues.push(`${nameOf(node.scheduleItemId)}: ${node.taskName} references missing predecessor ${predecessorId}.`);
       });
     });
     if (network.cycles.length > 0 || network.nodes.some(

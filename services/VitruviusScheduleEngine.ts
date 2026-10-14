@@ -21,7 +21,8 @@ export type VitruviusScheduleIssueCode =
   | 'missing_predecessor'
   | 'missing_predecessor_finish'
   | 'completed_task_locked'
-  | 'unsupported_task_duration';
+  | 'unsupported_task_duration'
+  | 'phase_link_circle';
 
 /**
  * An 'error' is a fault in the plan (a circle of links, a link to a task that
@@ -76,11 +77,15 @@ export class VitruviusScheduleCalculationError extends Error {
 export function previewVitruviusFinishToStartSchedule(
   sourceItems: readonly ScheduleItem[],
 ): VitruviusSchedulePreview {
-  const network = buildPIEScheduleDependencyNetwork(sourceItems);
-  const issues: VitruviusScheduleIssue[] = [];
+  // Open item 3.6: a link to a phase is worked out as links to the work in it; a circle through a phase is named.
+  const phaseLinks = scheduleItemsWithPhaseLinksWorkedOut(sourceItems);
+  const calculatedItems = phaseLinks.items;
+  const savedLinks = new Map(sourceItems.map(item => [item.id, normalizeScheduleDependencies(item.dependencies)]));
+  const network = buildPIEScheduleDependencyNetwork(calculatedItems);
+  const issues: VitruviusScheduleIssue[] = [...phaseLinks.issues];
   const changes: VitruviusScheduleDateChange[] = [];
   const itemsById = new Map<string, ScheduleItem>(
-    sourceItems.map(item => [
+    calculatedItems.map(item => [
       item.id,
       {
         ...item,
@@ -109,7 +114,7 @@ export function previewVitruviusFinishToStartSchedule(
   });
 
   if (network.cycles.length === 0) {
-    topologicalScheduleOrder(sourceItems, network).forEach(itemId => {
+    topologicalScheduleOrder(calculatedItems, network).forEach(itemId => {
       const item = itemsById.get(itemId);
       if (!item) return;
       const dependencies = normalizeScheduleDependencies(item.dependencies);
@@ -210,8 +215,9 @@ export function previewVitruviusFinishToStartSchedule(
       changes.push(Object.freeze({
         itemId,
         taskName: item.taskName,
+        // The links as saved: "After Sitework", not the tasks in it (3.6).
         predecessorItemIds: Object.freeze(
-          dependencies.map(dependency => dependency.predecessorItemId),
+          (savedLinks.get(itemId) ?? dependencies).map(dependency => dependency.predecessorItemId),
         ) as unknown as string[],
         previousStartDate: item.startDate,
         previousFinishDate: item.finishDate,
@@ -225,7 +231,11 @@ export function previewVitruviusFinishToStartSchedule(
   const safeToApply = !issues.some(issue => issue.severity === 'error');
   return Object.freeze({
     items: Object.freeze(
-      sourceItems.map(item => itemsById.get(item.id) || item),
+      sourceItems.map(item => {
+        const calculated = itemsById.get(item.id);
+        // Each with its links as saved (a link to a phase stays a link to the phase, 3.6).
+        return calculated ? { ...calculated, dependencies: normalizeScheduleDependencies(item.dependencies) } : item;
+      }),
     ) as unknown as ScheduleItem[],
     changes: Object.freeze(changes) as unknown as VitruviusScheduleDateChange[],
     issues: Object.freeze(issues) as unknown as VitruviusScheduleIssue[],
@@ -250,6 +260,229 @@ export function applyVitruviusSchedulePreview(
     ...item,
     dependencies: normalizeScheduleDependencies(item.dependencies),
   }));
+}
+
+/**
+ * Open item 3.6 (14 Oct 2026), the coordinator's rule: a task may start after a phase, as in Microsoft Project. A
+ * phase finishes when the last task or milestone under it finishes (at any depth), so a finish-to-start link from a
+ * phase means "starts after every task and milestone in that phase is finished". The calculation takes such a link
+ * as a link to each of them, with the same lag; a phase with nothing under it yet is placed by its own dates, as a
+ * task is. A link to a phase could not be saved on the computer ("this schedule can only place an item after tasks
+ * and milestones"), and the critical path left it out.
+ *
+ * A phase may not follow one of its own tasks, a task in a phase may not start after that phase, and no link may
+ * make a circle through a phase. Such a link is left out of the calculation and named as an error: "Apply dates"
+ * and the critical path are held until it is removed. (A phase starts no later than the work in it, and its own
+ * predecessors come before that work, so a circle is looked for with each phase as a start and a finish.) A circle
+ * of tasks alone is named as before. The items come back with their links worked out, for the calculation only.
+ */
+export function scheduleItemsWithPhaseLinksWorkedOut(
+  sourceItems: readonly ScheduleItem[],
+): Readonly<{ items: readonly ScheduleItem[]; issues: readonly VitruviusScheduleIssue[] }> {
+  const plan = schedulePhasePlan(sourceItems);
+  const linksOf = (item: ScheduleItem) => normalizeScheduleDependencies(item.dependencies);
+  const throughPhase = (item: ScheduleItem, predecessorId: string) =>
+    plan.isPhase(item.id) || plan.isPhase(predecessorId);
+  if (!sourceItems.some(item => linksOf(item).some(link => throughPhase(item, link.predecessorItemId)))) {
+    return Object.freeze({ items: sourceItems, issues: Object.freeze([]) });
+  }
+
+  const issues: VitruviusScheduleIssue[] = [];
+  const circular = new Set<string>();
+  sourceItems.forEach(item => {
+    linksOf(item).forEach(link => {
+      const predecessorId = link.predecessorItemId;
+      if (!plan.has(predecessorId) || !throughPhase(item, predecessorId)) return;
+      if (!plan.finishReachedFrom(item.id).has(predecessorId)) return;
+      circular.add(`${item.id}\u0000${predecessorId}`);
+      issues.push(Object.freeze({
+        code: 'phase_link_circle',
+        severity: 'error',
+        itemId: item.id,
+        message: phaseCircleText(item, plan.item(predecessorId)!, plan),
+      }));
+    });
+  });
+
+  const items = sourceItems.map(item => {
+    const links = linksOf(item);
+    if (!links.some(link => plan.isPhase(link.predecessorItemId) || circular.has(`${item.id}\u0000${link.predecessorItemId}`))) {
+      return item;
+    }
+    const worked = new Map<string, ScheduleDependency>();
+    const add = (predecessorItemId: string, lagDays: number) => {
+      const had = worked.get(predecessorItemId);
+      if (!had || (had.lagDays || 0) < lagDays) {
+        worked.set(predecessorItemId, Object.freeze({ predecessorItemId, type: 'FS', lagDays }));
+      }
+    };
+    links.forEach(link => {
+      if (circular.has(`${item.id}\u0000${link.predecessorItemId}`)) return;
+      const work = plan.isPhase(link.predecessorItemId) ? plan.workUnder(link.predecessorItemId) : [];
+      if (work.length === 0) add(link.predecessorItemId, link.lagDays || 0);
+      else work.forEach(id => add(id, link.lagDays || 0));
+    });
+    return { ...item, dependencies: [...worked.values()] };
+  });
+  return Object.freeze({ items: Object.freeze(items), issues: Object.freeze(issues) });
+}
+
+/**
+ * The items an item may not be set to start after (open item 3.6): each would close a circle. A task or milestone
+ * that already comes after it; a phase it is in; a phase with work in it that comes after it, or that is itself set
+ * to start after it. The item itself is among them. `parentItemId`, when given, is the phase the item is in (or
+ * none), as a form holds it before it is saved; a new item is asked for with a null id.
+ */
+export function scheduleItemsThatWouldCloseACircle(
+  itemId: string | null,
+  sourceItems: readonly ScheduleItem[],
+  parentItemId?: string | null,
+): ReadonlySet<string> {
+  const { selfId, plan } = schedulePlanForForm(itemId, sourceItems, parentItemId);
+  return plan.finishReachedFrom(selfId);
+}
+
+/**
+ * The first phase among the predecessors a form has ticked that the item may not start after (open item 3.6), or
+ * null: one it is in (`inIt`), or one with work in it that comes after it. Arguments as above.
+ */
+export function schedulePhaseThatWouldCloseACircle(
+  itemId: string | null,
+  sourceItems: readonly ScheduleItem[],
+  parentItemId: string | null | undefined,
+  predecessorItemIds: readonly string[],
+): Readonly<{ phase: ScheduleItem; inIt: boolean }> | null {
+  const { selfId, plan } = schedulePlanForForm(itemId, sourceItems, parentItemId);
+  const closes = plan.finishReachedFrom(selfId);
+  const id = predecessorItemIds.find(candidate => plan.isPhase(candidate) && closes.has(candidate));
+  const phase = id ? plan.item(id) : undefined;
+  return phase ? Object.freeze({ phase, inIt: plan.isIn(selfId, phase.id) }) : null;
+}
+
+function schedulePlanForForm(itemId: string | null, sourceItems: readonly ScheduleItem[], parentItemId?: string | null) {
+  const selfId = itemId?.trim() || '\u0000new';
+  const self = sourceItems.find(item => item.id === selfId);
+  const items = parentItemId === undefined && self
+    ? sourceItems
+    : [
+        ...sourceItems.filter(item => item.id !== selfId),
+        { ...(self ?? { dependencies: [] }), id: selfId, parentItemId: parentItemId ?? self?.parentItemId ?? null } as ScheduleItem,
+      ];
+  return { selfId, plan: schedulePhasePlan(items) };
+}
+
+type SchedulePhasePlan = Readonly<{
+  has: (id: string) => boolean;
+  item: (id: string) => ScheduleItem | undefined;
+  isPhase: (id: string) => boolean;
+  /** Whether an item is in a phase, at any depth. */
+  isIn: (itemId: string, phaseId: string) => boolean;
+  /** The tasks and milestones under a phase, at any depth. */
+  workUnder: (phaseId: string) => string[];
+  /** The items whose finish cannot come before this item starts: through links, and through the phases they are in. */
+  finishReachedFrom: (itemId: string) => Set<string>;
+}>;
+
+function schedulePhasePlan(sourceItems: readonly ScheduleItem[]): SchedulePhasePlan {
+  const byId = new Map<string, ScheduleItem>();
+  sourceItems.forEach(item => {
+    const id = item.id?.trim();
+    if (id && !byId.has(id)) byId.set(id, item);
+  });
+  const isPhase = (id: string) => byId.get(id)?.isSummary === true;
+  const phaseOf = (id: string) => {
+    const parentId = byId.get(id)?.parentItemId?.trim();
+    return parentId && parentId !== id && isPhase(parentId) ? parentId : null;
+  };
+  const childrenOf = new Map<string, string[]>();
+  byId.forEach((_item, id) => {
+    const parentId = phaseOf(id);
+    if (!parentId) return;
+    const children = childrenOf.get(parentId);
+    if (children) children.push(id);
+    else childrenOf.set(parentId, [id]);
+  });
+  // Each item is a start and a finish. A phase starts before the work in it and finishes after it; a link joins
+  // the predecessor's finish to the successor's start.
+  let next: Map<string, string[]> | null = null;
+  const graph = () => {
+    if (next) return next;
+    const edges = new Map<string, string[]>();
+    const edge = (from: string, to: string) => {
+      const existing = edges.get(from);
+      if (existing) existing.push(to);
+      else edges.set(from, [to]);
+    };
+    byId.forEach((item, id) => {
+      edge(`s:${id}`, `f:${id}`);
+      const parentId = phaseOf(id);
+      if (parentId) {
+        edge(`s:${parentId}`, `s:${id}`);
+        edge(`f:${id}`, `f:${parentId}`);
+      }
+      normalizeScheduleDependencies(item.dependencies).forEach(link => {
+        if (byId.has(link.predecessorItemId)) edge(`f:${link.predecessorItemId}`, `s:${id}`);
+      });
+    });
+    next = edges;
+    return edges;
+  };
+  return {
+    has: id => byId.has(id),
+    item: id => byId.get(id),
+    isPhase,
+    isIn: (itemId, phaseId) => {
+      const seen = new Set<string>();
+      for (let at = phaseOf(itemId); at && !seen.has(at); at = phaseOf(at)) {
+        if (at === phaseId) return true;
+        seen.add(at);
+      }
+      return false;
+    },
+    workUnder: phaseId => {
+      const work: string[] = [];
+      const seen = new Set<string>([phaseId]);
+      const queue = [...(childrenOf.get(phaseId) || [])];
+      while (queue.length > 0) {
+        const id = queue.shift()!;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        if (isPhase(id)) queue.push(...(childrenOf.get(id) || []));
+        else work.push(id);
+      }
+      return work;
+    },
+    finishReachedFrom: itemId => {
+      const edges = graph();
+      const reached = new Set<string>();
+      const seen = new Set<string>([`s:${itemId}`]);
+      const queue = [`s:${itemId}`];
+      while (queue.length > 0) {
+        const node = queue.shift()!;
+        if (node.startsWith('f:')) reached.add(node.slice(2));
+        (edges.get(node) || []).forEach(to => {
+          if (seen.has(to)) return;
+          seen.add(to);
+          queue.push(to);
+        });
+      }
+      return reached;
+    },
+  };
+}
+
+/** What he reads of a link that would close a circle through a phase (3.6). */
+function phaseCircleText(item: ScheduleItem, predecessor: ScheduleItem, plan: SchedulePhasePlan): string {
+  const name = (target: ScheduleItem) => target.taskName.trim();
+  const called = (target: ScheduleItem, start = false) =>
+    plan.isPhase(target.id) ? `${start ? 'The' : 'the'} phase ${name(target)}` : name(target);
+  if (plan.isPhase(predecessor.id) && plan.isIn(item.id, predecessor.id)) {
+    return `${called(item, true)} is in the phase ${name(predecessor)}, so it cannot start after ${name(predecessor)} is finished: that is a circle.`;
+  }
+  if (plan.isPhase(item.id) && plan.isIn(predecessor.id, item.id)) {
+    return `The phase ${name(item)} is set to start after ${name(predecessor)}, one of its own ${plan.isPhase(predecessor.id) ? 'phases' : 'tasks'}: that is a circle.`;
+  }
+  return `${called(item, true)} starts after ${called(predecessor)}, and ${called(predecessor)} also waits for ${called(item)}: that is a circle.`;
 }
 
 /**

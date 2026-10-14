@@ -71,8 +71,19 @@ export function daveWebLinkCircleClosedBy({
   const added = linksOf(item).filter(id => !had.has(id) && id !== self.id);
   if (added.length === 0) return null;
   const byId = new Map(shown.map(task => [task.id, task] as const));
+  // Open item 3.6 (14 Oct 2026): a task may start after a phase, which finishes when the work in it does. A phase
+  // waits for its own tasks and milestones too, so a circle through the work in a phase is found as well.
+  const workIn = new Map<string, string[]>();
+  shown.forEach(task => {
+    const parentId = task.parentItemId?.trim();
+    if (!parentId || byId.get(parentId)?.isSummary !== true) return;
+    const work = workIn.get(parentId);
+    if (work) work.push(task.id);
+    else workIn.set(parentId, [task.id]);
+  });
   // What each task shown waits for, as the cloud holds it; this task, as the save would leave it.
-  const waitsFor = (id: string) => (id === self.id ? linksOf(item) : linksOf(byId.get(id)));
+  const waitsFor = (id: string) =>
+    (id === self.id ? linksOf(item) : [...linksOf(byId.get(id)), ...(workIn.get(id) ?? [])]);
   for (const start of added) {
     // From the predecessor, back along what it waits for: reaching this task is a circle.
     const cameFrom = new Map<string, string | null>([[start, null]]);

@@ -1,5 +1,5 @@
 import type { ScheduleDependency, ScheduleItem } from '../types';
-import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
+import { normalizeScheduleDependencies, scheduleItemsThatWouldCloseACircle } from './VitruviusScheduleEngine';
 
 export type VitruviusScheduleHierarchyIssue = Readonly<{
   code: 'missing_parent' | 'hierarchy_cycle';
@@ -106,16 +106,20 @@ export function scheduleParentOptions(
     .sort(compareScheduleItems);
 }
 
+/**
+ * What an item may be set to start after. Open item 3.6 (14 Oct 2026): a phase too, as in Microsoft Project (the
+ * item then starts after every task and milestone in it is finished); a phase was never offered. Never what would
+ * close a circle: a task that already comes after the item, a phase the item is in, a phase with work in it that
+ * comes after the item. `parentItemId`: the phase the item is in as the form holds it (a new item has a null id).
+ */
 export function schedulePredecessorOptions(
   itemId: string | null,
   sourceItems: readonly ScheduleItem[],
+  parentItemId?: string | null,
 ): ScheduleItem[] {
-  const descendants = itemId
-    ? dependencyDescendantIds(itemId, sourceItems)
-    : new Set<string>();
+  const closesACircle = scheduleItemsThatWouldCloseACircle(itemId, sourceItems, parentItemId);
   return uniqueScheduleItems(sourceItems)
-    .filter(item => item.id !== itemId && !descendants.has(item.id))
-    .filter(item => item.isSummary !== true)
+    .filter(item => item.id !== itemId && !closesACircle.has(item.id))
     .sort(compareScheduleItems);
 }
 
