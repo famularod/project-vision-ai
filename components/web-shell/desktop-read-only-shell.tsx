@@ -113,6 +113,9 @@ import {
   planDAVEWebLinksRemovedWithTasks,
   type DAVEWebLinksLeftAfterDelete,
   daveWebScheduleDocumentDeleteNote,
+  daveWebDocumentDetailsRefusal,
+  daveWebScheduleCategoryStays,
+  daveWebScheduleCategoryStaysText,
   daveWebScheduleImportPairingQuestions,
   daveWebScheduleUploadRoleRefusal,
   daveWebScheduleUploadOtherProjectLine,
@@ -4568,6 +4571,12 @@ function DocumentManagementWorkspace({
     next: Partial<ReferenceDocument>,
   ) {
     if (uploading) return;
+    // Open item 2.34: a schedule file with tasks keeps its Category (the form does not offer another; refused here too).
+    const refusal = daveWebDocumentDetailsRefusal(document, next);
+    if (refusal) {
+      setNotice({ tone: 'danger', text: refusal });
+      return;
+    }
     setUploading(true);
     setNotice(null);
     try {
@@ -5613,11 +5622,19 @@ function DocumentECOSDetailsEditor({
       <Text style={styles.sectionDetail}>These fields control project scope, revision authority, and whether ECOS may use this source.</Text>
       <View style={styles.fieldGroup}>
         <Text style={styles.fieldLabel}>Category</Text>
-        <OptionButtons<string>
-          options={DAVE_WEB_DOCUMENT_CATEGORIES}
-          value={category}
-          onChange={setCategory}
-        />
+        {/* Open item 2.34: under another category, a schedule file's tasks would be listed again on every device. */}
+        {daveWebScheduleCategoryStays(document) ? (
+          <>
+            <Text style={styles.dataDetail}>{document.category}</Text>
+            <Text style={styles.dataMeta}>{daveWebScheduleCategoryStaysText(document.category || 'Other')}</Text>
+          </>
+        ) : (
+          <OptionButtons<string>
+            options={DAVE_WEB_DOCUMENT_CATEGORIES}
+            value={category}
+            onChange={setCategory}
+          />
+        )}
       </View>
       <View style={styles.fieldGroup}>
         <Text style={styles.fieldLabel}>Projects</Text>

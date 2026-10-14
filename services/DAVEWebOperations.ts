@@ -1120,6 +1120,36 @@ export function daveWebScheduleDocumentDeleteNote({
 }
 
 /**
+ * Open item 2.34 (review pass 6, O-8; 13 Oct 2026). Edit Project Document Details offered every schedule file that
+ * is not in effect a new Category. Filed as a Report, say, an OLDER schedule file is no longer a schedule by the
+ * app's own test (scheduleDocumentIsScheduleLike), so its tasks were listed again on every device at once: each task
+ * the newer schedule had moved, twice, and a task it had dropped, back. Nothing asked first. Of the two ways the
+ * brief allows, the smaller and safer: the Category of a schedule file with tasks (or of a lookahead, whose tasks it
+ * is) is not changed on the computer; the rest of the form is saved as before. A schedule file with no task, and any
+ * document that is not a schedule, keep every choice.
+ */
+export function daveWebScheduleCategoryStays(
+  document: ReferenceDocument & Partial<Pick<DAVEWebReferenceDocument, 'linkedScheduleItems' | 'importedScheduleItemCount'>>,
+): boolean {
+  if (!scheduleDocumentIsScheduleLike(document)) return false;
+  return (document.importedScheduleItemCount ?? 0) > 0 || (document.linkedScheduleItems?.length ?? 0) > 0 || scheduleDocumentAddsToMaster(document);
+}
+
+/** What the form says under Category for such a file (open item 2.34). */
+export function daveWebScheduleCategoryStaysText(category: string): string {
+  return `This schedule file has tasks, so its category stays ${category}. Under another category its tasks would show again on every device, some of them twice. To file it as something else, delete it with its tasks, then upload it again.`;
+}
+
+/** Why Save Document Details is refused, or null: another Category for a schedule file with tasks (open item 2.34). */
+export function daveWebDocumentDetailsRefusal(
+  document: Parameters<typeof daveWebScheduleCategoryStays>[0],
+  next: Partial<ReferenceDocument>,
+): string | null {
+  if (next.category === undefined || normalized(next.category) === normalized(document.category)) return null;
+  return daveWebScheduleCategoryStays(document) ? daveWebScheduleCategoryStaysText(document.category || 'Other') : null;
+}
+
+/**
  * Open item, web batch WS1 item 8 (6 Oct 2026): deleting a task on the web's
  * Tasks page recorded the task (and the hidden rows of its revision chain)
  * as deleted and wrote nothing else, so every task that listed it as a
