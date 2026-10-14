@@ -17,6 +17,10 @@
  *   4. (item 4 part A) the model of the project the app saves on a device does not change the written report:
  *      the draft made as the app's provider makes it (buildRuntime, then the live Core), on a device that never
  *      saw the project, on one that was open before today's records, and on one that held a record deleted since.
+ *      4b. (item 4b) and it takes no place among a work area's three lines: with NO saved model (the writer's own
+ *      two steps on the draft's evidence without that one piece), with one that reads as a problem and with one
+ *      that advises an action, the whole text is the same. On the generated projects, and on six more that also
+ *      hold field notes recorded with no area and no task: those are filed where the model's line is filed.
  * The other direction (the fingerprint moves and no word does) costs one more approval and is counted, not failed.
  *
  * What the guard found that is NOT settled is pinned by name under "KNOWN" below, so nothing joins it unseen and
@@ -51,6 +55,7 @@ import { buildLivePIECoreIntelligence, buildPIECoreIntelligence } from '../../se
 import { scheduleTasksInReportOrder } from '../../services/PIEEvidenceFusion';
 import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, enhanceDAVEReportDraft } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
+import { buildConstructionUnderstanding, buildProjectNarrative } from '../../services/PIEReporter';
 import { buildRuntime } from '../../services/PIERuntime';
 import type { ContactBook, ProjectArea, ProjectUpdate, ReferenceDocument, ScheduleItem } from '../../types';
 
@@ -206,7 +211,13 @@ function phone(world: World, now: string = at(0)): Read {
  * The same, with the app's own draft made as providers/PIELiveAuthorityProvider makes it on a workspace that keeps
  * its model on the device: the only road that SAVES a model (the plain Core above saves nothing).
  */
-async function phoneLive(device: string, world: World, now: string = at(0)): Promise<{ fingerprint: string; text: string }> {
+type LiveDraft = {
+  sourceEvidence: Array<{ id: string; summary: string; actionRequired?: string | null }>;
+  risks: Array<{ sourceEvidenceIds: string[] }>;
+  locationGroups: unknown[];
+};
+type Live = { fingerprint: string; text: string; draft: LiveDraft; briefing: ReturnType<typeof buildDAVEReportBriefing> };
+async function phoneLive(device: string, world: World, now: string = at(0)): Promise<Live> {
   jest.useFakeTimers({ now: Date.parse(now), doNotFake: ['nextTick', 'setImmediate', 'setInterval', 'setTimeout', 'clearTimeout', 'clearInterval', 'queueMicrotask'] });
   try {
     mockDevice = device;
@@ -228,11 +239,69 @@ async function phoneLive(device: string, world: World, now: string = at(0)): Pro
       verifiedLearningEvents: [], identityTrusted: false, cloudAvailable: false, runtime: buildRuntime(runtimeContext as never),
     } as never);
     const text = (['project_manager', 'executive'] as const).map(format => String(enhanceDAVEReportDraft(core.reportDraft as never, briefing, format).body)).join('\n=====\n');
-    return { fingerprint, text };
+    return { fingerprint, text, draft: core.reportDraft as unknown as LiveDraft, briefing };
   } finally {
     mockDevice = 'none';
     jest.useRealTimers();
   }
+}
+
+/** The one piece of the writer's evidence that comes from the model the app saves (services/PIEReporter.ts). */
+const SAVED_MODEL = 'runtime-current-situation';
+/**
+ * The whole written text with NO saved model: the writer's own two steps (the understanding, then the narrative)
+ * on the draft's own evidence without that one piece. From the whole evidence the same two steps give the draft's
+ * own work areas, which is checked first.
+ */
+function writtenWithNoSavedModel(report: Live, world: World): string {
+  const input = { reportType: 'daily_project_update', selectedProjectNames: ['Tower'], currentUpdate: null, savedUpdates: world.updates, scheduleItems: world.items, projectAreas: world.areas, contacts: world.contacts };
+  const workAreas = (evidence: LiveDraft['sourceEvidence']) => buildProjectNarrative(buildConstructionUnderstanding(input as never, evidence as never)).locationGroups;
+  expect(JSON.stringify(workAreas(report.draft.sourceEvidence))).toBe(JSON.stringify(report.draft.locationGroups));
+  const draft = { ...report.draft, locationGroups: workAreas(report.draft.sourceEvidence.filter(item => item.id !== SAVED_MODEL)) };
+  return (['project_manager', 'executive'] as const).map(format => String(enhanceDAVEReportDraft(draft as never, report.briefing, format).body)).join('\n=====\n');
+}
+
+/** Field notes recorded with NO area and no task: the report files them under the project's own name. */
+const NO_AREA_NOTES = {
+  work: ['Temporary fencing was installed along the street frontage.', 'Concrete washout pit was installed near the gate.', 'Silt fence was installed along the north property line.', 'Temporary power panel was installed at the trailer.'],
+  plain: ['Owner walked the job with the lender.', 'Neighbor asked about work hours.', 'Dumpster was swapped this morning.'],
+  problem: ['Street closure permit expired. Deliveries are on hold.', 'Crane permit was denied. Truss setting is blocked.'],
+  step: ['Please confirm the street closure dates with the city.', 'Please verify the survey stakes at the east corner.'],
+} as const;
+/** Six shapes of two to four such notes; the first is review pass 5's (R1): one plain note and two about the work. */
+const NO_AREA_SHAPES: ReadonlyArray<ReadonlyArray<keyof typeof NO_AREA_NOTES>> = [
+  ['plain', 'work', 'work'],
+  ['work', 'work'],
+  ['plain', 'plain', 'work', 'step'],
+  ['problem', 'work', 'plain'],
+  ['work', 'work', 'work', 'plain'],
+  ['step', 'problem', 'plain', 'work'],
+];
+/**
+ * Three of the six are quiet projects: no task is overdue. There the model of a device that never saw the project
+ * sums it up in a sentence that reads as a problem ("... 0 are at risk, 0 are blocked ..."); with an overdue task
+ * it advises an action first ("Verify risk for ...").
+ */
+const QUIET = new Set([2, 3, 5]);
+/** Generated project `seed` (1 to 6) with its shape of no-area notes added, on days of the seed's choosing. */
+function projectWithNotesOfNoArea(seed: number): World {
+  const generated = project(seed);
+  const world = QUIET.has(seed)
+    ? { ...generated, items: generated.items.map(item => (dueIn(item) < 0 && Number(item.percentComplete) < 100 ? { ...item, finishDate: date(30) } : item)) }
+    : generated;
+  const rand = seeded(seed * 15485863);
+  const used = new Set<string>();
+  const notes = NO_AREA_SHAPES[(seed - 1) % NO_AREA_SHAPES.length].map((kind, index) => {
+    const text = shuffled(rand, NO_AREA_NOTES[kind]).find(candidate => !used.has(candidate)) as string;
+    used.add(text);
+    // Every third one carries a photo that has no area either.
+    const photos = (seed + index) % 3 === 0 ? [photo(`pn${index + 1}`, '', `Street frontage, view ${index + 1}`)] : [];
+    return {
+      id: `n${index + 1}`, projectName: 'Tower', scheduleProjectName: 'Tower', date: savedDay(-Math.floor(rand() * 9)), photos, recipients: { contactIds: [] },
+      notes: text, status: 'sent', scheduleItemId: null, scheduleTaskName: null, selectedAreaName: '',
+    } as unknown as ProjectUpdate;
+  });
+  return { ...world, updates: shuffled(rand, [...world.updates, ...notes]) };
 }
 
 const SEEDS = Array.from({ length: Number(process.env.B232_SEEDS || 3) }, (_unused, index) => Number(process.env.B232_FIRST || 1) + index);
@@ -580,6 +649,55 @@ describe('B232 item 2 part C: the phone\'s whole written report against the 2.0 
           .toEqual({ seed, device: name, text: true, fingerprint: true, quotesTheDeletedNote: false });
       }
     }
+  });
+
+  it('4b. (item 4b) the saved model takes no place among a work area\'s lines: no saved model, one that reads as a problem, one that advises an action, one text', async () => {
+    const worlds: Array<[string, World, boolean]> = [
+      ...SEEDS.map(seed => [`generated ${seed}`, project(seed), false] as [string, World, boolean]),
+      ...NO_AREA_SHAPES.map((shape, index) => [`generated ${index + 1}${QUIET.has(index + 1) ? ', no task overdue,' : ''} with notes of no area (${shape.join(', ')})`, projectWithNotesOfNoArea(index + 1), true] as [string, World, boolean]),
+    ];
+    const differing: string[] = [];
+    const models = { reports: 0, readsAsAProblem: 0, advisesAnAction: 0 };
+    for (const [name, world, withNotesOfNoArea] of worlds) {
+      const byDate = newestFirst(world.updates);
+      const devices: Array<[string, Live]> = [];
+      // A device that never saw the project: its model sums the project up in one sentence.
+      devices.push(['never saw the project', await phoneLive(`4b-fresh-${name}`, world)]);
+      if (withNotesOfNoArea) {
+        // Open yesterday, before the two newest updates, when the first task stood 20 points lower.
+        const lower = world.items.map((item, index) => (index === 0 ? { ...item, percentComplete: Math.max(0, Number(item.percentComplete) - 20) } as ScheduleItem : item));
+        await phoneLive(`4b-earlier-${name}`, { ...world, updates: byDate.slice(2), items: lower }, at(-1));
+        devices.push(['was open before today\'s records', await phoneLive(`4b-earlier-${name}`, world)]);
+      }
+      // Held, yesterday, an update and a task that were deleted since.
+      const goneTask = task('gone-task', 'Temporary power', 'Trailer', 0, date(1), 'Luis', { status: 'Waiting' });
+      const goneUpdate = update('u9', goneTask, savedDay(-1), 'Temporary power is out at the trailer. Generator is on order.');
+      await phoneLive(`4b-deleted-${name}`, { ...world, updates: [goneUpdate, ...world.updates], items: [...world.items, goneTask] }, at(-1));
+      devices.push(['held a record deleted since', await phoneLive(`4b-deleted-${name}`, world)]);
+
+      const noSavedModel = writtenWithNoSavedModel(devices[0][1], world);
+      for (const [device, report] of devices) {
+        const model = report.draft.sourceEvidence.find(item => item.id === SAVED_MODEL);
+        const kind = { readsAsAProblem: report.draft.risks.some(risk => risk.sourceEvidenceIds.includes(SAVED_MODEL)), advisesAnAction: Boolean(model?.actionRequired?.trim()) };
+        models.reports += 1;
+        models.readsAsAProblem += Number(kind.readsAsAProblem);
+        models.advisesAnAction += Number(kind.advisesAnAction);
+        // The model is in the draft on every device (the app's own advice reads it there)...
+        expect({ name, device, theModelIsInTheDraft: Boolean(model) }).toEqual({ name, device, theModelIsInTheDraft: true });
+        expect({ name, device, sameFingerprint: report.fingerprint === devices[0][1].fingerprint }).toEqual({ name, device, sameFingerprint: true });
+        // ...and the text is the one written with no saved model at all, to the letter.
+        if (report.text !== noSavedModel) {
+          const lines = [...newLines(report.text, noSavedModel).map(line => `    with no saved model, not here: ${line}`), ...newLines(noSavedModel, report.text).map(line => `    here, not with no saved model: ${line}`)];
+          differing.push(`${name}, a device that ${device} (its model ${kind.readsAsAProblem ? 'reads as a problem' : ''}${kind.readsAsAProblem && kind.advisesAnAction ? ' and ' : ''}${kind.advisesAnAction ? 'advises an action' : ''}${kind.readsAsAProblem || kind.advisesAnAction ? '' : 'is neither'})`);
+          say(`4b. ${differing[differing.length - 1]}: THE TEXT IS NOT THE ONE WRITTEN WITH NO SAVED MODEL\n${lines.join('\n')}`);
+        }
+      }
+    }
+    say(`4b. ${models.reports} reports of ${worlds.length} projects against the text with no saved model: ${differing.length} differ; the model read as a problem on ${models.readsAsAProblem}, advised an action on ${models.advisesAnAction}`);
+    // Both kinds of model were met, so the check is not asleep.
+    expect(models.readsAsAProblem).toBeGreaterThan(0);
+    expect(models.advisesAnAction).toBeGreaterThan(0);
+    expect(differing).toEqual([]);
   });
 });
 

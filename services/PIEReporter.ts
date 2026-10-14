@@ -1621,6 +1621,17 @@ function buildReport(
  * fingerprint. The evidence stays in the draft: the app's own screens read
  * the model's advice from it (the draft's action items, risks and
  * decisions). Only the lines that are written leave.
+ *
+ * Item 4b (the coordinator's decision, 13 Oct 2026; review pass 5, R1 and
+ * R2): it takes NO PLACE among a work area's lines either. An area prints at
+ * most three lines (selectConciseAreaBullets: its first progress line, its
+ * first problem, its first next step, then the rest). The model's line was
+ * chosen with the others and THEN left out, so its place stood empty: of
+ * three field notes recorded with no area, one that Build 231 printed was
+ * gone (the model's sentence read as a problem and held the "first problem"
+ * place), and two devices with two saved models still wrote two texts (on
+ * the other the model's advice held the "first next step" place). The three
+ * lines are now chosen as if that evidence were not there.
  */
 const SAVED_MODEL_EVIDENCE_ID = 'runtime-current-situation';
 
@@ -1633,17 +1644,20 @@ function buildReportBulletsFromUnderstanding(
   actionItems: PIEReportActionItem[],
 ): PIEReportBullet[] {
   const bullets: PIEReportBullet[] = [];
-  /** The lines made from the saved model alone (part A): chosen as before, and not written. */
-  const notWritten = new Set<string>();
+  // What the lines are chosen from: the area's progress lines, problems and
+  // next steps WITHOUT the ones made from the saved model alone (item 4b), in
+  // each of its forms. A line of his own with the same words stays: it has
+  // evidence of his.
+  const progressLines = area.whatChanged.filter(summary => !onlyFromTheSavedModel(area.progress
+    .filter(item => normalizeName(item.summary) === normalizeName(summary))
+    .flatMap(item => item.sourceEvidenceIds)));
+  const issues = area.issues.filter(issue => !onlyFromTheSavedModel(issue.sourceEvidenceIds));
+  const nextSteps = actionItems.filter(item => !onlyFromTheSavedModel(item.sourceEvidenceIds));
 
-  area.whatChanged.slice(0, 3).forEach((summary, index) => {
+  progressLines.slice(0, 3).forEach((summary, index) => {
     if (!summary || shouldSuppressReportBullet(summary)) return;
-    const id = slug(`bullet-${area.id}-progress-${index}`);
-    if (onlyFromTheSavedModel(area.progress
-      .filter(item => normalizeName(item.summary) === normalizeName(summary))
-      .flatMap(item => item.sourceEvidenceIds))) notWritten.add(id);
     bullets.push({
-      id,
+      id: slug(`bullet-${area.id}-progress-${index}`),
       text: ensureSentence(summary),
       kind: 'progress',
       sourceEvidenceIds: area.sourceEvidenceIds,
@@ -1651,11 +1665,9 @@ function buildReportBulletsFromUnderstanding(
     });
   });
 
-  area.issues.slice(0, 2).forEach((issue, index) => {
-    const id = slug(`bullet-${area.id}-issue-${index}`);
-    if (onlyFromTheSavedModel(issue.sourceEvidenceIds)) notWritten.add(id);
+  issues.slice(0, 2).forEach((issue, index) => {
     bullets.push({
-      id,
+      id: slug(`bullet-${area.id}-issue-${index}`),
       text: ensureSentence(issue.summary),
       kind: issue.summary.toLowerCase().includes('safety') ? 'safety' : 'issue',
       sourceEvidenceIds: issue.sourceEvidenceIds,
@@ -1663,11 +1675,9 @@ function buildReportBulletsFromUnderstanding(
     });
   });
 
-  actionItems.forEach(item => {
-    const id = slug(`bullet-action-${item.id}`);
-    if (onlyFromTheSavedModel(item.sourceEvidenceIds)) notWritten.add(id);
+  nextSteps.forEach(item => {
     bullets.push({
-      id,
+      id: slug(`bullet-action-${item.id}`),
       text: formatActionItem(item),
       kind: 'next_step',
       sourceEvidenceIds: item.sourceEvidenceIds,
@@ -1675,42 +1685,29 @@ function buildReportBulletsFromUnderstanding(
     });
   });
 
-  /** The area's photos named in a line of their own, where no line of his carries them. */
-  let imagesAlone: PIEReportBullet | null = null;
-  /** The line the photos' numbers were added to. */
-  let carriesImages = '';
   if (area.imageReferences.length > 0) {
     const lastProgressIndex = bullets.findIndex(
       bullet => bullet.kind === 'progress' || bullet.kind === 'schedule',
     );
     const imageText = imageReferenceText(area.imageReferences);
-    imagesAlone = {
-      id: slug(`bullet-image-${area.id}`),
-      text: imageText,
-      kind: 'image_reference',
-      sourceEvidenceIds: area.imageReferences.map(ref => ref.photoId),
-      needsReview: false,
-    };
 
     if (lastProgressIndex >= 0) {
-      carriesImages = bullets[lastProgressIndex].id;
       bullets[lastProgressIndex] = {
         ...bullets[lastProgressIndex],
         text: `${stripTerminalPunctuation(bullets[lastProgressIndex].text)}. ${imageText}`,
       };
     } else {
-      bullets.push(imagesAlone);
+      bullets.push({
+        id: slug(`bullet-image-${area.id}`),
+        text: imageText,
+        kind: 'image_reference',
+        sourceEvidenceIds: area.imageReferences.map(ref => ref.photoId),
+        needsReview: false,
+      });
     }
   }
 
-  // The lines are chosen exactly as before, the saved model's among them, so
-  // that nothing else in the area moves: no other line takes their place.
-  // Then the model's are left out. Had one carried the photos' numbers, the
-  // numbers stand in a line of their own.
-  return selectConciseAreaBullets(uniqueBullets(bullets)).flatMap(bullet => {
-    if (!notWritten.has(bullet.id)) return [bullet];
-    return bullet.id === carriesImages && imagesAlone ? [imagesAlone] : [];
-  });
+  return selectConciseAreaBullets(uniqueBullets(bullets));
 }
 
 function actionItemsFromEvidence(
