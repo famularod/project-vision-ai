@@ -1268,9 +1268,19 @@ export function buildReportImageReferences(
   const seenPhotoIds = new Set<string>();
 
   updates.forEach(update => {
+    // Open item 7.54: an update saved from a sub-project's task carries the
+    // sub-project's own name and names its parent in scheduleProjectName. The
+    // parent's report carries its lines (selectedUpdates), and its photos were
+    // left out here, so they had no number and went nowhere. They are numbered
+    // with the parent's, filed under the parent its lines are printed under.
+    const parent = update.scheduleProjectName?.trim() || '';
+    const savedUnderItsParent = selected.length > 0 &&
+      !selected.includes(normalizeName(update.projectName)) &&
+      Boolean(parent) && selected.includes(normalizeName(parent));
     if (
       selected.length > 0 &&
-      !selected.includes(normalizeName(update.projectName))
+      !selected.includes(normalizeName(update.projectName)) &&
+      !savedUnderItsParent
     ) {
       return;
     }
@@ -1282,7 +1292,7 @@ export function buildReportImageReferences(
       references.push({
         imageNumber: references.length + 1,
         photoId: photo.id,
-        projectName: update.projectName,
+        projectName: savedUnderItsParent ? parent : update.projectName,
         areaName: areaResolution.areaName,
         caption: cleanReportBulletText(photo.caption),
         sourceUpdateId: update.id,
