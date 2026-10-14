@@ -2,9 +2,10 @@
  * High item 3, option (b2) (the coordinator's decision on Q52 B, 13 Oct 2026: app only, no database change). The live
  * document list leaves document_data.extractedPages out and keeps every other key. Every updated device and the
  * desktop now write the citation slice of a drawing's index under ONE new key, document_data.citationPageIndex, when
- * they send its row; the one reader of the list's copy reads that key on the phone, the iPad and the desktop; and the
- * desktop backfills it, once, for drawings already in the cloud whose row still holds the index. Everything else of
- * (c) stands: a report cites only the list's copy, never a live row's own, never a device's own reading.
+ * they send its row; the one reader of the list's copy reads that key on the phone, the iPad and the desktop. There is
+ * no backfill (high item 3e: a write of a row nobody touched can start the cloud's paid preparation): a drawing already
+ * in the cloud gets its key when it is read again on an updated iPhone or iPad. Everything else of (c) stands: a
+ * report cites only the list's copy, never a live row's own, never a device's own reading.
  * Each device by its own code, over a cloud whose list is the live one. Made-up project and drawing.
  */
 import type * as RSTypes from '../../services/DAVEReportSnapshot';
@@ -234,46 +235,6 @@ const desktopSaysAlreadySent = (sentByPhone: RSTypes.DAVEReportSnapshot, desktop
 
 const KEY = 'citationPageIndex';
 const keyOf = (id = 'doc-a201') => (mockCloud.rows.get(id)?.document_data as any)?.[KEY];
-/** The backfill, by the desktop's own function, over a cloud reached the way the desktop reaches it. */
-function backfillClient() {
-  return {
-    from: (table: string) => {
-      if (table !== 'reference_documents') throw new Error(`Unexpected table ${table}`);
-      return {
-        select: (columns: string) => ({
-          eq: (_owner: string, _id: string) => ({
-            in: async (_column: string, ids: string[]) => {
-              expect(columns.replace(/\s/g, '')).toBe('id,updated_at,pages:document_data->extractedPages');
-              return { data: ids.flatMap(id => { const row = mockCloud.rows.get(id); return row ? [{ id, updated_at: row.updated_at, pages: json((row.document_data as any).extractedPages ?? null) }] : []; }), error: null };
-            },
-          }),
-        }),
-        update: (values: Record<string, any>) => {
-          const where: Record<string, string> = {};
-          const query: any = {
-            eq: (column: string, value: string) => { where[column] = value; return query; },
-            select: () => ({
-              maybeSingle: async () => {
-                const row = mockCloud.rows.get(where.id);
-                if (!row || row.updated_at !== where.updated_at) return { data: null, error: null };
-                mockCloud.rows.set(where.id, { ...row, document_data: json(values.document_data), updated_at: values.updated_at });
-                return { data: { updated_at: values.updated_at }, error: null };
-              },
-            }),
-          };
-          return query;
-        },
-      };
-    },
-  };
-}
-/* eslint-disable @typescript-eslint/no-var-requires */
-const backfillModule = (() => { try { return require('../../services/DrawingCitationBackfill'); } catch { return {}; } })();
-/* eslint-enable @typescript-eslint/no-var-requires */
-async function desktopBackfills() {
-  expect(typeof backfillModule.backfillDrawingCitationPageIndexes).toBe('function');
-  return backfillModule.backfillDrawingCitationPageIndexes({ client: backfillClient(), ownerId: 'owner-1', listedRows: mockListed() });
-}
 /** A drawing as a Build 231 phone sent it: its own reading in extractedPages, no key. */
 function sentByBuild231(document: ReferenceDocument) {
   const { [KEY]: _none, listedPageIndex: _l, ...data } = json(compactECOSDocumentIndexForCloud(document)) as any;
@@ -351,61 +312,26 @@ describe('(b2) the writers: a drawing\'s row is sent with the citation slice und
   });
 });
 
-describe('(b2) the backfill: the desktop writes the key once for drawings already in the cloud', () => {
-  it('a drawing a Build 231 phone sent (its row still holds the whole index): written once; then every device shows its piece after its next list; nothing else of the row changes', async () => {
+describe('(b2) with no backfill (high item 3e): drawings already in the cloud', () => {
+  it('a drawing an earlier build sent (its record holds its index, no key) shows no piece anywhere, and nothing writes its record', async () => {
     sentByBuild231(DRAWING_AS_READ);
     const before = json(mockCloud.rows.get('doc-a201')!);
     desktopReload();
-    expect((await allThree(await download([SCHEDULE]), await download([SCHEDULE]))).desktop).toEqual([]);
-    const result = await desktopBackfills();
-    expect(result.written).toEqual(['doc-a201']);
-    const after = mockCloud.rows.get('doc-a201')!;
-    const { [KEY]: written, ...rest } = after.document_data as any;
-    expect(rest).toEqual(before.document_data);
-    expect(written.pages.flatMap((page: any) => page.regions.map((region: any) => region.id))).toEqual(['region-lot']);
-    expect(after.name).toBe(before.name);
-    expect((await desktopBackfills()).written).toEqual([]);
+    expect(await allThree(await download([SCHEDULE]), await download([SCHEDULE]))).toMatchObject({ phone: [], iPad: [], desktop: [], oneReport: true });
+    expect(mockCloud.rows.get('doc-a201')).toEqual(before);
+  });
+
+  it('read again on an updated iPhone (added again into the same record): its key goes up with that send, and every device shows its piece after its next list', async () => {
+    sentByBuild231(DRAWING_AS_READ);
+    await upload({ ...DRAWING_AS_READ, updatedAt: '2026-10-02T09:00:00.000Z' } as ReferenceDocument);
+    expect(keyOf()?.pages).toHaveLength(1);
     desktopReload();
     expect(await allThree(await download([SCHEDULE]), await download([SCHEDULE]))).toMatchObject({ phone: CITES_REV_C, iPad: CITES_REV_C, desktop: CITES_REV_C, oneReport: true });
   });
 
-  it('a drawing whose row no longer holds its index (an edit emptied it), and a Google Drive one: nothing is written; no piece anywhere', async () => {
-    sentByBuild231({ ...DRAWING_AS_READ, extractedPages: [], extractedText: null } as ReferenceDocument);
-    const drive = { ...DRAWING_AS_READ, id: 'doc-a202', name: 'A-202 Drive plan', sourceProvider: 'google_drive', storagePath: null, extractedPages: [], extractedText: null } as unknown as ReferenceDocument;
-    sentByBuild231(drive);
-    const rowsBefore = json([...mockCloud.rows.values()]);
-    expect((await desktopBackfills()).written).toEqual([]);
-    expect(json([...mockCloud.rows.values()])).toEqual(rowsBefore);
-    desktopReload();
-    expect(await allThree(await download([SCHEDULE]), await download([SCHEDULE]))).toMatchObject({ phone: [], iPad: [], desktop: [], oneReport: true });
-  });
-
-  it('two desktops at once, or another write in between: only one write lands, and none over a newer row', async () => {
-    sentByBuild231(DRAWING_AS_READ);
-    const listedEarlier = mockListed();
-    const [first, second] = [await desktopBackfills(), await backfillModule.backfillDrawingCitationPageIndexes({ client: backfillClient(), ownerId: 'owner-1', listedRows: listedEarlier })];
-    expect([first.written, second.written]).toEqual([['doc-a201'], []]);
-    mockCloud.rows = new Map();
-    sentByBuild231(DRAWING_AS_READ);
-    const stale = mockListed();
-    mockStore({ name: 'A-201 Site plan', category: 'Plans', document_data: { ...(mockCloud.rows.get('doc-a201')!.document_data as any), notes: 'Typed on the iPad' } }, 'doc-a201');
-    expect((await backfillModule.backfillDrawingCitationPageIndexes({ client: backfillClient(), ownerId: 'owner-1', listedRows: stale })).written).toEqual([]);
-    expect((mockCloud.rows.get('doc-a201')!.document_data as any).notes).toBe('Typed on the iPad');
-    expect(keyOf()).toBeUndefined();
-  });
-
-  it('a drawing whose index names no work area: written once as "nothing to cite", so it is not read again; no piece', async () => {
-    const noAreas = { ...DRAWING_AS_READ, extractedPages: [{ ...PAGE_C, regions: PAGE_C.regions.map(region => ({ ...region, areaNames: [], label: region.text })) }] } as unknown as ReferenceDocument;
-    sentByBuild231(noAreas);
-    expect((await desktopBackfills()).written).toEqual(['doc-a201']);
-    expect(keyOf()).toEqual({ sourceSha256: SHA_C, pages: [] });
-    expect((await desktopBackfills()).written).toEqual([]);
-  });
-
-  it('the wiring: the desktop backfills after it has read the document list', () => {
+  it('the wiring: the desktop sends a Google Drive drawing\'s record with the key rule, and its Word report cites as listed', () => {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const client: string = require('fs').readFileSync(require('path').resolve(__dirname, '../../services/DAVEWebSupabaseClient.ts'), 'utf8');
-    expect(client).toContain('void backfillDrawingCitationPageIndexes({ client, ownerId: userId, listedRows: referenceDocuments, seen: drawingCitationBackfillSeen })');
     expect(client).toContain('? withCitationPageIndexForTheCloudRow(compactECOSDocumentMetadataForCloud(document), document)');
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const shell: string = require('fs').readFileSync(require('path').resolve(__dirname, '../../components/web-shell/desktop-read-only-shell.tsx'), 'utf8');
@@ -434,15 +360,16 @@ describe('(b2) fingerprints', () => {
     expect(withKey).toEqual(withoutKey);
   });
 
-  it('a report sent before the update without a piece is known as before; the first report after a drawing gets its piece reads as changed once, then is known everywhere', async () => {
+  it('a report sent before the update without a piece is known as before; the first report after a drawing gets its piece (read again on an updated iPhone) reads as changed once, then is known everywhere', async () => {
     sentByBuild231(DRAWING_AS_READ);
     desktopReload();
-    const beforeBackfill = await allThree(await download([SCHEDULE]), await download([SCHEDULE]));
-    expect(beforeBackfill.oneReport).toBe(true);
-    await desktopBackfills();
+    const beforeTheReading = await allThree(await download([SCHEDULE]), await download([SCHEDULE]));
+    expect(beforeTheReading.oneReport).toBe(true);
+    // No backfill (3e): the drawing gets its piece when it is read again on an updated iPhone and sent.
+    await upload({ ...DRAWING_AS_READ, updatedAt: '2026-10-02T09:00:00.000Z' } as ReferenceDocument);
     desktopReload();
     const after = await allThree(await download([SCHEDULE]), await download([SCHEDULE]));
-    expect(RS.sameReportSource(beforeBackfill.p.sent.sourceFingerprint, after.p.fingerprint)).toBe(false);
+    expect(RS.sameReportSource(beforeTheReading.p.sent.sourceFingerprint, after.p.fingerprint)).toBe(false);
     expect(desktopSaysAlreadySent(after.p.sent, after.d.fingerprint)).toBe(true);
   });
 });

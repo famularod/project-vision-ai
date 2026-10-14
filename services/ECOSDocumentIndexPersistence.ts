@@ -141,8 +141,10 @@ export function compactECOSReferenceDocumentsForOperationalRead(
  *    index sends none). The device's own field never goes into a row.
  *  - THE ONE READER (listedPageIndexOfTheListRow): reads that key from a list row. Phone and iPad hold the result as
  *    ReferenceDocument.listedPageIndex (null: none); the desktop's loader does the same.
- *  - THE BACKFILL (DrawingCitationBackfill.ts): the desktop writes the key, once, for a drawing whose row still holds
- *    its own whole index (citationPageIndexOfTheRowsOwnIndex).
+ *  - NO BACKFILL (high item 3e, the coordinator's decision, option A): every write of a document's row starts the
+ *    cloud's own work on it (the hosted-preparation trigger can queue a full, paid preparation of a drawing), so
+ *    the app writes a row only as part of something he does, and the key goes up only inside those writes.
+ *    Drawings already in the cloud show their piece once added or read again on an updated iPhone or iPad.
  *  - Everything else of (c) stands: the merge keeps the list's verdict across live changes (DAVECloudRecovery); the
  *    Reports screens cite only from listedPageIndex (referenceDocumentsCitedAsListed); the desktop keeps, for a live
  *    change, the list's copy of the row it replaces (liveDocumentRowWithTheListedIndex); the report's truth gets the
