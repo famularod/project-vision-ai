@@ -148,8 +148,9 @@ describe('2.38: the tasks a newer schedule turned High (the phone\'s and iPad\'s
     expect(scheduleTurnedHighLine([])).toBeNull();
     expect(scheduleTurnedHighLine([task('Roof')])).toBe('This schedule turned 1 task High: Roof (Lot). To set one back, open it and change its priority.');
     expect(scheduleTurnedHighLine([task('Survey', ''), task('Roof')])).toBe('This schedule turned 2 tasks High: Roof (Lot) and Survey. To set one back, open it and change its priority.');
+    // CHANGED by S1c item 3 (14 Oct, review pass 5's H5S-3): two tasks named "Roof (Lot)" are two tasks, not one.
     expect(scheduleTurnedHighLine(['Paint', 'Deck', 'Roof', 'Framing', 'Survey', 'Roof'].map(name => task(name))))
-      .toBe('This schedule turned 5 tasks High: Deck (Lot), Framing (Lot), Paint (Lot) and 2 more. To set one back, open it and change its priority.');
+      .toBe('This schedule turned 6 tasks High: Deck (Lot), Framing (Lot), Paint (Lot) and 3 more. To set one back, open it and change its priority.');
   });
 });
 

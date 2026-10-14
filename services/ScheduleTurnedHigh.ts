@@ -30,20 +30,41 @@ export function scheduleTasksTurnedHigh(
 
 const NAMED = 3;
 
-/** How a task is named in the line: its name, and its area where it has one. */
-function taskLabel(item: ScheduleItem): string {
-  const name = (item.taskName || '').trim() || 'A task';
-  const area = (item.locationName || '').trim();
-  return area ? `${name} (${area})` : name;
+/**
+ * How each task is named in the line: its name, and its area where it has one. Review pass 5's H5S-3 (14 Oct 2026,
+ * Low, caused by 2.38): two different tasks with one name and area were counted as one ("turned 1 task High:
+ * Inspection" when two were). Every task is counted, and where labels repeat they are told apart in plain words, by
+ * what differs among them: the project, then the day each ends, then the day each starts. Tasks alike in all of these
+ * keep one label each, and each still counts.
+ */
+function taskLabels(tasks: readonly ScheduleItem[]): string[] {
+  const each = [...new Map<unknown, ScheduleItem>(tasks.map(task => [task.id || task, task])).values()]; // a row twice is one task
+  const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  const named = each.map(task => ({ name: text(task.taskName) || 'A task', details: text(task.locationName) ? [text(task.locationName)] : [] as string[], task }));
+  const labelOf = (entry: typeof named[number]) => (entry.details.length > 0 ? `${entry.name} (${entry.details.join(', ')})` : entry.name);
+  const tellApart: readonly ((task: ScheduleItem) => string)[] = [
+    task => text(task.projectName),
+    task => (text(task.finishDate) ? `ends ${text(task.finishDate)}` : ''),
+    task => (text(task.startDate) ? `starts ${text(task.startDate)}` : ''),
+  ];
+  tellApart.forEach(detail => {
+    const groups = new Map<string, typeof named>();
+    named.forEach(entry => groups.set(labelOf(entry), [...(groups.get(labelOf(entry)) || []), entry]));
+    groups.forEach(group => {
+      if (group.length < 2 || new Set(group.map(entry => detail(entry.task))).size < 2) return;
+      group.forEach(entry => { if (detail(entry.task)) entry.details.push(detail(entry.task)); });
+    });
+  });
+  return named.map(labelOf);
 }
 
 /**
  * The one line he reads where he approved the schedule (the phone's and iPad's import review, the desktop's upload
- * and Make Current): the tasks it turned High, each once, in alphabetical order, three by name and "and N more"
+ * and Make Current): the tasks it turned High, each counted, in alphabetical order, three by name and "and N more"
  * after, and how to set one back. Null when it turned none.
  */
 export function scheduleTurnedHighLine(tasks: readonly ScheduleItem[]): string | null {
-  const labels = [...new Set(tasks.map(taskLabel))].sort((left, right) => left.localeCompare(right));
+  const labels = taskLabels(tasks).sort((left, right) => left.localeCompare(right));
   if (labels.length === 0) return null;
   const named = labels.slice(0, NAMED);
   const more = labels.length - named.length;
