@@ -159,6 +159,7 @@ import {
 } from '../services/ReportDrawingReferences';
 
 import { useListedSharedDocuments } from '../hooks/use-listed-shared-documents';
+import { withoutKeptPageIndexes } from '../services/ECOSDocumentIndexPersistence';
 
 const EMPTY_REVIEW_IDS: readonly string[] = Object.freeze([]);
 
@@ -361,7 +362,9 @@ export function ReportsScreen({
     knownScheduleItems,
     knownScheduleDocuments,
     projectAreas,
-    referenceDocuments,
+    // High item 3: the drawings are cited from the page index this device kept; the documents are held as before.
+    referenceDocuments: referenceDocuments && withoutKeptPageIndexes(referenceDocuments),
+    drawingDocuments: referenceDocuments,
   }), [
     knownScheduleDocuments,
     knownScheduleItems,

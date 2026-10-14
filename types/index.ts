@@ -339,6 +339,8 @@ export type ReferenceDocument = {
   indexedContentSha256?: string | null;
   /** Optional page/region index used for exact citations and automatic report excerpts. */
   extractedPages?: ReferenceDocumentExtractedPage[];
+  /** The phone's and iPad's own copy of the part of a drawing's page index a report cites from (high item 3). Never in the cloud's row. */
+  keptPageIndex?: ReferenceDocumentKeptPageIndex | null;
   /** Customer-safe status mirrored from the Vitruvius-operated background indexer. */
   ecosHostedIndexStatus?:
     | 'Waiting'
@@ -459,6 +461,16 @@ export type ReferenceDocumentSheetProvenance = {
   sheetMappingEvidence: ReferenceDocumentSheetMappingEvidence[];
   documentStructuralIdentity: ReferenceDocumentStructuralIdentity | null;
   assurance: ReferenceDocumentPageAssurance | null;
+};
+
+/**
+ * High item 3 (the owner's instruction of 13 Oct 2026): the pages and regions of a drawing's page index that a
+ * report's citation can be read from, exactly as the cloud's row holds them (ECOSDocumentIndexPersistence).
+ */
+export type ReferenceDocumentKeptPageIndex = {
+  /** The checksum of the file the index was read from, or null where it is not known. */
+  sourceSha256: string | null;
+  pages: ReferenceDocumentExtractedPage[];
 };
 
 export type ReferenceDocumentExtractedPage = {

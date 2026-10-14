@@ -322,10 +322,12 @@ function mergeCloudReferenceDocumentAuthority(
 ): ReferenceDocument {
   // Part of "which schedule is current", written and cleared only by the
   // activation call (owner answer Q15): the cloud's list, or none.
-  const { retiredForProjectNames: _deviceRetirement, ...merged } = metadataMerged;
+  const { retiredForProjectNames: _deviceRetirement, keptPageIndex: _deviceKept, ...merged } = metadataMerged;
   return {
     ...merged,
     ...(cloud.retiredForProjectNames?.length ? { retiredForProjectNames: cloud.retiredForProjectNames } : {}),
+    // High item 3: the page index a report cites from is the cloud's row's, as `extractedPages` is.
+    ...(cloud.keptPageIndex ? { keptPageIndex: cloud.keptPageIndex } : {}),
     isCurrent: cloud.isCurrent,
     webContentReview: cloud.webContentReview,
     webReport: cloud.webReport,
@@ -393,6 +395,7 @@ const REFERENCE_DOCUMENT_DEVICE_OR_CLOUD_AUTHORITY_KEYS = new Set([
   'extractionAverageConfidence',
   'indexedContentSha256',
   'extractedPages',
+  'keptPageIndex',
   'ecosHostedIndexStatus',
   'ecosHostedIndexProgressPercent',
   'ecosHostedIndexCustomerMessage',

@@ -75,6 +75,7 @@ import {
 import {
   compactECOSDocumentIndexForCloud,
   compactECOSReferenceDocumentsForOperationalRead,
+  withKeptPageIndexForTheCloudRow,
 } from './ECOSDocumentIndexPersistence';
 import { replaceECOSDocumentCloudIndex } from './ECOSDocumentCloudIndex';
 import {
@@ -2514,7 +2515,8 @@ export async function upsertReferenceDocument(
   // (by its id) and the index again; and both requests say which account they are sent for, so the last look where
   // they leave refuses them under any other sign-in.
   const asOwner = cloudOwnerExpectedForThisCall();
-  const compactDocument = compactECOSDocumentIndexForCloud(document);
+  // High item 3: a drawing's kept page index goes in the row's own place, so an edit never removes it there.
+  const compactDocument = withKeptPageIndexForTheCloudRow(compactECOSDocumentIndexForCloud(document), document);
   const { cloudUpdatedAt: _cloudUpdatedAt, cloudDetailsSeen: _cloudDetailsSeen, ...documentData } = compactDocument;
   const payload = {
     id: document.id,
