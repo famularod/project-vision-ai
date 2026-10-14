@@ -6994,6 +6994,141 @@ describe('Way 2, step 1: the mark is left by his edit and goes wherever its fiel
 });
 
 /**
+ * Open item 2.41 (W2-1 of the review of Way 2; Medium for Build 233, older: Build 232 had it on the approval's road).
+ * Review Conflicts' Keep Phone on a card that a WHOLE copy of the task made (his edit with no signal, then the lookahead
+ * that moved the task deleted with its items, or a second lookahead approved: one whole copy since Way 2's item 1) kept
+ * his value but left the other device's mark beside it (the priority's "set by hand, when"; since Way 2 also the five
+ * typed fields'). His Medium then read as not his, and the next master turned it High everywhere with no question.
+ * Now each field's mark comes from the copy its value came from, for Keep Phone as for Keep Cloud.
+ */
+describe('Open item 2.41: after Review Conflicts, each field\'s mark of who set it comes from the copy its value came from', () => {
+  const { LOOK, underTheLookahead, heardEverywhere } = ITEM_1C;
+  const FIELDS = {
+    priority: ['prioritySetByHand', 'Low', 'High'],
+    owner: ['ownerSetByHand', 'Bob', 'Ana'],
+    contractor: ['contractorSetByHand', 'Acme Framing', 'Best Framing'],
+    notes: ['notesSetByHand', 'Crew short Tuesday', 'Pour moved to Wednesday'],
+    nextAction: ['nextActionSetByHand', 'Call the inspector', 'Order the trusses'],
+    milestone: ['milestoneSetByHand', 'Dry-in', 'Topping out'],
+  } as const;
+  type Field = keyof typeof FIELDS;
+  type Who = 'phone' | 'ipad';
+  type Road = 'his edit alone' | 'his edit, then the lookahead deleted' | 'his edit, then a second lookahead approved';
+  const PHONE_AT = '2026-09-10T09:00:00.000Z', IPAD_AT = '2026-09-10T09:30:00.000Z';
+  const DATES: Record<Road, string> = {
+    'his edit alone': '10/18/2026 - 10/28/2026', 'his edit, then the lookahead deleted': '10/15/2026 - 10/25/2026',
+    'his edit, then a second lookahead approved': '10/19/2026 - 10/29/2026',
+  };
+  const valueOf = (field: Field, who: Who) => FIELDS[field][who === 'phone' ? 1 : 2];
+  /** A field's value and its mark (what the mark names, and when), as a place holds them. */
+  const held = (item: ScheduleItem | undefined, field: Field) => {
+    const record = (item ?? {}) as unknown as Record<string, unknown>;
+    const mark = record[FIELDS[field][0]] as { priority?: string; text?: string; at?: string } | null | undefined;
+    return { value: record[field] ?? null, mark: mark ? { names: mark.priority ?? mark.text ?? null, at: mark.at ?? null } : null };
+  };
+  const his = (field: Field, who: Who, markAt = who === 'phone' ? PHONE_AT : IPAD_AT) => ({ value: valueOf(field, who), mark: { names: valueOf(field, who), at: markAt } });
+  /** The phone, the iPad and the computer. */
+  const shownRows = (phone: Device, ipad: Device) => [theRow(phone), theRow(ipad), framingOf(webShown())[0]];
+
+  /**
+   * Framing is under the lookahead everywhere. The phone, with no signal, sets `set('phone')` (then, on a whole copy's
+   * road, deletes that lookahead with its items or approves a second one); the iPad sets `set('ipad')` and it goes up
+   * (its clock `ipadAhead` minutes ahead). The phone gets signal; Review Conflicts asks; he chooses; everything syncs.
+   */
+  async function chosen(set: (who: Who) => Partial<ScheduleItem>, road: Road, choice: 'keep_local' | 'keep_cloud',
+    { ipadAhead = 0, beforeChoice }: { ipadAhead?: number; beforeChoice?: (phone: Device) => void } = {}) {
+    const { phone, ipad } = await underTheLookahead();
+    const id = theRow(phone).id;
+    setOnline(phone, false);
+    at(PHONE_AT); await edit(phone, id, set('phone'));
+    if (road === 'his edit, then the lookahead deleted') { at('2026-09-10T09:10:00.000Z'); await deleteWithItems(phone, LOOK); }
+    if (road === 'his edit, then a second lookahead approved') {
+      const L2 = scheduleDoc('LOOKAHEAD RVK3', '2026-09-10T09:10:00.000Z', 'lookahead');
+      at(L2.importedAt!); await approve(phone, L2, ['Framing,Alpha,Lot,10/19/2026,10/29/2026,'], true);
+    }
+    at(IPAD_AT); if (ipadAhead) jest.setSystemTime(Date.now() + ipadAhead * 60_000);
+    await edit(ipad, id, set('ipad')); await backgroundUpload(ipad);
+    at('2026-09-10T10:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    await settle(phone, ipad);
+    const cards = await conflictsOf(phone);
+    const asked = cards.map(conflict => (conflict.localPayload as { askedFields?: string[] }).askedFields ?? null);
+    beforeChoice?.(phone);
+    for (const conflict of cards) await chooseInSettings(phone, conflict.id, choice);
+    await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+    const after = {
+      asked, dates: shownRows(phone, ipad).map(item => (item ? `${item.startDate} - ${item.finishDate}` : null)),
+      cards: [(await conflictsOf(phone)).length, (await conflictsOf(ipad)).length], waiting: [(await queueOf(phone)).length, (await queueOf(ipad)).length],
+    };
+    return { phone, ipad, after };
+  }
+  const settledAs = (road: Road, field: string) => ({ asked: [[field]], dates: Array(3).fill(DATES[road]), cards: [0, 0], waiting: [0, 0] });
+
+  const CASES: Array<[Field, Road, 'keep_local' | 'keep_cloud']> = [];
+  for (const field of Object.keys(FIELDS) as Field[]) {
+    for (const road of Object.keys(DATES) as Road[]) for (const choice of ['keep_local', 'keep_cloud'] as const) CASES.push([field, road, choice]);
+  }
+  it.each(CASES)('K / K3, %s: %s; the iPad sets it too; %s leaves that copy\'s value AND that copy\'s mark on the phone, the iPad and the computer', async (field, road, choice) => {
+    const { phone, ipad, after } = await chosen(who => ({ [field]: valueOf(field, who) }) as Partial<ScheduleItem>, road, choice);
+    expect(after).toEqual(settledAs(road, field));
+    // (It was, on a whole copy's road with Keep Phone: his value with the iPad's mark beside it, in all three places.)
+    expect(shownRows(phone, ipad).map(item => held(item, field))).toEqual(Array(3).fill(his(field, choice === 'keep_local' ? 'phone' : 'ipad')));
+  });
+
+  it.each(['keep_local', 'keep_cloud'] as const)('K, seed 7749\'s clock (the iPad 2.5 h ahead), the priority on a whole copy\'s card, %s: the value and its mark from the same copy', async choice => {
+    const { phone, ipad, after } = await chosen(who => ({ priority: valueOf('priority', who) }) as Partial<ScheduleItem>, 'his edit, then the lookahead deleted', choice, { ipadAhead: 150 });
+    expect(after).toEqual(settledAs('his edit, then the lookahead deleted', 'priority'));
+    expect(shownRows(phone, ipad).map(item => held(item, 'priority')))
+      .toEqual(Array(3).fill(choice === 'keep_local' ? his('priority', 'phone') : his('priority', 'ipad', '2026-09-10T12:00:00.000Z')));
+  });
+
+  it.each(['keep_local', 'keep_cloud'] as const)('his hand links on a whole copy\'s card, %s: the links and their stamp come from the same copy', async choice => {
+    const link = (lagDays: number) => [{ predecessorItemId: 'MASTER F-2', type: 'FS' as const, lagDays }];
+    const { phone, ipad, after } = await chosen(who => ({ dependencies: link(who === 'phone' ? 0 : 3), dependenciesUpdatedAt: who === 'phone' ? PHONE_AT : IPAD_AT }) as Partial<ScheduleItem>,
+      'his edit, then the lookahead deleted', choice);
+    expect(after).toEqual(settledAs('his edit, then the lookahead deleted', 'dependencies'));
+    expect(shownRows(phone, ipad).map(item => ({ lags: (item?.dependencies ?? []).map(entry => entry.lagDays), stamp: item?.dependenciesUpdatedAt ?? null })))
+      .toEqual(Array(3).fill(choice === 'keep_local' ? { lags: [0], stamp: PHONE_AT } : { lags: [3], stamp: IPAD_AT }));
+  });
+
+  it('a card saved before Way 2 (his copy holds no mark of his typing): Keep Phone leaves his text and the row\'s mark as it was, as before (it cannot say whose the text is)', async () => {
+    const { phone, ipad, after } = await chosen(who => ({ owner: valueOf('owner', who) }), 'his edit, then the lookahead deleted', 'keep_local', {
+      beforeChoice: device => {
+        const store = mockStores.get(device.name)!;
+        const cards = JSON.parse(store.get('projectVisionAI.syncConflicts.v1')!) as Array<{ localPayload?: { itemData?: Record<string, unknown> } }>;
+        cards.forEach(card => { delete card.localPayload?.itemData?.ownerSetByHand; });
+        store.set('projectVisionAI.syncConflicts.v1', JSON.stringify(cards));
+      },
+    });
+    expect(after).toEqual(settledAs('his edit, then the lookahead deleted', 'owner'));
+    expect(shownRows(phone, ipad).map(item => held(item, 'owner'))).toEqual(Array(3).fill({ value: 'Bob', mark: { names: 'Ana', at: IPAD_AT } }));
+  });
+
+  it.each([[true], [false]] as const)('K2: his Medium kept by Keep Phone (the lookahead deleted with no signal too: %s); a new master then moves Framing to finish within the week: Medium stays, his, everywhere, with no question', async withDelete => {
+    const { phone, ipad } = await underTheLookahead();
+    const id = theRow(phone).id;
+    at('2026-09-09T13:00:00.000Z'); await edit(phone, id, { priority: 'Low' }); await heardEverywhere(phone, ipad);
+    setOnline(phone, false);
+    at(PHONE_AT); await edit(phone, id, { priority: 'Medium' });
+    if (withDelete) { at('2026-09-10T09:10:00.000Z'); await deleteWithItems(phone, LOOK); }
+    at(IPAD_AT); await edit(ipad, id, { priority: 'High' }); await backgroundUpload(ipad);
+    at('2026-09-10T10:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    await settle(phone, ipad);
+    const cards = await conflictsOf(phone);
+    expect(cards.map(conflict => (conflict.localPayload as { askedFields?: string[] }).askedFields)).toEqual([['priority']]);
+    for (const conflict of cards) await chooseInSettings(phone, conflict.id, 'keep_local');
+    await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+    const mediumHis = { value: 'Medium', mark: { names: 'Medium', at: PHONE_AT } };
+    expect(shownRows(phone, ipad).map(item => held(item, 'priority'))).toEqual(Array(3).fill(mediumHis));
+    const GH = scheduleDoc('MASTER GH', '2026-09-11T12:00:00.000Z');
+    at(GH.importedAt!); await approve(phone, GH, ['Framing,Alpha,Lot,09/12/2026,09/16/2026,', SURVEY]); await heardEverywhere(phone, ipad);
+    await refresh(phone); await refresh(ipad);
+    // (It was, with the delete: High in all three places, the file's, with no question.)
+    expect({ places: shownRows(phone, ipad).map(item => held(item, 'priority')), cards: [(await conflictsOf(phone)).length, (await conflictsOf(ipad)).length] })
+      .toEqual({ places: Array(3).fill(mediumHis), cards: [0, 0] });
+  });
+});
+
+/**
  * Way 2, step 2, part B: open item 2.49 (review pass 1 of Way 2 step 1, finding 2; Medium, older: the same on Build 232).
  * A schedule FILE can fill a task's owner, contractor, note or milestone itself (an Owner, Notes or Milestone column).
  * The new row a master makes then takes nothing for that field from the row it replaces, so it keeps no record of it

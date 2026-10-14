@@ -106,6 +106,19 @@ export function scheduleItemFieldsWithCompanions(fields: readonly string[]): str
 }
 
 /**
+ * Open item 2.41 (Medium for Build 233; older, reached by Way 2's 945e68d4): the fields Keep Phone sends of the copy
+ * it keeps, each with its companions (the mark of who set it and when, the links' stamp) from that same copy, as Keep
+ * Cloud keeps the cloud's. A card that a WHOLE copy of the task made (his edit joined with a lookahead's delete or a
+ * schedule's approval) names the field alone, and the other device's mark stayed beside his value: his Medium then
+ * read as not his, and the next master turned it High with no question. A companion the kept copy does not have is
+ * left as the row has it, as before (a card saved before Way 2 has no mark of his typing).
+ */
+export function scheduleItemFieldsKeptWithCompanions(fields: readonly string[], kept: unknown): string[] {
+  const has = (field: string) => Boolean(kept) && typeof kept === 'object' && Object.prototype.hasOwnProperty.call(kept, field);
+  return scheduleItemFieldsWithCompanions(fields).filter(field => fields.includes(field) || has(field));
+}
+
+/**
  * The fields a whole copy of a task (a schedule approved, a lookahead deleted,
  * a percent carried on Set Active) is weighed on field by field, after the
  * sync merge (recoverDAVEScheduleRecords) has weighed it whole: what David

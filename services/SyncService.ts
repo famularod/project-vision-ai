@@ -78,7 +78,7 @@ import {
   scheduleItemNewRowMetAgain, scheduleItemRecordAfterTheSyncWrote, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyRestUnchanged,
   scheduleItemChangedSinceMade, scheduleItemWholeCopyBaseSinceMade, scheduleItemWholeCopyFieldByField, SCHEDULE_ITEM_AS_MADE,
   scheduleItemEditBaseOverTextBroughtForward, scheduleItemActivityWithOtherRows, scheduleItemCarriedFieldsToSend,
-  scheduleItemWholeCopyBase,
+  scheduleItemWholeCopyBase, scheduleItemFieldsKeptWithCompanions,
   scheduleItemWholeCopyOverCloud, SCHEDULE_PROGRESS_FIELDS, type ScheduleItemEditBase,
 } from './ScheduleItemEditBase';
 import {
@@ -7331,8 +7331,9 @@ async function chooseScheduleItemSyncConflictCopy(
     // over the other device's. A whole copy among them goes whole, as before.
     const scopes = [localPayload, ...(localPayload.withdrawnEdits ?? []), ...(existing ? [existing] : [])]
       .map(entry => ('payload' in entry ? (entry as SyncQueueItem).payload : entry) as Partial<ScheduleItemRecordPayload>);
+    // Each with its mark of who set it, and when, from the kept copy too (open item 2.41: scheduleItemFieldsKeptWithCompanions).
     const keptFields = isEditBase(localPayload.base) && scopes.every(scope => Array.isArray(scope.changedFields))
-      ? [...new Set(scopes.flatMap(scope => (scope.changedFields as string[]).map(String)))] as Array<keyof ScheduleItem>
+      ? scheduleItemFieldsKeptWithCompanions([...new Set(scopes.flatMap(scope => (scope.changedFields as string[]).map(String)))], keptItem) as Array<keyof ScheduleItem>
       : null;
     const now = new Date().toISOString();
     const kept: SyncQueueItem = {
