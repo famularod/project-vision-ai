@@ -7157,3 +7157,119 @@ describe('Way 2, step 2, part C: Set Active and Make Current weigh a field chang
     expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
   });
 });
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Way 2, step 2b, part E (open item 2.52, 14 Oct 2026; older: on Build 232 with the note already sent, and with the
+ * returned item 1 also while it waits; the generator's seed 6248). An activity note added on one device was gone from
+ * every device once the other device's whole copy of the task went up: a whole copy (a schedule approved, a
+ * lookahead deleted, a percent carried) that meets a cloud row changed elsewhere in something only the sync merge can
+ * order (two lookaheads approved apart: each changed the lookahead's note) goes the merge's way, and the merge kept
+ * ONE copy's activity list, the one it ranked first. Notes are only ever added (no screen removes one), so the copy
+ * that goes up now keeps the notes of both, each once (by its id), in the order of their dates.
+ */
+describe('Way 2, step 2b, part E (2.52): an activity note is kept when a whole copy of the task goes up by the sync merge\'s rules', () => {
+  /** A note both devices heard before anything else happened: it is on both copies, and must end once. */
+  const HEARD = { id: 'act-heard', message: 'Forms ordered', author: 'David', createdAt: '2026-09-09T16:00:00.000Z' };
+  const NEW = { id: 'act-new', message: 'Rebar checked', author: 'David', createdAt: '2026-09-10T09:00:00.000Z' };
+  const L1 = scheduleDoc('LOOKAHEAD E1', '2026-09-09T12:00:00.000Z', 'lookahead');
+  const notesIn = (items: readonly ScheduleItem[]) => framingOf(items).map(item => (item.activity ?? []).map(entry => entry.id));
+  const places = (phone: Device, ipad: Device) => [notesIn(deviceShown(phone)), notesIn(deviceShown(ipad)), notesIn(webShown())];
+  const heardEverywhere = async (device: Device, other: Device) => { shareDocuments(device); await backgroundUpload(device); await settle(device, other); };
+  const addNote = (device: Device, entry: typeof NEW) => edit(device, theRow(device).id, { activity: [...(theRow(device).activity ?? []), entry] } as Partial<ScheduleItem>);
+  const nothingAskedOrWaiting = async (phone: Device, ipad: Device) =>
+    expect([(await conflictsOf(phone)).length, (await conflictsOf(ipad)).length, (await queueOf(phone)).length, (await queueOf(ipad)).length]).toEqual([0, 0, 0, 0]);
+
+  it.each([
+    ['his note added on the phone and sent; the iPad, with no signal, approves its own lookahead for the task after the phone approved one', 'phone'],
+    ['his note added on the iPad with no signal, then the iPad approves its own lookahead; the phone approves one later', 'ipad'],
+  ] as const)('two lookaheads approved apart on two devices, %s: his note is on the task in all three places, and the note both had is there once', async (_label, noteOn) => {
+    const { phone, ipad } = await start();
+    at(L1.importedAt!); await approve(phone, L1, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true); await heardEverywhere(phone, ipad);
+    at(HEARD.createdAt); await addNote(phone, HEARD); await heardEverywhere(phone, ipad);
+    setOnline(ipad, false);
+    const onPhone = scheduleDoc('LOOKAHEAD E-PHONE', noteOn === 'phone' ? '2026-09-10T10:00:00.000Z' : '2026-09-10T11:00:00.000Z', 'lookahead');
+    const onIpad = scheduleDoc('LOOKAHEAD E-IPAD', noteOn === 'phone' ? '2026-09-10T11:00:00.000Z' : '2026-09-10T10:00:00.000Z', 'lookahead');
+    at(NEW.createdAt);
+    if (noteOn === 'phone') { await addNote(phone, NEW); await backgroundUpload(phone); } else await addNote(ipad, NEW);
+    const phoneApproves = async () => { at(onPhone.importedAt!); await approve(phone, onPhone, ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true); shareDocuments(phone); await backgroundUpload(phone); };
+    const ipadApproves = async () => { at(onIpad.importedAt!); await approve(ipad, onIpad, ['Framing,Alpha,Lot,10/21/2026,10/31/2026,'], true); };
+    if (noteOn === 'phone') { await phoneApproves(); await ipadApproves(); } else { await ipadApproves(); await phoneApproves(); }
+    at('2026-09-10T13:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad); await backgroundUpload(ipad);
+    await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+    // (It was: ['act-heard'] in all three places: the copy the merge ranked first had not heard of his note.)
+    expect(places(phone, ipad)).toEqual(Array(3).fill([['act-heard', 'act-new']]));
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+
+  /** Seed 6248's shape: two lookaheads list the task; the phone adds a note and deletes the first; the iPad, not having heard, deletes the second. */
+  async function twoDeletes(noteConfirmed: boolean) {
+    const LA = scheduleDoc('LOOKAHEAD E6248 A', '2026-09-09T12:00:00.000Z', 'lookahead');
+    const LB = scheduleDoc('LOOKAHEAD E6248 B', '2026-09-09T14:00:00.000Z', 'lookahead');
+    const { phone, ipad } = await start();
+    at(LA.importedAt!); await approve(phone, LA, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true); await heardEverywhere(phone, ipad);
+    at(LB.importedAt!); await approve(phone, LB, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true); await heardEverywhere(phone, ipad);
+    at(HEARD.createdAt); await addNote(phone, HEARD); await heardEverywhere(phone, ipad);
+    setOnline(ipad, false);
+    at(NEW.createdAt);
+    if (!noteConfirmed) setOnline(phone, false);
+    await addNote(phone, NEW);
+    if (noteConfirmed) await backgroundUpload(phone);
+    at('2026-09-10T10:00:00.000Z'); await deleteWithItems(phone, LA);
+    at('2026-09-10T11:00:00.000Z'); setOnline(phone, true); shareDocuments(phone); await backgroundUpload(phone);
+    at('2026-09-10T12:00:00.000Z'); await deleteWithItems(ipad, LB);
+    at('2026-09-10T13:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad); await backgroundUpload(ipad);
+    await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+    return { phone, ipad };
+  }
+  it.each([['sent before the delete', true], ['added and the delete made with no signal', false]] as const)(
+    'seed 6248\'s shape, his note %s: it is on the task in all three places, once', async (_label, confirmed) => {
+      const { phone, ipad } = await twoDeletes(confirmed);
+      // (It was: ['act-heard'] in all three places, his note gone with no card.)
+      expect(places(phone, ipad)).toEqual(Array(3).fill([['act-heard', 'act-new']]));
+      await nothingAskedOrWaiting(phone, ipad);
+    });
+
+  /**
+   * Step 2's probe X15, kept: ONE lookahead lists the task, his note waits on the phone in each way a write can wait,
+   * and he deletes the lookahead with its items. Green on the base too (step 2's item 1 gave it), kept as a guard.
+   */
+  it.each([
+    'sent before the delete', 'added with no signal, and the delete with no signal too', 'added with no signal, signal back, the delete before the automatic send',
+    'sent, and the write never reached the cloud', 'sent and written in the cloud, and the answer was lost',
+  ])('one lookahead, his note %s, then the lookahead deleted with its items: the note in all three places, on the master\'s dates', async how => {
+    for (const rows of [['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], ['Framing,Alpha,Lot,10/18/2026,10/28/2026,70', 'Survey,Alpha,Lot,10/13/2026,10/16/2026,']]) {
+      const { phone, ipad } = await start();
+      at(L1.importedAt!); await approve(phone, L1, rows, true); await heardEverywhere(phone, ipad);
+      const id = theRow(phone).id;
+      at(NEW.createdAt);
+      const note = () => addNote(phone, NEW);
+      if (how === 'sent before the delete') { await note(); await backgroundUpload(phone); }
+      else if (how === 'sent and written in the cloud, and the answer was lost') { mockCloud.lostAnswers = 1; await note(); mockCloud.lostAnswers = 0; }
+      else if (how === 'sent, and the write never reached the cloud') { mockCloud.failNextWriteOf = id; await note(); mockCloud.failNextWriteOf = null; }
+      else { setOnline(phone, false); await note(); if (how.includes('signal back')) setOnline(phone, true); }
+      at('2026-09-10T12:00:00.000Z'); await deleteWithItems(phone, L1);
+      if (isOnline(phone)) { shareDocuments(phone); await backgroundUpload(phone); }
+      at('2026-09-10T15:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+      await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+      expect([rows.length, places(phone, ipad), [deviceShown(phone), deviceShown(ipad), webShown()].map(shown => framingOf(shown).map(item => `${item.startDate} - ${item.finishDate}`))])
+        .toEqual([rows.length, Array(3).fill([['act-new']]), Array(3).fill(['10/15/2026 - 10/25/2026'])]);
+      await nothingAskedOrWaiting(phone, ipad);
+    }
+  });
+
+  it('the same note on both copies, and only there: each copy\'s note goes up once, nothing is written twice', async () => {
+    // A note both devices hold, then the two lookaheads approved apart with no new note: the merge has nothing to add.
+    const { phone, ipad } = await start();
+    at(L1.importedAt!); await approve(phone, L1, ['Framing,Alpha,Lot,10/18/2026,10/28/2026,'], true); await heardEverywhere(phone, ipad);
+    at(HEARD.createdAt); await addNote(phone, HEARD); await heardEverywhere(phone, ipad);
+    setOnline(ipad, false);
+    at('2026-09-10T10:00:00.000Z'); await approve(phone, scheduleDoc('LOOKAHEAD E-P', '2026-09-10T10:00:00.000Z', 'lookahead'), ['Framing,Alpha,Lot,10/22/2026,11/01/2026,'], true);
+    shareDocuments(phone); await backgroundUpload(phone);
+    at('2026-09-10T11:00:00.000Z'); await approve(ipad, scheduleDoc('LOOKAHEAD E-I', '2026-09-10T11:00:00.000Z', 'lookahead'), ['Framing,Alpha,Lot,10/21/2026,10/31/2026,'], true);
+    at('2026-09-10T13:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad); await backgroundUpload(ipad);
+    await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+    expect(places(phone, ipad)).toEqual(Array(3).fill([['act-heard']]));
+    await nothingAskedOrWaiting(phone, ipad);
+  });
+});

@@ -8133,7 +8133,13 @@ async function uploadQueueItem(
     // started from: what only it changed goes on the cloud's row, what only the cloud's row changed stays, and a
     // field changed on both is asked about. (Without that copy, or where the sync merge alone has a rule: the merge.)
     const byField = merged && remote ? scheduleItemWholeCopyFieldByField(payload.itemData, payload.base, remote, merged) : null;
-    const recovered = remote && !changedFields && !payload.forceLocal ? restUnchanged ? payload.itemData : byField?.itemData ?? merged : null;
+    // Way 2, step 2b, part E (open item 2.52): where the copy goes the merge's way, the merge kept the activity notes of
+    // the copy it ranked first only: a note added on one device was lost when the other's whole copy went up (two
+    // lookaheads approved apart, or deleted apart). Notes are only ever added: those of both copies, each once, in the
+    // order of their dates, stamped just after the later of the two copies so each device takes them.
+    const notesOfBoth = merged && remote && !byField ? scheduleItemActivityWithOtherRows(merged.activity, payload.itemData.activity, remote.activity) : null;
+    const mergedWithNotes = notesOfBoth ? { ...merged!, activity: notesOfBoth, updatedAt: scheduleItemStampAfter(payload.itemData.updatedAt, remote!.updatedAt) } : merged;
+    const recovered = remote && !changedFields && !payload.forceLocal ? restUnchanged ? payload.itemData : byField?.itemData ?? mergedWithNotes : null;
     const wholeWeighedAsItStarted = recovered && remote && isEditBase(payload.base)
       ? scheduleItemWholeCopyAgainstCloud(recovered, payload.itemData, payload.base, remote, taskOfRow)
       : null;
