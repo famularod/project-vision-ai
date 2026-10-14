@@ -256,8 +256,11 @@ describe('R-1 (review pass 6): a new project\'s first schedule whose Project col
     'on the desktop with every project ticked, the column spelled with %s: Lookahead is filled in, as on Build 231, and it is not saved as a full schedule for every ticked project',
     (_how, spelling) => {
       const first = desktop(ACCOUNT, ACTIVE, threeWeeks(spelling));
-      // The desktop keeps a row's project as the file writes it.
-      expect(first.rowProjects).toEqual([spelling]);
+      // CHANGED by high item 2 (open item 2.33; the owner's instruction of 13 Oct 2026): this line pinned "the desktop
+      // keeps a row's project as the file writes it", which filed the tasks under a second project called by the
+      // file's spelling. A hyphen or a double space is the project for the app (scheduleProjectScopeKey), and the
+      // rows are now saved under the project's own name. The suggestion below reads the file's spelling, as before.
+      expect(first.rowProjects).toEqual([NEW]);
       expect(first.suggestion).toEqual({ role: 'lookahead', reason: AGAINST_LONG });
       // Uploaded as filled in it is a lookahead: saved for its rows' projects, and no other project's master goes
       // out of use. (With items 10 and 10b part 1 in, "Full schedule" was filled in, "because there is no master

@@ -26,7 +26,8 @@ import {
   normalizeMicrosoftProjectWebPdfPages,
   normalizeScheduleImport,
 } from './PIEScheduleIntelligence';
-import { currentScheduleDocumentWinners, scheduleDocumentAddsToMaster, scheduleDocumentIsScheduleLike, scheduleItemAsSaved } from './PIEScheduleReconciliation';
+import { currentScheduleDocumentWinners, scheduleDocumentAddsToMaster, scheduleDocumentIsScheduleLike, scheduleItemAsSaved, scheduleProjectScopeKey } from './PIEScheduleReconciliation';
+import { SCHEDULE_IMPORT_NEEDS_PROJECT, validateScheduleImportScope } from './ScheduleImportScopeGuard';
 import {
   findExactScheduleTaskForCompletionClaim,
   mergeReportedCompletionClaim,
@@ -150,6 +151,12 @@ export type DAVEWebPreparedUpload = Readonly<{
   pairingChoices?: Readonly<Record<string, string | null>> | null;
   /** Whether every row the file gave named a project itself (a row that named none took the first ticked one). */
   everyRowNamedAProject?: boolean;
+  /**
+   * The project a row's own Project cell named, by row id, where that is not one of his projects as the app spells
+   * it (High item 2): the row is listed under the project's own name, or waits for one ("Needs Project"). Absent
+   * when every row named one of his projects exactly, or named none.
+   */
+  fileProjectNames?: Readonly<Record<string, string>>;
 }>;
 
 type DAVEWebDocumentPreparationInput = Readonly<{
@@ -162,6 +169,8 @@ type DAVEWebDocumentPreparationInput = Readonly<{
   projectName?: string;
   projectNames?: readonly string[];
   projects: readonly string[];
+  /** His open projects in the cloud (the snapshot's openCloudProjects); without them, `projects` (High item 2). */
+  openProjectNames?: readonly string[];
   fingerprint: string;
   versionGroupId?: string | null;
   now?: string;
@@ -216,6 +225,7 @@ export function prepareDAVEWebDocumentUpload({
   projectName,
   projectNames,
   projects,
+  openProjectNames,
   fingerprint,
   versionGroupId,
   now = new Date().toISOString(),
@@ -307,8 +317,10 @@ export function prepareDAVEWebDocumentUpload({
         now: new Date(now),
       });
   const readItems = pdfSchedule ? positionedPdfItems : normalizedImport?.items || [];
+  // High item 2: each row's project as the phone resolves it, among his projects (daveWebRowProjects).
+  const rowProjects = daveWebRowProjects(readItems, uniqueNames([...selectedProjectNames, ...(openProjectNames?.length ? openProjectNames : projects)]));
   const items = dedupeScheduleImportItems(
-    readItems.map(item => ({
+    rowProjects.items.map(item => ({
       ...item,
       scheduleProjectName: item.scheduleProjectName || item.projectName || selectedProjectNames[0],
       projectName: item.projectName || selectedProjectNames[0],
@@ -340,7 +352,48 @@ export function prepareDAVEWebDocumentUpload({
     reviewMessage: `${batch.items.length} schedule ${batch.items.length === 1 ? 'activity' : 'activities'} extracted for ${selectedProjectNames.length} selected project${selectedProjectNames.length === 1 ? '' : 's'}. Review each task's project, dates, area, status, and percent complete before upload.`,
     extractionStatus: 'ready',
     everyRowNamedAProject: readItems.every(item => Boolean(item.projectName?.trim())),
+    ...(Object.keys(rowProjects.fileProjectNames).length > 0 ? { fileProjectNames: Object.freeze(rowProjects.fileProjectNames) } : {}),
   });
+}
+
+/**
+ * High item 2 (the owner's instruction of 13 Oct 2026, the three high items; review pass 4, O-4). The desktop saved
+ * each row under the file's own spelling of its project: a file saying "6101" for the project "6101 Quay Works"
+ * filed its tasks under a second project called "6101" (as a lookahead they were listed twice; as a full schedule
+ * made current the real project showed no tasks). A row's project is now resolved as the phone's import
+ * resolves it (validateScheduleImportScope), among his projects (the ticked ones and his other open projects):
+ * other capitals and spaces are the project, under its own name. Where the phone's comparison finds none, the same
+ * function is given, as each project's other spellings, those the app files under that project when a project
+ * finds its schedule (scheduleProjectScopeKey: "Garden-shed" is Garden shed; the coordinator's decision). A row
+ * that is still none of his projects is "Needs Project", as on the phone, and the upload waits until he gives it
+ * one (daveWebScheduleUploadProjectReview). A row that named no project is left as before.
+ */
+function daveWebRowProjects(items: readonly ScheduleItem[], ownProjects: readonly string[]): {
+  items: ScheduleItem[];
+  fileProjectNames: Record<string, string>;
+} {
+  const named = items.filter(item => item.projectName?.trim());
+  const selectedProjects = ownProjects.map(name => ({ id: name, name }));
+  const spellings = [...new Set(named.map(item => item.projectName.trim()))];
+  const exact = validateScheduleImportScope({ items: named, selectedProjects }).itemResults;
+  const respelled = validateScheduleImportScope({
+    items: named,
+    selectedProjects: selectedProjects.map(project => ({
+      ...project,
+      aliases: spellings.filter(spelling => scheduleProjectScopeKey(spelling) === scheduleProjectScopeKey(project.name)),
+    })),
+  }).itemResults;
+  const fileProjectNames: Record<string, string> = {};
+  const resolved = new Map(named.map((item, index) => {
+    const result = exact[index].assignment === 'selected_project' ? exact[index] : respelled[index];
+    const projectName = result.assignment === 'selected_project' ? result.item.projectName : SCHEDULE_IMPORT_NEEDS_PROJECT;
+    if (projectName !== item.projectName) fileProjectNames[item.id] = item.projectName.trim();
+    return [item, projectName] as const;
+  }));
+  return {
+    items: items.map(item => (resolved.has(item) && resolved.get(item) !== item.projectName ? { ...item, projectName: resolved.get(item)! } : item)),
+    fileProjectNames,
+  };
 }
 
 export function prepareDAVEWebLinkedDocument(
@@ -487,12 +540,17 @@ export function daveWebScheduleUploadRoleSuggestion({
   prepared,
 }: {
   snapshot: DAVEWebImportSnapshot | null | undefined;
-  prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'extractionStatus'> | null | undefined;
+  prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'extractionStatus' | 'fileProjectNames'> | null | undefined;
 }): ScheduleImportRoleSuggestion | null {
   if (!snapshot || !prepared || prepared.extractionStatus !== 'ready' || normalized(prepared.document.category) !== 'schedules') return null;
   const { scheduleRole: _role, ...file } = prepared.document;
+  // High item 2: the rows as the file names their projects, as before; the suggestion is Build 231's, not changed.
+  const named = prepared.fileProjectNames ?? {};
+  const items = prepared.scheduleItems.map(item => (named[item.id] === undefined ? item : {
+    ...item, projectName: named[item.id], scheduleProjectName: item.scheduleProjectName === item.projectName ? named[item.id] : item.scheduleProjectName,
+  }));
   return suggestScheduleImportRole({
-    batch: { documents: [file as ReferenceDocument], items: [...prepared.scheduleItems] },
+    batch: { documents: [file as ReferenceDocument], items },
     documents: snapshot.referenceDocuments ?? [],
     scheduleItems: snapshot.knownScheduleItems ?? snapshot.scheduleItems,
   });
@@ -577,6 +635,72 @@ export function daveWebScheduleUploadRoleRefusal(
     : null;
 }
 
+/** A task the review lists as waiting for one of his projects (High item 2). */
+export function daveWebScheduleUploadRowNeedsProject(item: Pick<ScheduleItem, 'projectName'>): boolean {
+  return (item.projectName || '').trim() === SCHEDULE_IMPORT_NEEDS_PROJECT;
+}
+
+/** What the review lists as a task's project: a task waiting for one says what the file named. */
+export function daveWebScheduleUploadRowProject(prepared: Pick<DAVEWebPreparedUpload, 'fileProjectNames'>, item: Pick<ScheduleItem, 'id' | 'projectName'>): string {
+  const named = prepared.fileProjectNames?.[item.id];
+  return daveWebScheduleUploadRowNeedsProject(item) && named ? `${SCHEDULE_IMPORT_NEEDS_PROJECT} (the file names "${named}")` : item.projectName;
+}
+
+/** Said by the upload itself if a task waiting for a project ever reaches it (High item 2). */
+export const DAVE_WEB_UPLOAD_NEEDS_PROJECT_TEXT =
+  `Every task needs one of your projects before this file can be uploaded. Choose a project for each task marked "${SCHEDULE_IMPORT_NEEDS_PROJECT}".`;
+
+export type DAVEWebScheduleUploadProjectReview = Readonly<{
+  /** While a task waits for a project the upload is held, and this says how many and why; else null. */
+  heldLine: string | null;
+  /** One project ticked and every waiting task named alike by the file: the one button; else null. */
+  useForAll: Readonly<{ project: string; label: string }> | null;
+  /** Tasks the file names otherwise, once each has one of his projects: where they will be saved; else null. */
+  savedUnderLine: string | null;
+}>;
+
+const quotedNames = (names: readonly string[]) => {
+  const quoted = names.map(name => `"${name}"`);
+  return quoted.length > 1 ? `${quoted.slice(0, -1).join(', ')} and ${quoted[quoted.length - 1]}` : quoted.join('');
+};
+
+/**
+ * High item 2: what the upload review says about the tasks' projects, from the rows as he leaves them. Nothing is
+ * given a project without his press: the one button (exactly one project ticked, every waiting task named alike
+ * by the file) says in its own words what it does, and the line under it says where they will be saved.
+ */
+export function daveWebScheduleUploadProjectReview(prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'fileProjectNames'> | null): DAVEWebScheduleUploadProjectReview {
+  const named = (item: ScheduleItem) => prepared?.fileProjectNames?.[item.id] ?? item.projectName.trim();
+  const waiting = (prepared?.scheduleItems ?? []).filter(daveWebScheduleUploadRowNeedsProject);
+  const names = [...new Set(waiting.map(named))];
+  const count = waiting.length;
+  const heldLine = count === 0 ? null : `${count} ${count === 1 ? 'task needs' : 'tasks need'} a project before you can upload: the file names ${count === 1 ? 'its project' : names.length === 1 ? 'their project' : 'their projects'} ${quotedNames(names)}, which ${names.length === 1 ? 'is not one of your open projects' : 'are not among your open projects'}. Choose a project for ${count === 1 ? 'it' : 'each of them'} above.`;
+  const ticked = prepared?.document.projectNames ?? [];
+  const useForAll = count > 0 && names.length === 1 && ticked.length === 1
+    ? { project: ticked[0], label: count === 1 ? `Use ${ticked[0]} for the task named "${names[0]}"` : `Use ${ticked[0]} for all ${count} tasks named "${names[0]}"` }
+    : null;
+  const given = new Map<string, number>();
+  (prepared?.scheduleItems ?? []).forEach(item => {
+    const file = prepared?.fileProjectNames?.[item.id];
+    if (file === undefined || daveWebScheduleUploadRowNeedsProject(item)) return;
+    const key = JSON.stringify([file, item.projectName]);
+    given.set(key, (given.get(key) ?? 0) + 1);
+  });
+  const savedUnderLine = [...given].map(([key, total]) => {
+    const [file, project] = JSON.parse(key) as [string, string];
+    return `${total} ${total === 1 ? 'task' : 'tasks'} named "${file}" in the file will be saved under ${project}.`;
+  }).join(' ') || null;
+  return { heldLine, useForAll, savedUnderLine };
+}
+
+/** The one button: every task still waiting for a project is given that project, as the review's own choice does. */
+export function daveWebScheduleUploadUseProject<T extends DAVEWebPreparedUpload>(prepared: T, project: string): T {
+  return {
+    ...prepared,
+    scheduleItems: prepared.scheduleItems.map(item => (daveWebScheduleUploadRowNeedsProject(item) ? { ...item, projectName: project, scheduleProjectName: project } : item)),
+  };
+}
+
 export function planDAVEWebScheduleImport({
   snapshot,
   importedScheduleItems,
@@ -596,6 +720,8 @@ export function planDAVEWebScheduleImport({
   if (importedScheduleItems.length === 0) {
     return Object.freeze({ additions: Object.freeze([]), revisions: Object.freeze([]) });
   }
+  // High item 2: never saved under "Needs Project"; the review holds the upload until each task has a project.
+  if (importedScheduleItems.some(daveWebScheduleUploadRowNeedsProject)) throw new Error(DAVE_WEB_UPLOAD_NEEDS_PROJECT_TEXT);
   // WS1 item 2: the rows of a file he chose "Lookahead" for at the review (withDAVEWebScheduleUploadRole) are merged
   // as the phone's approval merges a lookahead: it restates the master's tasks in place, adds its own, and is in
   // effect at once (owner answer Q22), so nothing waits for Make Current. The file's own role says so (WS2).

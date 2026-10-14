@@ -264,8 +264,11 @@ describe('Kept from Build 232 item 10b part 1, as Build 231 does it: a real thre
   it('on the desktop with that project ticked, however the file\'s Project column spells it (review pass 4, C-5)', () => {
     for (const spelling of [...SAME_PROJECT, ...ANOTHER_SPELLING]) {
       const plain = desktop(ACCOUNT, [LONG], threeWeeks(spelling, 'Field plan.csv'));
-      // The desktop keeps a row's project as the file writes it (the file's own spaces around it apart).
-      expect(plain.rowProjects).toEqual([spelling.trim()]);
+      // CHANGED by high item 2 (open item 2.33; the owner's instruction of 13 Oct 2026): this line pinned "the desktop
+      // keeps a row's project as the file writes it", which filed such rows under a second project called by the
+      // file's spelling. A spelling the app takes for the project is now saved under the project's own name, and one
+      // that is none of his projects waits for a project, as on the phone. The suggestion reads the file's spelling.
+      expect(plain.rowProjects).toEqual([SAME_PROJECT.includes(spelling) ? LONG : 'Needs Project']);
       expect([spelling, plain.suggestion]).toEqual([spelling, { role: 'lookahead', reason: againstLong(spelling) }]);
       // The reviewer's file was NAMED a lookahead, and came filled in as a Full schedule all the same.
       expect([spelling, desktop(ACCOUNT, [LONG], threeWeeks(spelling, '4410 lookahead.csv')).suggestion])
