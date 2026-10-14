@@ -839,7 +839,9 @@ export function buildConstructionUnderstanding(
     };
   });
 
-  const numberedWorkAreas = renumberWorkAreaImageReferences(workAreas);
+  const numberedWorkAreas = renumberWorkAreaImageReferences(
+    withEveryPhotoAttached(input, workAreas, Array.from(byArea.values()), imageReferences, rawEvidence),
+  );
   const locationGroups = groupUnderstandingByLocation(numberedWorkAreas);
   const reviewFlags = buildReportReviewFlags({
     evidence,
@@ -906,6 +908,134 @@ function imageReferenceMatchesWorkArea(
     !reference.sourceUpdateId ||
     directUpdateIds.has(reference.sourceUpdateId)
   );
+}
+
+/**
+ * Open item 4.87 (review pass 7, R7-4; the owner's authorisation of 13 Oct
+ * 2026): EVERY PHOTO OF THE REPORT IS NUMBERED AND ATTACHED. A work area took
+ * a photo only through a line made from the photo itself, or from a note or
+ * photo of the same update in the same area (imageReferenceMatchesWorkArea),
+ * and never a photo with no area of its own. So a photo recorded alone whose
+ * caption has no word of the writer's building vocabulary (it makes no line),
+ * and a photo taken with a note that has no area, had no number, no line, no
+ * place in the e-mail or the Word file.
+ *
+ * A photo no area took goes, in this order (but a photo whose own records
+ * name two different areas stays out, as decided, until he classifies it):
+ * to the area of the line made from the photo itself; to its own area (same
+ * project, same name); to the first
+ * area holding a line of the update it was recorded with; else to an area of
+ * its own (its own area's name, or else its update's), whose line is its
+ * caption where the writer would print it (else "See Image N." alone). Such
+ * an area is put among the others by its update's place in the report's
+ * order, so every area that was there keeps its place. A report in which
+ * every photo was taken already is returned as it was.
+ */
+function withEveryPhotoAttached(
+  input: PIEReportDraftInput,
+  workAreas: PIEWorkAreaUnderstanding[],
+  itemsOfArea: PIEReportSourceEvidence[][],
+  imageReferences: PIEReportImageReference[],
+  rawEvidence: PIEReportSourceEvidence[],
+): PIEWorkAreaUnderstanding[] {
+  const taken = new Set(workAreas.flatMap(area => area.imageReferences.map(reference => reference.photoId)));
+  // A photo whose own records name two areas stays out until he classifies it, as it was decided (review flag "N
+  // photos need area classification"); a photo with no area at all is not that, and goes with its update.
+  const untaken = imageReferences.filter(reference => !taken.has(reference.photoId) &&
+    (reference.classificationStatus !== 'needs_classification' || reference.classificationReason === PHOTO_WITH_NO_AREA));
+  if (untaken.length === 0) return workAreas;
+
+  const selectedProjects = selectedProjectsFromInput(input);
+  const updates = selectedUpdates(input, selectedProjects);
+  const placeOfUpdate = new Map(updates.map((update, index) => [update.id, index] as const));
+  const areas = workAreas.map(area => ({ ...area, imageReferences: [...area.imageReferences] }));
+  const items = itemsOfArea.map(list => [...list]);
+  const keyOf = (location: string, workAreaName: string) => `${normalizeName(location)}|${normalizeName(workAreaName)}`;
+  const firstAreaHolding = (holds: (item: PIEReportSourceEvidence) => boolean) =>
+    items.findIndex(list => list.some(holds));
+  // An area's place in the report's order: its first line's update (areas are
+  // made in the order of their first line; lines of updates come first).
+  const placeOfArea = (index: number) => Math.min(
+    ...items[index].map(item => placeOfUpdate.get(item.sourceUpdateId || '') ?? Number.POSITIVE_INFINITY),
+  );
+
+  untaken.forEach(reference => {
+    const ownNames = reference.classificationStatus === 'classified'
+      ? new Set([
+        cleanReportWorkAreaName(reference.projectName, reference.areaName, reference.caption),
+        cleanReportWorkAreaName(reference.projectName, reference.areaName),
+      ].map(normalizeName))
+      : new Set<string>();
+    const place = [
+      firstAreaHolding(item => item.photoId === reference.photoId),
+      areas.findIndex(area =>
+        normalizeName(area.projectName) === normalizeName(reference.projectName) &&
+        ownNames.has(normalizeName(area.workAreaName))),
+      reference.sourceUpdateId
+        ? firstAreaHolding(item => item.sourceUpdateId === reference.sourceUpdateId)
+        : -1,
+    ].find(index => index >= 0);
+    if (place !== undefined) {
+      areas[place].imageReferences.push(reference);
+      return;
+    }
+
+    // A line of its own.
+    const update = updates.find(candidate => candidate.id === reference.sourceUpdateId);
+    if (!update) return;
+    const context = reportContextForUpdate(update, reportScheduleItems(input), selectedProjects.length > 1);
+    const caption = cleanReportBulletText(reference.caption);
+    const [photoLine] = withCanonicalProjectNames(input, [...rawEvidence, {
+      id: `photo-${reference.photoId}`,
+      source: 'photo',
+      projectName: context.projectName,
+      areaName: reference.classificationStatus === 'classified' ? reference.areaName : context.areaName,
+      summary: caption,
+      confidence: 'medium',
+      photoId: reference.photoId,
+      sourceUpdateId: update.id,
+    }]).slice(-1);
+    const printable = Boolean(caption) &&
+      !shouldSuppressReportBullet(caption) &&
+      !isIncidentalReportEvidence(photoLine) &&
+      !containsGenericAiWording(caption);
+    const location = locationTitle(photoLine.projectName, photoLine.areaName);
+    const workAreaName = cleanReportWorkAreaName(photoLine.projectName, photoLine.areaName, caption);
+    const same = areas.findIndex(area => keyOf(area.locationTitle, area.workAreaName) === keyOf(location, workAreaName));
+    if (same >= 0) {
+      areas[same].imageReferences.push(reference);
+      areas[same].whatChanged = uniqueText([...areas[same].whatChanged, ...(printable ? [caption] : [])]).slice(0, 4);
+      items[same].push(photoLine);
+      return;
+    }
+    const printedName = printedNameOfFiledWorkArea(workAreaName, [photoLine]);
+    const ownPlace = placeOfUpdate.get(update.id) ?? Number.POSITIVE_INFINITY;
+    const before = areas.findIndex((_, index) => placeOfArea(index) > ownPlace);
+    const at = before >= 0 ? before : areas.length;
+    areas.splice(at, 0, {
+      id: slug(`understanding-${location}-${workAreaName}-photos`),
+      projectName: photoLine.projectName,
+      locationTitle: location,
+      workAreaName,
+      ...(printedName !== workAreaName ? { printedName } : {}),
+      status: 'On Track',
+      whatWorkIsAbout: workAreaName,
+      whatChanged: printable ? [caption] : [],
+      progress: [],
+      issues: [],
+      decisions: [],
+      nextSteps: [],
+      affectsSchedule: false,
+      hasSafetyConcern: false,
+      hasInspectionDependency: false,
+      readerTakeaway: buildReaderTakeaway(workAreaName, 'On Track', [], [], []),
+      imageReferences: [reference],
+      sourceEvidenceIds: [photoLine.id],
+    });
+    items.splice(at, 0, [photoLine]);
+  });
+
+  return areas;
 }
 
 function renumberWorkAreaImageReferences(
@@ -1165,6 +1295,9 @@ export function buildReportImageReferences(
   return references;
 }
 
+/** Why a photo with no area of its own anywhere needs classification (open item 4.87 reads it). */
+const PHOTO_WITH_NO_AREA = 'No project area is recorded for this photo.';
+
 function resolveReportPhotoAreaName(
   update: ProjectUpdate,
   photo: UpdatePhoto,
@@ -1205,7 +1338,7 @@ function resolveReportPhotoArea(
     return {
       areaName: 'Needs Classification',
       status: 'needs_classification',
-      reason: 'No project area is recorded for this photo.',
+      reason: PHOTO_WITH_NO_AREA,
     };
   }
 
@@ -2848,6 +2981,14 @@ function selectConciseAreaBullets(
     ...preferred,
     ...bullets.filter(bullet => !selectedIds.has(bullet.id)),
   ].slice(0, 3);
+  // Open item 4.87: an area with no progress line cites its photos on a line
+  // of their own, after its problems and requests; where those already fill
+  // the area's three lines, that line was cut and the photos, numbered and
+  // attached, were cited nowhere. They are cited on the area's first line.
+  const citation = bullets.find(bullet => bullet.kind === 'image_reference');
+  if (citation && selected.length > 0 && !selected.includes(citation)) {
+    selected[0] = { ...selected[0], text: `${stripTerminalPunctuation(selected[0].text)}. ${citation.text}` };
+  }
 
   return selected;
 }

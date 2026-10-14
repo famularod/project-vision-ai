@@ -115,7 +115,7 @@ const DAILY_HARBOR = [
   '',
   'Please let me know if you have any questions.',
 ].join('\n');
-/** The same, handed Ridge's task as well: as the writer wrote it before this change. */
+/** The same, handed Ridge's task as well: as the writer wrote it before this change (but for open item 4.87's photos). */
 const DAILY_HARBOR_HANDED_RIDGES_TASK = [
   'Please review the updates below and look for action items assigned to your name.',
   '',
@@ -129,7 +129,9 @@ const DAILY_HARBOR_HANDED_RIDGES_TASK = [
   'Ridge',
   '',
   '1. Site',
-  '• Progress: Rebar is tied at the north footing.',
+  // Open item 4.87 (13 Oct 2026): Harbor's three Site photos were in no line and attached nowhere here (their lines
+  // are printed under Ridge, the case this test keeps as it was); each now goes with the lines of its own update.
+  '• Progress: Rebar is tied at the north footing. See Images 1, 3, and 4.',
   '• Action: Footing excavation is complete at the north side.',
   '• Progress: Rebar tied at the north footing.',
   '',
@@ -138,7 +140,7 @@ const DAILY_HARBOR_HANDED_RIDGES_TASK = [
   '1. Level 1',
   '• Action: Framing is complete at the east wall.',
   '• Action: East wall framing complete.',
-  '• Evidence: See Image 1.',
+  '• Evidence: See Image 2.',
   '',
   '2. Site',
   '• Issue: Pour slab, due 11/20/2026, status Waiting, owner Dana.',

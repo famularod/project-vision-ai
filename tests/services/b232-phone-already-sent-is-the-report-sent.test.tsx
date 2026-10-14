@@ -243,7 +243,9 @@ const THE_SECTION = [
   '• Tower — Level 1: West bay rebar failed inspection. Pour is on hold.',
   '• Tower — Level 1: West bay rebar.',
   '• Tower — Roof: Roof trusses were delivered. See Image 3.',
-  '• Tower — Level 2: Framing is complete on Level 2. Inspection passed.',
+  // Open item 4.87 (13 Oct 2026): Level 2's photo, Image 4, was attached to the e-mail and the Word file and cited by
+  // no line (its "See Image 4." line was the area's fourth and was cut); it is cited on the area's first line now.
+  '• Tower — Level 2: Framing is complete on Level 2. Inspection passed. See Image 4.',
   '• Tower — Level 2: Framing complete.',
   '• Tower — Level 2: Dana – Please frame walls, status Complete.',
   // Build 232 item 4 part A (the owner's answer to question 49): two lines stood here, made from the app's own model
