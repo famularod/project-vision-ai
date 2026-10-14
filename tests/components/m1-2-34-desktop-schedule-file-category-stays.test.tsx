@@ -59,7 +59,8 @@ const master = scheduleDocument('Alpha master', { isCurrent: true, importedAt: '
 // The older master: the newer one moved two of its tasks, and its own copies of them are its linked tasks.
 const older = scheduleDocument('Alpha rev 1', { linkedScheduleItems: [{ id: 'rev1-paint', cloudUpdatedAt: '2026-09-30T12:00:00.000Z' }, { id: 'rev1-roof', cloudUpdatedAt: '2026-09-30T12:00:00.000Z' }] });
 const memo = scheduleDocument('Site memo', { category: 'Report', originalFileName: 'Site memo.pdf', mimeType: 'application/pdf', importBatchId: null, importedScheduleItemCount: 0 });
-const STAYS = 'This schedule file has tasks, so its category stays Schedules. Under another category its tasks would show again on every device, some of them twice. To file it as something else, delete it with its tasks, then upload it again.';
+// CHANGED by review pass H4, H4S-1 (14 Oct 2026): the words now speak of the category and the projects.
+const STAYS = 'This schedule file has tasks, so its category and projects stay as they are. Changed, its tasks could show again on every device (some twice, or on old dates), and Make Current on it could hide another project\'s tasks. To file it differently, delete it with its tasks, then upload it again.';
 
 const mockAuth = {
   phase: 'ready',
@@ -127,14 +128,11 @@ describe('the Category of a schedule file with tasks stays as it is on the compu
     expect(screen.queryAllByRole('radio', { name: 'Permit Card' })).toHaveLength(0);
     expect(screen.queryAllByRole('radio', { name: 'Drawing' })).toHaveLength(0);
     expect(screen.getByText(STAYS)).toBeTruthy();
-    // What else he changes is saved as before: here he ticks Beta as well.
-    fireEvent.press(screen.getByRole('checkbox', { name: /Beta$/ }));
-    await act(async () => { fireEvent.press(screen.getByText('Save Document Details')); });
-    expect(mockAuth.updateDocument).toHaveBeenCalledTimes(1);
-    const saved = mockAuth.updateDocument.mock.calls[0][0];
-    expect(saved).toMatchObject({ id: 'Alpha rev 1', category: 'Schedules' });
-    // (The form lists a one-project file's project twice, as it always has; Beta is there as he ticked it.)
-    expect([...new Set(saved.projectNames)]).toEqual(['Alpha', 'Beta']);
+    // CHANGED by review pass H4, H4S-1 (14 Oct 2026): its Projects stay too, so the form offers no
+    // project and nothing to save (before: he ticked Beta as well and Save Document Details kept the category only).
+    expect(screen.queryAllByRole('checkbox', { name: /Beta$/ })).toHaveLength(0);
+    expect(screen.queryByText('Save Document Details')).toBeNull();
+    expect(mockAuth.updateDocument).not.toHaveBeenCalled();
   });
 
   it('unchanged: a document that is not a schedule with tasks keeps every category choice and is saved under the one chosen', async () => {

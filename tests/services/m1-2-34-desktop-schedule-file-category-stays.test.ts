@@ -16,7 +16,8 @@ const doc = (extra: Partial<DAVEWebReferenceDocument>): DAVEWebReferenceDocument
   cloudUpdatedAt: '2026-09-30T12:00:00.000Z', linkedScheduleItems: [{ id: 'row-1', cloudUpdatedAt: '2026-09-30T12:00:00.000Z' }], importedScheduleItemCount: 3,
   ...extra,
 });
-const STAYS = 'This schedule file has tasks, so its category stays Schedules. Under another category its tasks would show again on every device, some of them twice. To file it as something else, delete it with its tasks, then upload it again.';
+// CHANGED by review pass H4, H4S-1 (14 Oct 2026): the words now speak of the category and the projects.
+const STAYS = 'This schedule file has tasks, so its category and projects stay as they are. Changed, its tasks could show again on every device (some twice, or on old dates), and Make Current on it could hide another project\'s tasks. To file it differently, delete it with its tasks, then upload it again.';
 
 describe('the Category of a schedule file with tasks stays as it is on the computer (open item 2.34)', () => {
   it('an older master, an upload never made current, a replaced lookahead: the category stays', () => {
@@ -33,9 +34,11 @@ describe('the Category of a schedule file with tasks stays as it is on the compu
   it('Save Document Details with another Category is refused in his words; with the same Category it is not', () => {
     expect(web.daveWebDocumentDetailsRefusal(doc({}), { category: 'Report', projectNames: ['Alpha'] })).toBe(STAYS);
     expect(web.daveWebDocumentDetailsRefusal(doc({}), { category: 'Other' })).toBe(STAYS);
-    expect(web.daveWebDocumentDetailsRefusal(doc({}), { category: 'Schedules', projectNames: ['Alpha', 'Beta'] })).toBeNull();
-    expect(web.daveWebDocumentDetailsRefusal(doc({}), { projectNames: ['Beta'] })).toBeNull();
-    expect(web.daveWebScheduleCategoryStaysText('Schedules')).toBe(STAYS);
+    // CHANGED by review pass H4, H4S-1 (14 Oct 2026): other Projects are refused too (they were saved).
+    expect(web.daveWebDocumentDetailsRefusal(doc({}), { category: 'Schedules', projectNames: ['Alpha', 'Beta'] })).toBe(STAYS);
+    expect(web.daveWebDocumentDetailsRefusal(doc({}), { projectNames: ['Beta'] })).toBe(STAYS);
+    expect(web.daveWebDocumentDetailsRefusal(doc({}), { category: 'Schedules', projectNames: ['Alpha'] })).toBeNull();
+    expect(web.DAVE_WEB_SCHEDULE_DETAILS_STAY_TEXT).toBe(STAYS);
   });
 
   it('unchanged: a schedule file with no task, a drawing, a report or a message screenshot can still be filed under another category', () => {

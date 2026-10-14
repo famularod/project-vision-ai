@@ -115,7 +115,7 @@ import {
   daveWebScheduleDocumentDeleteNote,
   daveWebDocumentDetailsRefusal,
   daveWebScheduleCategoryStays,
-  daveWebScheduleCategoryStaysText,
+  DAVE_WEB_SCHEDULE_DETAILS_STAY_TEXT,
   daveWebScheduleImportPairingQuestions,
   daveWebScheduleUploadRoleRefusal,
   daveWebScheduleUploadOtherProjectLine,
@@ -5619,6 +5619,9 @@ function DocumentECOSDetailsEditor({
   }
 
   const drawing = normalizedName(category) === 'drawing';
+  // Open item 2.34 and review pass H4, H4S-1: a schedule file with tasks keeps its Category and Projects (changed, its
+  // tasks came back on every device, or Make Current on it hid another project's tasks), so nothing here is offered.
+  const stays = daveWebScheduleCategoryStays(document);
   const canSave = selectedProjects.length > 0 && (!drawing || (
     Boolean(number.trim()) && Boolean(revision.trim()) && Boolean(issueStatus)
   ));
@@ -5628,12 +5631,8 @@ function DocumentECOSDetailsEditor({
       <Text style={styles.sectionDetail}>These fields control project scope, revision authority, and whether ECOS may use this source.</Text>
       <View style={styles.fieldGroup}>
         <Text style={styles.fieldLabel}>Category</Text>
-        {/* Open item 2.34: under another category, a schedule file's tasks would be listed again on every device. */}
-        {daveWebScheduleCategoryStays(document) ? (
-          <>
-            <Text style={styles.dataDetail}>{document.category}</Text>
-            <Text style={styles.dataMeta}>{daveWebScheduleCategoryStaysText(document.category || 'Other')}</Text>
-          </>
+        {stays ? (
+          <Text style={styles.dataDetail}>{document.category}</Text>
         ) : (
           <OptionButtons<string>
             options={DAVE_WEB_DOCUMENT_CATEGORIES}
@@ -5644,7 +5643,12 @@ function DocumentECOSDetailsEditor({
       </View>
       <View style={styles.fieldGroup}>
         <Text style={styles.fieldLabel}>Projects</Text>
-        <View style={styles.optionRow}>
+        {stays ? (
+          <>
+            <Text style={styles.dataDetail}>{[...new Set(initialProjects)].join(', ')}</Text>
+            <Text style={styles.dataMeta}>{DAVE_WEB_SCHEDULE_DETAILS_STAY_TEXT}</Text>
+          </>
+        ) : <View style={styles.optionRow}>
           {projects.map(project => {
             const selected = selectedProjects.some(value => normalizedName(value) === normalizedName(project));
             return (
@@ -5661,7 +5665,7 @@ function DocumentECOSDetailsEditor({
               </Pressable>
             );
           })}
-        </View>
+        </View>}
         {selectedProjects.length === 0 ? <Text style={styles.errorText}>Choose at least one project.</Text> : null}
       </View>
       {drawing ? (
@@ -5687,23 +5691,25 @@ function DocumentECOSDetailsEditor({
         >
           <Text style={styles.secondaryButtonText}>Cancel</Text>
         </Pressable>
-        <Pressable
-          style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed, (!canSave || pending) && styles.buttonDisabled]}
-          onPress={() => onSave({
-            category,
-            projectName: selectedProjects[0] || null,
-            projectNames: selectedProjects,
-            drawingNumber: drawing ? number.trim() || null : null,
-            drawingRevision: drawing ? revision.trim() || null : null,
-            drawingDiscipline: drawing ? discipline.trim() || null : null,
-            drawingStatus: drawing ? issueStatus : null,
-            drawingIssuedAt: drawing ? issueDate.trim() || null : null,
-          })}
-          disabled={!canSave || pending}
-          accessibilityRole="button"
-        >
-          <Text style={styles.primaryButtonText}>{pending ? 'Saving…' : 'Save Document Details'}</Text>
-        </Pressable>
+        {stays ? null : (
+          <Pressable
+            style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed, (!canSave || pending) && styles.buttonDisabled]}
+            onPress={() => onSave({
+              category,
+              projectName: selectedProjects[0] || null,
+              projectNames: selectedProjects,
+              drawingNumber: drawing ? number.trim() || null : null,
+              drawingRevision: drawing ? revision.trim() || null : null,
+              drawingDiscipline: drawing ? discipline.trim() || null : null,
+              drawingStatus: drawing ? issueStatus : null,
+              drawingIssuedAt: drawing ? issueDate.trim() || null : null,
+            })}
+            disabled={!canSave || pending}
+            accessibilityRole="button"
+          >
+            <Text style={styles.primaryButtonText}>{pending ? 'Saving…' : 'Save Document Details'}</Text>
+          </Pressable>
+        )}
       </View>
     </View>
   );

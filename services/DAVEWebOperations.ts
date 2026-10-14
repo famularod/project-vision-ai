@@ -1140,6 +1140,13 @@ export function daveWebScheduleDocumentDeleteNote({
  * brief allows, the smaller and safer: the Category of a schedule file with tasks (or of a lookahead, whose tasks it
  * is) is not changed on the computer; the rest of the form is saved as before. A schedule file with no task, and any
  * document that is not a schedule, keep every choice.
+ * Review pass H4, H4S-1 (Medium, older; open item 2.42; 14 Oct 2026): its PROJECTS stay too. A replaced lookahead
+ * moved to another project counted again (the newest lookahead for the project it then named), so its old dates and
+ * the detail task the newer lookahead had dropped came back on every device, with no card; an older master moved to
+ * another project hid that project's tasks at Make Current, with no question. Refused rather than carried: carrying
+ * it would mean teaching every device's choice of the schedule in effect, and Make Current's retirement, what a
+ * relabelled file stands for; refusing is the form alone, and the file can still be deleted with its tasks and
+ * uploaded again under the right ticks.
  */
 export function daveWebScheduleCategoryStays(
   document: ReferenceDocument & Partial<Pick<DAVEWebReferenceDocument, 'linkedScheduleItems' | 'importedScheduleItemCount'>>,
@@ -1148,18 +1155,28 @@ export function daveWebScheduleCategoryStays(
   return (document.importedScheduleItemCount ?? 0) > 0 || (document.linkedScheduleItems?.length ?? 0) > 0 || scheduleDocumentAddsToMaster(document);
 }
 
-/** What the form says under Category for such a file (open item 2.34). */
-export function daveWebScheduleCategoryStaysText(category: string): string {
-  return `This schedule file has tasks, so its category stays ${category}. Under another category its tasks would show again on every device, some of them twice. To file it as something else, delete it with its tasks, then upload it again.`;
+/** What the form says for such a file, under its Category and Projects (open item 2.34; review pass H4, H4S-1). */
+export const DAVE_WEB_SCHEDULE_DETAILS_STAY_TEXT =
+  'This schedule file has tasks, so its category and projects stay as they are. Changed, its tasks could show again on every device (some twice, or on old dates), and Make Current on it could hide another project\'s tasks. To file it differently, delete it with its tasks, then upload it again.';
+
+/** The projects a document names, as one comparable value (trimmed, lower case, each once, in any order). */
+function documentProjectsKey(projectName: string | null | undefined, projectNames: readonly string[] | null | undefined): string {
+  return [...new Set([projectName ?? '', ...(projectNames ?? [])].map(normalized).filter(Boolean))].sort().join('|');
 }
 
-/** Why Save Document Details is refused, or null: another Category for a schedule file with tasks (open item 2.34). */
+/**
+ * Why Save Document Details is refused, or null: another Category, or other Projects, for a schedule file with tasks
+ * (open item 2.34; review pass H4, H4S-1).
+ */
 export function daveWebDocumentDetailsRefusal(
   document: Parameters<typeof daveWebScheduleCategoryStays>[0],
   next: Partial<ReferenceDocument>,
 ): string | null {
-  if (next.category === undefined || normalized(next.category) === normalized(document.category)) return null;
-  return daveWebScheduleCategoryStays(document) ? daveWebScheduleCategoryStaysText(document.category || 'Other') : null;
+  if (!daveWebScheduleCategoryStays(document)) return null;
+  const categoryChanged = next.category !== undefined && normalized(next.category) !== normalized(document.category);
+  const projectsChanged = (next.projectName !== undefined || next.projectNames !== undefined) &&
+    documentProjectsKey(next.projectName, next.projectNames) !== documentProjectsKey(document.projectName, document.projectNames);
+  return categoryChanged || projectsChanged ? DAVE_WEB_SCHEDULE_DETAILS_STAY_TEXT : null;
 }
 
 /**
