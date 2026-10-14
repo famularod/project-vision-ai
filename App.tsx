@@ -12085,8 +12085,11 @@ Note: This update was opened through Outlook because PLZ email security may reje
         })),
         unavailableProjects: unavailableScopeProjects,
       });
+      // Open item 2.36 (H2b's rule): a row left waiting keeps the file's project name for its id and the duplicate check.
+      const waitingFileProjectNames = validation.itemResults?.map(result => result.assignment === 'needs_project' ? result.originalProjectName || '' : null);
       return {
-        items: bindStableScheduleImportItemIds(validation.items, sourceIdentity),
+        items: bindStableScheduleImportItemIds(validation.items, sourceIdentity, waitingFileProjectNames),
+        waitingFileProjectNames,
         warnings: [
           ...extractionWarnings.map(value => value.trim()).filter(Boolean),
           ...validation.warnings.map(value => value.message),
@@ -12112,7 +12115,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       }
       const validated = validateAndBindItems(imported);
       const items = dedupeScheduleImportItems(
-        validated.items as unknown as import('./types').ScheduleItem[],
+        validated.items as unknown as import('./types').ScheduleItem[], validated.waitingFileProjectNames,
       );
       return {
         id: sourceIdentity.batchId,
@@ -12178,7 +12181,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     if (extractedItems.length > 0) {
       const validated = validateAndBindItems(extractedItems, extractionWarnings);
       const items = dedupeScheduleImportItems(
-        validated.items as unknown as import('./types').ScheduleItem[],
+        validated.items as unknown as import('./types').ScheduleItem[], validated.waitingFileProjectNames,
       );
       return {
         id: sourceIdentity.batchId,

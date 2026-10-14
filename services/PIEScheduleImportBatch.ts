@@ -5,6 +5,7 @@ import {
   scheduleImportDateWarnings,
 } from './ScheduleImportScopeGuard';
 import { scheduleDatesToCheck } from './ScheduleInputLimits';
+import { scheduleProjectScopeKey } from './PIEScheduleReconciliation';
 import {
   bindScheduleImportBatch,
   scheduleItemsForExactImportBatch,
@@ -131,11 +132,25 @@ export function scheduleImportItemIdentity(item: ScheduleItem) {
     .join('|');
 }
 
-export function dedupeScheduleImportItems(items: ScheduleItem[]) {
+/**
+ * A task the file gives twice (the same task, finish date, project, area and row) is listed once.
+ * Open item 2.36 (review pass 1 H1S-1 on the phone; H2b's rule on the desktop): `waitingFileProjectNames` holds, for
+ * each row the project check left waiting ("Needs Project"), the project name the FILE gives it (null for a row given
+ * one of his projects). Such a row is compared by that name, so "Safety walk" on one day for "6101" and for "6102",
+ * two names the app does not know, stays two rows; one name twice ("6101" and "6101", or "Shed Annex" and
+ * "Shed-Annex" by scheduleProjectScopeKey) is still one row. A row given his project is compared by the project.
+ */
+export function dedupeScheduleImportItems(
+  items: ScheduleItem[],
+  waitingFileProjectNames?: readonly (string | null | undefined)[],
+) {
   const seen = new Set<string>();
 
-  return items.filter(item => {
-    const identity = scheduleImportItemIdentity(item);
+  return items.filter((item, index) => {
+    const fileName = waitingFileProjectNames?.[index];
+    const identity = scheduleImportItemIdentity(typeof fileName === 'string'
+      ? { ...item, projectName: `${SCHEDULE_IMPORT_NEEDS_PROJECT}|${scheduleProjectScopeKey(fileName)}` }
+      : item);
     if (seen.has(identity)) return false;
     seen.add(identity);
     return true;

@@ -96,13 +96,32 @@ export function canonicalScheduleImportScope(
 export function bindStableScheduleImportItemIds(
   items: readonly ScheduleItem[],
   source: ScheduleImportSourceIdentity,
+  /**
+   * Open item 2.36: for each row left waiting for a project, the project name the file gives it (null otherwise),
+   * as handed to dedupeScheduleImportItems. Two waiting rows of one task on one day under two names the app does not
+   * know ("6101", "6102") are two tasks: the first keeps its id, a later one under another name gets an id made with
+   * that name (the same on every device). Every other row's id is as before.
+   */
+  waitingFileProjectNames?: readonly (string | null | undefined)[],
 ): ScheduleItem[] {
-  return items.map(item => ({
-    ...item,
-    id: stableScheduleImportItemId(item, source),
-    importBatchId: source.batchId,
-    sourceDocumentId: source.documentId,
-  }));
+  const firstWaitingName = new Map<string, string>();
+  return items.map((item, index) => {
+    const fileName = waitingFileProjectNames?.[index];
+    let id = stableScheduleImportItemId(item, source);
+    if (typeof fileName === 'string') {
+      const first = firstWaitingName.get(id);
+      if (first === undefined) firstWaitingName.set(id, normalize(fileName));
+      else if (first !== normalize(fileName)) {
+        id = stableScheduleImportItemId({ ...item, projectName: `${item.projectName}|${normalize(fileName)}` }, source);
+      }
+    }
+    return {
+      ...item,
+      id,
+      importBatchId: source.batchId,
+      sourceDocumentId: source.documentId,
+    };
+  });
 }
 
 export function stableScheduleImportItemId(
