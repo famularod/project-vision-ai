@@ -403,7 +403,15 @@ describe('review N2 (Low): what does not stop a report', () => {
     // The report approved here is still on screen; this tab's own record is never called another tab's.
     expect(screen.queryAllByText(/Another tab of this browser/)).toHaveLength(0);
     fireEvent.press(screen.getByText('Share Approved Report'));
-    expect(await screen.findByText(NOT_RECORDED)).toBeTruthy();
+    // HIGH item 1 (fingerprint 3.0): the refresh changed no fact here, and now it changes no fingerprint either (under
+    // 2.0 the six minutes alone made the approval here "out of date", and the page said it "could not record" the
+    // send). The facts on screen are the approved report's, so the send is recorded as review N1 L2 records one: the
+    // period now runs from the report this tab sent last.
+    const approvedHere = buildDAVEReportSourceFingerprint(buildDAVEWebReportTruths(mockAuth.snapshot, null));
+    await waitFor(() => expect(sharedRow()?.deliveredAt).toEqual(expect.any(String)));
+    await waitFor(() => expect(sharedSnapshot()?.sourceFingerprint).toBe(approvedHere));
+    await settle();
+    expect(screen.queryByText(NOT_RECORDED)).toBeNull();
     expect(copied()).toHaveBeenCalledTimes(1);
     expect(screen.queryAllByText(/Another tab of this browser/)).toHaveLength(0);
     expect(screen.queryByText(OTHER_DEVICE)).toBeNull();

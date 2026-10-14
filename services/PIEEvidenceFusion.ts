@@ -510,14 +510,20 @@ export function buildFusedEvidence({
 export function extractScheduleEvidence({
   projectName,
   scheduleItems = [],
+  now,
 }: {
   projectName?: string | null;
   scheduleItems?: ScheduleItem[];
+  /**
+   * The moment the days are counted from; the device's clock when not given (as the runtime counts them). HIGH
+   * item 1: the report's fingerprint names the "Schedule focus" the written report prints, at the report's moment.
+   */
+  now?: Date;
 }): PIEScheduleEvidence[] {
   return scheduleItems
     .filter(item => matchesProject(projectName, item.projectName))
     .map(item => {
-      const days = daysUntilDate(item.finishDate);
+      const days = now ? daysUntilDate(item.finishDate, now) : daysUntilDate(item.finishDate);
       const isComplete = scheduleProgressIsComplete(item);
       const notes = trimOrNull(item.notes);
       const importedFrom = trimOrNull(item.importedFrom ?? '');
@@ -536,7 +542,7 @@ export function extractScheduleEvidence({
         areaName: item.locationName.trim() || 'Unassigned area',
         startDate: trimOrNull(item.startDate),
         dueDate: trimOrNull(item.finishDate),
-        dueLabel: dueStatusText(item.finishDate),
+        dueLabel: now ? dueStatusText(item.finishDate, now) : dueStatusText(item.finishDate),
         daysUntilDue: days,
         status: item.status,
         percentComplete: item.percentComplete,

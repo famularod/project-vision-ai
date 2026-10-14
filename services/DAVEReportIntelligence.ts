@@ -22,12 +22,18 @@ import {
 
 export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/2.0' as const;
 /**
+ * 3.0 (HIGH item 1, the owner's instruction of 13 Oct 2026, the three high
+ * items): of Project Truth, what a report prints, and every record it is made
+ * from; no longer what Project Truth counts from "now" and no output prints
+ * (reportSourceFactsOf3, below). Then what the phone's written report prints
+ * that Project Truth does not hold (writtenReportFacts).
  * 2.0 (R4 item 4a): the fingerprint no longer follows the order the tasks
- * were saved in, nor the id each device files the project under. 1.0 is
- * still worked out beside it for reports made under it (DAVEReportSnapshot,
- * sameReportSource).
+ * were saved in, nor the id each device files the project under. Its code is
+ * kept, unchanged (buildDAVEVersion2ReportSourceFingerprint). 1.0 is still
+ * worked out for R7's rule, and none of its names stands (R10).
  */
-export const DAVE_REPORT_SOURCE_VERSION = 'dave-report-source/2.0' as const;
+export const DAVE_REPORT_SOURCE_VERSION = 'dave-report-source/3.0' as const;
+const DAVE_VERSION_2_REPORT_SOURCE_VERSION = 'dave-report-source/2.0' as const;
 const DAVE_LEGACY_REPORT_SOURCE_VERSION = 'dave-report-source/1.0' as const;
 
 export type DAVEReportAction = Readonly<{
@@ -157,15 +163,7 @@ export type DAVEReportBriefing = Readonly<{
 export function buildDAVEReportSourceFingerprint(
   truths: readonly DAVEProjectTruth[],
 ): string {
-  const truthFingerprints = truths
-    .map(truth => ({
-      projectName: normalized(truth.projectName),
-      fingerprint: stableHash(stableStringify(canonicalizeReportSourceValue(
-        withoutVolatileReportSourceFields(reportSourceFactsOf(truth), LEFT_OUT_OF_REPORT_SOURCE_2_0),
-      ))),
-    }))
-    .sort((left, right) => left.projectName.localeCompare(right.projectName));
-  const fingerprint = `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify(truthFingerprints))}`;
+  const fingerprint = `${DAVE_REPORT_SOURCE_VERSION}:${hashOfProjects(truths, truth => reportSourceFactsOf3(truth), LEFT_OUT_OF_REPORT_SOURCE_3_0)}`;
   // R7 item A (the coordinator's decision on review pass 1, F0): a 1.0 fingerprint is a name of these facts only
   // where this build's report counts the same field updates as Build 230's did for the same saved data. Where it
   // counts even one that Build 230 left out, the 1.0 fingerprint is of a report without it, blind to whatever
@@ -175,6 +173,36 @@ export function buildDAVEReportSourceFingerprint(
   // R10: no longer offered (EARLIER_VERSION_NAMES_STAND). This is the one place today's facts are given a 1.0 name.
   rememberLegacyReportSource(fingerprint, EARLIER_VERSION_NAMES_STAND && countsWhatBuild230Counted ? buildDAVELegacyReportSourceFingerprint(truths) : null);
   return fingerprint;
+}
+
+/**
+ * The fingerprint as version 2.0 wrote it, unchanged (Builds 231 and 232): of
+ * every fact of each truth but the time it was worked out, Project Truth's own
+ * summary lines and its links. A report truth's `writtenReportFacts` came with
+ * 3.0 and is left out by name, so this is still 2.0 to the byte. Only to know a
+ * report made under 2.0 for the same facts.
+ */
+export function buildDAVEVersion2ReportSourceFingerprint(
+  truths: readonly DAVEProjectTruth[],
+): string {
+  return `${DAVE_VERSION_2_REPORT_SOURCE_VERSION}:${hashOfProjects(truths, reportSourceFactsOf, LEFT_OUT_OF_REPORT_SOURCE_2_0)}`;
+}
+
+/** Each project's facts hashed, in the order of the projects' names, and hashed together. */
+function hashOfProjects(
+  truths: readonly DAVEProjectTruth[],
+  factsOf: (truth: DAVEProjectTruth) => unknown,
+  leftOut: ReadonlySet<string>,
+): string {
+  const truthFingerprints = truths
+    .map(truth => ({
+      projectName: normalized(truth.projectName),
+      fingerprint: stableHash(stableStringify(canonicalizeReportSourceValue(
+        withoutVolatileReportSourceFields(factsOf(truth), leftOut),
+      ))),
+    }))
+    .sort((left, right) => left.projectName.localeCompare(right.projectName));
+  return stableHash(stableStringify(truthFingerprints));
 }
 
 /**
@@ -229,6 +257,66 @@ export function buildDAVELegacyReportSourceFingerprint(
  */
 function reportSourceFactsOf(truth: DAVEProjectTruth): unknown {
   const { briefing: _briefing, entityLinks: _entityLinks, ...facts } = truth as DAVEProjectTruth & Record<string, unknown>;
+  return withoutReportProjectId(truth, facts);
+}
+
+/**
+ * What version 3.0 hashes of a truth (HIGH item 1, the owner's instruction of
+ * 13 Oct 2026; reports review pass 3, P3-4): every record the report is made
+ * from, and of what Project Truth works out from them, exactly what a report
+ * prints. Version 2.0 held all of Project Truth, and much of it is counted
+ * from "now" and printed by no output: its own reading of the project (the
+ * `intelligence`: "3 in the last 14 days", "Updated recently", its evidence
+ * score, its state and confidence, the attention and uncertainty items of its
+ * daily brief), its reasoning about each task (a recommendation's timing, a
+ * challenge, a connection, the smallest next action) and the verification
+ * list made from that. So the report sent yesterday was offered again on most
+ * mornings, some of them with no word of it changed. Here, as 2.0:
+ *  - the records: the evidence ledger (every field update, photo, GPS fix,
+ *    photo analysis, task, document and memory), the photo comparisons, the
+ *    correlations, the tasks' earlier rows, the lookahead facts, the drawings
+ *    cited, and the facts of each schedule document (Project Truth keeps them
+ *    in its intelligence: `referenceDocuments`, R7 item C);
+ *  - the tasks as the report has them, but for one distinction no output
+ *    prints: a task due in 8 to 21 days is "upcoming", and one due later
+ *    "not urgent" (the report reads only "overdue" and "due within 7 days");
+ * and, in place of the rest, what the report prints of it:
+ *  - the decisions the report lists, each as printed: task, area, action,
+ *    owner, timing, consequence (`listedDecision`, the briefing's own rule);
+ *  - Project Truth's own risk lines and "what changed" lines, as printed.
+ * What the clock moves AND a report prints stays (a task now overdue or due
+ * within 7 days, "Today", a risk line): a report that reads differently is
+ * another report.
+ */
+function reportSourceFactsOf3(truth: DAVEProjectTruth): unknown {
+  const {
+    briefing, entityLinks: _entityLinks, intelligence, reasoning, verificationQueue: _verificationQueue, schedule, ...facts
+  } = truth as DAVEProjectTruth & Record<string, unknown>;
+  // (A truth made by hand, as some tests make one, may lack a part: it is read as empty.)
+  return withoutReportProjectId(truth, {
+    ...facts,
+    schedule: (schedule ?? []).map(task => (task.urgency === 'upcoming' ? { ...task, urgency: 'not_urgent' as const } : task)),
+    referenceDocuments: intelligence?.referenceDocuments ?? [],
+    listedDecisions: uniqueBy([...(reasoning?.criticalDecisions ?? []), ...(reasoning?.decisions ?? [])], decision => decision.taskId)
+      .filter(listedDecision)
+      .map(decision => ({
+        taskId: decision.taskId,
+        taskName: decision.taskName,
+        areaName: decision.areaName,
+        action: decision.recommendation.action,
+        owner: decision.recommendation.owner,
+        timing: decision.recommendation.timing,
+        consequence: decision.recommendation.consequenceOfInaction,
+      })),
+    printedProjectTruthLines: {
+      risks: (briefing?.risksAndConflicts ?? []).map(item => toPMReportLanguage(item)).filter(Boolean),
+      whatChanged: (briefing?.whatChanged ?? []).map(item => toPMReportLanguage(item)).filter(Boolean),
+    },
+  });
+}
+
+/** `facts` without the id the truth is filed under, wherever an id carries it (see reportSourceFactsOf). */
+function withoutReportProjectId(truth: DAVEProjectTruth, facts: Record<string, unknown>): unknown {
   const projectId = typeof truth.projectId === 'string' ? truth.projectId : '';
   if (!projectId) return facts;
   // As written, and as an id inside an id carries it: encoded once, twice ("report%253Aalpha") or three times.
@@ -311,11 +399,7 @@ export function buildDAVEReportBriefing({
     ...criticalDecisions,
     ...truths.flatMap(truth => truth.reasoning.decisions),
   ], decision => `${truthProjectName(truths, decision.taskId)}|${decision.taskId}`);
-  const reportableActionDecisions = actionDecisions.filter(decision =>
-    decision.confidence !== 'low' &&
-    isReportableCurrentState(decision.recommendation.action) &&
-    !isVerificationOnlyAction(decision.recommendation.action),
-  );
+  const reportableActionDecisions = actionDecisions.filter(listedDecision);
   const reasoningActions = reportableActionDecisions.map(decision => ({
       id: `report-action:${decision.taskId}`,
       projectName: truthProjectName(truths, decision.taskId),
@@ -443,6 +527,16 @@ export function buildDAVEReportBriefing({
     decisionsRequired,
     nextActions,
   });
+}
+
+/**
+ * Whether the report lists a decision of Project Truth's reasoning (its action plan, its decisions required): one
+ * rule for the briefing and for version 3.0 of the fingerprint, which holds what is listed and nothing else of it.
+ */
+function listedDecision(decision: DAVEProjectTruth['reasoning']['decisions'][number]): boolean {
+  return decision.confidence !== 'low' &&
+    isReportableCurrentState(decision.recommendation.action) &&
+    !isVerificationOnlyAction(decision.recommendation.action);
 }
 
 function projectConditionFromTruth(
@@ -1429,8 +1523,10 @@ const VOLATILE_REPORT_SOURCE_FIELDS = new Set([
 /**
  * R8 items 3 and 4 (the coordinator's decisions on review pass 2): what
  * version 2.0 of the fingerprint leaves out, by name: only the time the
- * truth was worked out. Version 1.0 leaves out the whole list above, as the
- * released build did, and must go on doing so.
+ * truth was worked out (and, since 3.0, the written report's facts, which no
+ * truth had under 2.0: so 2.0 is what Builds 231 and 232 wrote). Version 1.0
+ * leaves out the whole list above, as the released build did, and must go on
+ * doing so.
  *
  * The rule (the guard: r8-report-fingerprint-moves-whenever-the-report-does):
  * whenever a change to what the report is made from moves the written report,
@@ -1449,7 +1545,9 @@ const VOLATILE_REPORT_SOURCE_FIELDS = new Set([
  * Each is worked out from the saved tasks and schedules alone, the same on
  * the phone and on the web.
  */
-const LEFT_OUT_OF_REPORT_SOURCE_2_0: ReadonlySet<string> = new Set(['generatedAt']);
+const LEFT_OUT_OF_REPORT_SOURCE_2_0: ReadonlySet<string> = new Set(['generatedAt', 'writtenReportFacts']);
+/** What version 3.0 leaves out by name (HIGH item 1); what it leaves out of Project Truth is in reportSourceFactsOf3. */
+const LEFT_OUT_OF_REPORT_SOURCE_3_0: ReadonlySet<string> = new Set(['generatedAt']);
 
 function withoutVolatileReportSourceFields(value: unknown, leftOut: ReadonlySet<string> = VOLATILE_REPORT_SOURCE_FIELDS): unknown {
   if (Array.isArray(value)) return value.map(item => withoutVolatileReportSourceFields(item, leftOut));

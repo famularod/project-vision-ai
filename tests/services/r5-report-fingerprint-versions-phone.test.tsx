@@ -328,7 +328,7 @@ describe('R5 item 2 (phone), reversed by R10: a report made under the earlier fi
     await settle();
     await settle();
     // This phone's own approval, under today's fingerprint, recorded as sent; not an approval written over the send.
-    expect(local('phone')?.sourceFingerprint).toMatch(/^dave-report-source\/2\.0:/);
+    expect(local('phone')?.sourceFingerprint).toMatch(/^dave-report-source\/3\.0:/);
     expect(local('phone')?.sourceFingerprint).not.toBe(approval.sourceFingerprint);
     expect(local('phone')).toMatchObject({ deliveredAt: expect.any(String) });
     await waitFor(() => expect(cloudRow()?.deliveredAt).toBe(local('phone')?.deliveredAt), SLOW);
@@ -352,7 +352,7 @@ describe('R5 item 2 (phone), reversed by R10: a report made under the earlier fi
     await approvable();
     await approveAnyway();
     await settle();
-    await waitFor(() => expect(local('phone')?.sourceFingerprint).toMatch(/^dave-report-source\/2\.0:/), SLOW);
+    await waitFor(() => expect(local('phone')?.sourceFingerprint).toMatch(/^dave-report-source\/3\.0:/), SLOW);
     expect(local('phone')?.sourceFingerprint).not.toBe(approval.sourceFingerprint);
     expect(local('phone')).toMatchObject({ deliveredAt: null });
     setClock('2026-10-05T14:20:00.000Z');

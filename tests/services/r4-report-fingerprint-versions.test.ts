@@ -61,9 +61,9 @@ const REORDERED = [...SAVED].reverse();
 const MOVED = SAVED.map(item => (item.taskName === 'Paint' ? { ...item, percentComplete: 60 } : item));
 
 describe('R4 item 4a: a sync that only reorders the saved tasks changes nothing a report says', () => {
-  it('the fingerprint is the same, and it is version 2.0', () => {
+  it('the fingerprint is the same, and it is today\'s version (2.0 then, 3.0 since HIGH item 1)', () => {
     const fingerprint = buildDAVEReportSourceFingerprint(phoneTruths(SAVED));
-    expect(fingerprint).toMatch(/^dave-report-source\/2\.0:[0-9a-f]{8}$/);
+    expect(fingerprint).toMatch(/^dave-report-source\/3\.0:[0-9a-f]{8}$/);
     expect(buildDAVEReportSourceFingerprint(phoneTruths(REORDERED, [...UPDATES].reverse()))).toBe(fingerprint);
   });
 
@@ -244,7 +244,7 @@ describe('R4 item 4a, reversed by R10: a report made under 1.0 is never taken fo
 
   it('web: a report saved under 1.0 is out of date', () => {
     const source = buildDAVEWebReportSource(webSnapshot(SAVED), 'Alpha');
-    const savedUnderOne = source.fingerprint.replace(/^dave-report-source\/2\.0:[0-9a-f]+/, buildDAVELegacyReportSourceFingerprint(buildDAVEWebReportTruths(webSnapshot(SAVED), 'Alpha')));
+    const savedUnderOne = source.fingerprint.replace(/^dave-report-source\/3\.0:[0-9a-f]+/, buildDAVELegacyReportSourceFingerprint(buildDAVEWebReportTruths(webSnapshot(SAVED), 'Alpha')));
     expect(savedUnderOne).not.toBe(source.fingerprint);
     expect(daveWebReportSourceIsCurrent(savedUnderOne, source)).toBe(false);
     expect(daveWebReportSourceIsCurrent(source.fingerprint, source)).toBe(true);
@@ -272,7 +272,7 @@ describe('R4 item 4a, reversed by R10: a report made under 1.0 is never taken fo
     expect(reportSnapshotToSave(snapshotOf(MOVED, fingerprint), before)).not.toBeNull();
     expect(approvalReplacesUnsentApproval(before, fingerprint)).toBe(true);
     const source = buildDAVEWebReportSource(webSnapshot(MOVED), 'Alpha');
-    const savedBefore = source.fingerprint.replace(/^dave-report-source\/2\.0:[0-9a-f]+/, buildDAVELegacyReportSourceFingerprint(buildDAVEWebReportTruths(webSnapshot(SAVED), 'Alpha')));
+    const savedBefore = source.fingerprint.replace(/^dave-report-source\/3\.0:[0-9a-f]+/, buildDAVELegacyReportSourceFingerprint(buildDAVEWebReportTruths(webSnapshot(SAVED), 'Alpha')));
     expect(daveWebReportSourceIsCurrent(savedBefore, source)).toBe(false);
   });
 

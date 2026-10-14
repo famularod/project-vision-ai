@@ -325,7 +325,7 @@ describe('B232 item 2 part C: the phone\'s whole written report against the 2.0 
     for (const seed of SEEDS) {
       const { section, fingerprint, areas } = phone(project(seed));
       say(`=== seed ${seed}: the section on day 0 ===\n${section}`);
-      expect(fingerprint.split(':')[0]).toBe('dave-report-source/2.0');
+      expect(fingerprint.split(':')[0]).toBe('dave-report-source/3.0');
       expect(section).toContain(HEADING);
       expect(section).toMatch(/Latest update: /);
       expect(section).toMatch(/Schedule focus: /);
@@ -702,21 +702,25 @@ describe('B232 item 2 part C: the phone\'s whole written report against the 2.0 
 });
 
 // ---- KNOWN: found by this guard, told to the coordinator, not settled in this batch ----
-/** Single changes that move the text under one fingerprint (test 3): what the section reads and the 2.0 fingerprint does not hold. */
-const KNOWN_BY_CHANGE: readonly string[] = [
-  // ('the saved tasks in another order', F1, was here: settled by item 3 part 1, see test 1e.)
-  'a later task made high priority',
-  'the task due soonest named a milestone',
-  'the photos of one update in another order',
-  'the newest note marked as the photo analysis\'s own suggestion, accepted',
-  'the confirmed comparison\'s finding reworded',
-];
+/**
+ * Single changes that move the text under one fingerprint (test 3): what the section reads and the fingerprint does
+ * not hold. NONE since version 3.0 (HIGH item 1, the owner's instruction of 13 Oct 2026, the three high items): the
+ * five that were here (F2 'a later task made high priority', F2b 'the task due soonest named a milestone', F5 'the
+ * photos of one update in another order', F6 'the newest note marked as the photo analysis's own suggestion,
+ * accepted', F6b 'the confirmed comparison's finding reworded') are held by the report truth's writtenReportFacts.
+ * ('the saved tasks in another order', F1, was here before them: settled by item 3 part 1, see test 1e.)
+ */
+const KNOWN_BY_CHANGE: readonly string[] = [];
 /** Days on which the text moves under one fingerprint. None. */
 const KNOWN_BY_DAY: readonly string[] = [];
-/** What the section still counts from today (test 2b), as found. */
+/**
+ * What the section still counts from today (test 2b). Both still move the section with the calendar, and since 3.0
+ * (HIGH item 1, F3 and F4) the fingerprint moves with them, on that morning: a report that reads differently is
+ * another report.
+ */
 const KNOWN_COUNTED_FROM_TODAY = {
   // "Schedule focus" names a task from the day it is due within two weeks: a line of the section's own.
-  twoWeekLine: ['day 0 to day 1: the section moved, the fingerprint DID NOT', 'day 15 to day 16: the section moved, the fingerprint moved'],
+  twoWeekLine: ['day 0 to day 1: the section moved, the fingerprint moved', 'day 15 to day 16: the section moved, the fingerprint moved'],
   // A comparison he confirmed is quoted for seven days from its photo, and not on the eighth.
-  comparisonAges: ['day 3 to day 4: the section moved, the fingerprint DID NOT'],
+  comparisonAges: ['day 3 to day 4: the section moved, the fingerprint moved'],
 };

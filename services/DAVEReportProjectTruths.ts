@@ -8,6 +8,7 @@ import { buildDAVEProjectTruth, daveProjectTruthInStableOrder, type DAVEProjectT
 import type { ProjectRecord } from './ProjectCoverPhotoService';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
 import { buildAutomaticReportDrawingReferences } from './ReportDrawingReferences';
+import { buildWrittenReportFacts } from './ReportWrittenFacts';
 
 export type DAVEReportProjectTruthsInput = {
   /** The report's projects in the order shown, each with the id its Project Truth carries. */
@@ -132,7 +133,16 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
     const builtBefore = before
       ? truthOf(buildDailyReportAuthorityScope({ ...scopeInput, scheduleItems: before.scheduleItems }), before.knownScheduleItems ?? known)
       : sameUpdates ? truth : truthOf(scopeAsBefore);
+    // HIGH item 1 (F2 to F6b): what the phone's written report prints of this project's own updates and tasks that
+    // the truth does not hold, read by the writer's own rules at the truth's own moment, so that the fingerprint
+    // holds it on the phone and on the desktop alike.
+    const writtenReportFacts = buildWrittenReportFacts({
+      projectName: project.name,
+      updates: scope.updates,
+      scheduleItems: scope.scheduleItems,
+      now: truth.generatedAt,
+    });
     // In a stable order, so a sync that only reorders the saved rows changes nothing a report says (R4 item 4a).
-    return daveProjectTruthInStableOrder(truth, builtBefore, !sameUpdates, drawingCitations);
+    return daveProjectTruthInStableOrder(truth, builtBefore, !sameUpdates, drawingCitations, writtenReportFacts);
   });
 }

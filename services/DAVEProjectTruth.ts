@@ -46,6 +46,7 @@ import {
   type ProjectTimeZone,
 } from './ProjectDateTime';
 import { scheduleTaskDurationWeight } from './dave-project-schedule-rollup';
+import type { DAVEWrittenReportFacts } from './ReportWrittenFacts';
 
 export const DAVE_PROJECT_TRUTH_VERSION = 'dave-project-truth/1.0' as const;
 
@@ -258,6 +259,12 @@ export type DAVEProjectTruth = {
    * none, is another report.
    */
   drawingCitations?: readonly DAVEReportDrawingCitation[];
+  /**
+   * Only on a truth a report is written from: what the phone's written report prints of the project's own records
+   * that nothing else here holds (HIGH item 1, F2 to F6b; services/ReportWrittenFacts.ts). IN version 3.0 of the
+   * report's fingerprint; left out of 2.0 by name, so 2.0 is still the released build's.
+   */
+  writtenReportFacts?: DAVEWrittenReportFacts;
   verificationQueue: DAVEVerificationRequest[];
   briefing: DAVEPMBriefing;
 };
@@ -683,6 +690,8 @@ export function daveProjectTruthInStableOrder(
   countsOtherUpdatesThanBefore = false,
   /** The drawings the report cites for this project, as printed and saved (R8 item 2). */
   drawingCitations: readonly DAVEReportDrawingCitation[] = [],
+  /** What the phone's written report prints of the project's records that nothing else here holds (HIGH item 1). */
+  writtenReportFacts: DAVEWrittenReportFacts | null = null,
 ): DAVEProjectTruth {
   if (truthAsBuilt.has(truth)) return truth;
   const schedule = scheduleTruthInStableOrder(truth.schedule);
@@ -716,6 +725,7 @@ export function daveProjectTruthInStableOrder(
             .sort((left, right) => plainOrder(left.projectName, right.projectName) || plainOrder(left.areaName, right.areaName) || plainOrder(left.documentId, right.documentId)),
         }
       : {}),
+    ...(writtenReportFacts ? { writtenReportFacts } : {}),
     verificationQueue,
     briefing: buildPMBriefing({
       projectName: truth.projectName,

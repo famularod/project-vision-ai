@@ -141,7 +141,7 @@ describe('R8 item 1: after the update\'s first sync a report sent on the release
     expect(opened.takenForTheSavedReport).toBe(false);
     expect(opened.said).toEqual([]);
     const approvedHere = opened.sent();
-    expect(approvedHere.sourceFingerprint).toMatch(/^dave-report-source\/2\.0:/);
+    expect(approvedHere.sourceFingerprint).toMatch(/^dave-report-source\/3\.0:/);
     const reopened = screen(asTheReleasedBuildLeftIt, approvedHere, '2026-09-10T22:25:00.000Z');
     expect(reopened.takenForTheSavedReport).toBe(true);
     expect(reopened.text).toEqual(opened.text);
@@ -170,7 +170,7 @@ describe('R8 item 1: after the update\'s first sync a report sent on the release
     const { sent, synced } = theUpdate(beforeReportZero);
     const offeredOnce = screen(synced, sent, '2026-09-10T22:30:00.000Z');
     const sentAgain = offeredOnce.sent();
-    expect(sentAgain.sourceFingerprint).toMatch(/^dave-report-source\/2\.0:/);
+    expect(sentAgain.sourceFingerprint).toMatch(/^dave-report-source\/3\.0:/);
     // Opened again with nothing changed: that report, already sent.
     const reopened = screen(synced, sentAgain, '2026-09-10T23:00:00.000Z');
     expect(reopened.takenForTheSavedReport).toBe(true);
@@ -190,7 +190,7 @@ describe('R8 item 1: after the update\'s first sync a report sent on the release
       projectUpdates: [], referenceDocuments: state.documents, refreshedAt: '2026-09-10T22:30:00.000Z',
     }) as unknown as DAVEWebReadOnlySnapshot;
     const before = buildDAVEWebReportSource(web(asTheReleasedBuildLeftIt), 'Alpha');
-    const savedOnTheReleasedBuild = String(before.fingerprint).replace(/^dave-report-source\/2\.0:[0-9a-f]+/, buildDAVELegacyReportSourceFingerprint(buildDAVEWebReportTruths(web(asTheReleasedBuildLeftIt), 'Alpha')));
+    const savedOnTheReleasedBuild = String(before.fingerprint).replace(/^dave-report-source\/3\.0:[0-9a-f]+/, buildDAVELegacyReportSourceFingerprint(buildDAVEWebReportTruths(web(asTheReleasedBuildLeftIt), 'Alpha')));
     expect(daveWebReportSourceIsCurrent(savedOnTheReleasedBuild, before)).toBe(false);
     expect(daveWebReportSourceIsCurrent(before.fingerprint, before)).toBe(true);
     const after = buildDAVEWebReportSource(web(synced), 'Alpha');

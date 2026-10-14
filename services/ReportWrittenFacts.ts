@@ -1,12 +1,18 @@
-import type { ProjectUpdate } from '../types';
+import type { ProjectUpdate, ScheduleItem, UpdatePhoto } from '../types';
 import { isConstructionRelevantObservation } from './dave-construction-relevance';
-import type { PIEPhotoProgressEvidence } from './PIEPhotoProgress';
+import { extractScheduleEvidence, fieldUpdatesNewestFirst, whatChangedForWrittenReport } from './PIEEvidenceFusion';
+import { buildPhotoProgress, type PIEPhotoProgressEvidence } from './PIEPhotoProgress';
 
 /**
- * HIGH item 1 (the owner's instruction of 13 Oct 2026, the three high items): the phone's written report's own rules
- * for two things it prints, in one place, so that the report's fingerprint can read them by the same rules (next
- * change). Moved here from services/PIEReporter.ts as they were: which confirmed photo comparison the section WORK
- * AREAS / PHOTO NOTES quotes, and whether a note is the photo analysis's suggestion accepted word for word.
+ * HIGH item 1 (the owner's instruction of 13 Oct 2026, the three high items; the Build 232 round's F2 to F6b): what
+ * the phone's written report prints of a project's own records that the report's Project Truth does not hold.
+ *
+ * The section WORK AREAS / PHOTO NOTES is written from the field updates and tasks themselves (services/
+ * PIEReporter.ts), not from Project Truth. "Your other device already sent this report" is said by the report's
+ * fingerprint, and the fingerprint is worked out from Project Truth, so whatever the section reads that Project Truth
+ * does not keep could change the report under "already sent". These are those things, read by the writer's own
+ * rules (the same functions, here), from the project's records, on the phone and on the desktop alike: the desktop
+ * prints no such section, but it must work out the same value for the same records.
  */
 
 /** A confirmed comparison older than this is history, not today's photo note (the same 7 days ProjectIntelligenceEngine treats as recent activity). */
@@ -77,4 +83,101 @@ export function confirmedComparisonQuoted(
   if (!Number.isFinite(seenAt)) return null;
   if (reportAt - seenAt > REPORT_CURRENT_PHOTO_NOTE_DAYS * 24 * 60 * 60 * 1000) return null;
   return { confirmed, source };
+}
+
+/**
+ * What the written report prints of a project's records beyond what its Project Truth holds, as the report's
+ * fingerprint holds it (version 3.0). Each part is a value both devices hold the same: the desktop's loader keeps a
+ * photo's kind as an issue, a safety concern or neither, and an action's status as open, in progress, waiting or
+ * closed (DAVEWebReadOnlyRepository normalizeWebPhoto), and so does this.
+ */
+export type DAVEWrittenReportFacts = Readonly<{
+  /** F2, F2b: a task made High priority (a "Please confirm the current status" line, and the focus's rank), its milestone name (the rank); and its own notes, which the section prints with the task. */
+  tasks: readonly Readonly<{ taskId: string; highPriority: boolean; milestone: string; notes: string }>[];
+  /**
+   * F5, F6: each update's photos IN THEIR OWN ORDER (the image numbers, "Latest photo"), each photo's kind and asked
+   * action; whether its note is the accepted suggestion. And the names it was filed under: the report takes an update
+   * for the project's by its task as well, and Project Truth then holds it under the project's own name, while the
+   * section heads its lines, and numbers its photos, by the names the update carries (review pass 3, part A).
+   */
+  updates: readonly Readonly<{
+    updateId: string;
+    filedUnder: string;
+    scheduleProjectName: string;
+    noteIsAcceptedPhotoSuggestion: boolean;
+    /** `place`: the photo's place in its update (the fingerprint holds every list as a set, so the order is held by this). */
+    photos: readonly Readonly<{ photoId: string; place: number; kind: 'issue' | 'safety' | 'photo'; actionRequired: string; actionOwner: string; actionStatus: string }>[];
+  }>[];
+  /**
+   * F3: the section's "Schedule focus" sentence as the writer writes it ("Schedule focus: Pour slab (due
+   * 10/17/2026)."), or null. It names a task from the day it comes within two weeks: it moves the morning the
+   * sentence does, and only then.
+   */
+  scheduleFocus: string | null;
+  /**
+   * F4, F6b: the confirmed comparison the section quotes, or null. It is quoted for 7 days from its photo: it moves
+   * the morning the quote leaves the report, and when its summary is reworded.
+   */
+  quotedComparison: Readonly<{ photoId: string; summary: string; areaName: string }> | null;
+}>;
+
+const photoKind = (category: unknown): 'issue' | 'safety' | 'photo' =>
+  (category === 'Open Issue' ? 'issue' : category === 'Safety Concern' ? 'safety' : 'photo');
+const actionStatusAsKept = (status: unknown) =>
+  (status === 'In Progress' || status === 'Waiting' || status === 'Closed' ? status : 'Open');
+const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+
+/**
+ * The written report's own facts of one project, from its field updates and tasks (as the device holds them, with
+ * the names they were filed under), at `now`.
+ */
+export function buildWrittenReportFacts({
+  projectName,
+  updates,
+  scheduleItems,
+  now,
+}: {
+  projectName: string;
+  updates: readonly ProjectUpdate[];
+  scheduleItems: readonly ScheduleItem[];
+  now: string;
+}): DAVEWrittenReportFacts {
+  const moment = new Date(now);
+  const newestFirst = fieldUpdatesNewestFirst(updates);
+  const focus = whatChangedForWrittenReport({
+    userUpdateEvidence: [],
+    photoEvidence: [],
+    scheduleEvidence: extractScheduleEvidence({ projectName, scheduleItems: [...scheduleItems], now: moment }),
+  });
+  const quoted = confirmedComparisonQuoted(
+    buildPhotoProgress({ projectName, updates: [...updates], now: moment }).acceptedEvidence,
+    newestFirst,
+    moment.getTime(),
+  );
+  return {
+    tasks: scheduleItems.map(item => ({
+      taskId: item.id,
+      highPriority: item.priority === 'High',
+      milestone: text(item.milestone),
+      notes: text(item.notes),
+    })),
+    updates: updates.map(update => ({
+      updateId: update.id,
+      filedUnder: text(update.projectName),
+      scheduleProjectName: text(update.scheduleProjectName),
+      noteIsAcceptedPhotoSuggestion: noteIsAcceptedPhotoSuggestion(update),
+      photos: (update.photos ?? []).map((photo: UpdatePhoto, place: number) => ({
+        photoId: photo.id,
+        place,
+        kind: photoKind(photo.category),
+        actionRequired: text(photo.actionRequired),
+        actionOwner: text(photo.actionOwner),
+        actionStatus: actionStatusAsKept(photo.actionStatus),
+      })),
+    })),
+    scheduleFocus: focus.startsWith('Schedule focus:') ? focus : null,
+    quotedComparison: quoted
+      ? { photoId: quoted.confirmed.currentPhotoId, summary: quoted.confirmed.summary, areaName: text(quoted.confirmed.areaName) }
+      : null,
+  };
 }
