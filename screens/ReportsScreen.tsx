@@ -916,6 +916,19 @@ export function ReportsScreen({
     })();
   };
 
+  /**
+   * Open item 7.21: a share that never comes back (a share sheet or composer that stalled) held Reports in
+   * "Waiting for the selected share action to finish." with every send button off until he left the screen. He
+   * can stop waiting. Nothing is recorded by stopping: a share that finishes later is still recorded as sent (it
+   * went out); one that never does is not, and Mark as Sent records a report he sent another way.
+   */
+  const stopWaitingForShare = () => {
+    if (!pendingCommunicationTokenRef.current) return;
+    pendingCommunicationTokenRef.current = null;
+    setCommunicationPending(false);
+    setCommunicationError(STOPPED_WAITING_FOR_SHARE);
+  };
+
   const markReportApproved = () => {
     if (!reportApprovalAllowed) {
       setCommunicationError(reportApprovalMessage);
@@ -1282,6 +1295,7 @@ export function ReportsScreen({
             periodNotice={shownPeriodNotice}
             periodNote={sharedPeriodNote}
             communicationPending={communicationPending}
+            onStopWaiting={stopWaitingForShare}
             communicationError={[snapshotSaveError, communicationError].filter(Boolean).join(' ')}
             reportEditing={reportEditing}
             drawingReferences={drawingReferences}
@@ -1538,6 +1552,10 @@ type SharedPeriodMoment = 'refresh' | 'approve' | 'send' | 'mark';
 
 const ALREADY_SENT_NOTICE_START = 'Your other device already sent this report';
 
+/** Said when he stops waiting for a share that has not come back (open item 7.21). */
+const STOPPED_WAITING_FOR_SHARE = 'Stopped waiting. If that share finishes later, the report is still recorded as sent. ' +
+  'If you sent it another way, use Mark as Sent.';
+
 /**
  * Approval waits for this device to catch up with the other device's changes
  * (whole-app audit A6 pass 9 M2), and says why (pass 10 L2): the other
@@ -1642,6 +1660,7 @@ function PIEReporterPreview({
   periodNotice,
   periodNote,
   communicationPending,
+  onStopWaiting,
   communicationError,
   reportEditing,
   drawingReferences,
@@ -1681,6 +1700,8 @@ function PIEReporterPreview({
   /** The other device's last report could not be checked (A6 pass 7). */
   periodNote: string;
   communicationPending: boolean;
+  /** Stops waiting for a share that has not come back (open item 7.21). */
+  onStopWaiting: () => void;
   communicationError: string;
   reportEditing: boolean;
   drawingReferences: readonly ReportDrawingReference[];
@@ -1993,7 +2014,12 @@ function PIEReporterPreview({
       ) : null}
 
       {communicationPending ? (
-        <Text style={styles.approvalBoundaryText}>Waiting for the selected share action to finish.</Text>
+        <View>
+          <Text style={styles.approvalBoundaryText}>Waiting for the selected share action to finish.</Text>
+          <TouchableOpacity onPress={onStopWaiting} accessibilityRole="button" accessibilityLabel="Stop Waiting">
+            <Text style={styles.reportActionText}>Stop Waiting</Text>
+          </TouchableOpacity>
+        </View>
       ) : null}
 
       {communicationError ? (
