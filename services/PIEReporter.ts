@@ -94,6 +94,7 @@ import type { PIEJarvisReasoningValidation } from './PIEJarvisReasoningValidatio
 import type { PIEConfidenceDecomposition } from './PIEConfidenceDecomposition';
 import type { PIEEvidenceValuePrioritization } from './PIEEvidenceValuePrioritization';
 import { fieldUpdatesNewestFirst, scheduleTasksInReportOrder, whatChangedForWrittenReport } from './PIEEvidenceFusion';
+import { confirmedComparisonQuoted, isEmptyRuntimeSummary, noteIsAcceptedPhotoSuggestion } from './ReportWrittenFacts';
 import { resolvePIEReportProjectNames } from './PIEReportScope';
 import type { PIEScheduleReconciliationResult } from './PIEScheduleReconciliation';
 import {
@@ -579,12 +580,8 @@ export function collectReportEvidence(
 
   updates.forEach(update => {
     const context = reportContextForUpdate(update, scheduleItems, selectedProjects.length > 1);
-    const suggestedNote = update.pieSuggestedNote?.trim() || '';
-    const noteWasGeneratedFromPhotoAnalysis = Boolean(
-      update.pieSuggestedNoteAccepted &&
-      suggestedNote &&
-      suggestedNote === update.notes.trim(),
-    );
+    // The rule the report's fingerprint reads too (ReportWrittenFacts, HIGH item 1: F6).
+    const noteWasGeneratedFromPhotoAnalysis = noteIsAcceptedPhotoSuggestion(update);
 
     if (
       update.notes.trim() &&
@@ -702,28 +699,23 @@ function writtenReportWhatChanged(
   return runtime?.intelligentSummary?.whatChanged;
 }
 
-// A confirmed comparison older than this is history, not today's photo note
-// (the same 7 days ProjectIntelligenceEngine treats as recent activity).
-const REPORT_CURRENT_PHOTO_NOTE_DAYS = 7;
-
+/**
+ * The confirmed comparison quoted as today's photo note: the newest confirmed one, about the work, of this report's
+ * updates, at most 7 days old. Chosen by the rule the report's fingerprint reads too (ReportWrittenFacts, HIGH item
+ * 1: F4, F6b).
+ */
 function recentConfirmedPhotoNote(
   input: PIEReportDraftInput,
   updates: ProjectUpdate[],
 ): PIEReportSourceEvidence | null {
   // Newest first, so [0] is the newest confirmed comparison.
-  const confirmed = newestConfirmedComparison(input.runtime?.photoProgress?.acceptedEvidence, updates);
-  if (!confirmed?.summary || isEmptyRuntimeSummary(confirmed.summary)) return null;
-  if (!isConstructionRelevantObservation(confirmed.summary)) return null;
-  // Its photo must belong to this report's updates; project and area come
-  // from that update, never from the open draft.
-  const source = updates.find(update =>
-    update.photos.some(photo => photo.id === confirmed.currentPhotoId),
+  const quoted = confirmedComparisonQuoted(
+    input.runtime?.photoProgress?.acceptedEvidence,
+    updates,
+    (input.generatedAt || new Date()).getTime(),
   );
-  if (!source) return null;
-  const seenAt = Date.parse(confirmed.acceptedAt || '');
-  const reportAt = (input.generatedAt || new Date()).getTime();
-  if (!Number.isFinite(seenAt)) return null;
-  if (reportAt - seenAt > REPORT_CURRENT_PHOTO_NOTE_DAYS * 24 * 60 * 60 * 1000) return null;
+  if (!quoted) return null;
+  const { confirmed, source } = quoted;
   const context = reportContextForUpdate(source, reportScheduleItems(input), selectedProjectsFromInput(input).length > 1);
   return {
     id: `runtime-photo-progress-${confirmed.currentPhotoId}`,
@@ -733,34 +725,6 @@ function recentConfirmedPhotoNote(
     summary: cleanReportBulletText(confirmed.summary),
     confidence: 'medium',
   };
-}
-
-/**
- * The newest confirmed comparison. They come newest first by their photo's
- * moment, and several of ONE moment (two photos of one day that carry no
- * capture time) came in the order of this device's list. Build 232 item 2
- * part A: of those, the one whose update comes first in the report's own
- * order (`updates`: newest first by the update's date, then its id), so two
- * devices quote the same comparison.
- */
-function newestConfirmedComparison(
-  accepted: readonly PIEPhotoProgressEvidence[] | null | undefined,
-  updates: readonly ProjectUpdate[],
-) {
-  const newest = accepted?.[0];
-  if (!accepted || !newest) return newest;
-  const ofOneMoment = accepted.filter(item => item.acceptedAt === newest.acceptedAt);
-  if (ofOneMoment.length < 2) return newest;
-  const placeOf = (photoId: string): [number, number] => {
-    for (let index = 0; index < updates.length; index += 1) {
-      const within = updates[index].photos.findIndex(photo => photo.id === photoId);
-      if (within >= 0) return [index, within];
-    }
-    return [Number.MAX_SAFE_INTEGER, 0];
-  };
-  return ofOneMoment
-    .map((item, index) => ({ item, index, place: placeOf(item.currentPhotoId) }))
-    .sort((left, right) => left.place[0] - right.place[0] || left.place[1] - right.place[1] || left.index - right.index)[0].item;
 }
 
 function isIncidentalReportEvidence(item: PIEReportSourceEvidence) {
@@ -2766,10 +2730,6 @@ function isRiskText(value: string) {
 
 function isUnclearText(value: string) {
   return value.trim().length < 8 || /\b(todo|tbd|\?{2,}|asdf)\b/i.test(value);
-}
-
-function isEmptyRuntimeSummary(value: string) {
-  return /no .*summarize|no .*evidence|not enough/i.test(value);
 }
 
 function ownerFromText(value: string) {
