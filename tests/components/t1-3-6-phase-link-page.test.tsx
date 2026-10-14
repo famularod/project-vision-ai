@@ -135,7 +135,8 @@ describe('the Schedule editor: a task may start after a phase (open item 3.6)', 
     // Still listed, ticked, so that he can untick it.
     expect(predecessorChoices(screen)).toContainEqual({ text: '1 · Sitework (a phase)', checked: true });
     await act(async () => { fireEvent.press(screen.getByText('Create Task')); });
-    expect(screen.getByText('Not saved. This item is in the phase “Sitework”, so it cannot also start after “Sitework” is finished: that is a circle. Untick “Sitework” and save again.')).toBeTruthy();
+    // T1b: the save's check names the task that would close the circle, with every step of it.
+    expect(screen.getByText('Not saved. “Curb” would close a circle: “Curb” is in the phase “Sitework”, and “Curb” starts after the phase “Sitework”. The schedule could not place them. Untick “Sitework”, or choose another parent phase for “Curb”, and save again.')).toBeTruthy();
     expect(mockAuth.createTask).not.toHaveBeenCalled();
   });
 

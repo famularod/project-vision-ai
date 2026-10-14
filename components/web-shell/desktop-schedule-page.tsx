@@ -37,7 +37,6 @@ import {
   type VitruviusLookaheadWeeks,
 } from '../../services/VitruviusLookahead';
 import { buildVitruviusCalendarExport } from '../../services/VitruviusCalendarExport';
-import { schedulePhaseThatWouldCloseACircle } from '../../services/VitruviusScheduleEngine';
 import {
   analyzeVitruviusListedSchedule,
   analyzeVitruviusSchedule,
@@ -330,18 +329,6 @@ export function DesktopSchedulePage({
     if (form.kind !== 'phase') {
       const limitProblem = scheduleEditorLimitProblem(form, opened);
       if (limitProblem) return { ok: false, message: limitProblem };
-      // Open item 3.6: an item may start after a phase, but never after one it is in or one with work in it that
-      // comes after it (a circle). Neither is offered; one ticked before the item was put in that phase is refused.
-      const circle = schedulePhaseThatWouldCloseACircle(opened?.id ?? null, scheduleTasks, form.parentItemId, form.predecessorItemIds);
-      if (circle) {
-        const name = `“${circle.phase.taskName.trim()}”`;
-        return {
-          ok: false,
-          message: circle.inIt
-            ? `Not saved. This item is in the phase ${name}, so it cannot also start after ${name} is finished: that is a circle. Untick ${name} and save again.`
-            : `Not saved. Work in the phase ${name} comes after this item, so this item cannot also start after ${name}: that is a circle. Untick ${name} and save again.`,
-        };
-      }
     }
     const projectTasks = tasks.filter(task => inProject(task, form.projectName));
     // A new item's cloud project is looked up by its project's name among
@@ -456,8 +443,10 @@ export function DesktopSchedulePage({
         projects: auth.snapshot, // a task saved earlier under another project's name is repaired here (WS1 item 6)
       });
       // A predecessor added here that already comes after this item in the cloud (linked the other way on another
-      // device or in another tab) would close a circle: refused, with what he typed kept (WS1 item 7).
-      const circle = editingTask ? await daveWebLinkCircleRefusal({ item, opened: editingTask, shownIdOf: shownLinkId, here: scheduleHere }) : null;
+      // device or in another tab) would close a circle: refused, with what he typed kept (WS1 item 7). T1b: a new
+      // item too, and a circle through a phase (the item put in a phase, ticks in any order), by this tab's schedule
+      // and by the cloud's at this moment; the sentence names the item that would close it.
+      const circle = await daveWebLinkCircleRefusal({ item, opened: editingTask, shownIdOf: shownLinkId, here: scheduleHere });
       if (circle) {
         setNotice({ tone: 'danger', text: circle });
         return;

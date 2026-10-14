@@ -1,7 +1,7 @@
 import type { ScheduleItem } from '../types';
 import { loadDAVEWebReadOnlySnapshot, type DAVEWebReadOnlySnapshot } from './DAVEWebReadOnlyRepository';
 import { scheduleTaskLinkTargets } from './ScheduleTaskRevisions';
-import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
+import { normalizeScheduleDependencies, scheduleCircleThrough, type ScheduleCircleStep } from './VitruviusScheduleEngine';
 
 /**
  * Open item, web batch WS1 item 7 (6 Oct 2026): two web sessions (two tabs,
@@ -140,11 +140,85 @@ export function daveWebLinkCircleText(circle: DAVEWebLinkCircle, { inThisSchedul
 
 export const DAVE_WEB_LINK_CHECK_FAILED_TEXT =
   'Not saved. Vitruvius could not read the latest schedule to check this new link against it. Check your connection and try again.';
+export const DAVE_WEB_PHASE_CHECK_FAILED_TEXT =
+  'Not saved. Vitruvius could not read the latest schedule to check this change against it. Check your connection and try again.';
+
+/**
+ * T1b (14 Oct 2026; review pass 6, H6S-1, caused by d9557b83, open item 3.6). Since a task may start after a phase,
+ * a circle can run through a phase: Curb is in the phase Sitework and starts after Paving, which starts after
+ * Sitework. Two saves made one: a new task ticked to start after Paving and THEN put in Sitework (the editor's lists
+ * and its change preview look at an existing task only), and Fence (after Paving) put in Sitework from a tab that had
+ * not seen Paving linked to Sitework (the cloud was read only when a save added a link).
+ *
+ * The circle the item, as this save would leave it, is in among the tasks given, where it was in none before (as
+ * opened; a new item was in none), step by step from the item, with the id it has there; or null. By task, as the
+ * list shows links (a link or a parent that names a row a master has since replaced is that task's row shown).
+ */
+export function daveWebCircleClosedBySave({
+  item,
+  opened,
+  tasks,
+}: {
+  item: ScheduleItem;
+  opened: ScheduleItem | null | undefined;
+  tasks: CloudTasks;
+}): Readonly<{ selfId: string; steps: readonly ScheduleCircleStep[] }> | null {
+  const shown = tasks.scheduleItems as readonly ScheduleItem[];
+  const target = scheduleTaskLinkTargets(shown, tasks.knownScheduleItems ?? shown);
+  const self = target(item.id) ?? item;
+  const shownIdOf = (id: string | null | undefined) => (id?.trim() ? target(id.trim())?.id ?? id.trim() : null);
+  const asShown = (task: ScheduleItem): ScheduleItem => ({
+    ...task,
+    parentItemId: shownIdOf(task.parentItemId),
+    dependencies: normalizeScheduleDependencies(task.dependencies)
+      .map(link => ({ ...link, predecessorItemId: shownIdOf(link.predecessorItemId) ?? link.predecessorItemId })),
+  });
+  const others = shown.filter(task => task.id !== self.id).map(asShown);
+  const after = scheduleCircleThrough(self.id, [...others, asShown({ ...item, id: self.id })]);
+  if (!after) return null;
+  const before = opened ? scheduleCircleThrough(self.id, [...others, asShown({ ...opened, id: self.id })]) : null;
+  return before ? null : Object.freeze({ selfId: self.id, steps: after });
+}
+
+/**
+ * What he is told when a save would close a circle through a phase (T1b): the task that closes it first, every step
+ * of the circle, and what to change. `elsewhere`: the circle is not in the schedule this tab shows (a link or a phase
+ * saved on another device or in another tab is part of it).
+ */
+export function daveWebCircleText(
+  item: ScheduleItem,
+  { selfId, steps }: Readonly<{ selfId: string; steps: readonly ScheduleCircleStep[] }>,
+  { elsewhere = false }: { elsewhere?: boolean } = {},
+): string {
+  const quoted = (task: ScheduleItem) => `“${task.taskName.trim()}”`;
+  const called = (task: ScheduleItem) => (task.isSummary === true ? `the phase ${quoted(task)}` : quoted(task));
+  const phrases = steps.map(step => step.kind === 'after'
+    ? `${called(step.item)} starts after ${called(step.predecessor)}`
+    : `${called(step.item)} is in the phase ${quoted(step.phase)}`);
+  const said = phrases.length < 2 ? phrases.join('') : `${phrases.slice(0, -1).join(', ')}, and ${phrases[phrases.length - 1]}`;
+  // What this item holds in the circle: a link it starts after (untick it), or the phase it is in (move it).
+  const own = steps.filter(step => step.item.id === selfId);
+  const untick = own.flatMap(step => (step.kind === 'after' ? [quoted(step.predecessor)] : []));
+  const moved = own.some(step => step.kind === 'in');
+  const remedy = untick.length > 0 && moved
+    ? `Untick ${untick.join(' and ')}, or choose another parent phase for ${quoted(item)}, and save again.`
+    : untick.length > 0
+      ? `Untick ${untick.join(' and ')} and save again.`
+      : `Choose another parent phase for ${quoted(item)} and save again.`;
+  return `Not saved. ${elsewhere ? 'With what has been saved on another device or in another browser tab, ' : ''}${quoted(item)} would close a circle: ${said}. The schedule could not place them. ${remedy}`;
+}
 
 /**
  * Before a web save of an existing task: why it is refused, or null. Reads
  * the cloud only when the save adds a predecessor link; a read that fails
  * refuses the save in plain words, since the link could not be checked.
+ *
+ * T1b: a new task too (`opened` null), and a circle through a phase. The cloud is read also when the save puts the
+ * item in a phase (a new parent phase); a new task, which nothing yet starts after, only when it has both a parent
+ * phase and a predecessor (it cannot close a circle otherwise). After the circle of links above (its own sentence, as
+ * before), the save is refused if the item, as the form would save it, would close a circle by the cloud's links at
+ * this moment (daveWebCircleText); the words say so when this tab's schedule does not show that circle. A circle
+ * already saved is not this save's doing (as above).
  */
 export async function daveWebLinkCircleRefusal({
   item,
@@ -154,7 +228,8 @@ export async function daveWebLinkCircleRefusal({
   load = loadDAVEWebReadOnlySnapshot,
 }: {
   item: ScheduleItem;
-  opened: Pick<ScheduleItem, 'dependencies'> | null | undefined;
+  /** The item as the editor opened it, or null for a new item. */
+  opened: ScheduleItem | null | undefined;
   /**
    * The schedule this tab shows, whatever is chosen at the top of the page: the tasks shown, and every saved row.
    * Only for the sentence: a circle whose links are all in it was not made on another device or in another tab.
@@ -172,13 +247,27 @@ export async function daveWebLinkCircleRefusal({
   const links = (task: Pick<ScheduleItem, 'dependencies'> | null | undefined) =>
     new Set(normalizeScheduleDependencies(task?.dependencies).map(link => shownIdOf(link.predecessorItemId.trim())));
   const had = links(opened);
-  if (![...links(item)].some(id => !had.has(id))) return null;
+  const addsLink = [...links(item)].some(id => !had.has(id));
+  const parentOf = (task: Pick<ScheduleItem, 'parentItemId'> | null | undefined) =>
+    (task?.parentItemId?.trim() ? shownIdOf(task.parentItemId.trim()) : '');
+  const putInPhase = Boolean(parentOf(item)) && parentOf(item) !== parentOf(opened);
+  const mayCloseThroughPhase = opened ? addsLink || putInPhase : Boolean(parentOf(item)) && links(item).size > 0;
+  if (!(opened && addsLink) && !mayCloseThroughPhase) return null;
   let cloud: CloudTasks;
   try {
     cloud = await load();
   } catch {
-    return DAVE_WEB_LINK_CHECK_FAILED_TEXT;
+    return addsLink ? DAVE_WEB_LINK_CHECK_FAILED_TEXT : DAVE_WEB_PHASE_CHECK_FAILED_TEXT;
   }
-  const circle = daveWebLinkCircleClosedBy({ item, opened, cloud });
-  return circle ? daveWebLinkCircleText(circle, { inThisSchedule: Boolean(here) && circleStandsIn(circle, here as CloudTasks) }) : null;
+  if (opened && addsLink) {
+    const circle = daveWebLinkCircleClosedBy({ item, opened, cloud });
+    if (circle) return daveWebLinkCircleText(circle, { inThisSchedule: Boolean(here) && circleStandsIn(circle, here as CloudTasks) });
+  }
+  if (!mayCloseThroughPhase) return null;
+  // Decided by the cloud's links at this moment, with the item as the form would save it (F7: a circle only this
+  // tab's stale copy still holds refuses nothing). This tab's schedule only chooses the words.
+  const inTheCloud = daveWebCircleClosedBySave({ item, opened, tasks: cloud });
+  if (!inTheCloud) return null;
+  const inThisTab = here ? daveWebCircleClosedBySave({ item, opened, tasks: here }) : null;
+  return daveWebCircleText(item, inThisTab ?? inTheCloud, { elsewhere: !inThisTab });
 }

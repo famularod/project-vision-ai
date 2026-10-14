@@ -99,7 +99,8 @@ export function previewVitruviusFinishToStartSchedule(
       code: 'dependency_cycle',
       severity: 'error',
       itemId: cycle[0] || null,
-      message: `Dependency cycle includes ${cycle.join(', ')}.`,
+      // Named task by task (T1b); it read "Dependency cycle includes <ids>".
+      message: scheduleTaskCircleText(cycle, itemsById),
     }));
   });
   network.nodes.forEach(node => {
@@ -342,23 +343,6 @@ export function scheduleItemsThatWouldCloseACircle(
   return plan.finishReachedFrom(selfId);
 }
 
-/**
- * The first phase among the predecessors a form has ticked that the item may not start after (open item 3.6), or
- * null: one it is in (`inIt`), or one with work in it that comes after it. Arguments as above.
- */
-export function schedulePhaseThatWouldCloseACircle(
-  itemId: string | null,
-  sourceItems: readonly ScheduleItem[],
-  parentItemId: string | null | undefined,
-  predecessorItemIds: readonly string[],
-): Readonly<{ phase: ScheduleItem; inIt: boolean }> | null {
-  const { selfId, plan } = schedulePlanForForm(itemId, sourceItems, parentItemId);
-  const closes = plan.finishReachedFrom(selfId);
-  const id = predecessorItemIds.find(candidate => plan.isPhase(candidate) && closes.has(candidate));
-  const phase = id ? plan.item(id) : undefined;
-  return phase ? Object.freeze({ phase, inIt: plan.isIn(selfId, phase.id) }) : null;
-}
-
 function schedulePlanForForm(itemId: string | null, sourceItems: readonly ScheduleItem[], parentItemId?: string | null) {
   const selfId = itemId?.trim() || '\u0000new';
   const self = sourceItems.find(item => item.id === selfId);
@@ -381,6 +365,8 @@ type SchedulePhasePlan = Readonly<{
   workUnder: (phaseId: string) => string[];
   /** The items whose finish cannot come before this item starts: through links, and through the phases they are in. */
   finishReachedFrom: (itemId: string) => Set<string>;
+  /** The start and finish points from one to another (back to itself: a circle), first and last included; or null. */
+  path: (from: string, to: string) => string[] | null;
 }>;
 
 function schedulePhasePlan(sourceItems: readonly ScheduleItem[]): SchedulePhasePlan {
@@ -468,10 +454,40 @@ function schedulePhasePlan(sourceItems: readonly ScheduleItem[]): SchedulePhaseP
       }
       return reached;
     },
+    path: (from, to) => {
+      const edges = graph();
+      const cameFrom = new Map<string, string>();
+      const queue: string[] = [];
+      (edges.get(from) || []).forEach(node => {
+        if (!cameFrom.has(node)) {
+          cameFrom.set(node, from);
+          queue.push(node);
+        }
+      });
+      while (queue.length > 0) {
+        const node = queue.shift()!;
+        if (node === to) {
+          const nodes = [to];
+          for (let at = cameFrom.get(to)!; at !== from; at = cameFrom.get(at)!) nodes.unshift(at);
+          return [from, ...nodes];
+        }
+        (edges.get(node) || []).forEach(next => {
+          if (cameFrom.has(next)) return;
+          cameFrom.set(next, node);
+          queue.push(next);
+        });
+      }
+      return null;
+    },
   };
 }
 
-/** What he reads of a link that would close a circle through a phase (3.6). */
+/**
+ * What he reads of a link that would close a circle through a phase (3.6). T1b (review pass 6, H6S-1): a longer
+ * circle is named step by step with every task and phase in it, the task that closed it included; it had named only
+ * the link's two ends ("Paving starts after the phase Sitework, and the phase Sitework also waits for Paving"), so he
+ * could not see which link to remove.
+ */
 function phaseCircleText(item: ScheduleItem, predecessor: ScheduleItem, plan: SchedulePhasePlan): string {
   const name = (target: ScheduleItem) => target.taskName.trim();
   const called = (target: ScheduleItem, start = false) =>
@@ -482,7 +498,91 @@ function phaseCircleText(item: ScheduleItem, predecessor: ScheduleItem, plan: Sc
   if (plan.isPhase(item.id) && plan.isIn(predecessor.id, item.id)) {
     return `The phase ${name(item)} is set to start after ${name(predecessor)}, one of its own ${plan.isPhase(predecessor.id) ? 'phases' : 'tasks'}: that is a circle.`;
   }
-  return `${called(item, true)} starts after ${called(predecessor)}, and ${called(predecessor)} also waits for ${called(item)}: that is a circle.`;
+  const rest = plan.path(`s:${item.id}`, `f:${predecessor.id}`) ?? [];
+  return scheduleCircleText([
+    { kind: 'after', item, predecessor },
+    ...circleStepsOf(rest, plan),
+  ], plan.isPhase);
+}
+
+/** One step of a circle: an item that starts after another, or an item in a phase. */
+export type ScheduleCircleStep = Readonly<
+  | { kind: 'after'; item: ScheduleItem; predecessor: ScheduleItem }
+  | { kind: 'in'; item: ScheduleItem; phase: ScheduleItem }
+>;
+
+/** The steps a run of start and finish points makes: a link, or a phase's start or finish around its work. */
+function circleStepsOf(nodes: readonly string[], plan: SchedulePhasePlan): ScheduleCircleStep[] {
+  const steps: ScheduleCircleStep[] = [];
+  const said = new Set<string>();
+  nodes.slice(1).forEach((to, index) => {
+    const from = nodes[index];
+    const fromItem = plan.item(from.slice(2));
+    const toItem = plan.item(to.slice(2));
+    if (!fromItem || !toItem || fromItem === toItem) return;
+    const step: ScheduleCircleStep | null = from[0] === 'f' && to[0] === 's'
+      ? { kind: 'after', item: toItem, predecessor: fromItem }
+      : from[0] === 's' && to[0] === 's'
+        ? { kind: 'in', item: toItem, phase: fromItem }
+        : from[0] === 'f' && to[0] === 'f'
+          ? { kind: 'in', item: fromItem, phase: toItem }
+          : null;
+    if (!step) return;
+    const key = step.kind === 'after' ? `a:${step.item.id}:${step.predecessor.id}` : `i:${step.item.id}:${step.phase.id}`;
+    if (said.has(key)) return;
+    said.add(key);
+    steps.push(Object.freeze(step));
+  });
+  return steps;
+}
+
+/** A circle, step by step, as the Gantt and the Impact preview say it (T1b). */
+function scheduleCircleText(steps: readonly ScheduleCircleStep[], isPhase: (id: string) => boolean): string {
+  const name = (target: ScheduleItem) => target.taskName.trim();
+  const called = (target: ScheduleItem, start: boolean) =>
+    isPhase(target.id) ? `${start ? 'The' : 'the'} phase ${name(target)}` : name(target);
+  const phrases = steps.map((step, index) => step.kind === 'after'
+    ? `${called(step.item, index === 0)} starts after ${called(step.predecessor, false)}`
+    : `${called(step.item, index === 0)} is in the phase ${name(step.phase)}`);
+  return `${joinedWithAnd(phrases)}: that is a circle, and the schedule cannot place them until one of these is changed.`;
+}
+
+function joinedWithAnd(phrases: readonly string[]) {
+  return phrases.length < 2 ? phrases.join('') : `${phrases.slice(0, -1).join(', ')}, and ${phrases[phrases.length - 1]}`;
+}
+
+/**
+ * A circle of tasks alone, as the network finds it (each id followed by the next, the last by the first), named
+ * task by task (T1b). It read "Dependency cycle includes <ids>".
+ */
+export function scheduleTaskCircleText(
+  cycle: readonly string[],
+  itemsById: ReadonlyMap<string, ScheduleItem>,
+): string {
+  const named = (id: string) => itemsById.get(id) ?? ({ id, taskName: id } as ScheduleItem);
+  const steps = cycle.map((id, index) => Object.freeze({
+    kind: 'after' as const,
+    item: named(cycle[(index + 1) % cycle.length]),
+    predecessor: named(id),
+  }));
+  return cycle.length > 1
+    ? scheduleCircleText(steps, () => false)
+    : `${named(cycle[0]).taskName.trim()} is set to start after itself: that is a circle, and the schedule cannot place it until that link is removed.`;
+}
+
+/**
+ * T1b (review pass 6, H6S-1): the circle an item is in, step by step from the item, through links and through the
+ * phases things are in; or null. A save of the computer's Schedule editor is refused when the item, as it would be
+ * saved, is in one it was not in before.
+ */
+export function scheduleCircleThrough(
+  itemId: string,
+  sourceItems: readonly ScheduleItem[],
+): readonly ScheduleCircleStep[] | null {
+  const plan = schedulePhasePlan(sourceItems);
+  if (!plan.has(itemId)) return null;
+  const nodes = plan.path(`s:${itemId}`, `s:${itemId}`) ?? plan.path(`f:${itemId}`, `f:${itemId}`);
+  return nodes ? Object.freeze(circleStepsOf(nodes, plan)) : null;
 }
 
 /**

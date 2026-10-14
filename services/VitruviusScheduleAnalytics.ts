@@ -7,6 +7,7 @@ import {
   normalizeScheduleDependencies,
   previewVitruviusFinishToStartSchedule,
   scheduleItemsWithPhaseLinksWorkedOut,
+  scheduleTaskCircleText,
   type VitruviusSchedulePreview,
 } from './VitruviusScheduleEngine';
 
@@ -164,7 +165,8 @@ export function analyzeVitruviusCriticalPath(
     const network = buildPIEScheduleDependencyNetwork(items);
     const nameOf = (itemId: string | undefined) => scheduleNameOf(sourceItemsById.get(itemId ?? ''));
     network.cycles.forEach(cycle => {
-      issues.push(`${nameOf(cycle[0])}: dependency cycle includes ${cycle.join(', ')}.`);
+      // Named task by task (T1b); it read "dependency cycle includes <ids>".
+      issues.push(`${nameOf(cycle[0])}: ${scheduleTaskCircleText(cycle, sourceItemsById)}`);
     });
     network.nodes.forEach(node => {
       node.unresolvedPredecessors.forEach(predecessorId => {

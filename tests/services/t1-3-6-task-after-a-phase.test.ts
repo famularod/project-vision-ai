@@ -153,7 +153,8 @@ describe('a link through a phase that would make a circle (open item 3.6)', () =
 
   it('a task after a phase that holds work coming after that task', () => {
     holds([sitework(), grading({ dependencies: after('paving') }), trenching(), paving()],
-      'Paving starts after the phase Sitework, and the phase Sitework also waits for Paving: that is a circle.');
+      // Every step named since T1b (it read "..., and the phase Sitework also waits for Paving: that is a circle.").
+      'Paving starts after the phase Sitework, Grading starts after Paving, and Grading is in the phase Sitework: that is a circle, and the schedule cannot place them until one of these is changed.');
   });
 
   it('guard: a circle of tasks with no phase in it reads as before', () => {

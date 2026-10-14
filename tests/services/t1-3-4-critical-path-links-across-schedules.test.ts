@@ -104,7 +104,8 @@ describe('the critical path and a link between a hand-made task and a master\'s 
     const analysis = analyzeVitruviusCriticalPath([survey({ dependencies: after('punch') }), excavation(), punch()]);
 
     expect(analysis.safe).toBe(false);
-    expect(analysis.issues.join(' ')).toMatch(/dependency cycle includes/);
+    // Named task by task since T1b ("dependency cycle includes <ids>" before).
+    expect(analysis.issues.join(' ')).toMatch(/Survey starts after Punch walk.*: that is a circle/);
   });
 
   it('the phone\'s and the iPad\'s lookahead (the same critical path) marks the chain critical', () => {
