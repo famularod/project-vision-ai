@@ -166,7 +166,53 @@ export type DAVEReportSnapshot = Readonly<{
    * this report's changes only once it started after both (`reportSendCountsFrom`).
    */
   markedSentAt?: string;
+  /**
+   * Open item 7.44 (review pass 9, E9-1; the owner's authorisation of 13 Oct
+   * 2026): the words the owner approved or sent when he changed the app's
+   * report before sending it (Edit Report): its title and its text, as they
+   * went out. Absent when the app's own text was sent, and on reports saved
+   * before then. Kept with the approval so that a report sent another way and
+   * recorded later (Mark as Sent) keeps them; replaced at a send from the app
+   * by what that send carried. Every device shows these words for a report of
+   * these facts that was sent (`reportSentText`). Never in the report this
+   * one replaced (`supersedes`), which is read for its tasks only.
+   */
+  editedText?: DAVEReportEditedText;
 }>;
+
+/** The title and text the owner changed the report to (open item 7.44). */
+export type DAVEReportEditedText = Readonly<{ title: string; body: string }>;
+
+/** `snapshot` holding `editedText` (none for null), the same object when it already does. */
+export function withReportEditedText(
+  snapshot: DAVEReportSnapshot,
+  editedText: DAVEReportEditedText | null,
+): DAVEReportSnapshot {
+  if (sameEditedText(snapshot.editedText ?? null, editedText)) return snapshot;
+  const { editedText: _earlier, ...report } = snapshot;
+  return Object.freeze(editedText ? { ...report, editedText: Object.freeze({ title: editedText.title, body: editedText.body }) } : report);
+}
+
+function sameEditedText(left: DAVEReportEditedText | null, right: DAVEReportEditedText | null): boolean {
+  return left === right || (left !== null && right !== null && left.title === right.title && left.body === right.body);
+}
+
+/**
+ * The words a report of `currentFingerprint` was SENT with, when the owner
+ * changed them before sending (open item 7.44), or null: the period's report
+ * was sent, is of these same facts, and carries his words. The phone, after a
+ * restart, and the iPad then show the report as it went out, under "already
+ * sent", not the app's own text without his change.
+ */
+export function reportSentText(
+  period: DAVEReportSnapshot | null | undefined,
+  currentFingerprint: string,
+): DAVEReportEditedText | null {
+  const text = period?.editedText;
+  if (!period || typeof period.deliveredAt !== 'string' || !text) return null;
+  if (typeof text.title !== 'string' || typeof text.body !== 'string') return null;
+  return sameReportSource(period.sourceFingerprint, currentFingerprint) ? text : null;
+}
 
 /**
  * A saved or shared snapshot of this period, or null: the right version,
@@ -382,28 +428,33 @@ export function reportSnapshotToSave(
  * report was gone and the text changed under the approval (A6 pass 3).
  */
 function withReportBefore(snapshot: DAVEReportSnapshot): DAVEReportSnapshot {
-  const { supersedes: older, ...report } = snapshot;
+  // The owner's words (7.44) are not kept for the report before: it is read for its tasks only.
+  const { supersedes: older, editedText: _text, ...report } = snapshot;
   if (!older) return Object.freeze(report);
-  const { supersedes: _deeper, ...before } = older;
+  const { supersedes: _deeper, editedText: _olderText, ...before } = older;
   return Object.freeze({ ...report, supersedes: Object.freeze(before) });
 }
 
 /**
  * The approved report went out, from the install `sentBy` when it is known (A6 pass 9 L2).
  * `markedSentAt`: the owner recorded the send afterwards, at that time (everyday item 1).
+ * `sentText` (open item 7.44): the words that went out when the owner changed the report; none (the app's own text
+ * went out) when absent. A send records what IT carried, never an approval's words it did not.
  */
 export function markReportSnapshotDelivered(
   snapshot: DAVEReportSnapshot,
   deliveredAt: string,
   sentBy?: string | null,
   markedSentAt?: string | null,
+  sentText?: DAVEReportEditedText | null,
 ): DAVEReportSnapshot {
-  const { sentBy: _earlierSender, markedSentAt: _earlierMark, ...approved } = snapshot;
+  const { sentBy: _earlierSender, markedSentAt: _earlierMark, editedText: _approvedText, ...approved } = snapshot;
   return Object.freeze({
     ...approved,
     deliveredAt,
     ...(sentBy ? { sentBy } : {}),
     ...(markedSentAt ? { markedSentAt } : {}),
+    ...(sentText ? { editedText: Object.freeze({ title: sentText.title, body: sentText.body }) } : {}),
   });
 }
 

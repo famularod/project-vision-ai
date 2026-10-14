@@ -66,8 +66,11 @@ import {
 import {
   buildDAVEReportSnapshot,
   daveReportSnapshotScopeKey,
+  type DAVEReportEditedText,
   type DAVEReportSnapshot,
+  reportSentText,
   sameReportSource,
+  withReportEditedText,
 } from '../services/DAVEReportSnapshot';
 import {
   loadDAVEReportPeriod,
@@ -473,9 +476,18 @@ export function ReportsScreen({
     selectedProjectNames,
     updates,
   ]);
-  const pieReportDraft = useMemo(
+  const builtReportDraft = useMemo(
     () => enhanceDAVEReportDraft(baseReportDraft, reportBriefing, reportFormat),
     [baseReportDraft, reportBriefing, reportFormat],
+  );
+  // Open item 7.44 (review pass 9, E9-1): the report of these facts that was sent with his own words is shown
+  // with them, here after a restart and on the other device, not as the app writes it without his change.
+  const sentReportText = snapshotScopeLoaded ? reportSentText(previousReportSnapshot, reportSourceFingerprint) : null;
+  const pieReportDraft = useMemo<PIEReportDraft>(
+    () => sentReportText
+      ? { ...builtReportDraft, title: sentReportText.title, subject: sentReportText.title, body: sentReportText.body }
+      : builtReportDraft,
+    [builtReportDraft, sentReportText],
   );
   const effectiveReportDraft = useMemo<PIEReportDraft>(
     () => reportEdits
@@ -829,6 +841,8 @@ export function ReportsScreen({
 
     const startedReportIdentity = reportCommunicationIdentityKey;
     const startedReport = effectiveReportDraft;
+    // His words, if they are not the app's own for these facts: recorded with the send (7.44).
+    const startedText = reportEditedText(effectiveReportDraft, builtReportDraft);
     // The facts the approval was given on, so a change the report text does
     // not show (stage, checklist, next action) or a sync landing between
     // Approve and Share still records the approved report as sent (whole-app
@@ -871,7 +885,7 @@ export function ReportsScreen({
         // screen shows by now (a sync can land while the composer is open);
         // its own fingerprint and format's period scope the mark (audit A6
         // pass 3; owner answer Q17).
-        if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod, startedStateKey);
+        if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod, startedStateKey, startedText);
         if (
           mountedRef.current &&
           pendingCommunicationTokenRef.current === communicationToken &&
@@ -981,8 +995,10 @@ export function ReportsScreen({
     // Approving the same content again saves nothing; otherwise the saved
     // snapshot, not yet sent, remembers the report the owner has, so this
     // report is never compared against itself or against an approval that
-    // never went out (audit A6).
-    const snapshotToSave = reportSnapshotToSave(currentReportSnapshot, previousReportSnapshot);
+    // never went out (audit A6). Open item 7.44: it keeps his words when he
+    // changed the report, so a send recorded later (Mark as Sent) has them.
+    const approvedText = reportEditedText(effectiveReportDraft, builtReportDraft);
+    const snapshotToSave = reportSnapshotToSave(withReportEditedText(currentReportSnapshot, approvedText), previousReportSnapshot);
     if (!snapshotToSave) {
       // Review N2 (5 Oct 2026): the same report is already the approval waiting in the shared period, saved by
       // the other device, and this device holds no copy of it. Approved on the iPad and emailed (Mail said
@@ -991,16 +1007,28 @@ export function ReportsScreen({
       // Mark as Sent. Reading the other device's approval without approving still offers nothing (everyday item 1).
       const waiting = approvalAwaitingSend;
       const waitingKey = approvalAwaitingSendKey;
-      if (!waiting || !waitingKey || approvalSavedHereKey === waitingKey) return;
+      if (!waiting || !waitingKey) return;
+      // 7.44: approved again with other words (edited, or edits discarded), the approval waiting keeps the words
+      // approved now.
+      const toKeep = sameReportSource(waiting.sourceFingerprint, reportSourceFingerprint)
+        ? withReportEditedText(waiting, approvedText)
+        : waiting;
+      if (approvalSavedHereKey === waitingKey && toKeep === waiting) return;
       // A send can complete before this lands, as below: the delivered mark waits for it, and is never held up
       // by its failing (the send is then recorded as it was before, from the approval on screen).
-      const kept = reportApprovalSavedHere(waiting)
-        .then(here => (here ? undefined : saveDAVEReportSnapshot(waiting)))
+      const kept = (toKeep !== waiting
+        ? saveDAVEReportSnapshot(toKeep)
+        : reportApprovalSavedHere(waiting).then(here => (here ? undefined : saveDAVEReportSnapshot(waiting))))
         .then(() => {
-          if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(waiting)) setApprovalSavedHereKey(waitingKey);
+          if (!mountedRef.current || reportPeriodKeyRef.current !== reportPeriodKey(waiting)) return;
+          if (toKeep !== waiting) {
+            previousReportSnapshotRef.current = toKeep;
+            setPreviousReportSnapshot(toKeep);
+          }
+          setApprovalSavedHereKey(waitingKey);
         })
         .catch(() => undefined);
-      pendingReportSnapshotSaveRef.current = { snapshot: waiting, save: kept };
+      pendingReportSnapshotSaveRef.current = { snapshot: toKeep, save: kept };
       void kept.finally(() => {
         if (pendingReportSnapshotSaveRef.current?.save === kept) pendingReportSnapshotSaveRef.current = null;
       });
@@ -1058,28 +1086,30 @@ export function ReportsScreen({
     sentFingerprint: string,
     sentPeriod: Readonly<{ scopeKey: string; reportFormat: ReportFormat }>,
     sentStateKey: string,
+    sentText: DAVEReportEditedText | null,
   ) => {
     const sentPeriodKey = reportPeriodKey(sentPeriod);
     const pending = pendingReportSnapshotSaveRef.current;
     if (pending && sameReportSource(pending.snapshot.sourceFingerprint, sentFingerprint) && reportPeriodKey(pending.snapshot) === sentPeriodKey) {
-      void pending.save.then(() => markSavedReportDelivered(pending.snapshot, sentFingerprint, sentStateKey), () => undefined);
+      void pending.save.then(() => markSavedReportDelivered(pending.snapshot, sentFingerprint, sentStateKey, undefined, null, sentText), () => undefined);
       return;
     }
     const shown = previousReportSnapshotRef.current;
     if (shown && reportPeriodKey(shown) === sentPeriodKey) {
-      void markSavedReportDelivered(shown, sentFingerprint, sentStateKey);
+      void markSavedReportDelivered(shown, sentFingerprint, sentStateKey, undefined, null, sentText);
       return;
     }
     // The screen moved to the other format (or other projects) while the send
     // was open. Both formats of the same projects share a fingerprint, so the
     // shown snapshot is never marked for it; the sent period's own is (Q17).
     void loadDAVEReportSnapshot(sentPeriod.scopeKey, sentPeriod.reportFormat)
-      .then(saved => markSavedReportDelivered(saved, sentFingerprint, sentStateKey), () => undefined);
+      .then(saved => markSavedReportDelivered(saved, sentFingerprint, sentStateKey, undefined, null, sentText), () => undefined);
   };
   /**
    * Records `saved` as sent: at `deliveredAt` (now for a send from the app),
    * with `markedSentAt` when the owner recorded it afterwards (everyday item
-   * 1). Resolves true once this device's copy is saved.
+   * 1), and with `sentText`, his words when he changed the report (7.44).
+   * Resolves true once this device's copy is saved.
    */
   const markSavedReportDelivered = (
     saved: DAVEReportSnapshot | null,
@@ -1087,6 +1117,7 @@ export function ReportsScreen({
     sentStateKey: string,
     deliveredAt: string = new Date().toISOString(),
     markedSentAt: string | null = null,
+    sentText: DAVEReportEditedText | null = null,
   ): Promise<boolean> => {
     if (!saved || !sameReportSource(saved.sourceFingerprint, sentFingerprint) || saved.deliveredAt !== null) return Promise.resolve(false);
     // This device's send, kept for the app session so reading it back after
@@ -1101,7 +1132,7 @@ export function ReportsScreen({
     return reportSenderId()
       .catch(() => null)
       .then(sentBy => {
-        const delivered = markReportSnapshotDelivered(saved, deliveredAt, sentBy, markedSentAt);
+        const delivered = markReportSnapshotDelivered(saved, deliveredAt, sentBy, markedSentAt, sentText);
         return saveDAVEReportSnapshot(delivered).then(() => {
           if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(delivered)) {
             previousReportSnapshotRef.current = delivered;
@@ -1182,6 +1213,8 @@ export function ReportsScreen({
           approvalStateKey,
           recorded.sentAt,
           manualReportMarkTime(recorded.sentAt),
+          // Sent another way: the words of the approval he sent (7.44).
+          approval.editedText ?? null,
         );
         if (!mountedRef.current) return;
         if (saved) {
@@ -1515,6 +1548,17 @@ function reportDeviceBehindMessage(send: DAVEReportSnapshot): string {
   return "This device hasn't received your other device's latest changes yet: your other device sent the last report " +
     `${describeReportSendTime(send.deliveredAt as string)}, after this device last downloaded your tasks. ` +
     'Use Settings › Sync Now, then review.';
+}
+
+/**
+ * Open item 7.44: the title and text of `report` when they are not the app's own report for these facts (`built`):
+ * the owner changed them (Edit Report), or the report shown is one sent with his words. Null when they are the app's.
+ */
+function reportEditedText(
+  report: Pick<PIEReportDraft, 'title' | 'body'>,
+  built: Pick<PIEReportDraft, 'title' | 'body'>,
+): DAVEReportEditedText | null {
+  return report.title === built.title && report.body === built.body ? null : { title: report.title, body: report.body };
 }
 
 /** The later of two times, either possibly absent. */
