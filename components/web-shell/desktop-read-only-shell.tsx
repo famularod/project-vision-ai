@@ -5882,9 +5882,10 @@ function ReportWorkspace({
   // HIGH item 1c: worked out against the report this one counts from (the period's last report, as shared), where a
   // task's saved time prints ("since the last report"); the same on the phone and the iPad reading the same period.
   const currentPeriodSnapshot = periodRead.key === periodReadKey && periodRead.read.status !== 'loading' ? periodRead.read.snapshot ?? null : null;
+  // HIGH item 1d: of the report in the format chosen here (the period read is that format's), as that report prints it.
   const reportFingerprint = useMemo(
-    () => buildDAVEReportSourceOnPeriod(reportTruths, currentPeriodSnapshot).fingerprint,
-    [currentPeriodSnapshot, reportTruths],
+    () => buildDAVEReportSourceOnPeriod(reportTruths, currentPeriodSnapshot, reportAudience).fingerprint,
+    [currentPeriodSnapshot, reportAudience, reportTruths],
   );
   const period = daveWebReportPeriodState({
     read: currentPeriodRead,
@@ -5926,8 +5927,8 @@ function ReportWorkspace({
     [briefing, reportAudience, sinceSection],
   );
   const currentReportSource = useMemo(
-    () => buildDAVEWebReportSource(snapshot, selectedProject, period.periodKey, periodWaiting, currentPeriodSnapshot),
-    [currentPeriodSnapshot, period.periodKey, periodWaiting, selectedProject, snapshot],
+    () => buildDAVEWebReportSource(snapshot, selectedProject, period.periodKey, periodWaiting, currentPeriodSnapshot, reportAudience),
+    [currentPeriodSnapshot, period.periodKey, periodWaiting, reportAudience, selectedProject, snapshot],
   );
   const reportDocuments = documents.filter(document => reportRecordFromDocument(document));
   const [reportId, setReportId] = useState(() => createDAVEWebId('web-report'));

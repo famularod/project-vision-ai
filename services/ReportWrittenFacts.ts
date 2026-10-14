@@ -2,6 +2,7 @@ import type { ProjectUpdate, ScheduleItem, UpdatePhoto } from '../types';
 import { isConstructionRelevantObservation } from './dave-construction-relevance';
 import { extractScheduleEvidence, fieldUpdatesNewestFirst, whatChangedForWrittenReport } from './PIEEvidenceFusion';
 import { buildPhotoProgress, type PIEPhotoProgressEvidence } from './PIEPhotoProgress';
+import { scheduleLineAsWritten, type DAVEWrittenScheduleLine } from './ReportScheduleLine';
 
 /**
  * HIGH item 1 (the owner's instruction of 13 Oct 2026, the three high items; the Build 232 round's F2 to F6b): what
@@ -92,8 +93,14 @@ export function confirmedComparisonQuoted(
  * closed (DAVEWebReadOnlyRepository normalizeWebPhoto), and so does this.
  */
 export type DAVEWrittenReportFacts = Readonly<{
-  /** F2, F2b: a task made High priority (a "Please confirm the current status" line, and the focus's rank), its milestone name (the rank); and its own notes, which the section prints with the task. */
-  tasks: readonly Readonly<{ taskId: string; highPriority: boolean; milestone: string; notes: string }>[];
+  /**
+   * F2, F2b: each task's own schedule line as the section prints it (ReportScheduleLine): as a problem
+   * or as a next step with its owner, where it prints as one (the area it prints under is the task's own). HIGH item
+   * 1d (open item 7.55): its notes, owner or contractor and priority (a "Please confirm the current status" line) are
+   * held only as printed there. Its priority and milestone name also rank the section's "Schedule focus" sentence,
+   * held as written (`scheduleFocus`).
+   */
+  tasks: readonly Readonly<{ taskId: string; line: DAVEWrittenScheduleLine }>[];
   /**
    * F5, F6: each update's photos IN THEIR OWN ORDER (the image numbers, "Latest photo"), each photo's kind and asked
    * action; whether its note is the accepted suggestion. And the names it was filed under: the report takes an update
@@ -157,9 +164,7 @@ export function buildWrittenReportFacts({
   return {
     tasks: scheduleItems.map(item => ({
       taskId: item.id,
-      highPriority: item.priority === 'High',
-      milestone: text(item.milestone),
-      notes: text(item.notes),
+      line: scheduleLineAsWritten(item),
     })),
     updates: updates.map(update => ({
       updateId: update.id,

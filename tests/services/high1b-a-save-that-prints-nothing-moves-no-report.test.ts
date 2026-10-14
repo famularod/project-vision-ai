@@ -218,8 +218,10 @@ describe('HIGH 1b: the iPhone\'s 18:47 records against the cloud\'s at 20:33: "a
     expect(await iPhoneThenComputer(change(larchHollow()))).toEqual({ samePrinted: true, alreadySent: true });
   });
 
-  it('4. LEFT AS IT WAS: the hidden earlier row of the task that came back, given back another percent. No word differs today, and the computer does not say "already sent": the line that reads it ("Paint is back in the project plan ... from 60%") prints only against a report sent while Paint was off the schedule, and the fingerprint is worked out before, and without, the report it counts from', async () => {
-    expect(await iPhoneThenComputer(onRow(larchHollow(), earlierPaintRow(larchHollow()).id, item => ({ ...item, percentComplete: 50 } as ScheduleItem)))).toEqual({ samePrinted: true, alreadySent: false });
+  // HIGH item 1d (open item 7.55, the coordinator's decision): left as it was in 1b (offered with no word changed),
+  // and now held only where it prints: in "since the last report", counted from the report this one counts from (1c).
+  it('4. the hidden earlier row of the task that came back, given back another percent. No word differs today, and the computer says "already sent": the line that reads it ("Paint is back in the project plan ... from 60%") prints only against a report sent while Paint was off the schedule, and the fingerprint holds it there, as counted', async () => {
+    expect(await iPhoneThenComputer(onRow(larchHollow(), earlierPaintRow(larchHollow()).id, item => ({ ...item, percentComplete: 50 } as ScheduleItem)))).toEqual({ samePrinted: true, alreadySent: true });
   });
 
   const printsAWord: Array<[string, (world: World) => World]> = [

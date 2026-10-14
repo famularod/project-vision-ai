@@ -1360,12 +1360,14 @@ export function buildDAVEWebReportSource(
    * (buildDAVEReportSourceOnPeriod), as the page's own fingerprint is. None: a first report.
    */
   period: DAVEReportSnapshot | null = null,
+  /** HIGH item 1d: the report's format (the period's own); its facts are held as that report prints them. */
+  format: DAVEWebReportAudience = 'project_manager',
 ): DAVEWebReportSource {
   const truths = buildDAVEWebProjectTruths(snapshot, selectedProject);
   const evidenceRecords = truths.flatMap(truth => truth.evidence.records);
   const scopeNames = truths.map(truth => normalized(truth.projectName)).sort();
   const scopeKey = scopeNames.length > 0 ? scopeNames.join('|') : 'empty-scope';
-  const truthFingerprint = buildDAVEReportSourceOnPeriod(truths, period).fingerprint;
+  const truthFingerprint = buildDAVEReportSourceOnPeriod(truths, period, format).fingerprint;
   const mediaFingerprint = stableWebReportSourceHash(
     canonicalWebReportSourceValue(
       snapshot.projectUpdates

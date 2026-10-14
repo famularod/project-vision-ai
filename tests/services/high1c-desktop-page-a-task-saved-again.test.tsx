@@ -57,7 +57,7 @@ import { normalizeProjectControls } from '../../services/VitruviusProjectControl
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 
 
-const fpOn = (truths: any, period: any): string => ((RI as any).buildDAVEReportSourceOnPeriod ? (RI as any).buildDAVEReportSourceOnPeriod(truths, period).fingerprint : RI.buildDAVEReportSourceFingerprint(truths));
+const fpOn = (truths: any, period: any, format: 'project_manager' | 'executive' = 'project_manager'): string => ((RI as any).buildDAVEReportSourceOnPeriod ? (RI as any).buildDAVEReportSourceOnPeriod(truths, period, format).fingerprint : RI.buildDAVEReportSourceFingerprint(truths));
 jest.setTimeout(300_000);
 const json = <T,>(value: T): T => JSON.parse(JSON.stringify(value));
 const fakeNow = (now: string) => jest.useFakeTimers({ now: Date.parse(now), doNotFake: ['nextTick', 'setImmediate', 'setInterval', 'setTimeout', 'clearTimeout', 'clearInterval', 'queueMicrotask'] });
@@ -179,10 +179,10 @@ const onRow = (world: World, id: string, change: (item: ScheduleItem) => Schedul
   ...world, saved: world.saved.map(item => (item.id === id ? change(item) : item)), shown: world.shown.map(item => (item.id === id ? change(item) : item)),
 });
 const named = (world: World, name: string) => world.shown.find(item => item.taskName === name) as ScheduleItem;
-const snap = (truths: ReturnType<typeof phoneTruths>, at: string, period: any = null) => buildDAVEReportSnapshot({ truths, scopeKey: daveReportSnapshotScopeKey([P]), sourceFingerprint: fpOn(truths, period), capturedAt: at, reportFormat: 'project_manager' } as never);
-function phoneSends(world: World, at: string, previous: any) {
+const snap = (truths: ReturnType<typeof phoneTruths>, at: string, period: any = null, format: 'project_manager' | 'executive' = 'project_manager') => buildDAVEReportSnapshot({ truths, scopeKey: daveReportSnapshotScopeKey([P]), sourceFingerprint: fpOn(truths, period, format), capturedAt: at, reportFormat: format } as never);
+function phoneSends(world: World, at: string, previous: any, format: 'project_manager' | 'executive' = 'project_manager') {
   const truths = phoneTruths(world, at);
-  const current = snap(truths, at, previous);
+  const current = snap(truths, at, previous, format);
   const saved = reportSnapshotToSave(current, previous) ?? previous;
   return markReportSnapshotDelivered(saved, at, 'iphone-install');
 }
@@ -233,5 +233,44 @@ describe('HIGH 1c: the desktop Reports page drawn, after a real period', () => {
     OUT[name] = { notice, approveOffered, sinceLines: since };
     view.unmount();
     expect({ name, notice }).toEqual({ name, notice: NOTICE[name] });
+  }, 120000);
+});
+
+/**
+ * HIGH item 1d (open item 7.55): the page works the fingerprint out for the report in the format chosen on it, against
+ * that format's own period. Trim made High priority prints only in the Project Manager report (its WORK AREAS section,
+ * written on the phone), so the Executive report the phone sent is still the report on the page; the Project Manager
+ * report is not.
+ */
+describe('HIGH 1d: the desktop Reports page, in the format chosen on it', () => {
+  beforeEach(() => { mockTable.clear(); forgetDAVEWebReportPeriods('owner-1'); forgetDAVEWebReportTabMemory(); forgetDAVEWebOwnReportSends(); forgetDAVEWebReportPeriodSession();
+    const profile = new Map<string, string>(); (globalThis as any).localStorage = { getItem: (k: string) => profile.get(k) ?? null, setItem: (k: string, v: string) => { profile.set(k, v); }, removeItem: (k: string) => { profile.delete(k); }, key: (i: number) => [...profile.keys()][i] ?? null, get length() { return profile.size; } };
+    (globalThis as any).navigator = { clipboard: { writeText: jest.fn(async () => undefined) } }; });
+  const highPriority = (w: World) => onRow(w, named(w, 'Trim').id, item => ({ ...item, priority: 'High' } as ScheduleItem));
+  it.each([
+    ['executive', 'the same records', (w: World) => w, true],
+    ['executive', 'Trim made High priority (the Executive report prints nothing of it)', highPriority, true],
+    ['executive', 'Paint 65 -> 70 (printed)', (w: World) => onRow(w, named(w, 'Paint').id, item => ({ ...item, percentComplete: 70 } as ScheduleItem)), false],
+    ['project_manager', 'Trim made High priority (the Project Manager report prints a line for it)', highPriority, false],
+  ] as const)('%s: %s', async (format, _name, change, expected) => {
+    const base = onRow(larchHollow(), named(larchHollow(), 'Paint').id, item => ({ ...item, percentComplete: 50 } as ScheduleItem));
+    const r0 = phoneSends(base, T0, null, format);
+    const r1 = phoneSends(larchHollow(), T1, r0, format);
+    mockTable.set(`${daveReportSnapshotScopeKey([P])}|${format}`, { snapshot: JSON.parse(JSON.stringify(r1)), deliveredAt: T1 });
+    mockAuth.snapshot = await desktopSnapshot(change(larchHollow()), T2);
+    const view = render(<DesktopReadOnlyShell page="reports" />);
+    await waitFor(() => expect(screen.getByLabelText('Since the last report')).toBeTruthy(), { timeout: 20000 });
+    await settle();
+    if (format === 'executive') {
+      fireEvent.press(screen.getByText('Review & Prepare Report'));
+      await settle();
+      fireEvent.press(screen.getByLabelText('Executive Summary report'));
+      await settle();
+    }
+    await waitFor(() => expect(textOf(screen.getByLabelText('Since the last report')).some(line => /Since the report sent/.test(line))).toBe(true), { timeout: 20000 });
+    await settle();
+    const notice = textOf(screen.getByLabelText('Since the last report')).some(line => ALREADY_SENT.test(line));
+    view.unmount();
+    expect(notice).toBe(expected);
   }, 120000);
 });

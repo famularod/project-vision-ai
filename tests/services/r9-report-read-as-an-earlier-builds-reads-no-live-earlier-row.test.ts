@@ -19,7 +19,7 @@
  */
 import * as fs from 'fs';
 import * as path from 'path';
-import { buildDAVELegacyReportSourceFingerprint, buildDAVEReportBriefing, buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
+import { buildDAVELegacyReportSourceFingerprint, buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, buildDAVEReportSourceOnPeriod } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
 import {
   buildDAVEReportSnapshot, compareDAVEReportSnapshots, daveReportSnapshotScopeKey, markReportSnapshotDelivered, reportBaselineSnapshot, reportReadAsEarlierVersionReport,
@@ -80,7 +80,8 @@ const paintLines = (briefing: ReturnType<typeof buildDAVEReportBriefing>) => bri
 /** The phone's Reports screen for this saved data and saved period (screens/ReportsScreen.tsx). */
 function report(state: State, saved: DAVEReportSnapshot | null, at: string) {
   const truths = truthsOf(state, at);
-  const fingerprint = buildDAVEReportSourceFingerprint(truths);
+  // As the Reports screen works it out since HIGH item 1c: against the report it counts from (the saved period).
+  const fingerprint = buildDAVEReportSourceOnPeriod(truths, saved).fingerprint;
   const briefing = buildDAVEReportBriefing({
     truths, selectedProjectNames: ['Alpha'], previousSnapshot: reportBaselineSnapshot(saved, fingerprint),
     readAsEarlierVersionReport: reportReadAsEarlierVersionReport(saved, fingerprint), scheduleItems: shown(state),
@@ -102,7 +103,7 @@ function webPage(state: State, saved: DAVEReportSnapshot | null, at: string) {
     projects: [{ id: 'project-alpha-id', name: 'Alpha' }], scheduleItems: shown(state), knownScheduleItems: state.items,
     projectUpdates: [], referenceDocuments: state.documents, refreshedAt: at,
   } as unknown as DAVEWebReadOnlySnapshot;
-  const fingerprint = buildDAVEReportSourceFingerprint(buildDAVEWebReportTruths(snapshot, 'Alpha'));
+  const fingerprint = buildDAVEReportSourceOnPeriod(buildDAVEWebReportTruths(snapshot, 'Alpha'), saved).fingerprint;
   const period = daveWebReportPeriodState({ read: { status: 'loaded', snapshot: saved, shared: 'checked', approvalSavedHere: false }, fingerprint, pulledAt: at });
   const briefing = buildDAVEWebReportDraft(snapshot, 'Alpha', {
     previousSnapshot: period.previousSnapshot, waitingForOtherDevice: Boolean(period.behindSend), readAsEarlierVersionReport: period.readAsEarlierVersionReport,

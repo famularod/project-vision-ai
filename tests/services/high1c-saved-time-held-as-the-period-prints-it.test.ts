@@ -385,31 +385,12 @@ describe('HIGH 1c: every field, one at a time, after a real period: no "already 
 });
 
 /**
- * Record facts that move 3.0 and that this report (his project, no field updates) prints nowhere on either device: a
- * task's start date, contractor (an owner is set), next action, notes, milestone name, baseline finish, import time,
- * who confirmed its percent and where the percent came from; the hidden earlier row of the task that came back (R8 item
- * 3, left as it was in 1b); the current schedule file's import time and file name. Each prints in other reports (a schedule line of WORK AREAS, ACTION PLAN, MILESTONES, a project's position,
- * "is back ... from 60%", "Schedules document added: <file>"): 3.0 holds every record a report is made from (High 1,
- * D2). Not saved times; not this item.
+ * Record facts that move 3.0 and that this report (his project, no field updates) prints nowhere on either device. Until
+ * HIGH item 1d there were 19 kinds: a task's start date, contractor (an owner is set), next action, notes, milestone
+ * name, baseline finish, import time, who confirmed its percent and where the percent came from; the 8 fields of the
+ * hidden earlier row of the task that came back; the current schedule file's import time and file name. HIGH item 1d
+ * (open item 7.55, the coordinator's decision): each is held only where the report's format prints it
+ * (high1d-record-facts-held-as-each-format-prints-them, by format and device). None is left. Nothing joins the list
+ * unseen.
  */
-const KNOWN_RECORD_FACTS_PRINTED_NOWHERE_HERE: readonly string[] = [
-  'a hidden earlier row: finishDate',
-  'a hidden earlier row: importedAt',
-  'a hidden earlier row: locationName',
-  'a hidden earlier row: owner',
-  'a hidden earlier row: percentComplete',
-  'a hidden earlier row: projectName',
-  'a hidden earlier row: status',
-  'a hidden earlier row: taskName',
-  'a schedule file: importedAt',
-  'a schedule file: originalFileName',
-  'a task: baselineFinishDate',
-  'a task: contractor',
-  'a task: importedAt',
-  'a task: milestone',
-  'a task: nextAction',
-  'a task: notes',
-  'a task: progressConfirmedBy',
-  'a task: progressSource',
-  'a task: startDate',
-];
+const KNOWN_RECORD_FACTS_PRINTED_NOWHERE_HERE: readonly string[] = [];

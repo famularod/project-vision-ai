@@ -127,7 +127,7 @@ const onCopyReport = jest.fn(async () => 'completed' as const);
 // Mail "Saved" (a draft), and Outlook "Not yet": neither is a send.
 const onEmailReport = jest.fn(async () => 'unknown' as const);
 const onOutlookReport = jest.fn(async () => 'unknown' as const);
-const reportsScreen = (scheduleItems: ScheduleItem[]) => (
+const reportsScreen = (scheduleItems: ScheduleItem[], format: 'project_manager' | 'executive' = 'project_manager') => (
   <ReportsScreen
     projectName="Tower"
     reportType="daily_project_update"
@@ -135,7 +135,7 @@ const reportsScreen = (scheduleItems: ScheduleItem[]) => (
     availableProjectNames={['Tower']}
     selectedProjectNames={['Tower']}
     onToggleProject={() => undefined}
-    reportFormat="project_manager"
+    reportFormat={format}
     onReportFormatChange={() => undefined}
     updates={[]}
     scheduleItems={scheduleItems}
@@ -150,11 +150,11 @@ const reportsScreen = (scheduleItems: ScheduleItem[]) => (
 
 let current: ReturnType<typeof render> | null = null;
 /** Opens Reports afresh on `device` (a new app session there). */
-const visit = (device: string, scheduleItems: ScheduleItem[]) => {
+const visit = (device: string, scheduleItems: ScheduleItem[], format: 'project_manager' | 'executive' = 'project_manager') => {
   current?.unmount();
   forgetAllReportSessionState();
   mockDevice = device;
-  current = render(reportsScreen(scheduleItems));
+  current = render(reportsScreen(scheduleItems, format));
   return current;
 };
 afterEach(() => {
@@ -437,6 +437,43 @@ describe('HIGH item 1c (phone): a task saved again with nothing changed after a 
   it('guard: a task completed since: not the report sent, and the notice is not shown', async () => {
     await twoReportsFromTheIpad();
     visit('phone', imported(tower(2)));
+    await approvable();
+    await settle();
+    expect(screen.queryByText(/already sent this report/)).toBeNull();
+  });
+});
+
+/**
+ * HIGH item 1d (open item 7.55): each format's report is held as it prints. A task made High priority prints only in
+ * the Project Manager report (its WORK AREAS section: "<owner> - Please confirm the current status of <task>."), not in
+ * the Executive report. The phone asks for the fingerprint of the report in the format on screen, against that
+ * format's own period.
+ */
+describe('HIGH item 1d (phone): the report of the format on screen', () => {
+  const imported = (items: ScheduleItem[]) => items.map(item => ({ ...item, importedAt: '2026-09-01T12:00:00.000Z' } as ScheduleItem));
+  const highPriority = (items: ScheduleItem[]) => items.map(item => (item.id === 'roof' ? { ...item, priority: 'High' } as ScheduleItem : item));
+  const rowOf = (format: string) => mockCloud.get(`tower|${format}`) as { snapshot: DAVEReportSnapshot; deliveredAt: string | null } | undefined;
+  const twoReportsFromTheIpad = async (format: 'project_manager' | 'executive') => {
+    visit('ipad', imported(tower(0)), format);
+    await approve();
+    await share('Copy Report');
+    await waitFor(() => expect(rowOf(format)?.deliveredAt).toEqual(expect.any(String)), SLOW);
+    visit('ipad', imported(tower(1)), format);
+    await approve();
+    await share('Copy Report');
+    await waitFor(() => expect(rowOf(format)?.snapshot.supersedes?.deliveredAt).toEqual(expect.any(String)), SLOW);
+    return rowOf(format) as { snapshot: DAVEReportSnapshot; deliveredAt: string };
+  };
+
+  it('Executive: Set roof made High priority on another device: no word of the Executive report moves, and the phone says the other device already sent it', async () => {
+    const r2 = await twoReportsFromTheIpad('executive');
+    visit('phone', highPriority(imported(tower(1))), 'executive');
+    expect(await screen.findByText(ALREADY_SENT(r2.deliveredAt), {}, SLOW)).toBeTruthy();
+  });
+
+  it('Project Manager: the same change prints a line in its WORK AREAS section: not the report sent, and the notice is not shown', async () => {
+    await twoReportsFromTheIpad('project_manager');
+    visit('phone', highPriority(imported(tower(1))), 'project_manager');
     await approvable();
     await settle();
     expect(screen.queryByText(/already sent this report/)).toBeNull();

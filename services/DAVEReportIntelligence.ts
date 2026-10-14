@@ -19,6 +19,7 @@ import {
   reportTaskEarlierRows,
   reportTasksAddedByLookahead,
   reportTasksLeftByLookahead,
+  type DAVEReportFormat,
   type DAVEReportPeriodComparison,
   type DAVEReportSnapshot,
 } from './DAVEReportSnapshot';
@@ -29,7 +30,8 @@ export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/2.0' a
  * items): of Project Truth, what a report prints, and every record it is made
  * from; no longer what Project Truth counts from "now" and no output prints
  * (reportSourceFactsOf3, below). Then what the phone's written report prints
- * that Project Truth does not hold (writtenReportFacts).
+ * that Project Truth does not hold (writtenReportFacts). HIGH item 1d: of the
+ * report's chosen format (reportAsPrinted).
  * 2.0 (R4 item 4a): the fingerprint no longer follows the order the tasks
  * were saved in, nor the id each device files the project under. It is still
  * worked out beside 3.0, and a report made under it is known by it for the
@@ -172,15 +174,23 @@ export function buildDAVEReportSourceFingerprint(
    * buildDAVEReportSourceOnPeriod, which chooses it as the screen does.
    */
   countedFrom: DAVEReportSnapshot | null = null,
+  /**
+   * HIGH item 1d (open item 7.55): the report's format. Each format has its own period (owner answer Q17) and prints
+   * its own report; 3.0 holds what THAT report prints, on the phone and on the desktop.
+   */
+  format: DAVEReportFormat = 'project_manager',
 ): string {
-  // HIGH items 1b and 1c: with each project's facts (no saved time in them), what a report PRINTS of saved times: the
-  // "since the last report" lines counted from `countedFrom`, and Completed Work, each as written and in its order.
-  // And WHICH report it counts from (its own fingerprint and send): the report prints it ("Since the report sent
-  // Oct 13, 2026"), and two reports counted from two reports are two reports, even where both say "+0 completed; +0
-  // open; +0 overdue." and no more (else the period's next report, counted from the last one, could take that one's name).
+  // HIGH items 1b, 1c and 1d: what the report of this format prints, on every device, counted from `countedFrom`
+  // (reportAsPrinted: the "since the last report" lines and Completed Work, where saved times print, and every other
+  // part a device shows of it); for the Project Manager report, beside it, the records its WORK AREAS / PHOTO NOTES
+  // section is written from, which no device but the phone can write (reportSourceFactsOf3). And WHICH report it
+  // counts from (its own fingerprint and send): the report prints it ("Since the report sent Oct 13, 2026"), and two
+  // reports counted from two reports are two reports, even where both say "+0 completed; +0 open; +0 overdue." and no
+  // more (else the period's next report, counted from the last one, could take that one's name).
   const fingerprint = `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify({
-    projects: hashOfProjects(truths, truth => reportSourceFactsOf3(truth), LEFT_OUT_OF_REPORT_SOURCE_3_0),
-    printedOfSavedTimes: savedTimesAsPrinted(truths, countedFrom),
+    format,
+    projects: format === 'executive' ? null : hashOfProjects(truths, reportSourceFactsOf3, LEFT_OUT_OF_REPORT_SOURCE_3_0),
+    printed: reportAsPrinted(truths, countedFrom, format),
     countedFrom: countedFrom ? { report: countedFrom.sourceFingerprint, sentAt: countedFrom.deliveredAt ?? null } : null,
   }))}`;
   // R7 item A (the coordinator's decision on review pass 1, F0): a 1.0 fingerprint is a name of these facts only
@@ -210,19 +220,50 @@ export function buildDAVEReportSourceFingerprint(
  * reportBaselineSnapshot answers it: first against what the period's last report counted from; if that is the
  * period's last report's own fingerprint, this is that report; if not, against the report the period now runs from.
  * Every device reading the same period (the shared record) and holding the same records works out the same value.
+ * HIGH item 1d: of the report's format, the period's own (each format has its own period). And it is that report only
+ * where, that report being sent, a report counted from it would say nothing of what has happened since (no line of
+ * "since the last report", no count moved): a change that report itself prints nowhere but the next one says (an
+ * owner moved after a first report: "Set roof owner changed from Dana to Eli.") is news to send, not the report sent.
  */
 export function buildDAVEReportSourceOnPeriod(
   truths: readonly DAVEProjectTruth[],
   period: DAVEReportSnapshot | null | undefined,
+  format: DAVEReportFormat = 'project_manager',
 ): Readonly<{ fingerprint: string; countedFrom: DAVEReportSnapshot | null }> {
-  if (!period) return { fingerprint: buildDAVEReportSourceFingerprint(truths, null), countedFrom: null };
+  if (!period) return { fingerprint: buildDAVEReportSourceFingerprint(truths, null, format), countedFrom: null };
   // As the period's last report was counted (reportBaselineSnapshot of the same report).
   const asThatReport = reportBaselineSnapshot(period, period.sourceFingerprint);
-  const same = buildDAVEReportSourceFingerprint(truths, asThatReport);
-  if (sameReportSource(period.sourceFingerprint, same)) return { fingerprint: same, countedFrom: asThatReport };
+  const same = buildDAVEReportSourceFingerprint(truths, asThatReport, format);
+  if (sameReportSource(period.sourceFingerprint, same) && (typeof period.deliveredAt !== 'string' || nothingSaidSince(truths, period))) {
+    return { fingerprint: same, countedFrom: asThatReport };
+  }
   // Another report: counted from the period's last send (reportBaselineSnapshot of another report).
   const countedFrom = reportBaselineSnapshot(period, '');
-  return { fingerprint: buildDAVEReportSourceFingerprint(truths, countedFrom), countedFrom };
+  return { fingerprint: buildDAVEReportSourceFingerprint(truths, countedFrom, format), countedFrom };
+}
+
+/**
+ * HIGH item 1d: whether a report of `truths` counted from `sent` would say nothing in "since the last report": no task
+ * completed, opened or overdue more or less, and no line (a change, an activity, "<task> was updated."). Worked out by
+ * the briefing's own code, with the projects by name as everywhere in 3.0.
+ */
+function nothingSaidSince(selected: readonly DAVEProjectTruth[], sent: DAVEReportSnapshot): boolean {
+  const truths = [...selected].sort((left, right) => normalized(left.projectName).localeCompare(normalized(right.projectName)));
+  const current = buildDAVEReportSnapshot({
+    truths,
+    scopeKey: daveReportSnapshotScopeKey(unique(truths.map(truth => truth.projectName))),
+    sourceFingerprint: '',
+    capturedAt: truths.map(truth => truth.generatedAt).sort().at(-1),
+  });
+  const period = compareDAVEReportSnapshots({
+    current,
+    previous: sent,
+    tasksLeftByLookahead: reportTasksLeftByLookahead(truths),
+    earlierRows: reportTaskEarlierRows(truths),
+    lookaheadAddedTaskIds: reportTasksAddedByLookahead(truths),
+  });
+  if (period.completeDelta !== 0 || period.openDelta !== 0 || period.overdueDelta !== 0 || (period.changeCount ?? 0) > 0) return false;
+  return buildRecentChanges({ truths, reportingPeriod: period }).length === 0;
 }
 
 /**
@@ -311,142 +352,155 @@ function reportSourceFactsOf(truth: DAVEProjectTruth): unknown {
 }
 
 /**
- * What version 3.0 hashes of a truth (HIGH item 1, the owner's instruction of
- * 13 Oct 2026; reports review pass 3, P3-4): every record the report is made
- * from, and of what Project Truth works out from them, exactly what a report
- * prints. Version 2.0 held all of Project Truth, and much of it is counted
- * from "now" and printed by no output: its own reading of the project (the
- * `intelligence`: "3 in the last 14 days", "Updated recently", its evidence
- * score, its state and confidence, the attention and uncertainty items of its
- * daily brief), its reasoning about each task (a recommendation's timing, a
- * challenge, a connection, the smallest next action) and the verification
- * list made from that. So the report sent yesterday was offered again on most
- * mornings, some of them with no word of it changed. Here, as 2.0:
- *  - the records: the evidence ledger (every field update, photo, GPS fix,
- *    photo analysis, task, document and memory), the photo comparisons, the
- *    correlations, the tasks' earlier rows, the lookahead facts, the drawings
- *    cited, and the facts of each schedule document (Project Truth keeps them
- *    in its intelligence: `referenceDocuments`, R7 item C);
- *  - the tasks as the report has them, but for one distinction no output
- *    prints: a task due in 8 to 21 days is "upcoming", and one due later
- *    "not urgent" (the report reads only "overdue" and "due within 7 days");
- * and, in place of the rest, what the report prints of it:
- *  - the decisions the report lists, each as printed: task, area, action,
- *    owner, timing, consequence (`listedDecision`, the briefing's own rule);
- *  - Project Truth's own risk lines and "what changed" lines, as printed.
- * What the clock moves AND a report prints stays (a task now overdue or due
- * within 7 days, "Today", a risk line): a report that reads differently is
- * another report.
+ * What version 3.0 hashes of a truth for the Project Manager report (HIGH item 1, the owner's instruction of 13 Oct
+ * 2026; reports review pass 3, P3-4; HIGH item 1d): the records its WORK AREAS / PHOTO NOTES section is written from.
+ * The phone's writer prints that section from the project's own field updates, photos and tasks (services/
+ * PIEReporter.ts), and no other device can write it: so its records are held as records, as 2.0 held them: the
+ * evidence ledger (every field update, photo, GPS fix, photo analysis, task and memory), the photo comparisons, the
+ * correlations of the updates to the tasks, the tasks, the lookahead facts, the drawings cited, and what the section
+ * prints of them that Project Truth does not hold (writtenReportFacts). A task due in 8 to 21 days is "upcoming", and
+ * one due later "not urgent": no output prints the difference.
+ *
+ * Everything else the report prints, Project Truth's own reading of the project included (its risk and "what changed"
+ * lines, the decisions the report lists), is held as the report prints it (reportAsPrinted), not here. HIGH item 1d
+ * (open item 7.55, the coordinator's decision on the 19 kinds of record fact a report was offered again for with no
+ * word changed): of these records, nothing that prints elsewhere or nowhere. Of a task: its start date, contractor,
+ * owner (or, with none, its contractor), next action and baseline finish print only through the report's actions,
+ * position and task lines; its notes, milestone name and priority only through its schedule line and the section's
+ * "Schedule focus" sentence (writtenReportFacts); its import time, who confirmed its percent and where the percent
+ * came from only through what the app works out from them (when its record was made, the record's summary and
+ * reasons, the correlation's conclusion, confidence and explanation, what verifies it): each held where it prints.
+ * Of an earlier row of a task: it prints only in "since the last report", held as printed. A document (a schedule
+ * file among them: R7 item C held its facts) prints only in Project Truth's "what changed" lines ("Schedules document
+ * added: <name>"), held as printed; which tasks a schedule file shows is held by the tasks themselves; its import time
+ * and file name print nowhere. (HIGH items 1b and 1c: a task's saved time, who saved its settings, a document's notes,
+ * likewise.)
  */
 function reportSourceFactsOf3(truth: DAVEProjectTruth): unknown {
   const {
-    briefing, entityLinks: _entityLinks, intelligence, reasoning, verificationQueue: _verificationQueue, schedule, evidence, correlations,
-    completedWorkConfirmedAt: _heldAsCompletedWorkPrintsIt, ...facts
+    briefing: _heldAsPrinted, entityLinks: _entityLinks, intelligence: _itsReadingHeldAsPrinted, reasoning: _listedAsPrinted, verificationQueue: _verificationQueue,
+    schedule, evidence, correlations, completedWorkConfirmedAt: _heldAsCompletedWorkPrintsIt, earlierRows: _heldAsSinceLinesPrintThem,
+    ...facts
   } = truth as DAVEProjectTruth & Record<string, unknown>;
-  // HIGH items 1b and 1c (open item 7.46; reports review H1R-1, H1R-2; the coordinator's decisions): a record saved
-  // again with nothing a report prints changed moves nothing. Of a task: who last saved its settings (never printed);
-  // its saved time and the moment its percent was confirmed, which print only through the "since the last report"
-  // lines and Completed Work, held as printed (savedTimesAsPrinted), not here. Of a schedule file: its notes (never
-  // printed).
-  const open = new Set((schedule ?? []).map(task => task.taskId));
+  const tasks = new Set((schedule ?? []).map(task => task.taskId));
   const recordAsPrinted = (record: DAVEProjectTruth['evidence']['records'][number]) => {
-    if (record.kind === 'schedule' && open.has(record.taskId ?? '')) {
-      const { capturedAt: _confirmedAt, ...kept } = record;
-      return kept;
-    }
-    if (record.kind === 'document') {
-      const { equipmentKeys: _wordsOfItsNameAndNotes, ...kept } = record;
-      return kept;
+    if (record.kind === 'schedule' && tasks.has(record.taskId ?? '')) {
+      // A task's own record: the task (held below). Its time, summary, reasons and the words of its text are its
+      // import, confirmation, progress source, notes, milestone name, owner and contractor.
+      const { id, kind, sourceRecordId, projectName, areaName, taskId, disposition } = record;
+      return { id, kind, sourceRecordId, projectName, areaName, taskId, disposition };
     }
     return record;
   };
+  const notADocument = (record: DAVEProjectTruth['evidence']['records'][number]) => record.kind !== 'document';
   // (A truth made by hand, as some tests make one, may lack a part: it is read as empty.)
   return withoutReportProjectId(truth, {
     ...facts,
     schedule: (schedule ?? []).map(task => {
-      const { updatedBy: _savedBy, updatedAt, ...kept } = task;
-      return {
-        ...kept,
-        ...(open.has(task.taskId) ? {} : { updatedAt }),
-        urgency: task.urgency === 'upcoming' ? 'not_urgent' as const : task.urgency,
-      };
+      const {
+        updatedBy: _savedBy, updatedAt: _savedAt, startDate: _start, contractor: _contractor, owner: _owner, nextAction: _nextAction,
+        baselineFinishDate: _baselineFinish, relatedEvidenceIds: _related, completionState: _state, needsVerification: _verify,
+        contradiction: _contradiction, ...kept
+      } = task;
+      return { ...kept, urgency: task.urgency === 'upcoming' ? 'not_urgent' as const : task.urgency };
     }),
     evidence: evidence
-      ? { ...evidence, records: (evidence.records ?? []).map(recordAsPrinted), unresolvedRecords: (evidence.unresolvedRecords ?? []).map(recordAsPrinted) }
+      // The records; not their counts, which count the documents too and print nowhere.
+      ? {
+          records: (evidence.records ?? []).filter(notADocument).map(recordAsPrinted),
+          unresolvedRecords: (evidence.unresolvedRecords ?? []).filter(notADocument).map(recordAsPrinted),
+        }
       : evidence,
     correlations: correlations
       ? {
-          ...correlations,
-          tasks: (correlations.tasks ?? []).map(correlation => (open.has(correlation.taskId)
-            ? {
-                ...correlation,
-                evidence: correlation.evidence.map(claim => {
-                  if (claim.id !== `correlation:schedule:${correlation.taskId}`) return claim;
-                  const { recordedAt: _confirmedOrSavedAt, ...kept } = claim;
-                  return kept;
-                }),
-              }
-            : correlation)),
+          // Which field updates and photos answer to which task. What the app concludes from them, and from the task's
+          // own row (and how many of each it counts), is held where the report prints it.
+          tasks: (correlations.tasks ?? []).map(correlation => ({
+            taskId: correlation.taskId,
+            taskName: correlation.taskName,
+            areaName: correlation.areaName,
+            evidence: correlation.evidence.map(claim => {
+              if (claim.id !== `correlation:schedule:${correlation.taskId}`) return claim;
+              return { id: claim.id, sourceRecordId: claim.sourceRecordId, stance: claim.stance };
+            }),
+          })),
         }
       : correlations,
-    referenceDocuments: (intelligence?.referenceDocuments ?? []).map(document => {
-      const { notes: _notes, ...kept } = document as ReferenceDocument;
-      return kept;
-    }),
-    listedDecisions: uniqueBy([...(reasoning?.criticalDecisions ?? []), ...(reasoning?.decisions ?? [])], decision => decision.taskId)
-      .filter(listedDecision)
-      .map(decision => ({
-        taskId: decision.taskId,
-        taskName: decision.taskName,
-        areaName: decision.areaName,
-        action: decision.recommendation.action,
-        owner: decision.recommendation.owner,
-        timing: decision.recommendation.timing,
-        consequence: decision.recommendation.consequenceOfInaction,
-      })),
-    printedProjectTruthLines: {
-      risks: (briefing?.risksAndConflicts ?? []).map(item => toPMReportLanguage(item)).filter(Boolean),
-      whatChanged: (briefing?.whatChanged ?? []).map(item => toPMReportLanguage(item)).filter(Boolean),
-    },
   });
 }
 
 /**
- * HIGH item 1c: what a report prints of saved times, counted from `countedFrom`: the "since the last report" section
- * (its counts, its lines in their order as the briefing keeps them, how many there are) and Completed Work (each line
- * with its "Last updated" day, in its order). Worked out by the briefing's own code (compareDAVEReportSnapshots,
- * buildRecentChanges, completedWorkLines), with each completed task's confirmation time as the report truth carries
- * it (completedWorkConfirmedAt, from the same saved tasks the briefing reads). A task saved again moves this only
- * where a line comes, goes or moves.
+ * HIGH items 1c and 1d: what the report of `format` prints, counted from `countedFrom`, on every device: the phone's
+ * written report (Copy, Email, Text, Outlook, the Word file) and its Reports screen in that format, and the desktop's
+ * report in that format. Worked out by the briefing's own code from the same truths, then read as each of them reads
+ * it, each part as far as any of them prints it:
+ *  - "since the last report": its counts and label, its lines, how many; where a task's saved time prints (1c);
+ *  - Completed Work, every line; where a task's confirmation prints (1c);
+ *  - the condition and its snapshot line, each project's position (percent, current reality, schedule, forecast and
+ *    baseline finish, variance), the schedule's health, its position, the risks, the decisions and "what changed"
+ *    (the phone's screen shows the first ones in both formats; the desktop's report "what changed");
+ *  - the actions, each with what any device prints of it (the Executive report prints four, and how many): a task's
+ *    contractor, owner and next action print there; the milestones (each field of one prints in "since the last
+ *    report" too when it changes);
+ *  - for the Project Manager report only: Current Work, the tasks by status, the controls, each work area's progress.
+ * The date the report is read on (its "Reporting date", the desktop's "Generated") is not a fact of the project and
+ * is not held, as before.
  */
-function savedTimesAsPrinted(selected: readonly DAVEProjectTruth[], countedFrom: DAVEReportSnapshot | null): unknown {
+function reportAsPrinted(selected: readonly DAVEProjectTruth[], countedFrom: DAVEReportSnapshot | null, format: DAVEReportFormat): unknown {
   // The projects by name, not in the order they were ticked: as everywhere in 3.0, a combined report keeps one value
   // and its edits and approval whichever order its projects were ticked in (A6 pass 6 #6; review pass 3's B).
   const truths = [...selected].sort((left, right) => normalized(left.projectName).localeCompare(normalized(right.projectName)));
-  const projectNames = unique(truths.map(truth => truth.projectName));
-  const current = buildDAVEReportSnapshot({
-    truths,
-    scopeKey: daveReportSnapshotScopeKey(projectNames),
-    sourceFingerprint: '',
-    capturedAt: truths.map(truth => truth.generatedAt).sort().at(-1),
-  });
-  const period = compareDAVEReportSnapshots({
-    current,
-    previous: countedFrom,
-    tasksLeftByLookahead: reportTasksLeftByLookahead(truths),
-    earlierRows: reportTaskEarlierRows(truths),
-    lookaheadAddedTaskIds: reportTasksAddedByLookahead(truths),
-  });
-  const lines = buildRecentChanges({ truths, reportingPeriod: period });
   const confirmedAt = new Map(truths.flatMap(truth => Object.entries(truth.completedWorkConfirmedAt ?? {})));
+  const briefing = briefingOf({
+    truths,
+    previousSnapshot: countedFrom,
+    lastUpdatedAt: task => latestDate([task.latestActivityAt, confirmedAt.get(task.taskId)]) || latestDate([task.updatedAt]),
+  });
+  const executive = format === 'executive';
+  const upTo = <T,>(items: readonly T[], limit: number) => (executive ? items.slice(0, limit) : items);
+  const period = briefing.reportingPeriod;
+  const health = briefing.dashboard.scheduleHealth;
+  const status = briefing.dashboard.taskStatus;
+  const controls = briefing.dashboard.controls;
   return {
+    scope: briefing.scopeLabel,
+    condition: briefing.conditionLabel,
+    snapshot: briefing.executiveSnapshot,
     since: {
       basis: period.basis,
+      label: period.label,
       counts: [period.completeDelta, period.openDelta, period.overdueDelta],
-      lines: lines.slice(0, 12).map(change => change.summary),
-      count: lines.length + Math.max(0, (period.changeCount ?? 0) - period.changes.length),
+      lines: briefing.recentChanges.map(change => change.summary),
+      count: Math.max(briefing.recentChangeCount ?? 0, briefing.recentChanges.length),
     },
-    completedWork: completedWorkLines(truths, task => latestDate([task.latestActivityAt, confirmedAt.get(task.taskId)]) || latestDate([task.updatedAt])),
+    completedWork: briefing.completedWork,
+    positions: briefing.projectConditions.map(condition => [
+      condition.projectName, condition.percentComplete, condition.currentReality, condition.schedule,
+      condition.forecastFinish, condition.baselineFinish, condition.forecastVarianceDays,
+    ]),
+    health: [health.onTrack, health.blocked, health.dueSoon, health.overdue],
+    schedulePosition: briefing.schedulePosition,
+    risks: briefing.criticalRisks,
+    decisions: briefing.decisionsRequired,
+    whatChanged: briefing.whatChanged,
+    actions: {
+      lines: upTo(briefing.nextActions, 4).map(action => [
+        action.projectName, action.areaName, action.taskName, action.dueDate, action.issue, action.impact, action.action,
+        action.owner, action.timing, action.scheduleImpactDays,
+      ]),
+      count: briefing.nextActions.length,
+    },
+    milestones: briefing.milestones.map(milestone => [
+      milestone.projectName, milestone.taskName, milestone.areaName, milestone.finishDate, milestone.state,
+    ]),
+    ...(executive ? {} : {
+      currentWork: briefing.currentWork,
+      status: [status.total, status.complete, status.inProgress, status.waiting, status.notStarted],
+      controls: [controls.pendingApprovals, controls.responsesDue, controls.unassignedOpenWork, controls.incompleteChecklistItems],
+      workAreas: briefing.dashboard.workAreas.map(area => [
+        area.projectName, area.areaName, area.averagePercent, area.completeTaskCount, area.taskCount, area.completed,
+      ]),
+    }),
   };
 }
 
@@ -504,6 +558,32 @@ export function buildDAVEReportBriefing({
    */
   scheduleItems?: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>[];
 }): DAVEReportBriefing {
+  return briefingOf({
+    truths,
+    selectedProjectNames,
+    previousSnapshot,
+    readAsEarlierVersionReport,
+    waitingForOtherDevice,
+    lastUpdatedAt: completedTaskLastUpdatedAt(scheduleItems),
+  });
+}
+
+/** The briefing (buildDAVEReportBriefing), with Completed Work's "Last updated" as `lastUpdatedAt` reads it. */
+function briefingOf({
+  truths,
+  selectedProjectNames,
+  previousSnapshot,
+  readAsEarlierVersionReport = false,
+  waitingForOtherDevice = false,
+  lastUpdatedAt,
+}: {
+  truths: readonly DAVEProjectTruth[];
+  selectedProjectNames?: readonly string[];
+  previousSnapshot?: DAVEReportSnapshot | null;
+  readAsEarlierVersionReport?: boolean;
+  waitingForOtherDevice?: boolean;
+  lastUpdatedAt: CompletedTaskLastUpdatedAt;
+}): DAVEReportBriefing {
   const projectNames = unique(
     (selectedProjectNames?.length ? selectedProjectNames : truths.map(truth => truth.projectName))
       .map(clean)
@@ -511,10 +591,11 @@ export function buildDAVEReportBriefing({
   );
   const generatedAt = truths.map(truth => truth.generatedAt).sort().at(-1) || new Date().toISOString();
   const snapshotScopeKey = daveReportSnapshotScopeKey(projectNames);
+  // The comparison reads no fingerprint of this report (HIGH item 1d: the fingerprint holds this briefing as printed).
   const currentSnapshot = buildDAVEReportSnapshot({
     truths,
     scopeKey: snapshotScopeKey,
-    sourceFingerprint: buildDAVEReportSourceFingerprint(truths),
+    sourceFingerprint: '',
     capturedAt: generatedAt,
   });
   const comparison = compareDAVEReportSnapshots({
@@ -575,7 +656,7 @@ export function buildDAVEReportBriefing({
   const recentChangeCount = allRecentChanges.length +
     Math.max(0, (reportingPeriod.changeCount ?? 0) - reportingPeriod.changes.length);
   const milestones = buildReportMilestones(truths);
-  const completedWork = completedWorkLines(truths, completedTaskLastUpdatedAt(scheduleItems));
+  const completedWork = completedWorkLines(truths, lastUpdatedAt);
   // Whole-app audit A6 pass 20 L1 (1 Oct 2026): two same-named open tasks in one area with the same status,
   // percent and due date printed one Current Work line. They say how many, as Completed Work does (A6 pass 19 L4).
   const currentTasks = truths.flatMap(truth => truth.schedule
@@ -655,8 +736,8 @@ export function buildDAVEReportBriefing({
 }
 
 /**
- * Whether the report lists a decision of Project Truth's reasoning (its action plan, its decisions required): one
- * rule for the briefing and for version 3.0 of the fingerprint, which holds what is listed and nothing else of it.
+ * Whether the report lists a decision of Project Truth's reasoning (its action plan, its decisions required). Version
+ * 3.0 of the fingerprint holds what is listed as the report prints it (HIGH item 1d: reportAsPrinted) and nothing else.
  */
 function listedDecision(decision: DAVEProjectTruth['reasoning']['decisions'][number]): boolean {
   return decision.confidence !== 'low' &&

@@ -341,9 +341,14 @@ describe('R7 item C: what version 2.0 leaves out, and that no written report can
     ['when it was imported', { importedAt: '2026-09-21T15:00:00.000Z' }],
     ['its category', { category: 'Specifications' }],
     ['that it is a lookahead', { scheduleRole: 'lookahead' }],
-  ])('guard: a fact of the document still moves the fingerprint: %s', (_what, change) => {
-    expect(buildDAVEReportSourceFingerprint(deviceTruths(ITEMS, { ...PHONE_DOCUMENT, ...change } as ReferenceDocument)))
-      .not.toBe(buildDAVEReportSourceFingerprint(deviceTruths(ITEMS, PHONE_DOCUMENT)));
+  ])('guard: a fact of the document moves the fingerprint exactly where a word of the report moves: %s', (_what, change) => {
+    // HIGH item 1d (open item 7.55, the coordinator's decision): a document is held where the report prints it
+    // ("Schedules document added: <name>"), not as a record: its file's name and when it was imported print nowhere;
+    // which tasks it shows is held by the tasks. (This guard said every fact of it moved the fingerprint.)
+    const document = { ...PHONE_DOCUMENT, ...change } as ReferenceDocument;
+    const shownWith = (saved: ReferenceDocument) => selectAuthoritativeScheduleItems({ scheduleItems: ITEMS, scheduleDocuments: [saved] }) as ScheduleItem[];
+    const wordsMoved = written(deviceTruths(ITEMS, document), shownWith(document)) !== written(deviceTruths(ITEMS, PHONE_DOCUMENT), shownWith(PHONE_DOCUMENT));
+    expect(buildDAVEReportSourceFingerprint(deviceTruths(ITEMS, document)) !== buildDAVEReportSourceFingerprint(deviceTruths(ITEMS, PHONE_DOCUMENT))).toBe(wordsMoved);
   });
 
   // HIGH item 1b (the coordinator's decision, open item 7.46): a schedule file's notes are printed by no report, so

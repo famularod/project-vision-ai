@@ -393,10 +393,11 @@ export function ReportsScreen({
     updates,
   ]);
   // HIGH item 1c: worked out against the report this one counts from (the period's last report, as shared), where a
-  // task's saved time prints ("since the last report"); the same on every device that reads the same period.
+  // task's saved time prints ("since the last report"); the same on every device that reads the same period. HIGH
+  // item 1d: of the report in its format, as that report prints it.
   const reportSourceFingerprint = useMemo(
-    () => buildDAVEReportSourceOnPeriod(reportTruths, snapshotScopeLoaded ? previousReportSnapshot : null).fingerprint,
-    [previousReportSnapshot, reportTruths, snapshotScopeLoaded],
+    () => buildDAVEReportSourceOnPeriod(reportTruths, snapshotScopeLoaded ? previousReportSnapshot : null, reportFormat).fingerprint,
+    [previousReportSnapshot, reportFormat, reportTruths, snapshotScopeLoaded],
   );
   const reportSnapshotScopeKey = useMemo(
     () => daveReportSnapshotScopeKey(selectedProjectNames),
