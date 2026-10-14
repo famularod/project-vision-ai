@@ -345,6 +345,11 @@ export type ReferenceDocument = {
    * the cloud's row.
    */
   listedPageIndex?: ReferenceDocumentListedPageIndex | null;
+  /**
+   * The cloud row's own key for a drawing's citation slice (high item 3 (b2), document_data.citationPageIndex): what
+   * the document list carries to every device. On a device only in a row it sends or a list row it reads.
+   */
+  citationPageIndex?: ReferenceDocumentListedPageIndex | null;
   /** Customer-safe status mirrored from the Vitruvius-operated background indexer. */
   ecosHostedIndexStatus?:
     | 'Waiting'

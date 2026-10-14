@@ -207,7 +207,8 @@ async function desktop() {
   const report = RS.buildDAVEReportSnapshot({ truths, scopeKey: RS.daveReportSnapshotScopeKey(['Alpha']), sourceFingerprint: fingerprint, capturedAt: NOW, reportFormat: 'project_manager' });
   return {
     fingerprint,
-    cites: buildAutomaticReportDrawingReferences({ documents: [...snapshot.referenceDocuments] as ReferenceDocument[], scheduleItems: [...snapshot.scheduleItems] as ScheduleItem[], selectedProjectNames: ['Alpha'] }).map(reference => `${reference.areaName}: ${reference.citation.label}`),
+    // The desktop's Word report and Reports page cite as listed (high item 3).
+    cites: buildAutomaticReportDrawingReferences({ documents: referenceDocumentsCitedAsListed([...snapshot.referenceDocuments] as ReferenceDocument[]), scheduleItems: [...snapshot.scheduleItems] as ScheduleItem[], selectedProjectNames: ['Alpha'] }).map(reference => `${reference.areaName}: ${reference.citation.label}`),
     text: String((WebOps as any).formatDAVEWebReport(briefing, 'project_manager', null)).split('\n').filter((line: string) => !line.startsWith('Generated: ')).join('\n'),
     sent: RS.markReportSnapshotDelivered({ ...report, deliveredAt: null } as RSTypes.DAVEReportSnapshot, '2026-10-01T18:07:00.000Z', 'desktop-browser'),
   };
@@ -270,7 +271,8 @@ describe('the reviewer\'s P3-3 sequence: a current drawing whose page index name
     await upload(edited);
     const row = mockCloud.rows.get('doc-a201')!;
     expect(row.document_data.notes).toBe('Field verified');
-    expect((row.document_data.extractedPages as any[]).flatMap(page => page.regions.map((region: any) => region.areaNames)).flat()).toContain('Lot');
+    // High item 3d (b2): the index a report cites travels under the row's citation key.
+    expect(((row.document_data as any).citationPageIndex.pages as any[]).flatMap(page => page.regions.map((region: any) => region.areaNames)).flat()).toContain('Lot');
     expect(row.document_data).not.toHaveProperty('listedPageIndex');
     const onDesktop = await desktop();
     expect(onDesktop.cites).toEqual(CITES_REV_C);
@@ -325,9 +327,9 @@ describe('a new revision replaces the drawing: every device cites the new revisi
     }
     expect(phone(after).fingerprint).toBe(onDesktop.fingerprint);
     expect(phone(iPad).fingerprint).toBe(onDesktop.fingerprint);
-    // (As on the base, the queue sends a record the cloud already has with the cloud copy's index, so Rev D's own
-    // reading does not reach the row: every device cites nothing until Rev D is prepared; never Rev C.)
-    expect(onDesktop.cites).toEqual([]);
+    // High item 3d (b2): the queue still sends a record the cloud already has with the cloud copy's own index, but Rev
+    // D's citation slice, from the phone's own reading, goes under the row's citation key: every device cites Rev D.
+    expect(onDesktop.cites).toEqual(['Lot: A-201 Site plan · Rev D · Page 2']);
   });
 });
 
@@ -353,16 +355,16 @@ describe('a drawing kept where the app cannot read it (Google Drive: its row car
   });
 });
 
-describe('if the document list function leaves the page index out of what it returns (its code is not in the project)', () => {
-  it('the phone after the app has been closed, the iPad and the desktop all cite nothing: one fingerprint, as on the base', async () => {
+describe('the document list leaves the page index out (as the live one does): the row\'s citation key still carries the piece (high item 3d)', () => {
+  it('the phone after the app has been closed, the iPad and the desktop cite the same: one fingerprint', async () => {
     const thatDay = await phoneAddsTheDrawing();
     mockCloud.listGives = 'the row without its page index';
     const phoneNextDay = await download(relaunch(await download(thatDay)));
     const iPad = await download([SCHEDULE]);
     const onDesktop = await desktop();
-    expect(onDesktop.cites).toEqual([]);
-    expect(phone(phoneNextDay).cites).toEqual([]);
-    expect(phone(iPad).cites).toEqual([]);
+    expect(onDesktop.cites).toEqual(CITES_REV_C);
+    expect(phone(phoneNextDay).cites).toEqual(CITES_REV_C);
+    expect(phone(iPad).cites).toEqual(CITES_REV_C);
     expect(phone(phoneNextDay).fingerprint).toBe(onDesktop.fingerprint);
   });
 });

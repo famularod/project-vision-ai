@@ -47,6 +47,9 @@ import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence'
 import { selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import { buildDailyReportAuthorityScope } from '../../services/ReportAuthorityScope';
 import { buildAutomaticReportDrawingReferences } from '../../services/ReportDrawingReferences';
+import {
+  compactECOSDocumentIndexForCloud, listedPageIndexOfTheListRow, referenceDocumentsCitedAsListed, withoutListedPageIndexes,
+} from '../../services/ECOSDocumentIndexPersistence';
 import { mergeApprovedScheduleImportItems, scheduleImportReviewPairingQuestions, scheduleItemsVisibleBeforeImport } from '../../services/ScheduleImportMerge';
 import { scheduleSavedTasksOfProjects, scheduleTaskEarlierIds } from '../../services/ScheduleTaskRevisions';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
@@ -138,24 +141,32 @@ const written = (briefing: ReturnType<typeof buildDAVEReportBriefing>): string =
     String(formatDAVEWebReport(briefing, format, period)).split('\n').filter(line => !line.startsWith('Generated: ')).join('\n'),
   ]).join('\n=====\n');
 };
+/**
+ * High item 3 (c, b2): every device cites a drawing only from the copy the document list gives: the citation key of
+ * the drawing's row as its writers send it. Each world's documents as a device holds them after a list.
+ */
+const asListed = (documents: readonly ReferenceDocument[]): ReferenceDocument[] => documents.map(document => (document.category === 'Plans'
+  ? { ...document, listedPageIndex: listedPageIndexOfTheListRow(compactECOSDocumentIndexForCloud(document)) }
+  : document));
 function phoneScreen(world: World, period: DAVEReportSnapshot | null, now: string) {
   // App.tsx: the live authority input for a daily report, then the Reports screen's props.
   const scope = buildDailyReportAuthorityScope({
     selectedProjectName: 'Alpha', selectedProjectNames: ['Alpha'], projectRecords: [{ id: 'project-alpha-id', name: 'Alpha' }], updates: world.updates,
-    scheduleItems: shown(world), currentUpdate: null, projectAreas: world.areas, knownScheduleItems: world.items, referenceDocuments: world.documents,
+    scheduleItems: shown(world), currentUpdate: null, projectAreas: world.areas, knownScheduleItems: world.items, referenceDocuments: asListed(world.documents),
     projectDocuments: [], captureMemories: [], contacts: { contacts: [] },
   } as never);
   const truths = buildDAVEReportProjectTruths({
     projects: [{ name: 'Alpha', projectId: 'report:alpha' }], projectRecords: [{ name: 'Alpha' }] as never, updates: scope.updates, scheduleItems: scope.scheduleItems,
     knownScheduleItems: scheduleSavedTasksOfProjects(world.items, scope.scheduleItems, scope.projectNames), knownScheduleDocuments: world.documents,
-    projectAreas: scope.projectAreas, referenceDocuments: scope.referenceDocuments, now,
+    // As the Reports screen hands them (high item 3).
+    projectAreas: scope.projectAreas, referenceDocuments: withoutListedPageIndexes([...scope.referenceDocuments]), drawingDocuments: referenceDocumentsCitedAsListed([...scope.referenceDocuments]), now,
   });
   const fingerprint = buildDAVEReportSourceFingerprint(truths);
   const briefing = buildDAVEReportBriefing({
     truths, selectedProjectNames: ['Alpha'], previousSnapshot: reportBaselineSnapshot(period, fingerprint),
     readAsEarlierVersionReport: reportReadAsEarlierVersionReport(period, fingerprint), scheduleItems: scope.scheduleItems,
   });
-  const cited = buildAutomaticReportDrawingReferences({ documents: [...scope.referenceDocuments], scheduleItems: [...scope.scheduleItems], selectedProjectNames: ['Alpha'] });
+  const cited = buildAutomaticReportDrawingReferences({ documents: referenceDocumentsCitedAsListed([...scope.referenceDocuments]), scheduleItems: [...scope.scheduleItems], selectedProjectNames: ['Alpha'] });
   const snapshot = buildDAVEReportSnapshot({
     truths, scopeKey: SCOPE, sourceFingerprint: fingerprint, capturedAt: now, reportFormat: 'project_manager',
     sourceReferences: cited.map(reference => ({ ...reference.citation, projectName: reference.projectName, areaName: reference.areaName })),
@@ -169,13 +180,13 @@ function webPage(world: World, period: DAVEReportSnapshot | null, now: string) {
     projects: [{ id: 'project-alpha-id', name: 'Alpha' }], scheduleItems: shown(world), knownScheduleItems: world.items,
     // As the cloud keeps an update: the uploading device's own file path, and each photo's cloud path.
     projectUpdates: world.updates.map(update => ({ id: update.id, updateData: { ...update, photos: (update.photos ?? []).map(entry => ({ ...entry, uri: `file:///ipad/photos/${entry.id}.jpg`, cloudStoragePath: `Alpha/${update.id}/${entry.id}.jpg` })) } })),
-    referenceDocuments: world.documents, refreshedAt: now,
+    referenceDocuments: asListed(world.documents), refreshedAt: now,
   } as unknown as DAVEWebReadOnlySnapshot;
   const fingerprint = buildDAVEReportSourceFingerprint(buildDAVEWebReportTruths(snapshot, 'Alpha'));
   const briefing = buildDAVEWebReportDraft(snapshot, 'Alpha', {
     previousSnapshot: reportBaselineSnapshot(period, fingerprint), readAsEarlierVersionReport: reportReadAsEarlierVersionReport(period, fingerprint), waitingForOtherDevice: false,
   });
-  const cited = buildAutomaticReportDrawingReferences({ documents: [...snapshot.referenceDocuments], scheduleItems: [...snapshot.scheduleItems], selectedProjectNames: ['Alpha'] });
+  const cited = buildAutomaticReportDrawingReferences({ documents: referenceDocumentsCitedAsListed([...snapshot.referenceDocuments] as ReferenceDocument[]), scheduleItems: [...snapshot.scheduleItems], selectedProjectNames: ['Alpha'] });
   return { fingerprint, report: `${written(briefing)}\n=====CITES\n${cited.map(reference => `${reference.areaName}: ${reference.citation.label}`).join('\n')}` };
 }
 

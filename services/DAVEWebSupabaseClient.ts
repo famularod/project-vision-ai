@@ -57,7 +57,9 @@ import {
   compactECOSDocumentIndexForCloud,
   liveDocumentRowWithTheListedIndex,
   compactECOSDocumentMetadataForCloud,
+  withCitationPageIndexForTheCloudRow,
 } from './ECOSDocumentIndexPersistence';
+import { backfillDrawingCitationPageIndexes } from './DrawingCitationBackfill';
 import {
   canonicalReferenceCategory,
 } from './AuthoritativeDocumentSystem';
@@ -306,6 +308,9 @@ export function createDAVEWebSupabaseGateway(
   let authorizedDocumentPaths = new Set<string>();
   let cachedRowsOwnerId: string | null = null;
   let cachedAuthorizedRows: DAVEWebRawRows | null = null;
+  /** High item 3 (b2): the drawings this page has tried to backfill, and whether a backfill is on its way. */
+  const drawingCitationBackfillSeen = new Set<string>();
+  let drawingCitationBackfillRunning = false;
   let authorizationCache: Readonly<{ ownerId: string; expiresAt: number }> | null = null;
   let authorizationInFlight: Promise<string> | null = null;
   /** When the owner check now on its way was sent. */
@@ -955,6 +960,14 @@ export function createDAVEWebSupabaseGateway(
       cachedRowsOwnerId = userId;
       cachedAuthorizedRows = nextRows;
       artifactPathOwnerId = userId;
+      if (shouldReadReferenceDocuments && !drawingCitationBackfillRunning) {
+        // High item 3 (b2): drawings already in the cloud get their citation slice, once, in the background, from the
+        // rows exactly as the list gave them.
+        drawingCitationBackfillRunning = true;
+        void backfillDrawingCitationPageIndexes({ client, ownerId: userId, listedRows: referenceDocuments, seen: drawingCitationBackfillSeen })
+          .catch(() => undefined)
+          .finally(() => { drawingCitationBackfillRunning = false; });
+      }
       authorizedPhotoPaths = collectOwnerPhotoStoragePaths(projectUpdates);
       authorizedDocumentPaths = collectOwnerDocumentStoragePaths(referenceDocumentsWithHostedStatus);
       if (requestedCollections) {
@@ -2536,7 +2549,7 @@ function referenceDocumentRow(
   updatedAt: string,
 ) {
   const compactDocument = document.sourceProvider === 'google_drive'
-    ? compactECOSDocumentMetadataForCloud(document)
+    ? withCitationPageIndexForTheCloudRow(compactECOSDocumentMetadataForCloud(document), document)
     : compactECOSDocumentIndexForCloud(document);
   const {
     cloudUpdatedAt: _cloudUpdatedAt,

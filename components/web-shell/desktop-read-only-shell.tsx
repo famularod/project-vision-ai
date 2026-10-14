@@ -235,6 +235,7 @@ import {
   daveWebReportAlreadySentElsewhereNote,
 } from '../../services/DAVEWebReportPeriod';
 import { buildAutomaticReportDrawingReferences } from '../../services/ReportDrawingReferences';
+import { referenceDocumentsCitedAsListed } from '../../services/ECOSDocumentIndexPersistence';
 import {
   ECOSDocumentExtractionCancelledError,
   extractECOSWebDocument,
@@ -6228,7 +6229,8 @@ function ReportWorkspace({
         sourceUpdates.flatMap(update => update.photos.map(photo => photo.id)),
       );
       const drawingReferences = buildAutomaticReportDrawingReferences({
-        documents: [...snapshot.referenceDocuments],
+        // High item 3: a drawing piece only from the list's copy of its index.
+        documents: referenceDocumentsCitedAsListed([...snapshot.referenceDocuments] as ReferenceDocument[]),
         scheduleItems: [...snapshot.scheduleItems],
         selectedProjectNames,
       });

@@ -19,7 +19,20 @@ const MAX_REGION_TEXT_CHARACTERS = 1_200;
 export function compactECOSDocumentIndexForCloud(
   document: ReferenceDocument,
 ): ReferenceDocument {
-  const pages = (document.extractedPages ?? []).map(rawPage => {
+  const pages = cloudFormOfPages(document);
+  // High item 3 (b2): a drawing's row carries the citation slice under its own key (withCitationPageIndexForTheCloudRow).
+  return withCitationPageIndexForTheCloudRow({
+    ...document,
+    extractedText: pages.length > 0
+      ? null
+      : clean(document.extractedText).slice(0, MAX_FALLBACK_TEXT_CHARACTERS) || null,
+    extractedPages: pages,
+  }, document);
+}
+
+/** The page index in the cut-down form the cloud's row holds. */
+function cloudFormOfPages(document: ReferenceDocument): ReferenceDocumentExtractedPage[] {
+  return (document.extractedPages ?? []).map(rawPage => {
     const normalizedPage = withNormalizedECOSSheetProvenance(rawPage, {
       // Local extraction precedes the database Assurance commit. Preserve the
       // exact producer evidence here; the commit boundary independently
@@ -70,13 +83,6 @@ export function compactECOSDocumentIndexForCloud(
       regions,
     };
   });
-  return {
-    ...document,
-    extractedText: pages.length > 0
-      ? null
-      : clean(document.extractedText).slice(0, MAX_FALLBACK_TEXT_CHARACTERS) || null,
-    extractedPages: pages,
-  };
 }
 
 /**
@@ -117,103 +123,122 @@ export function compactECOSReferenceDocumentsForOperationalRead(
 }
 
 /*
- * HIGH ITEM 3 (the owner's instruction of 13 Oct 2026, the three high items; review pass 3 (reports), P3-3), AS
- * DECIDED AFTER THE LIVE LIST WAS READ (the coordinator's decision, option (c)).
- * Which drawing piece a report shows, and so its fingerprint, is read from the drawing's page index. On the live
- * system the cloud's document list (dave_list_reference_document_metadata) returns document_data without
- * extractedPages, while a live change carries the row whole and the device that read the file holds its own
- * reading. Each device therefore showed the piece at other moments, and a report read as changed, and was not known
- * across devices, each time the piece came or went.
+ * HIGH ITEM 3 (the owner's instruction of 13 Oct 2026, the three high items; review pass 3 (reports), P3-3).
+ * Which drawing piece a report shows, and so its fingerprint, is read from the drawing's page index.
  *
- * THE RULE: a report cites a drawing piece only from the drawing's index AS THE DOCUMENT LIST GIVES IT, the one
- * copy every device gets. Never from the device's own reading, never from a live-change row, never from a copy that
- * came from either. On the live system today the list carries none: no device shows a piece, so a report never
- * changes because of a drawing. If the list carries a citation slice under the key read below (option (b1)), every
- * device shows the same piece with no further app change.
- *  - THE ONE READER of the list's copy: listedPageIndexOfTheListRow (the only place that knows which key the list
- *    carries it under).
- *  - Phone and iPad: the list's copy is held as ReferenceDocument.listedPageIndex (null: the list carries none),
- *    saved and read back at launch, and the merge keeps the list's verdict across live changes
- *    (DAVECloudRecovery). The Reports screen cites only from it (referenceDocumentsCitedAsListed).
- *  - Desktop: a live-change row keeps the list's copy of the index of the row it replaces
- *    (liveDocumentRowWithTheListedIndex), so what it holds is only ever what its list gave.
- *  - Sent back (withListedPageIndexForTheCloudRow): where an edit would send the row with no index, the list's copy
- *    goes in its place, so that under (b1) an edit never removes it. Today it never has anything to send.
+ * THE RULE (option (c), the coordinator's decision): a report, on the phone, the iPad and the desktop alike, cites
+ * a drawing piece only from the drawing's index AS THE DOCUMENT LIST GIVES IT, the one copy every device gets.
+ * Never from the device's own reading, never from a live-change row, never from a copy made of either.
+ *
+ * HOW THE LIST CARRIES IT (option (b2), the coordinator's decision on Q52 B: app only, no database change). The live
+ * list function returns document_data - 'extractedPages' and every other key as it is. So a drawing's row carries
+ * the CITATION SLICE of its index under one key of its own, document_data.citationPageIndex
+ * (CITATION_PAGE_INDEX_KEY): per page its number and sheet; per region only what a citation and the piece read (id,
+ * label, work areas, confidence, box); the checksum of the file it was read from. A few hundred bytes a sheet.
+ *  - WRITERS (withCitationPageIndexForTheCloudRow, inside compactECOSDocumentIndexForCloud, so every row a phone, an
+ *    iPad or the desktop sends): the slice of the sender's own reading of the current file, else the copy the
+ *    document carries or the list's copy it holds, for the current file only; else no key (a drawing it cannot
+ *    index sends none). The device's own field never goes into a row.
+ *  - THE ONE READER (listedPageIndexOfTheListRow): reads that key from a list row. Phone and iPad hold the result as
+ *    ReferenceDocument.listedPageIndex (null: none); the desktop's loader does the same.
+ *  - THE BACKFILL (DrawingCitationBackfill.ts): the desktop writes the key, once, for a drawing whose row still holds
+ *    its own whole index (citationPageIndexOfTheRowsOwnIndex).
+ *  - Everything else of (c) stands: the merge keeps the list's verdict across live changes (DAVECloudRecovery); the
+ *    Reports screens cite only from listedPageIndex (referenceDocumentsCitedAsListed); the desktop keeps, for a live
+ *    change, the list's copy of the row it replaces (liveDocumentRowWithTheListedIndex); the report's truth gets the
+ *    documents as before (withoutListedPageIndexes), so no fingerprint moves for a report without a piece.
  *  - An index is used and sent only for the file it was read from.
  */
-const listedPagesBySourcePages = new WeakMap<readonly ReferenceDocumentExtractedPage[], ReferenceDocumentExtractedPage[]>();
+export const CITATION_PAGE_INDEX_KEY = 'citationPageIndex' as const;
+const slicesOfOwnReading = new WeakMap<readonly ReferenceDocumentExtractedPage[], ReferenceDocumentExtractedPage[]>();
 const citedAsListedByDocument = new WeakMap<ReferenceDocument, ReferenceDocument>();
 const normalizedListedPageIndexes = new WeakMap<object, ReferenceDocumentListedPageIndex | null>();
 
-/** The documents as the document list gave them: a drawing holds the part of the list's copy a citation reads, or null. */
+/** The documents as the document list gave them: a drawing holds the list's copy of its citation slice, or null. */
 export function compactECOSReferenceDocumentsFromTheDocumentList(
   documents: readonly ReferenceDocument[],
 ): ReferenceDocument[] {
   return documents.map(document => {
-    const { listedPageIndex: _neverInARow, ...row } = withoutEarlierKeptIndex(document);
+    const { listedPageIndex: _neverInARow, citationPageIndex: _readBelow, ...row } = withoutEarlierKeptIndex(document);
     const compact = compactECOSDocumentMetadataForCloud(row);
-    return isDrawing(row) ? { ...compact, listedPageIndex: listedPageIndexOfTheListRow(row) } : compact;
+    return isDrawing(row) ? { ...compact, listedPageIndex: listedPageIndexOfTheListRow(document) } : compact;
   });
 }
 
-/**
- * THE ONE READER of the index as the document list carries it: today the key extractedPages (which the live list
- * leaves out, so: null). Of what it carries, the part a citation can be read from (citablePagesOf), with the
- * checksum of the file it was read from.
- */
-export function listedPageIndexOfTheListRow(row: ReferenceDocument): ReferenceDocumentListedPageIndex | null {
-  const source = row.extractedPages ?? [];
-  if (source.length === 0) return null;
-  let pages = listedPagesBySourcePages.get(source);
-  if (!pages) {
-    pages = citablePagesOf(compactECOSDocumentIndexForCloud({ ...row, extractedText: null }).extractedPages ?? []);
-    listedPagesBySourcePages.set(source, pages);
-  }
-  return pages.length > 0
-    ? { sourceSha256: canonicalSha256(row.indexedContentSha256) ?? canonicalSha256(row.contentSha256), pages }
-    : null;
+/** THE ONE READER of the index as the document list carries it: document_data.citationPageIndex (null: none). */
+export function listedPageIndexOfTheListRow(row: Partial<ReferenceDocument>): ReferenceDocumentListedPageIndex | null {
+  return normalizeListedPageIndex(row[CITATION_PAGE_INDEX_KEY]);
 }
 
-/** The phone's and iPad's Reports screen: each drawing with the list's copy of its index as its index, or none. */
+/**
+ * The citation slice of a drawing's own index, as the cloud's row would hold it, with the checksum of the file it
+ * was read from; null for a document that is not a drawing or holds no index. Its pages are [] where the index names
+ * no work area: indexed, and nothing to cite.
+ */
+export function citationPageIndexOfTheRowsOwnIndex(document: ReferenceDocument): ReferenceDocumentListedPageIndex | null {
+  const source = document.extractedPages ?? [];
+  if (!isDrawing(document) || source.length === 0) return null;
+  let pages = slicesOfOwnReading.get(source);
+  if (!pages) {
+    pages = citationSliceOf(cloudFormOfPages(document));
+    slicesOfOwnReading.set(source, pages);
+  }
+  return { sourceSha256: canonicalSha256(document.indexedContentSha256) ?? canonicalSha256(document.contentSha256), pages };
+}
+
+/**
+ * The row a device sends of a document: a drawing with its citation slice under its own key, from the sender's own
+ * reading, else the copy the document carries, else the list's copy it holds, for the current file only; else none.
+ * The device's own fields never go into a row.
+ */
+export function withCitationPageIndexForTheCloudRow(
+  row: ReferenceDocument,
+  document: ReferenceDocument,
+): ReferenceDocument {
+  const { listedPageIndex: _deviceOnly, citationPageIndex: _chosenBelow, ...sent } = withoutEarlierKeptIndex(row);
+  if (!isDrawing(document)) return sent;
+  const slice = [
+    citationPageIndexOfTheRowsOwnIndex(document),
+    normalizeListedPageIndex(document.citationPageIndex),
+    normalizeListedPageIndex(document.listedPageIndex),
+  ].find(candidate => candidate && forTheCurrentFile(candidate, document));
+  return slice ? { ...sent, [CITATION_PAGE_INDEX_KEY]: slice } : sent;
+}
+
+/** The phone's, the iPad's and the desktop's Reports: each drawing with the list's copy of its index as its index, or none. */
 export function referenceDocumentsCitedAsListed(documents: ReferenceDocument[]): ReferenceDocument[] {
   return documents.map(document => {
     if (!isDrawing(document)) return document;
     const known = citedAsListedByDocument.get(document);
     if (known) return known;
-    const pages = listedPageIndexForThisFile(document)?.pages ?? [];
-    const cited = pages.length === 0 && (document.extractedPages ?? []).length === 0
-      ? document
-      : { ...document, extractedPages: pages };
+    const listed = normalizeListedPageIndex(document.listedPageIndex);
+    const pages = listed && forTheCurrentFile(listed, document) ? listed.pages : [];
+    // The index handed to the citation is the slice, read from the file the slice names (the citation's own check
+    // compares that with the document's file, as for any index).
+    const cited = pages.length === 0
+      ? (document.extractedPages ?? []).length === 0 ? document : { ...document, extractedPages: [] }
+      : { ...document, extractedPages: pages, ...(listed?.sourceSha256 ? { indexedContentSha256: listed.sourceSha256 } : {}) };
     citedAsListedByDocument.set(document, cited);
     return cited;
   });
 }
 
-/** The desktop: a live-change row of a document keeps the index the list gave for the row it replaces, never its own. */
+/** The desktop: a live-change row keeps the index the list gave for the row it replaces (both keys), never its own. */
 export function liveDocumentRowWithTheListedIndex(
   candidate: Readonly<Record<string, unknown>>,
   held: unknown,
 ): Readonly<Record<string, unknown>> {
   const data = candidate.document_data;
   if (!isRecord(data)) return candidate;
-  const { extractedPages: _live, ...rest } = data;
+  const { extractedPages: _live, [CITATION_PAGE_INDEX_KEY]: _liveSlice, ...rest } = data;
   const heldData = isRecord(held) && isRecord(held.document_data) ? held.document_data : null;
   const sameFile = heldData && canonicalSha256(heldData.contentSha256) === canonicalSha256(data.contentSha256);
-  return {
-    ...candidate,
-    document_data: heldData && sameFile && 'extractedPages' in heldData ? { ...rest, extractedPages: heldData.extractedPages } : rest,
-  };
-}
-
-/** The cloud's row of a document this device sends: the list's copy in the row's own place where the row has none. */
-export function withListedPageIndexForTheCloudRow(
-  row: ReferenceDocument,
-  document: ReferenceDocument,
-): ReferenceDocument {
-  const { listedPageIndex: _deviceOnly, ...sent } = withoutEarlierKeptIndex(row);
-  if ((sent.extractedPages ?? []).length > 0) return sent;
-  const listed = listedPageIndexForThisFile(document);
-  return listed ? { ...sent, extractedText: null, extractedPages: listed.pages } : sent;
+  const listed: Record<string, unknown> = {};
+  if (heldData && sameFile) {
+    if ('extractedPages' in heldData) listed.extractedPages = heldData.extractedPages;
+    if (CITATION_PAGE_INDEX_KEY in heldData) listed[CITATION_PAGE_INDEX_KEY] = heldData[CITATION_PAGE_INDEX_KEY];
+  }
+  return { ...candidate, document_data: { ...rest, ...listed } };
 }
 
 /**
@@ -221,11 +246,13 @@ export function withListedPageIndexForTheCloudRow(
  * each document whole, so that its earlier (1.0) fingerprint is still the build before's (Build 230's) to the byte.
  */
 export function withoutListedPageIndexes(documents: ReferenceDocument[]): ReferenceDocument[] {
-  if (!documents.some(document => 'listedPageIndex' in document || 'keptPageIndex' in document)) return documents;
+  const held = (document: ReferenceDocument) =>
+    'listedPageIndex' in document || 'keptPageIndex' in document || CITATION_PAGE_INDEX_KEY in document;
+  if (!documents.some(held)) return documents;
   return documents.map(document => {
-    if (!('listedPageIndex' in document) && !('keptPageIndex' in document)) return document;
-    const { listedPageIndex: _listed, ...held } = withoutEarlierKeptIndex(document);
-    return held;
+    if (!held(document)) return document;
+    const { listedPageIndex: _listed, citationPageIndex: _key, ...asBefore } = withoutEarlierKeptIndex(document);
+    return asBefore;
   });
 }
 
@@ -236,8 +263,8 @@ export function listedPageIndexField(value: unknown): { listedPageIndex?: Refere
   return listed ? { listedPageIndex: listed } : {};
 }
 
-function isDrawing(document: ReferenceDocument) {
-  return canonicalReferenceCategory(document) === 'drawing';
+function isDrawing(document: Partial<ReferenceDocument>) {
+  return canonicalReferenceCategory({ category: document.category ?? '' }) === 'drawing';
 }
 
 /**
@@ -250,31 +277,30 @@ function withoutEarlierKeptIndex<T extends ReferenceDocument>(document: T): T {
   return rest as T;
 }
 
-function listedPageIndexForThisFile(document: ReferenceDocument) {
-  if (!isDrawing(document)) return null;
-  const listed = normalizeListedPageIndex(document.listedPageIndex);
+function forTheCurrentFile(slice: ReferenceDocumentListedPageIndex, document: ReferenceDocument) {
   const file = canonicalSha256(document.contentSha256);
-  return listed && (!listed.sourceSha256 || !file || listed.sourceSha256 === file) ? listed : null;
+  return !slice.sourceSha256 || !file || slice.sourceSha256 === file;
 }
 
-function citablePagesOf(pages: readonly ReferenceDocumentExtractedPage[]): ReferenceDocumentExtractedPage[] {
+/** Of pages in the cloud's form: the pages with a region a citation can pick, and of those regions only what it reads. */
+function citationSliceOf(pages: readonly ReferenceDocumentExtractedPage[]): ReferenceDocumentExtractedPage[] {
   return pages.flatMap(page => {
-    const regions = page.regions ?? [];
-    if (!regions.some(citableRegion)) return [];
-    const provingSheet = new Set((page.sheetMappingEvidence ?? []).map(evidence => evidence?.id).filter(Boolean));
-    const {
-      visualCoverage: _coverage,
-      sheetMappingCandidates: _candidates,
-      text: _text,
-      regions: _regions,
-      ...kept
-    } = page;
-    return [{
-      ...kept,
-      text: null,
-      regions: regions.filter(region => regionShape(region) && (citableRegion(region) || provingSheet.has(region.id))),
-    }];
+    const regions = (page.regions ?? []).filter(citableRegion).map(sliceRegion);
+    return regions.length ? [{ pageNumber: page.pageNumber, sheetNumber: page.sheetNumber ?? null, regions }] : [];
   });
+}
+
+function sliceRegion(region: ReferenceDocumentRegion): ReferenceDocumentRegion {
+  return {
+    id: region.id,
+    label: region.label ?? null,
+    areaNames: [...(region.areaNames ?? [])],
+    confidence: region.confidence ?? null,
+    x: region.x,
+    y: region.y,
+    width: region.width,
+    height: region.height,
+  } as ReferenceDocumentRegion;
 }
 
 /** What AuthoritativeDocumentSystem.selectAutomaticDrawingExcerpt can ever pick, whatever the work areas are. */
@@ -298,17 +324,18 @@ function normalizeListedPageIndex(value: unknown): ReferenceDocumentListedPageIn
   return normalized;
 }
 
+/** A slice as saved or listed: kept only in the shape it was written in ([] pages: indexed, nothing to cite). */
 function readListedPageIndex(record: Record<string, unknown>): ReferenceDocumentListedPageIndex | null {
-  const pages = (Array.isArray(record.pages) ? record.pages : []).flatMap(value => {
+  if (!Array.isArray(record.pages)) return null;
+  const pages = record.pages.flatMap(value => {
     const page = value as ReferenceDocumentExtractedPage | null;
     if (!page || typeof page !== 'object' || !Number.isInteger(page.pageNumber) || !Array.isArray(page.regions)) return [];
     const regions = page.regions.filter(regionShape);
     return regions.length === page.regions.length ? [page] : [{ ...page, regions }];
   });
-  if (!pages.some(page => (page.regions ?? []).some(citableRegion))) return null;
   const sourceSha256 = canonicalSha256(record.sourceSha256);
   const asSaved = Object.keys(record).length === 2 && record.sourceSha256 === sourceSha256 &&
-    pages.length === (record.pages as unknown[]).length && pages.every((page, index) => page === (record.pages as unknown[])[index]);
+    pages.length === record.pages.length && pages.every((page, index) => page === (record.pages as unknown[])[index]);
   return asSaved ? record as ReferenceDocumentListedPageIndex : { sourceSha256, pages };
 }
 

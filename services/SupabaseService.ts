@@ -75,7 +75,6 @@ import {
 import {
   compactECOSDocumentIndexForCloud,
   compactECOSReferenceDocumentsFromTheDocumentList,
-  withListedPageIndexForTheCloudRow,
 } from './ECOSDocumentIndexPersistence';
 import { replaceECOSDocumentCloudIndex } from './ECOSDocumentCloudIndex';
 import {
@@ -2515,8 +2514,8 @@ export async function upsertReferenceDocument(
   // (by its id) and the index again; and both requests say which account they are sent for, so the last look where
   // they leave refuses them under any other sign-in.
   const asOwner = cloudOwnerExpectedForThisCall();
-  // High item 3 (c): the list's copy of a drawing's index goes in the row's own place, so an edit never removes it.
-  const compactDocument = withListedPageIndexForTheCloudRow(compactECOSDocumentIndexForCloud(document), document);
+  // High item 3 (b2): a drawing's row carries its citation slice under its own key (in the compaction).
+  const compactDocument = compactECOSDocumentIndexForCloud(document);
   const { cloudUpdatedAt: _cloudUpdatedAt, cloudDetailsSeen: _cloudDetailsSeen, ...documentData } = compactDocument;
   const payload = {
     id: document.id,

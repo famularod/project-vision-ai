@@ -23,7 +23,7 @@ import type { ReferenceDocument, ScheduleItem } from '../../types';
 const mockCloud: {
   rows: Map<string, { id: string; name: string; category: string; document_data: Record<string, unknown>; updated_at: string }>;
   /** What the document list function returns of a row's document_data (its code is in no migration: both ways). */
-  listGives: 'the row whole' | 'the row without its page index' | 'a citation slice';
+  listGives: 'the row whole' | 'the row without its page index' | 'the live list';
   clock: number;
 } = { rows: new Map(), listGives: 'the row whole', clock: Date.parse('2026-09-21T15:01:00.000Z') };
 function mockStore(payload: Record<string, any>, id: string) {
@@ -33,20 +33,14 @@ function mockStore(payload: Record<string, any>, id: string) {
     document_data: JSON.parse(JSON.stringify(payload.document_data)), updated_at: new Date(mockCloud.clock).toISOString(),
   });
 }
-/** Option (b) as described to the owner, made here independently of the app's own code: per page its number and sheet,
- * only regions that name a work area or carry a label of their own, with a size and a confidence. */
-function citationSlice(pages: unknown): unknown[] {
-  return (Array.isArray(pages) ? pages : []).flatMap((page: any) => {
-    const regions = (page.regions ?? []).filter((region: any) => ((region.areaNames ?? []).length > 0 || Boolean(region.label)) &&
-      region.width > 0 && region.height > 0 && (region.confidence ?? 0) > 0);
-    return regions.length ? [{ pageNumber: page.pageNumber, sheetNumber: page.sheetNumber ?? null, sheetMappingStatus: page.sheetMappingStatus ?? null, regions }] : [];
-  });
-}
 function mockListed() {
   return [...mockCloud.rows.values()].map(row => {
     const data = JSON.parse(JSON.stringify(row.document_data));
-    if (mockCloud.listGives === 'the row without its page index') delete data.extractedPages; // the live list: document_data - 'extractedPages'
-    if (mockCloud.listGives === 'a citation slice') data.extractedPages = citationSlice(data.extractedPages);
+    // The live list (document_data - 'extractedPages'), for a drawing whose row has no citation key: as every row sent
+    // before option (b2) (high item 3d) was.
+    if (mockCloud.listGives === 'the row without its page index') { delete data.extractedPages; delete data.citationPageIndex; }
+    // The live list over rows as this build writes them: the citation key is carried (option (b2)).
+    if (mockCloud.listGives === 'the live list') delete data.extractedPages;
     return { ...row, document_data: data };
   });
 }
@@ -203,7 +197,8 @@ async function desktopEdits(notes: string) {
   mockStore({ name: held.name, category: held.category, document_data: data }, 'doc-a201');
 }
 const drawingOf = (documents: readonly ReferenceDocument[]) => documents.find(document => document.id === 'doc-a201')!;
-const rowCitableRegions = () => ((mockCloud.rows.get('doc-a201')?.document_data.extractedPages as any[]) ?? [])
+// The row's citation key (high item 3d, option (b2)): what the list carries.
+const rowCitableRegions = () => (((mockCloud.rows.get('doc-a201')?.document_data as any)?.citationPageIndex?.pages as any[]) ?? [])
   .flatMap(page => page.regions ?? []).filter((region: any) => (region.areaNames ?? []).length > 0).length;
 
 const SHOWN = () => selectAuthoritativeScheduleItems({ scheduleItems: ITEMS, scheduleDocuments: [SCHEDULE] }) as ScheduleItem[];
@@ -233,7 +228,8 @@ async function desktop() {
   const report = RS.buildDAVEReportSnapshot({ truths, scopeKey: RS.daveReportSnapshotScopeKey(['Alpha']), sourceFingerprint: fingerprint, capturedAt: NOW, reportFormat: 'project_manager' });
   return {
     fingerprint,
-    cites: buildAutomaticReportDrawingReferences({ documents: [...snapshot.referenceDocuments] as ReferenceDocument[], scheduleItems: [...snapshot.scheduleItems] as ScheduleItem[], selectedProjectNames: ['Alpha'] }).map(reference => `${reference.areaName}: ${reference.citation.label}`),
+    // The desktop's Word report and Reports page cite as listed (high item 3).
+    cites: buildAutomaticReportDrawingReferences({ documents: citedAsListed([...snapshot.referenceDocuments] as ReferenceDocument[]), scheduleItems: [...snapshot.scheduleItems] as ScheduleItem[], selectedProjectNames: ['Alpha'] }).map(reference => `${reference.areaName}: ${reference.citation.label}`),
     sent: RS.markReportSnapshotDelivered({ ...report, deliveredAt: null } as RSTypes.DAVEReportSnapshot, '2026-10-01T18:07:00.000Z', 'desktop-browser'),
   };
 }
@@ -292,7 +288,7 @@ beforeEach(() => {
   mockDesktopHeld.clear();
 });
 
-describe('(c) the live system as it is: the list leaves the page index out; a live-change echo carries the row whole', () => {
+describe('(c) on the live list, a drawing whose row carries no citation key (every row sent before option (b2)); a live-change echo carries the row whole', () => {
   it('at every step, the phone, the iPad and the desktop write the same report, and none shows a drawing piece', async () => {
     mockCloud.listGives = 'the row without its page index';
     const steps = await timeline();
@@ -303,9 +299,9 @@ describe('(c) the live system as it is: the list leaves the page index out; a li
   });
 });
 
-describe('(b) shape: the list carries a citation slice of the index under the key the app already reads', () => {
+describe('(b2): the live list carries the row\'s citation key, written by this build\'s writers', () => {
   it('no piece until the list has carried it; then the same piece on all three, kept across closing and opening and across an edit on either side', async () => {
-    mockCloud.listGives = 'a citation slice';
+    mockCloud.listGives = 'the live list';
     const steps = await timeline();
     const pieceFromTheList = new Set(['4', '5a', '5c', '6', '7', '8', '9']);
     for (const step of steps) {
@@ -382,7 +378,7 @@ describe('nothing else changes', () => {
   });
 
   it('the earlier (1.0) fingerprint is the build before\'s, with the list\'s copy held or not', async () => {
-    mockCloud.listGives = 'a citation slice';
+    mockCloud.listGives = 'the live list';
     await upload(DRAWING_AS_READ);
     const listed = await download([SCHEDULE]);
     const asBefore = listed.map(document => {
