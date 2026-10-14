@@ -115,7 +115,10 @@ describe('A5 p15 L1: a web-filed North report on a deleted North row never links
     });
     expect(prepared.extractionStatus).toBe('ready');
     const document = { ...prepared.document, id, name: id } as ReferenceDocument;
-    return { document, items: prepared.scheduleItems.map((item, index) => ({ ...item, id: `${id}-${index + 1}`, sourceDocumentId: id }) as ScheduleItem) };
+    // Open item 2.35 (13 Oct 2026): the desktop now keeps a PDF's root only where it is a ticked project, as the phone
+    // does; Build 231's desktop kept it on every row, and his cloud may still hold such rows. These scenarios are
+    // about those rows, so the upload is taken as Build 231's desktop saved it: the root as each row's schedule parent.
+    return { document, items: prepared.scheduleItems.map((item, index) => ({ ...item, scheduleProjectName: prepared.fileScheduleProjectNames?.[item.id] ?? item.scheduleProjectName, id: `${id}-${index + 1}`, sourceDocumentId: id }) as ScheduleItem) };
   }
   /** The web's import plan over what is shown, saved with the schedule not yet current. */
   function uploadOnWeb(state: State, upload: { document: ReferenceDocument; items: ScheduleItem[] }): State {

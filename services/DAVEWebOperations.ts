@@ -167,6 +167,12 @@ export type DAVEWebPreparedUpload = Readonly<{
    * task waits.
    */
   waitingProjectNames?: Readonly<Record<string, Readonly<{ fitsEqually: readonly string[]; mayBeAnother: boolean }>>>;
+  /**
+   * The schedule parent a row's file gave (a Microsoft Project PDF's root), by row id, where the row does not keep it
+   * as written (open item 2.35: kept only where it is a ticked project, under its own name). Read only by the "Full
+   * schedule or Lookahead" suggestion, which is Build 231's. Absent when every row keeps what its file gave.
+   */
+  fileScheduleProjectNames?: Readonly<Record<string, string>>;
 }>;
 
 type DAVEWebDocumentPreparationInput = Readonly<{
@@ -331,17 +337,24 @@ export function prepareDAVEWebDocumentUpload({
   // list of his open projects when the page has it, even empty (review pass 1, L-4: the page's own list also holds
   // names known only from saved tasks); without it (an older caller), the page's list.
   const rowProjects = daveWebRowProjects(readItems, uniqueNames([...selectedProjectNames, ...(openProjectNames ?? projects)]), selectedProjectNames);
+  // Open item 2.35: a row's schedule parent (a PDF's root) only where it is a ticked project, as on the phone.
+  const parents = daveWebRowParents(readItems, selectedProjectNames);
+  const fileScheduleProjectNames: Record<string, string> = {};
   // The duplicate check compares a waiting row by the name the FILE gives, so two names the app does not know stay two
   // rows (review pass 1, H1S-1: two "Needs Project" rows of one task on one day were one); then the row waits. Two
   // spellings of one name by scheduleProjectScopeKey are one name there (review pass 2, L2S-3: "Shed Annex" and
   // "Shed-Annex" for one task on one day are one row): daveWebRowProjects hands such a row its first spelling.
   const items = dedupeScheduleImportItems(
-    rowProjects.items.map(item => ({
-      ...item,
-      scheduleProjectName: item.scheduleProjectName || item.projectName || selectedProjectNames[0],
-      projectName: item.projectName || selectedProjectNames[0],
-      importedFrom: cleanName,
-    })),
+    rowProjects.items.map((item, index) => {
+      const fileParent = item.scheduleProjectName?.trim() || '';
+      if (fileParent && parents[index] !== fileParent) fileScheduleProjectNames[item.id] = fileParent;
+      return {
+        ...item,
+        scheduleProjectName: parents[index] || item.projectName || selectedProjectNames[0],
+        projectName: item.projectName || selectedProjectNames[0],
+        importedFrom: cleanName,
+      };
+    }),
   ).map(item => (rowProjects.waiting.has(item.id) ? {
     ...item,
     projectName: SCHEDULE_IMPORT_NEEDS_PROJECT,
@@ -374,7 +387,34 @@ export function prepareDAVEWebDocumentUpload({
     everyRowNamedAProject: readItems.every(item => Boolean(item.projectName?.trim())),
     ...(Object.keys(rowProjects.fileProjectNames).length > 0 ? { fileProjectNames: Object.freeze(rowProjects.fileProjectNames) } : {}),
     ...(Object.keys(rowProjects.waitingProjectNames).length > 0 ? { waitingProjectNames: Object.freeze(rowProjects.waitingProjectNames) } : {}),
+    ...(Object.keys(fileScheduleProjectNames).length > 0 ? { fileScheduleProjectNames: Object.freeze(fileScheduleProjectNames) } : {}),
   });
+}
+
+/**
+ * Open item 2.35 (the 2.33 fixer's R-2, "the PDF root door"; 13 Oct 2026). A Microsoft Project PDF's root (the top line,
+ * scheduleProjectNameFromGanttRoot) was saved as every task's schedule parent as written; where it was none of his
+ * projects, the next phone or iPad that loaded made a project of that name (App.tsx, ensureScheduleParentProjects).
+ * The phone's own import keeps a parent only where it is one of the projects picked, under that project's own name,
+ * and clears it otherwise (guardScheduleParent). So here: the phone's function, given the TICKED projects; first by
+ * the phone's comparison, then, as a row's project is read on the desktop (High item 2), with each ticked project's
+ * spellings by scheduleProjectScopeKey. Null where the row keeps no parent (it then stands under its own project).
+ */
+function daveWebRowParents(items: readonly ScheduleItem[], ticked: readonly string[]): (string | null)[] {
+  const parentsOnly = items.map(item => ({ ...item, projectName: '' }));
+  const spellings = [...new Set(items.map(item => item.scheduleProjectName?.trim() || '').filter(Boolean))];
+  if (spellings.length === 0) return items.map(() => null);
+  const kept = (aliases: boolean) => validateScheduleImportScope({
+    items: parentsOnly,
+    selectedProjects: ticked.map(name => ({
+      id: name,
+      name,
+      ...(aliases ? { aliases: spellings.filter(spelling => scheduleProjectScopeKey(spelling) === scheduleProjectScopeKey(name)) } : {}),
+    })),
+  }).items.map(item => item.scheduleProjectName || null);
+  const exact = kept(false);
+  const respelled = kept(true);
+  return items.map((_, index) => exact[index] || respelled[index]);
 }
 
 /**
@@ -591,15 +631,23 @@ export function daveWebScheduleUploadRoleSuggestion({
   prepared,
 }: {
   snapshot: DAVEWebImportSnapshot | null | undefined;
-  prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'extractionStatus' | 'fileProjectNames'> | null | undefined;
+  prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'extractionStatus' | 'fileProjectNames' | 'fileScheduleProjectNames'> | null | undefined;
 }): ScheduleImportRoleSuggestion | null {
   if (!snapshot || !prepared || prepared.extractionStatus !== 'ready' || normalized(prepared.document.category) !== 'schedules') return null;
   const { scheduleRole: _role, ...file } = prepared.document;
   // High item 2: the rows as the file names their projects, as before; the suggestion is Build 231's, not changed.
+  // Open item 2.35: and with the schedule parent (a PDF's root) the file gave.
   const named = prepared.fileProjectNames ?? {};
-  const items = prepared.scheduleItems.map(item => (named[item.id] === undefined ? item : {
-    ...item, projectName: named[item.id], scheduleProjectName: item.scheduleProjectName === item.projectName ? named[item.id] : item.scheduleProjectName,
-  }));
+  const parents = prepared.fileScheduleProjectNames ?? {};
+  const items = prepared.scheduleItems.map(item => {
+    if (named[item.id] === undefined && parents[item.id] === undefined) return item;
+    const projectName = named[item.id] ?? item.projectName;
+    return {
+      ...item,
+      projectName,
+      scheduleProjectName: parents[item.id] ?? (item.scheduleProjectName === item.projectName ? projectName : item.scheduleProjectName),
+    };
+  });
   return suggestScheduleImportRole({
     batch: { documents: [file as ReferenceDocument], items },
     documents: snapshot.referenceDocuments ?? [],
