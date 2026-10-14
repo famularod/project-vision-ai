@@ -74,7 +74,7 @@ jest.mock('@react-native-community/datetimepicker', () => {
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 import { ReportsScreen } from '../../screens/ReportsScreen';
-import { describeReportSendTime, isLegacyReportSource, legacyReportSourcesOf, type DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
+import { describeReportSendTime, earlierReportSourcesOf, isLegacyReportSource, isVersion2ReportSource, legacyReportSourcesOf, type DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
 import { forgetAllReportSessionState } from '../../services/ReportSessionState';
 import {
   recordScheduleCloudPull,
@@ -363,5 +363,43 @@ describe('R5 item 2 (phone), reversed by R10: a report made under the earlier fi
     expect(screen.getByRole('button', { name: 'Share Report' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Approve Report' })).toBeNull();
     expect(screen.queryByRole('button', MARK_AS_SENT)).toBeNull();
+  });
+});
+
+/**
+ * HIGH item 1 (d) (the owner's instruction of 13 Oct 2026, the three high items). The fingerprint's version 3.0 came
+ * with an update, and a report the other device approved or sent on Builds 231 or 232 carries a 2.0 fingerprint. For
+ * the same facts today it IS the report on screen, exactly where 2.0 itself said so: the update offers nothing again
+ * that the build before would not have offered. (1.0 is untouched: R10 above.)
+ */
+describe('HIGH item 1 (phone): a report made under 2.0 is today\'s report for the same facts, and only for them', () => {
+  /** The iPad, on Build 232, sends the report: the shared period is its send, under the 2.0 fingerprint of the same facts. */
+  const sentFromTheIpadUnderVersion2 = async () => {
+    visit('ipad', tower(0));
+    await approve();
+    await share('Copy Report');
+    await waitFor(() => expect(cloudRow()?.deliveredAt).toEqual(expect.any(String)), SLOW);
+    const row = cloudRow() as { snapshot: DAVEReportSnapshot; deliveredAt: string | null };
+    // The 2.0 fingerprint the app works out beside today's for these very facts (the 2.0 code, unchanged).
+    const version2 = earlierReportSourcesOf(row.snapshot.sourceFingerprint).find(isVersion2ReportSource) as string;
+    expect(version2).toMatch(/^dave-report-source\/2\.0:[0-9a-f]{8}$/);
+    const snapshot = { ...row.snapshot, sourceFingerprint: version2 };
+    mockCloud.set('tower|project_manager', { snapshot, deliveredAt: row.deliveredAt });
+    return snapshot;
+  };
+
+  it('the "already sent" notice: the report the iPad sent on the build before, the same facts today, is the report on screen, and the screen says so', async () => {
+    const sent = await sentFromTheIpadUnderVersion2();
+    onCopyReport.mockClear();
+    visit('phone', tower(0));
+    expect(await screen.findByText(ALREADY_SENT(sent.deliveredAt as string), {}, SLOW)).toBeTruthy();
+  });
+
+  it('guard: once a task changes it is another report, and the notice is not shown', async () => {
+    await sentFromTheIpadUnderVersion2();
+    visit('phone', tower(1));
+    await approvable();
+    await settle();
+    expect(screen.queryByText(/already sent this report/)).toBeNull();
   });
 });

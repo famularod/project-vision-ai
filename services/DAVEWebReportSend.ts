@@ -8,7 +8,7 @@ import {
   type DAVEReportFormat,
   type DAVEReportSnapshot,
   sameReportSource,
-  legacyReportSourcesOf,
+  earlierReportSourcesOf,
 } from './DAVEReportSnapshot';
 import {
   carryUpDAVEReportPeriod,
@@ -808,9 +808,10 @@ export function daveWebReportSentHereAt(
     sameReportSource(send.sourceFingerprint, fingerprint) && typeof send.deliveredAt === 'string' && ownSends.has(send.deliveredAt));
   if (sent?.deliveredAt) return sent.deliveredAt;
   // R2 item 1: a report from before the three the period remembers, by this browser's own list of what it sent.
-  // By these facts' fingerprint, or by the one the earlier version gave them when the report was sent (R4 item 4a).
+  // By these facts' fingerprint, or by the one an earlier version gave them when the report was sent (R4 item 4a; the
+  // 2.0 one since HIGH item 1).
   if (!period?.reportFormat) return null;
-  for (const facts of [fingerprint, ...legacyReportSourcesOf(fingerprint)]) {
+  for (const facts of [fingerprint, ...earlierReportSourcesOf(fingerprint)]) {
     const sentAt = ownSendFacts.get(ownSendFactsKey(period.scopeKey, period.reportFormat, facts));
     if (sentAt) return sentAt;
   }

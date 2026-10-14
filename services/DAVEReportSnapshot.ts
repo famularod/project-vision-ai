@@ -244,8 +244,45 @@ export function legacyReportSourcesOf(current: string | null | undefined): reado
 }
 
 /**
+ * HIGH item 1 (d) (the owner's instruction of 13 Oct 2026, the three high items). Version 3.0 of the fingerprint
+ * came with an update, and every report approved, sent or saved by Builds 231 and 232 carries a 2.0 fingerprint.
+ * Wherever the app works out today's fingerprint it also works out the 2.0 one of the same facts (with the 2.0 code,
+ * unchanged), and remembers it here, ONE per today's fingerprint: the 2.0 value of the facts as last worked out. A
+ * report made under 2.0 is then today's report exactly where 2.0 itself says so, until the next report replaces it:
+ * installing the update offers no report again that the build before would not have offered. Unlike 1.0's (R10),
+ * a 2.0 name stands: 3.0 changes when a report is offered, not one word of it. In memory, as the 1.0 names were.
+ */
+const VERSION_2_REPORT_SOURCE_PREFIX = 'dave-report-source/2.0:';
+const version2ReportSources = new Map<string, string>();
+
+export function isVersion2ReportSource(fingerprint: string | null | undefined): boolean {
+  return typeof fingerprint === 'string' && fingerprint.startsWith(VERSION_2_REPORT_SOURCE_PREFIX);
+}
+
+/** Today's fingerprint of some facts, and the 2.0 fingerprint of the same facts (HIGH item 1). */
+export function rememberVersion2ReportSource(current: string, version2: string): void {
+  if (!current || !version2 || current === version2 || !isVersion2ReportSource(version2)) return;
+  // Most recently worked out last, so the oldest pair is the one dropped.
+  version2ReportSources.delete(current);
+  version2ReportSources.set(current, version2);
+  while (version2ReportSources.size > REMEMBERED_LEGACY_SOURCES) {
+    const oldest = version2ReportSources.keys().next().value;
+    if (oldest === undefined) break;
+    version2ReportSources.delete(oldest);
+  }
+}
+
+/** Every earlier-version fingerprint that names the facts of `current`: its 2.0 one, and any 1.0 one (none stands, R10). */
+export function earlierReportSourcesOf(current: string | null | undefined): readonly string[] {
+  if (!current) return [];
+  const version2 = version2ReportSources.get(current);
+  return [...(version2 ? [version2] : []), ...legacyReportSourcesOf(current)];
+}
+
+/**
  * Whether two fingerprints are of the same facts: the same fingerprint, or
- * one written under 1.0 and the other today's fingerprint of those facts.
+ * one written under 2.0 (HIGH item 1) or 1.0 and the other today's
+ * fingerprint of those facts.
  * The web's longer source fingerprint ("<facts>:media-…") is compared by its
  * facts part, with the rest the same.
  */
@@ -255,6 +292,8 @@ export function sameReportSource(left: string | null | undefined, right: string 
   const [leftFacts, ...leftRest] = left.split(':media-');
   const [rightFacts, ...rightRest] = right.split(':media-');
   if (leftRest.join(':media-') !== rightRest.join(':media-')) return false;
+  // HIGH item 1 (d): a report made under 2.0, by the 2.0 fingerprint of today's facts.
+  if (version2ReportSources.get(leftFacts) === rightFacts || version2ReportSources.get(rightFacts) === leftFacts) return true;
   if (isLegacyReportSource(leftFacts) === isLegacyReportSource(rightFacts)) return false;
   return isLegacyReportSource(leftFacts)
     ? legacyReportSourcesOf(rightFacts).includes(leftFacts)

@@ -17,8 +17,8 @@
  *      written report in both formats, with the app's own draft; what the Reports preview and the desktop's page
  *      print; the desktop's report in both formats). The phone and the desktop work out one value each morning.
  *   2. Each of F2 to F6b: the phone's written report moves, and so does the fingerprint.
- *   3. The 2.0 value worked out beside today's is a5cab6c's own: the values below were worked out there (Build 231)
- *      for these very projects.
+ *   3. A report sent on the build before (Build 231, a5cab6c: a 2.0 fingerprint) is known for exactly the mornings
+ *      a5cab6c itself knew it: the 2.0 values below are a5cab6c's own, worked out there for these very projects.
  * Synthetic data, made-up names. No network.
  */
 jest.mock('expo-file-system/legacy', () => ({ documentDirectory: null }));
@@ -295,11 +295,51 @@ describe('HIGH 1. Fourteen mornings with nothing changed: the report is offered 
   });
 });
 
-describe('HIGH 1. The 2.0 fingerprint, worked out beside today\'s, is the build before\'s own', () => {
+describe('HIGH 1. A report sent on the build before (a 2.0 fingerprint) is known exactly where that build knew it', () => {
   it.each(WORLDS)('%s: the 2.0 value worked out beside today\'s is a5cab6c\'s own, every morning', (name, make) => {
     expect(mornings(name, make).map(entry => entry.v2)).toEqual(ON_A5CAB6C[name].map(hash => `dave-report-source/2.0:${hash}`));
   });
 
+  it.each(WORLDS)('%s: a report sent on a5cab6c on any morning is "the same report" on a later morning exactly when a5cab6c would say so', (name, make) => {
+    const read = mornings(name, make);
+    const differ: string[] = [];
+    read.forEach((sentOn, sentDay) => {
+      const sentFingerprint = `dave-report-source/2.0:${ON_A5CAB6C[name][sentDay]}`;
+      read.slice(sentDay).forEach((openedOn, offset) => {
+        // Today's value is worked out first (the screen does), and with it the 2.0 name of the same facts.
+        fakeNow(new Date(Date.parse(make().day0) + (sentDay + offset) * DAY).toISOString());
+        try { RI.buildDAVEReportSourceFingerprint(phoneTruths(make())); } finally { jest.useRealTimers(); }
+        const known = Snapshots.sameReportSource(sentFingerprint, openedOn.fingerprint);
+        const a5cab6cKnows = ON_A5CAB6C[name][sentDay + offset] === ON_A5CAB6C[name][sentDay];
+        if (known !== a5cab6cKnows) differ.push(`sent on morning ${sentDay}, opened on morning ${sentDay + offset}: known ${known}, a5cab6c ${a5cab6cKnows}`);
+        // The desktop's longer source fingerprint (with its photos' part) the same way.
+        const web = Snapshots.sameReportSource(`${sentFingerprint}:media-0a0b0c0d`, `${openedOn.fingerprint}:media-0a0b0c0d`);
+        if (web !== a5cab6cKnows) differ.push(`(desktop) sent on morning ${sentDay}, opened on morning ${sentDay + offset}: known ${web}, a5cab6c ${a5cab6cKnows}`);
+      });
+    });
+    expect(differ).toEqual([]);
+    expect(read[0].fingerprint.startsWith('dave-report-source/2.0:')).toBe(false);
+  });
+
+  it('the period: approving the same facts over a 2.0 approval saves nothing new; a 2.0 report sent is counted from as before; it is not "read as an earlier version\'s report" (that is 1.0\'s alone)', () => {
+    const world = alpha();
+    fakeNow(world.day0);
+    try {
+      const truths = phoneTruths(world);
+      const today = RI.buildDAVEReportSourceFingerprint(truths);
+      const scopeKey = Snapshots.daveReportSnapshotScopeKey(['Alpha']);
+      const onA5cab6c = Snapshots.buildDAVEReportSnapshot({ truths, scopeKey, sourceFingerprint: `dave-report-source/2.0:${ON_A5CAB6C['Alpha (review pass 3)'][0]}`, capturedAt: world.day0, reportFormat: 'project_manager' });
+      const current = Snapshots.buildDAVEReportSnapshot({ truths, scopeKey, sourceFingerprint: today, capturedAt: world.day0, reportFormat: 'project_manager' });
+      const sent = Snapshots.markReportSnapshotDelivered({ ...onA5cab6c, deliveredAt: null }, '2026-10-01T17:00:00.000Z', 'install-ipad');
+      expect(Snapshots.reportSnapshotToSave(current, sent)).toBeNull();
+      expect(Snapshots.reportBaselineSnapshot(sent, today)).toBe(sent.supersedes ?? null);
+      expect(Snapshots.reportReadAsEarlierVersionReport(sent, today)).toBe(false);
+      // A 1.0 record is still never taken for today's report (R10).
+      expect(Snapshots.sameReportSource('dave-report-source/1.0:0badc0de', today)).toBe(false);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 // ---- F2 to F6b: what the phone's written report prints that 2.0 did not hold ----

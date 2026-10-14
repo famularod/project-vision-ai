@@ -11,6 +11,7 @@ import {
   buildDAVEReportSnapshot,
   compareDAVEReportSnapshots,
   rememberLegacyReportSource,
+  rememberVersion2ReportSource,
   daveReportSnapshotScopeKey,
   reportPeriodWaitingForOtherDevice,
   reportTaskEarlierRows,
@@ -28,9 +29,10 @@ export const DAVE_REPORT_INTELLIGENCE_VERSION = 'dave-report-intelligence/2.0' a
  * (reportSourceFactsOf3, below). Then what the phone's written report prints
  * that Project Truth does not hold (writtenReportFacts).
  * 2.0 (R4 item 4a): the fingerprint no longer follows the order the tasks
- * were saved in, nor the id each device files the project under. Its code is
- * kept, unchanged (buildDAVEVersion2ReportSourceFingerprint). 1.0 is still
- * worked out for R7's rule, and none of its names stands (R10).
+ * were saved in, nor the id each device files the project under. It is still
+ * worked out beside 3.0, and a report made under it is known by it for the
+ * same facts (DAVEReportSnapshot, sameReportSource). 1.0 is still worked out
+ * for R7's rule, and none of its names stands (R10).
  */
 export const DAVE_REPORT_SOURCE_VERSION = 'dave-report-source/3.0' as const;
 const DAVE_VERSION_2_REPORT_SOURCE_VERSION = 'dave-report-source/2.0' as const;
@@ -172,6 +174,10 @@ export function buildDAVEReportSourceFingerprint(
   // The 1.0 fingerprint of the same facts, so a report made under it is still known (R4 item 4a).
   // R10: no longer offered (EARLIER_VERSION_NAMES_STAND). This is the one place today's facts are given a 1.0 name.
   rememberLegacyReportSource(fingerprint, EARLIER_VERSION_NAMES_STAND && countsWhatBuild230Counted ? buildDAVELegacyReportSourceFingerprint(truths) : null);
+  // HIGH item 1 (d): the 2.0 fingerprint of the same facts, so that a report approved or sent under 2.0 (Builds 231
+  // and 232) is known for exactly what 2.0 itself knew it, until the next report replaces it. Its name stands
+  // (unlike 1.0's): this version changes when a report is offered, not one word of it.
+  rememberVersion2ReportSource(fingerprint, buildDAVEVersion2ReportSourceFingerprint(truths));
   return fingerprint;
 }
 
