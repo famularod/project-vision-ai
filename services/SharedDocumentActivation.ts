@@ -51,6 +51,23 @@ export type SharedDocumentActivationOutcome =
 export const SCHEDULE_NOT_UPLOADED_YET =
   'This schedule has not finished uploading, so your other devices do not have it yet. Nothing was changed on any device. It uploads by itself when this device has signal (Sync Now sends it at once); then try again.';
 
+/**
+ * Review pass 5's H5S-1 (14 Oct 2026, Low, caused by 3.1): with no cloud stamp here, a schedule the cloud has was made
+ * current by the cloud's own revision; a note typed on its card just before was then outranked by the activation's
+ * stamp and never reached the other devices (the protection for text typed before Make Current needs the stamp this
+ * device last saw). Such a schedule is made current only while what this device holds for it reads as the cloud's
+ * copy does; otherwise this.
+ */
+export const SCHEDULE_DETAILS_NOT_HEARD_BACK =
+  'This device has not yet heard back from the cloud about this schedule, and its details here (such as a note just typed) differ from the cloud’s copy. Nothing was changed on any device, and nothing you typed was lost. Try again in a moment.';
+
+/** The details a person types or picks on a document's card, as text, for comparing two copies of one document. */
+function personDetails(document: ReferenceDocument): string {
+  const record = document as unknown as Record<string, unknown>;
+  const text = (name: string) => (typeof record[name] === 'string' ? (record[name] as string).trim() : '');
+  return JSON.stringify(['name', 'notes', 'category', 'drawingNumber', 'drawingRevision', 'drawingDiscipline', 'drawingIssuedAt', 'drawingStatus'].map(text));
+}
+
 /** What making a schedule current does to another project's schedule. */
 export type ScheduleRetirementEffect = Readonly<{
   projectName: string;
@@ -113,7 +130,11 @@ export async function activateSharedReferenceDocument({
     const cloudTarget = cloud.find(document => document.id === documentId);
     // Never in the cloud: still uploading from this device (3.1). Once there and gone since: a refresh shows why.
     if (!cloudTarget) return target.cloudUpdatedAt ? { status: 'refresh_required' } : { status: 'not_uploaded', message: SCHEDULE_NOT_UPLOADED_YET };
-    // Uploaded since this device last heard: made current by the cloud's own revision (3.1).
+    // Uploaded since this device last heard: made current by the cloud's own revision (3.1), only while nothing typed
+    // here since is missing from the cloud's copy (H5S-1: the activation's stamp would outrank it).
+    if (!target.cloudUpdatedAt && personDetails(target) !== personDetails(cloudTarget)) {
+      return { status: 'not_uploaded', message: SCHEDULE_DETAILS_NOT_HEARD_BACK };
+    }
     expectedUpdatedAt ||= cloudTarget.cloudUpdatedAt || '';
     if (!expectedUpdatedAt) return { status: 'refresh_required' };
     retiring = scheduleActivationEffects(cloudTarget, cloud, scope);
