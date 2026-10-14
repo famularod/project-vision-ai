@@ -7,7 +7,6 @@ import {
   selectAutomaticDrawingExcerpt,
   type AutomaticDrawingExcerpt,
 } from './AuthoritativeDocumentSystem';
-import { referenceDocumentWithKeptPageIndex } from './ECOSDocumentIndexPersistence';
 
 export type ReportDrawingReference = Readonly<{
   id: string;
@@ -35,14 +34,12 @@ export function buildAutomaticReportDrawingReferences({
   minimumConfidence?: number;
 }) {
   const selectedProjects = new Set(selectedProjectNames.map(normalized).filter(Boolean));
-  // High item 3: a phone or iPad cites from the page index it kept, where it does not hold the file's own reading.
-  const cited = documents.map(referenceDocumentWithKeptPageIndex);
   const areas = uniqueProjectAreas(scheduleItems)
     .filter(item => selectedProjects.has(normalized(item.projectName)));
 
   return areas.flatMap<ReportDrawingReference>(area => {
     const excerpt = selectAutomaticDrawingExcerpt({
-      documents: cited,
+      documents,
       projectName: area.projectName,
       areaName: area.areaName,
       minimumConfidence,

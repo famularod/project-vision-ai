@@ -322,12 +322,14 @@ function mergeCloudReferenceDocumentAuthority(
 ): ReferenceDocument {
   // Part of "which schedule is current", written and cleared only by the
   // activation call (owner answer Q15): the cloud's list, or none.
-  const { retiredForProjectNames: _deviceRetirement, keptPageIndex: _deviceKept, ...merged } = metadataMerged;
+  const { retiredForProjectNames: _deviceRetirement, listedPageIndex: carried, ...merged } = metadataMerged;
+  // High item 3 (c): the document list's copy of a drawing's index (null: it gave none) is replaced only by what a
+  // list gives; a live-change row carries no verdict of the list's, so the copy this device holds is carried over.
+  const listed = cloud.listedPageIndex !== undefined ? cloud.listedPageIndex : carried;
   return {
     ...merged,
     ...(cloud.retiredForProjectNames?.length ? { retiredForProjectNames: cloud.retiredForProjectNames } : {}),
-    // High item 3: the page index a report cites from is the cloud's row's, as `extractedPages` is.
-    ...(cloud.keptPageIndex ? { keptPageIndex: cloud.keptPageIndex } : {}),
+    ...(listed !== undefined ? { listedPageIndex: listed } : {}),
     isCurrent: cloud.isCurrent,
     webContentReview: cloud.webContentReview,
     webReport: cloud.webReport,
@@ -395,7 +397,7 @@ const REFERENCE_DOCUMENT_DEVICE_OR_CLOUD_AUTHORITY_KEYS = new Set([
   'extractionAverageConfidence',
   'indexedContentSha256',
   'extractedPages',
-  'keptPageIndex',
+  'listedPageIndex',
   'ecosHostedIndexStatus',
   'ecosHostedIndexProgressPercent',
   'ecosHostedIndexCustomerMessage',

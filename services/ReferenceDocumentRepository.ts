@@ -19,7 +19,7 @@ import {
   resolveLegacyOwnedLocalFilePath,
 } from './OwnedLocalFileRepository';
 import { referenceDocumentCategory, referenceDocumentName } from './ReferenceDocumentSharedFields';
-import { keptPageIndexField } from './ECOSDocumentIndexPersistence';
+import { listedPageIndexField } from './ECOSDocumentIndexPersistence';
 
 const REFERENCE_DOCUMENTS_FOLDER = 'project-documents';
 const REFERENCE_DOCUMENTS_DIR = FileSystem.documentDirectory
@@ -154,8 +154,8 @@ export function normalizeReferenceDocument(
     extractionAverageConfidence: confidenceOrNull(value.extractionAverageConfidence),
     indexedContentSha256: canonicalSha256(value.indexedContentSha256),
     extractedPages: normalizeExtractedPages(value.extractedPages),
-    // High item 3: the part of a drawing's page index a report cites from, read back at launch.
-    ...keptPageIndexField(value.keptPageIndex),
+    // High item 3 (c): a drawing's index as the document list last gave it (null: none), read back at launch.
+    ...listedPageIndexField(value.listedPageIndex),
   };
 }
 

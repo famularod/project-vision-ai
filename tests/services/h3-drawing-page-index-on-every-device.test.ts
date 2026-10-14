@@ -6,10 +6,12 @@
  * own cloud kept it, so the desktop cited the drawing and the phone, once the app had been closed, did not: the
  * piece of the drawing was gone from the phone's report, and neither device knew the report the other had sent.
  *
- * The coordinator's decision: every device holds the same page index for a drawing, and keeps it. The phone and the
- * iPad keep the part of the index a citation is read from with the document, read it back at launch, take it from
- * the cloud's row when they download the document, and send it with the row when they upload it. Nothing else of the
- * report or its fingerprint changes.
+ * The coordinator's decision: every device holds the same page index for a drawing, and keeps it. As decided once
+ * the live document list had been read (option (c), tests/services/h3c-cite-only-the-lists-copy.test.ts): the index
+ * a report cites from is the one the document list gives, the one copy every device gets. This file's cloud lists
+ * the row WHOLE (the (b) shape: the list carries the index under the key the app reads), so here every device holds
+ * it: the phone and the iPad take it from the list, keep it with the document, read it back at launch, and send it
+ * back with the row when they upload it. Nothing else of the report or its fingerprint changes.
  *
  * Each device by its own code: the phone's save, launch, download (SupabaseService.listReferenceDocuments through the
  * document list function) and merge, its upload (SupabaseService.upsertReferenceDocument after the queue's merge),
@@ -89,8 +91,10 @@ const RI: typeof import('../../services/DAVEReportIntelligence') = require('../.
 const RS: typeof import('../../services/DAVEReportSnapshot') = require('../../services/DAVEReportSnapshot');
 const { compactECOSDocumentIndexForCloud, compactECOSReferenceDocumentsForOperationalRead }: typeof import('../../services/ECOSDocumentIndexPersistence') = require('../../services/ECOSDocumentIndexPersistence');
 /** ReportsScreen's own call (absent on the base: the documents are then handed as they are). */
-const withoutKeptPageIndexes: (documents: ReferenceDocument[]) => ReferenceDocument[] =
-  require('../../services/ECOSDocumentIndexPersistence').withoutKeptPageIndexes ?? ((documents: ReferenceDocument[]) => documents);
+const withoutListedPageIndexes: (documents: ReferenceDocument[]) => ReferenceDocument[] =
+  require('../../services/ECOSDocumentIndexPersistence').withoutListedPageIndexes;
+const referenceDocumentsCitedAsListed: (documents: ReferenceDocument[]) => ReferenceDocument[] =
+  require('../../services/ECOSDocumentIndexPersistence').referenceDocumentsCitedAsListed;
 const { normalizeScheduleImport }: typeof import('../../services/PIEScheduleIntelligence') = require('../../services/PIEScheduleIntelligence');
 const { selectAuthoritativeScheduleItems }: typeof import('../../services/PIEScheduleReconciliation') = require('../../services/PIEScheduleReconciliation');
 const { buildAutomaticReportDrawingReferences }: typeof import('../../services/ReportDrawingReferences') = require('../../services/ReportDrawingReferences');
@@ -182,10 +186,10 @@ function phone(documents: readonly ReferenceDocument[]) {
     projects: [{ name: 'Alpha', projectId: 'report:alpha' }], projectRecords: [{ name: 'Alpha' }] as never, updates: [], scheduleItems: shown,
     knownScheduleItems: ITEMS, knownScheduleDocuments: [SCHEDULE], projectAreas: [], now: NOW,
     // As ReportsScreen hands them: the documents as held before, the drawings cited from what the device kept.
-    referenceDocuments: withoutKeptPageIndexes(all), drawingDocuments: all,
+    referenceDocuments: withoutListedPageIndexes(all), drawingDocuments: referenceDocumentsCitedAsListed(all),
   });
   const fingerprint = RI.buildDAVEReportSourceFingerprint(truths);
-  const cites = buildAutomaticReportDrawingReferences({ documents: all, scheduleItems: shown, selectedProjectNames: ['Alpha'] }).map(reference => `${reference.areaName}: ${reference.citation.label}`);
+  const cites = buildAutomaticReportDrawingReferences({ documents: referenceDocumentsCitedAsListed(all), scheduleItems: shown, selectedProjectNames: ['Alpha'] }).map(reference => `${reference.areaName}: ${reference.citation.label}`);
   const briefing = RI.buildDAVEReportBriefing({ truths, selectedProjectNames: ['Alpha'], previousSnapshot: null, scheduleItems: shown } as any);
   const text = String((WebOps as any).formatDAVEWebReport(briefing, 'project_manager', null)).split('\n').filter((line: string) => !line.startsWith('Generated: ')).join('\n');
   const snapshot = RS.buildDAVEReportSnapshot({ truths, scopeKey: RS.daveReportSnapshotScopeKey(['Alpha']), sourceFingerprint: fingerprint, capturedAt: NOW, reportFormat: 'project_manager' });
@@ -267,7 +271,7 @@ describe('the reviewer\'s P3-3 sequence: a current drawing whose page index name
     const row = mockCloud.rows.get('doc-a201')!;
     expect(row.document_data.notes).toBe('Field verified');
     expect((row.document_data.extractedPages as any[]).flatMap(page => page.regions.map((region: any) => region.areaNames)).flat()).toContain('Lot');
-    expect(row.document_data).not.toHaveProperty('keptPageIndex');
+    expect(row.document_data).not.toHaveProperty('listedPageIndex');
     const onDesktop = await desktop();
     expect(onDesktop.cites).toEqual(CITES_REV_C);
     const after = await download(relaunch(nextDay.map(document => document.id === 'doc-a201' ? edited : document)));
@@ -339,8 +343,8 @@ describe('a drawing kept where the app cannot read it (Google Drive: its row car
     const iPad = await download([SCHEDULE]);
     const onDesktop = await desktop();
     expect(onDesktop.cites).toEqual([]);
-    // The phone that read it cites it in that session only, as on the base; closed and opened again with no signal: nothing.
-    expect(phone([SCHEDULE, drive]).cites).toEqual(CITES_REV_C);
+    // (c): the phone that read it does not cite its own reading, in that session or after; the list carries none.
+    expect(phone([SCHEDULE, drive]).cites).toEqual([]);
     expect(phone(relaunch([SCHEDULE, drive])).cites).toEqual([]);
     expect(phone(phoneNextDay).cites).toEqual([]);
     expect(phone(iPad).cites).toEqual([]);
@@ -367,23 +371,19 @@ describe('nothing else of the report changes', () => {
   it('the earlier (1.0) fingerprint of the phone after the app has been closed is the base\'s', async () => {
     const nextDay = await download(relaunch(await phoneAddsTheDrawing()));
     const asOnTheBase = nextDay.map(document => {
-      const { keptPageIndex: _kept, ...rest } = document as ReferenceDocument & { keptPageIndex?: unknown };
+      const { listedPageIndex: _listed, ...rest } = document as ReferenceDocument & { listedPageIndex?: unknown };
       return rest as ReferenceDocument;
     });
     expect(phone(nextDay).earlierVersion).toBe(phone(asOnTheBase).earlierVersion);
   });
 
-  it('the Reports screen hands the report its documents as before and cites the drawings from what the device kept', () => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const screen: string = require('fs').readFileSync(require('path').resolve(__dirname, '../../screens/ReportsScreen.tsx'), 'utf8');
-    expect(screen).toContain('referenceDocuments: referenceDocuments && withoutKeptPageIndexes(referenceDocuments),');
-    expect(screen).toContain('drawingDocuments: referenceDocuments,');
-  });
-
-  it('what the phone keeps is only the part of the index a citation is read from', async () => {
-    const [kept] = relaunch([DRAWING_AS_READ]) as Array<ReferenceDocument & { keptPageIndex?: any }>;
+  it('what the phone keeps is only the part of the index a citation is read from, as the list gave it; nothing of its own reading', async () => {
+    const [ownReading] = relaunch([DRAWING_AS_READ]) as Array<ReferenceDocument & { listedPageIndex?: any }>;
+    expect(ownReading.extractedPages).toEqual([]);
+    expect(ownReading).not.toHaveProperty('listedPageIndex');
+    const kept = drawingOf(relaunch(await phoneAddsTheDrawing())) as ReferenceDocument & { listedPageIndex?: any };
     expect(kept.extractedPages).toEqual([]);
     expect(kept.extractedText ?? null).toBeNull();
-    expect(kept.keptPageIndex?.pages?.flatMap((page: any) => page.regions.map((region: any) => region.id))).toEqual(['region-lot']);
+    expect(kept.listedPageIndex?.pages?.flatMap((page: any) => page.regions.map((region: any) => region.id))).toEqual(['region-lot']);
   });
 });

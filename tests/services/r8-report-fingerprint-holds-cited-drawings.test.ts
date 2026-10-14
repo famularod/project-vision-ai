@@ -20,7 +20,7 @@
  * rows as the upload cuts them down, the one report recipe, the screen's own
  * citation function and the snapshot Approve saves. Synthetic data.
  */
-import { compactECOSDocumentIndexForCloud, compactECOSReferenceDocumentsForOperationalRead } from '../../services/ECOSDocumentIndexPersistence';
+import { compactECOSDocumentIndexForCloud, compactECOSReferenceDocumentsForOperationalRead, referenceDocumentsCitedAsListed } from '../../services/ECOSDocumentIndexPersistence';
 import { buildDAVELegacyReportSourceFingerprint, buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
 import {
@@ -199,17 +199,18 @@ describe('R8 item 2: the web\'s fingerprint holds what the web\'s Word report ci
 });
 
 describe('R8 item 2: where two devices cite differently for the same saved project, their fingerprints differ, as their reports do', () => {
-  it('one phone: the session that read the drawing cites it; after the next launch it keeps the part of the page index a report cites from (high item 3), cites the same, and it is the same report', () => {
-    // Until high item 3 (the owner's instruction of 13 Oct 2026) the index was emptied at the next launch: the report
-    // cited nothing and was offered once more (review pass 3, P3-3). It is still left out of the saved document's
-    // own index; the part a citation is read from is kept beside it (ECOSDocumentIndexPersistence).
+  it('one phone, as its Reports screen cites: neither the drawing it has just read nor, after the next launch, anything; one report (high item 3 (c))', () => {
+    // Until high item 3 (the owner's instruction of 13 Oct 2026) the session that read the file cited it and the next
+    // launch did not, so the report was offered once more (review pass 3, P3-3). Now a report cites a drawing only from
+    // the index the cloud's document list gives (h3c-cite-only-the-lists-copy), never from the device's own reading.
     const [nextLaunch] = compactECOSReferenceDocumentsForOperationalRead([DRAWING]);
     expect(nextLaunch.extractedPages).toEqual([]);
-    const read = reports([SCHEDULE, DRAWING]);
-    const relaunched = reports([SCHEDULE, nextLaunch]);
-    expect([read.cites, relaunched.cites]).toEqual([['Lot: A-201 Site plan · Rev C · Page 1'], ['Lot: A-201 Site plan · Rev C · Page 1']]);
+    const asTheScreenCites = (documents: ReferenceDocument[]) => referenceDocumentsCitedAsListed(documents);
+    const read = reports(asTheScreenCites([SCHEDULE, DRAWING]));
+    const relaunched = reports(asTheScreenCites([SCHEDULE, nextLaunch]));
+    expect([read.cites, relaunched.cites]).toEqual([[], []]);
     expect(relaunched.fingerprint).toBe(read.fingerprint);
-    expect(alreadySent([SCHEDULE, DRAWING], [SCHEDULE, nextLaunch])).toBe(true);
+    expect(alreadySent(asTheScreenCites([SCHEDULE, DRAWING]), asTheScreenCites([SCHEDULE, nextLaunch]))).toBe(true);
   });
 
   it('the web, for a drawing whose row carries no page index (a Google Drive file): it cites nothing where the phone that read it cites the page', async () => {

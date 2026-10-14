@@ -55,6 +55,7 @@ import { uploadWebFileResumably } from './ResumableWebStorageUpload';
 import { MAX_PHOTO_SOURCE_BYTES } from './PhotoPairPreparation';
 import {
   compactECOSDocumentIndexForCloud,
+  liveDocumentRowWithTheListedIndex,
   compactECOSDocumentMetadataForCloud,
 } from './ECOSDocumentIndexPersistence';
 import {
@@ -2060,7 +2061,8 @@ function applyDAVEWebRealtimeRows(
   const nextCollection = mergeRealtimeRows(
     rows[property],
     entity === 'reference_document' && payload.eventType !== 'DELETE'
-      ? withHeldHostedIndexStatus(documentRow, rows.referenceDocuments, id)
+      // High item 3 (c): the drawing's index stays the one the list gave, never the live row's own.
+      ? withHeldHostedIndexStatus(liveDocumentRowWithTheListedIndex(documentRow, rows.referenceDocuments.find(row => readRawString(row, 'id') === id)), rows.referenceDocuments, id)
       : documentRow,
     payload.eventType,
     value => readRawString(value, 'id'),

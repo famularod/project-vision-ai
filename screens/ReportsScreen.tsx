@@ -159,7 +159,7 @@ import {
 } from '../services/ReportDrawingReferences';
 
 import { useListedSharedDocuments } from '../hooks/use-listed-shared-documents';
-import { withoutKeptPageIndexes } from '../services/ECOSDocumentIndexPersistence';
+import { referenceDocumentsCitedAsListed, withoutListedPageIndexes } from '../services/ECOSDocumentIndexPersistence';
 
 const EMPTY_REVIEW_IDS: readonly string[] = Object.freeze([]);
 
@@ -296,6 +296,8 @@ export function ReportsScreen({
   // The one place shared documents are handed to the report (owner answer Q44; review of D1, L10): an archived one
   // is not counted. With nothing archived this is the supplied list itself, and the report's fingerprint does not move.
   const referenceDocuments = useListedSharedDocuments(suppliedReferenceDocuments);
+  // High item 3 (c): a drawing piece is cited only from the drawing's index as the document list gave it.
+  const citedDocuments = useMemo(() => referenceDocumentsCitedAsListed(referenceDocuments || []), [referenceDocuments]);
   const { sizeClass } = useAppShellLayout();
   const [reportApproved, setReportApproved] = useState(false);
   const [reportEditing, setReportEditing] = useState(false);
@@ -362,10 +364,11 @@ export function ReportsScreen({
     knownScheduleItems,
     knownScheduleDocuments,
     projectAreas,
-    // High item 3: the drawings are cited from the page index this device kept; the documents are held as before.
-    referenceDocuments: referenceDocuments && withoutKeptPageIndexes(referenceDocuments),
-    drawingDocuments: referenceDocuments,
+    // High item 3: the documents are held as before (the 1.0 fingerprint does not move); the drawings are cited as listed.
+    referenceDocuments: referenceDocuments && withoutListedPageIndexes(referenceDocuments),
+    drawingDocuments: citedDocuments,
   }), [
+    citedDocuments,
     knownScheduleDocuments,
     knownScheduleItems,
     projectAreas,
@@ -387,11 +390,11 @@ export function ReportsScreen({
   // audience's report runs from the last report of that format it was sent.
   const currentReportPeriodKey = reportPeriodKey({ scopeKey: reportSnapshotScopeKey, reportFormat });
   const drawingReferences = useMemo(() => buildAutomaticReportDrawingReferences({
-    documents: referenceDocuments || [],
+    documents: citedDocuments,
     scheduleItems,
     selectedProjectNames,
   }), [
-    referenceDocuments,
+    citedDocuments,
     scheduleItems,
     selectedProjectNames,
   ]);
