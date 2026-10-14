@@ -49,6 +49,12 @@ import { forgetDAVEWebReportPeriods } from './DAVEWebReportSend';
 export const DAVE_WEB_AUTHORIZATION_CACHE_TTL_MS = 5 * 60_000;
 /** How many times one owner check is asked before it gives up, when its answers keep being overtaken (review P4 L2). */
 export const DAVE_WEB_OWNER_CHECK_ASKS = 4;
+/**
+ * Open item 4.62 (14 Oct 2026): an owner check on its way for this long is no
+ * longer waited on; the next read sends a new one. One that never answered
+ * held every later read of the tab until a reload.
+ */
+export const DAVE_WEB_OWNER_CHECK_LET_GO_MS = 60_000;
 export const DAVE_WEB_DOCUMENT_COVERAGE_CACHE_TTL_MS = 5 * 60_000;
 import { RESUMABLE_UPLOAD_THRESHOLD_BYTES } from './StorageUploadPolicy';
 import { uploadWebFileResumably } from './ResumableWebStorageUpload';
@@ -486,7 +492,9 @@ export function createDAVEWebSupabaseGateway(
     ) {
       return authorizationCache.ownerId;
     }
-    if (authorizationInFlight) return authorizationInFlight;
+    if (authorizationInFlight && Date.now() - authorizationInFlightSince < DAVE_WEB_OWNER_CHECK_LET_GO_MS) {
+      return authorizationInFlight;
+    }
     const sentAt = signInChanges;
     const request = requireAuthorizedOwner(client!).then(ownerId => {
       if (sentAt !== signInChanges) {

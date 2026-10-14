@@ -203,6 +203,28 @@ const WORKSPACE_UNAVAILABLE_MESSAGE =
  */
 export const DESKTOP_WORKSPACE_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000] as const;
 /**
+ * Open item 4.62 (14 Oct 2026): with a workspace open, an automatic refresh
+ * that has not answered in a minute counts as not done and no longer holds
+ * the tab's later refreshes (one that never answered held them all until a
+ * reload). A late answer is still taken if no newer read has started.
+ */
+export const DESKTOP_AUTOMATIC_REFRESH_LIMIT_MS = 60_000;
+
+/** What `work` came to within DESKTOP_AUTOMATIC_REFRESH_LIMIT_MS; never rejects (4.62). */
+async function withinAutomaticRefreshLimit<T>(
+  work: Promise<T>,
+): Promise<Readonly<{ value: T }> | Readonly<{ error: unknown }> | 'time-up'> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeUp = new Promise<'time-up'>(resolve => {
+    timer = setTimeout(() => resolve('time-up'), DESKTOP_AUTOMATIC_REFRESH_LIMIT_MS);
+  });
+  try {
+    return await Promise.race([work.then(value => ({ value }), (error: unknown) => ({ error })), timeUp]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+/**
  * The longest a sign-in waits for this tab's sign-in to finish ending
  * (whole-app audit A12 pass 7 L1, 30 Sep 2026).
  */
@@ -255,6 +277,12 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   const [message, setMessage] = useState<string | null>(null);
   /** Loads in a row that could not finish before any workspace loaded. */
   const [unavailableAttempts, setUnavailableAttempts] = useState(0);
+  /**
+   * Refreshes in a row that did not finish while a workspace is open: each
+   * is tried again after 5 s, 15 s, 30 s, then every minute while the tab is
+   * in view, and coming back to the tab tries at once (open item 4.62).
+   */
+  const [refreshFailures, setRefreshFailures] = useState(0);
   const mountedRef = useRef(true);
   const loadSequenceRef = useRef(0);
   const snapshotRef = useRef<DAVEWebReadOnlySnapshot | null>(null);
@@ -307,6 +335,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     setSnapshot(null);
     setFreshness(initialDAVEWebFreshnessState());
     setUnavailableAttempts(0);
+    setRefreshFailures(0);
     // While the owner check's "not the owner" stands, the view stays on it:
     // the browser's own sign-out going through (SIGNED_OUT, now or on a
     // quiet retry) does not turn it into a plain sign-in page (A12 pass 4 L3).
@@ -442,6 +471,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       setSnapshot(nextSnapshot);
       setPhase('ready');
       setUnavailableAttempts(0);
+      setRefreshFailures(0);
       setFreshness(recordDAVEWebRefreshSuccess(nextSnapshot.refreshedAt));
       if (options.background) {
         setMessage(current =>
@@ -472,6 +502,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
         setFreshness(current =>
           recordDAVEWebRefreshFailure(current, new Date().toISOString()));
         setMessage(AUTOMATIC_REFRESH_WAITING_MESSAGE);
+        setRefreshFailures(count => count + 1);
       } else {
         // Still signed in; the owner check or first read did not finish (a
         // timeout, a dropped connection). This had shown the password form
@@ -807,22 +838,31 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       while (true) {
         pendingFullBackgroundRefreshRef.current = false;
         pendingBackgroundCollectionsRef.current.clear();
-        try {
+        // 4.62: a refresh that has not answered in a minute is let go; what
+        // it answers later starts nothing more.
+        let letGo = false;
+        const collectionsNow = nextCollections;
+        const outcome = await withinAutomaticRefreshLimit((async () => {
           const status = await daveWebSupabaseGateway.getSessionStatus();
-          if (!mountedRef.current) return;
+          if (!mountedRef.current || letGo) return 'stop' as const;
           if (!status.session) {
             clearSessionView();
-            return;
+            return 'stop' as const;
           }
           await loadAuthorizedSnapshot(status.session, {
             background: true,
-            collections: nextCollections,
+            collections: collectionsNow,
           });
-        } catch {
+          return 'done' as const;
+        })());
+        if (outcome === 'time-up') letGo = true;
+        if (outcome !== 'time-up' && 'value' in outcome && outcome.value === 'stop') return;
+        if (outcome === 'time-up' || 'error' in outcome) {
           if (mountedRef.current) {
             setFreshness(current =>
               recordDAVEWebRefreshFailure(current, new Date().toISOString()));
             setMessage(AUTOMATIC_REFRESH_WAITING_MESSAGE);
+            setRefreshFailures(count => count + 1);
           }
         }
         if (!mountedRef.current) return;
@@ -867,6 +907,26 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       clearInterval(timer);
     };
   }, [phase, refreshSnapshotInBackground]);
+
+  // Open item 4.62 (14 Oct 2026): a refresh that did not finish was tried
+  // again only by the next live update, coming back to the tab, or the
+  // 30-minute check, so "waiting" and "Stale" could stay up in a tab he was
+  // looking at. It is now tried again after 5 s, 15 s, 30 s, then every
+  // minute while the tab is in view; a hidden tab tries when it is looked at
+  // again (below). Reads only: nothing is sent to the other tabs.
+  useEffect(() => {
+    if (phase !== 'ready' || refreshFailures === 0) return;
+    const delay = DESKTOP_WORKSPACE_RETRY_DELAYS_MS[
+      Math.min(refreshFailures, DESKTOP_WORKSPACE_RETRY_DELAYS_MS.length) - 1
+    ];
+    const timer = setTimeout(() => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return;
+      // A refresh on its way answers for this one: it ends in a minute at most.
+      if (backgroundRefreshRef.current) return;
+      void refreshSnapshotInBackground();
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [phase, refreshFailures, refreshSnapshotInBackground]);
 
   useEffect(() => {
     if (phase !== 'ready') return;
@@ -929,7 +989,8 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     if (typeof window === 'undefined' || typeof document === 'undefined') return;
     const refreshWhenVisible = () => {
       if (document.visibilityState === 'visible' && phase === 'ready') {
-        if (shouldRefreshDAVEOperationalDataOnForeground({
+        // A refresh that did not finish is reason enough to look (4.62).
+        if (refreshFailures > 0 || shouldRefreshDAVEOperationalDataOnForeground({
           realtimeHealthy: realtimeHealthyRef.current,
           lastSuccessfulRefreshAt: lastSuccessfulRefreshAtRef.current,
         })) {
@@ -943,7 +1004,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('focus', refreshWhenVisible);
       document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
-  }, [phase, refreshSnapshotInBackground]);
+  }, [phase, refreshFailures, refreshSnapshotInBackground]);
 
   const announceMutation = useCallback((
     collections: readonly DAVEOperationalCollectionName[],
