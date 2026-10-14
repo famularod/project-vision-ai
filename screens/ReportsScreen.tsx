@@ -618,6 +618,10 @@ export function ReportsScreen({
   const reportApprovalAllowedRef = useRef(reportApprovalAllowed);
   const reportApprovedRef = useRef(reportApproved);
   const pendingCommunicationTokenRef = useRef<symbol | null>(null);
+  // The share whose composer or share sheet has opened (H2R-1): the one Stop Waiting can no longer call back.
+  const openedCommunicationTokenRef = useRef<symbol | null>(null);
+  // The shares he stopped with Stop Waiting (H2R-1): one stopped before it opened never opens.
+  const stoppedCommunicationTokensRef = useRef(new Set<symbol>());
   const mountedRef = useRef(true);
   reportIdentityRef.current = reportCommunicationIdentityKey;
   reportApprovalAllowedRef.current = reportApprovalAllowed;
@@ -912,9 +916,15 @@ export function ReportsScreen({
         // Word review copy is not a send.
         if (requireApproval) {
           const loaded = await loadDAVEReportPeriod(startedPeriod.scopeKey, startedPeriod.reportFormat).catch(() => null);
+          // Review pass 2 of the report fixes, H2R-1: he stopped waiting while this read was on its way (up to four
+          // seconds on a slow connection). The share he stopped never opens: it opened anyway, and a share he
+          // started at once after stopping opened too, two of one report. (A share whose screen moved to the other
+          // format or projects meanwhile still opens, as before: he did not stop it; its own period is marked.)
+          if (stoppedCommunicationTokensRef.current.has(communicationToken)) return;
           if (loaded && showLaterSharedPeriod(startedPeriod, loaded, sinceSentAt, 'send')) return;
           if (!mountedRef.current) return;
         }
+        openedCommunicationTokenRef.current = communicationToken;
         const outcome = await communicate(startedReport);
         // The report that went out is the one that started, whatever the
         // screen shows by now (a sync can land while the composer is open);
@@ -958,10 +968,13 @@ export function ReportsScreen({
    * went out); one that never does is not, and Mark as Sent records a report he sent another way.
    */
   const stopWaitingForShare = () => {
-    if (!pendingCommunicationTokenRef.current) return;
+    const stopped = pendingCommunicationTokenRef.current;
+    if (!stopped) return;
+    stoppedCommunicationTokensRef.current.add(stopped);
     pendingCommunicationTokenRef.current = null;
     setCommunicationPending(false);
-    setCommunicationError(STOPPED_WAITING_FOR_SHARE);
+    // H2R-1: stopped before its composer or share sheet opened, the share never opens (see completeCommunication).
+    setCommunicationError(openedCommunicationTokenRef.current === stopped ? STOPPED_WAITING_FOR_SHARE : STOPPED_BEFORE_THE_SHARE_OPENED);
   };
 
   const markReportApproved = () => {
@@ -1600,6 +1613,8 @@ const ALREADY_SENT_NOTICE_START = 'Your other device already sent this report';
 /** Said when he stops waiting for a share that has not come back (open item 7.21). */
 const STOPPED_WAITING_FOR_SHARE = 'Stopped waiting. If that share finishes later, the report is still recorded as sent. ' +
   'If you sent it another way, use Mark as Sent.';
+/** Said when he stops a share that had not opened yet: it never will (review pass 2 of the report fixes, H2R-1). */
+const STOPPED_BEFORE_THE_SHARE_OPENED = 'Stopped. That share had not opened yet, so nothing was sent. Share again when you are ready.';
 
 /**
  * Approval waits for this device to catch up with the other device's changes
