@@ -1,3 +1,5 @@
+import { SCHEDULE_TEXT_SET_BY_HAND } from './ScheduleTaskRevisions';
+
 export type ScheduleItemTextSyncTimer = ReturnType<typeof setTimeout>;
 
 export type ScheduleItemTextSyncLifecycle = {
@@ -5,13 +7,15 @@ export type ScheduleItemTextSyncLifecycle = {
   timers: Map<string, ScheduleItemTextSyncTimer>;
 };
 
-const DEBOUNCED_SCHEDULE_ITEM_CHANGE_KEYS = new Set([
+const DEBOUNCED_SCHEDULE_ITEM_CHANGE_KEYS = new Set<string>([
   'notes',
   'nextAction',
   'owner',
   'contractor',
   'percentComplete',
   'projectControls',
+  // The marks his typing of those fields leaves (way 2): they go with the field, so the edit is still text only.
+  ...Object.values(SCHEDULE_TEXT_SET_BY_HAND),
 ]);
 
 export function scheduleItemChangeUsesDebouncedSync(next: object): boolean {

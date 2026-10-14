@@ -1127,7 +1127,8 @@ async function typedOnTheOldRow(
  * the row it replaces (textFromTask), in the device's list and in what waits to go up.
  */
 function masterRowsAsBuild229SavedThem(device: Device) {
-  const plain = (row: ScheduleItem) => { const { textFromTask: _taken, ...rest } = row; return rest as ScheduleItem; };
+  // (Nor did Build 229 mark what is typed on a row: way 2's record of what the row was made with goes too.)
+  const plain = (row: ScheduleItem) => { const { textFromTask: _taken, textAsMade: _made, ...rest } = row; return rest as ScheduleItem; };
   setter(device)(device.state.map(plain));
   device.ref.current = device.state;
   const store = mockStores.get(device.name)!;
@@ -1414,15 +1415,16 @@ describe('Review N2 P1: what an import on Build 229 left on a hidden row comes f
     at(G.importedAt!);
     await approve(phone, G, [G_ROW, SURVEY]);
     const newId = theRow(phone).id;
-    // Build 229's approval left the new row blank; put that back on the phone's copy and in what it sends.
-    setter(phone)(phone.state.map(item => (item.id === newId ? { ...item, notes: '', owner: '', textFromTask: undefined } : item)));
+    // Build 229's approval left the new row blank; put that back on the phone's copy and in what it sends. (Nor did it mark
+    // what is typed on a row: way 2's record of what the row was made with goes too.)
+    setter(phone)(phone.state.map(item => (item.id === newId ? { ...item, notes: '', owner: '', textFromTask: undefined, textAsMade: undefined } : item)));
     phone.ref.current = phone.state;
     on(phone);
     const queueKey = 'projectVisionAI.syncQueue.v1';
     const store = mockStores.get('phone')!;
     store.set(queueKey, JSON.stringify((JSON.parse(store.get(queueKey) || '[]') as Array<{ payload?: { id?: string; itemData?: ScheduleItem } }>)
-      .map(queued => (queued.payload?.id === newId && queued.payload.itemData ? { ...queued, payload: { ...queued.payload, itemData: { ...queued.payload.itemData, notes: '', owner: '', textFromTask: undefined } } } : queued))));
-    if (cloudRow(newId)) mockCloud.rows.set(newId, mockCopy({ ...cloudRow(newId)!, notes: '', owner: '', textFromTask: undefined }));
+      .map(queued => (queued.payload?.id === newId && queued.payload.itemData ? { ...queued, payload: { ...queued.payload, itemData: { ...queued.payload.itemData, notes: '', owner: '', textFromTask: undefined, textAsMade: undefined } } } : queued))));
+    if (cloudRow(newId)) mockCloud.rows.set(newId, mockCopy({ ...cloudRow(newId)!, notes: '', owner: '', textFromTask: undefined, textAsMade: undefined }));
     shareDocuments(phone);
     return { phone, ipad, oldId, newId };
   }
@@ -6433,5 +6435,241 @@ describe('Review pass 10, O-9: a note waiting on the iPad while the phone delete
     O9_RESULTS.O9f = { phoneUp, ...end };
     expect([phoneUp, ...end.runs]).toEqual(Array(5).fill('finished'));
     expect([end.afterSettle, end.end, end.writesWhenNothingHappens, end.cloud.withNote]).toEqual([O9_SETTLED, O9_SETTLED, 0, ['MASTER F-1']]);
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * Way 2 of the sync design note, step 1 (notes/sync-design/NOTE.txt, "WAY 2: A CARRY BY FIELD"; the coordinator's
+ * decisions of 14 Oct 2026). The carry of his typed text from a task's earlier row to its newest row (review N2 P1)
+ * read one time for all of a row's fields, the row's own stamp: a row stamped for any reason read as "typed later".
+ * Now each of the five fields he types (owner, contractor, note, next step, milestone) has its own mark on the row:
+ * the text he last typed there by hand, and when (ownerSetByHand, ...); and a row a master makes keeps what it was
+ * made with in those fields (textAsMade): one with no mark that still holds that was not typed there since. The carry
+ * reads those marks and the record of what the row took (textFromTask), not the stamps:
+ *  1. text he typed on the OLD row follows to the new row, unless the new row has his own later typing of that field;
+ *  2. a field he CLEARED stays cleared: a hidden row stamped by something else never gives a cleared value back;
+ *  3. a row with no mark (written by Build 231 or 232, the web before it is updated, a master approved on Build 229)
+ *     keeps the rule by the stamps exactly.
+ * The priority reads the mark it already had (prioritySetByHand) the same way. Hand links and the percent: not here.
+ */
+describe('Way 2, step 1: the carry by field, on the records alone', () => {
+  const row = (id: string, extra: Partial<ScheduleItem> & Record<string, unknown> = {}) => ({
+    id, taskName: 'Framing', projectName: 'Alpha', locationName: 'Lot', startDate: '10/15/2026', finishDate: '10/25/2026', milestone: '',
+    owner: '', contractor: '', percentComplete: 0, priority: 'Medium', status: 'Not Started', notes: '', createdAt: '2026-09-07T12:00:00.000Z',
+    importedAt: '2026-09-07T12:00:00.000Z', ...extra,
+  }) as ScheduleItem;
+  const merged = (rows: ScheduleItem[]) => recoverDAVEScheduleRecords({ local: rows, cloud: rows, deletedIds: [], allowCloudOnly: true });
+  const of = (rows: ScheduleItem[], id: string) => rows.find(item => item.id === id)!;
+  const T1 = '2026-09-08T09:00:00.000Z', T2 = '2026-09-09T09:00:00.000Z', T3 = '2026-09-10T09:00:00.000Z', T4 = '2026-09-11T09:00:00.000Z';
+  const typed = (text: string, at: string) => ({ text, at });
+  /** What a row a master made on this build holds in each field he types when it is made (all blank unless given). */
+  const madeWith = (text: Record<string, string> = {}) => ({ textAsMade: { owner: '', contractor: '', notes: '', nextAction: '', milestone: '', ...text } });
+  /** A new row a master made on this build: it took a blank owner and note from F, and marks what is typed on it. */
+  const newRow = (extra: Record<string, unknown> = {}) => row('G', { revisedFromTaskIds: ['F'], textFromTask: { taskId: 'F', owner: '', notes: '' }, ...madeWith(), ...extra } as never);
+
+  describe('decision 1: text he typed on the old row follows, unless the new row has his own later typing of that field', () => {
+    it('the new row was stamped after the old row\'s owner for something else (2.1e\'s cause): the owner still reaches it', async () => {
+      const out = merged([row('F', { owner: 'Ana', ownerSetByHand: typed('Ana', T2), updatedAt: T2 } as never), newRow({ updatedAt: T3 })]);
+      expect([of(out, 'G').owner, of(out, 'G').updatedAt, of(out, 'G').textFromTask]).toEqual(['Ana', T3, { taskId: 'F', owner: 'Ana', notes: '' }]);
+    });
+    it('the same when the old row has no mark (the web before it is updated wrote it): the new row never typed it, so the old row has the later word', async () => {
+      expect(of(merged([row('F', { owner: 'Ana', updatedAt: T2 }), newRow({ updatedAt: T3 })]), 'G').owner).toBe('Ana');
+    });
+    it('he typed the owner on the new row and cleared it BEFORE the old row\'s owner was typed: the old row\'s owner follows', async () => {
+      const out = merged([row('F', { owner: 'Ana', ownerSetByHand: typed('Ana', T2), updatedAt: T2 } as never), newRow({ ownerSetByHand: typed('', T1), updatedAt: T3 })]);
+      expect(of(out, 'G').owner).toBe('Ana');
+    });
+    it('he cleared it on the new row AFTER: his clear stands', async () => {
+      const out = merged([row('F', { owner: 'Ana', ownerSetByHand: typed('Ana', T2), updatedAt: T2 } as never), newRow({ ownerSetByHand: typed('', T3), updatedAt: T3 })]);
+      expect(of(out, 'G').owner).toBe('');
+    });
+  });
+
+  describe('decision 2: a field he cleared stays cleared', () => {
+    it('the hidden row was stamped after his clear by something else (a lookahead\'s delete, a percent): its older note does not come back', async () => {
+      const out = merged([row('F', { notes: NOTE, notesSetByHand: typed(NOTE, T1), updatedAt: T3 } as never), newRow({ notesSetByHand: typed('', T2), updatedAt: T2 })]);
+      expect(of(out, 'G').notes).toBe('');
+    });
+    it('nor a note the hidden row holds from when it was made (it was never typed there since)', async () => {
+      const out = merged([row('F', { notes: NOTE, ...madeWith({ notes: NOTE }), updatedAt: T3 } as never), newRow({ notesSetByHand: typed('', T2), updatedAt: T2 })]);
+      expect(of(out, 'G').notes).toBe('');
+    });
+    it('but a note the hidden row holds that it was not made with, with no mark (typed there on Build 232): by the stamps', async () => {
+      const out = merged([row('F', { notes: NOTE, ...madeWith(), updatedAt: T3 } as never), newRow({ notesSetByHand: typed('', T2), updatedAt: T2 })]);
+      expect(of(out, 'G').notes).toBe(NOTE);
+    });
+    it('a note typed on the hidden row after his clear does come forward (his later word)', async () => {
+      const out = merged([row('F', { notes: NOTE, notesSetByHand: typed(NOTE, T3), updatedAt: T3 } as never), newRow({ notesSetByHand: typed('', T2), updatedAt: T4 })]);
+      expect(of(out, 'G').notes).toBe(NOTE);
+    });
+    it('seed 9179 with the marks: a blank typed back over an owner set on the newest row stands over an older note through a row in between', async () => {
+      const rows = [
+        row('F', { notes: NOTE, notesSetByHand: typed(NOTE, T2), updatedAt: T3 } as never),
+        row('G', { revisedFromTaskIds: ['F'], textFromTask: { taskId: 'F', notes: '' }, ...madeWith() } as never),
+        row('H', { revisedFromTaskIds: ['F', 'G'], textFromTask: { taskId: 'G', notes: '' }, ...madeWith(), notesSetByHand: typed('', T4), updatedAt: T4 } as never),
+      ];
+      expect(of(merged(rows), 'H').notes).toBe('');
+    });
+    it('a clear typed on the row in between, after the oldest row\'s note, stands for the newest row too', async () => {
+      const rows = [
+        row('F', { notes: NOTE, notesSetByHand: typed(NOTE, T1), updatedAt: T1 } as never),
+        row('G', { revisedFromTaskIds: ['F'], textFromTask: { taskId: 'F', notes: '' }, ...madeWith(), notesSetByHand: typed('', T2), updatedAt: T2 } as never),
+        row('H', { revisedFromTaskIds: ['F', 'G'], textFromTask: { taskId: 'G', notes: '' }, ...madeWith() } as never),
+      ];
+      expect(of(merged(rows), 'H').notes).toBe('');
+    });
+  });
+
+  describe('decision 3: a row with no mark keeps the rule by the stamps exactly', () => {
+    it('a new row Build 232 made (no mark): stamped after the old row\'s owner, it keeps its blank, as today', async () => {
+      const out = merged([row('F', { owner: 'Ana', ownerSetByHand: typed('Ana', T2), updatedAt: T2 } as never), row('G', { revisedFromTaskIds: ['F'], textFromTask: { taskId: 'F', owner: '' }, updatedAt: T3 })]);
+      expect(of(out, 'G').owner).toBe('');
+    });
+    it('a new row whose owner mark Build 232 left behind (it typed there, the mark no longer names what the row holds): by the stamps', async () => {
+      // He typed Bob on this build, then cleared it on Build 232 (no mark left). By the stamps the clear is later: it stands.
+      const out = merged([row('F', { owner: 'Ana', ownerSetByHand: typed('Ana', T2), updatedAt: T2 } as never), newRow({ ownerSetByHand: typed('Bob', T1), updatedAt: T3 })]);
+      expect(of(out, 'G').owner).toBe('');
+    });
+    it('a hidden row with no mark stamped after his clear: by the stamps, as today (its note comes back once)', async () => {
+      const out = merged([row('F', { notes: NOTE, updatedAt: T3 }), newRow({ notesSetByHand: typed('', T2), updatedAt: T2 })]);
+      expect(of(out, 'G').notes).toBe(NOTE);
+    });
+    it('rows with no record of what they took (Build 229) and no mark: from the row changed last, as today', async () => {
+      const out = merged([row('A', { owner: 'Ana', updatedAt: T1 }), row('B', { revisedFromTaskIds: ['A'], notes: NOTE, updatedAt: T2 }), row('C', { revisedFromTaskIds: ['A', 'B'] })]);
+      expect([of(out, 'C').owner, of(out, 'C').notes]).toEqual(['', NOTE]);
+    });
+  });
+
+  describe('the comparisons for a row with no record of a field, by field where every row says when', () => {
+    it('each field from the earlier row that typed it last', async () => {
+      const out = merged([
+        row('A', { owner: 'Ana', ownerSetByHand: typed('Ana', T3), ...madeWith(), updatedAt: T3 } as never),
+        row('B', { revisedFromTaskIds: ['A'], notes: NOTE, notesSetByHand: typed(NOTE, T2), ...madeWith(), updatedAt: T4 } as never),
+        row('C', { revisedFromTaskIds: ['A', 'B'], ...madeWith(), updatedAt: T1 } as never),
+      ]);
+      expect([of(out, 'C').owner, of(out, 'C').notes]).toEqual(['Ana', NOTE]);
+    });
+  });
+
+  describe('the priority, by the mark it already had', () => {
+    const P = (extra: Record<string, unknown>) => row('F', { priority: 'High', prioritySetByHand: { priority: 'High', at: T2 }, updatedAt: T2, ...extra } as never);
+    const took = (extra: Record<string, unknown>) => row('G', { revisedFromTaskIds: ['F'], priority: 'Low', prioritySetByHand: { priority: 'Low', at: T1 }, textFromTask: { taskId: 'F', priority: 'Low' }, updatedAt: T3, ...extra } as never);
+    it('set on the old row after the priority the new row took (the new row stamped later for something else): it follows, with its mark', async () => {
+      const out = merged([P({}), took({})]);
+      expect([of(out, 'G').priority, of(out, 'G').prioritySetByHand]).toEqual(['High', { priority: 'High', at: T2 }]);
+    });
+    it('set on the new row later: it stands', async () => {
+      expect(of(merged([P({}), took({ prioritySetByHand: { priority: 'Low', at: T4 } })]), 'G').priority).toBe('Low');
+    });
+    it('the old row\'s priority has no mark (set on Build 230): by the stamps, as today', async () => {
+      expect(of(merged([P({ prioritySetByHand: undefined, priorityAsImported: 'Medium' }), took({})]), 'G').priority).toBe('Low');
+    });
+  });
+});
+
+describe('Way 2, step 1: the carry by field, between two devices and the web', () => {
+  const OLD_ROW = 'MASTER F-1';
+  const NEW_ROW = 'MASTER G-1';
+  const WEB_NOTE = 'Rebar inspection booked (typed on the web)';
+  const places = (phone: Device, ipad: Device) => [deviceShown(phone), deviceShown(ipad), webShown()]
+    .map(shown => framingOf(shown).map(item => ({ row: item.id, owner: item.owner || '', note: item.notes || '', percent: item.percentComplete })));
+  const heardEverywhere = async (phone: Device, ipad: Device) => { shareDocuments(phone); await backgroundUpload(phone); await settle(phone, ipad); };
+  /** Master G approved and heard, then master F made current again and heard: the web shows F's row. Then the iPad loses signal. */
+  async function fCurrentAgain() {
+    const { phone, ipad } = await start();
+    at(G.importedAt!); await approve(phone, G, [G_ROW, SURVEY]); await heardEverywhere(phone, ipad);
+    at('2026-09-11T08:00:00.000Z'); await setActiveOn(phone, F); await heardEverywhere(phone, ipad);
+    expect(places(phone, ipad).map(place => place[0]?.row)).toEqual(Array(3).fill(OLD_ROW));
+    setOnline(ipad, false);
+    return { phone, ipad };
+  }
+  async function everythingSyncs(phone: Device, ipad: Device) {
+    at('2026-09-13T08:00:00.000Z');
+    setOnline(ipad, true); shareDocuments(ipad);
+    await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+  }
+
+  it('decision 1: the web sets the owner on the row it still shows; the phone, not having heard, makes G current and enters a percent on the task: the owner is on the task in all three places', async () => {
+    const { phone, ipad } = await fCurrentAgain();
+    at('2026-09-12T12:00:00.000Z'); webWrite(webEdited(cloudRow(OLD_ROW)!, { owner: 'Ana' }));
+    at('2026-09-12T18:00:00.000Z'); await setActiveOn(phone, G); shareDocuments(phone); await backgroundUpload(phone);
+    at('2026-09-12T19:00:00.000Z'); await edit(phone, NEW_ROW, { percentComplete: 40 }); await backgroundUpload(phone);
+    await everythingSyncs(phone, ipad);
+    // (By the stamps: the task's row was changed after the web's owner, so its blank stood and Ana stayed on the hidden row.)
+    expect(places(phone, ipad)).toEqual(Array(3).fill([{ row: NEW_ROW, owner: 'Ana', note: '', percent: 40 }]));
+  });
+
+  it('decision 2: he types a note on the task and clears it; the other device then enters a percent on the row it still shows, where the web had typed a note earlier: his clear stands in all three places', async () => {
+    const { phone, ipad } = await fCurrentAgain();
+    at('2026-09-12T12:00:00.000Z'); webWrite(webEdited(cloudRow(OLD_ROW)!, { notes: WEB_NOTE }));
+    at('2026-09-12T18:00:00.000Z'); await setActiveOn(phone, G); shareDocuments(phone); await backgroundUpload(phone);
+    at('2026-09-12T18:30:00.000Z'); await edit(phone, NEW_ROW, { notes: PHONE_NOTE }); await backgroundUpload(phone);
+    at('2026-09-12T18:35:00.000Z'); await edit(phone, NEW_ROW, { notes: '' }); await backgroundUpload(phone); await refresh(phone);
+    expect(places(phone, ipad)[0]).toEqual([{ row: NEW_ROW, owner: '', note: '', percent: 0 }]);
+    at('2026-09-12T19:00:00.000Z'); await edit(ipad, OLD_ROW, { percentComplete: 30 });
+    await everythingSyncs(phone, ipad);
+    // (By the stamps: the row the iPad's percent landed on read as "changed later", and the web's older note came back over his clear.)
+    expect(places(phone, ipad).map(place => place.map(item => [item.row, item.note]))).toEqual(Array(3).fill([[NEW_ROW, '']]));
+  });
+
+  describe('seed 9179\'s shape: an owner set on the task, a card open for the other device\'s owner, and the web\'s later clear', () => {
+    /**
+     * The iPad, not having heard of G, sets Mike on the row it shows; the phone sets Bob on the task's new row; the
+     * iPad gets signal (its Mike goes on to the task and is asked about over Bob); the web then clears the owner.
+     * With `stampedAfter`, the iPad then enters a percent on the row it showed, which stamps that row after the clear.
+     */
+    async function run(stampedAfter: boolean) {
+      const { phone, ipad } = await start();
+      setOnline(ipad, false);
+      at(G.importedAt!); await approve(phone, G, [G_ROW, SURVEY]); shareDocuments(phone); await backgroundUpload(phone);
+      at('2026-09-11T09:00:00.000Z'); await edit(ipad, OLD_ROW, { owner: 'Mike' });
+      at('2026-09-11T10:00:00.000Z'); await edit(phone, NEW_ROW, { owner: 'Bob' }); await backgroundUpload(phone);
+      at('2026-09-11T10:30:00.000Z'); setOnline(ipad, true); shareDocuments(ipad); await backgroundUpload(ipad);
+      at('2026-09-11T11:00:00.000Z'); webWrite(webEdited(cloudRow(NEW_ROW)!, { owner: '' }));
+      if (stampedAfter) { at('2026-09-11T12:00:00.000Z'); webWrite(webEdited(cloudRow(OLD_ROW)!, { percentComplete: '30' })); }
+      at('2026-09-11T13:00:00.000Z');
+      await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+      return { phone, ipad };
+    }
+    it('the web\'s clear stands in all three places', async () => {
+      const { phone, ipad } = await run(false);
+      expect(places(phone, ipad).map(place => place.map(item => [item.row, item.owner]))).toEqual(Array(3).fill([[NEW_ROW, '']]));
+    });
+    it('and still when the row the iPad showed is stamped after the clear for something else', async () => {
+      const { phone, ipad } = await run(true);
+      expect(places(phone, ipad).map(place => place.map(item => [item.row, item.owner]))).toEqual(Array(3).fill([[NEW_ROW, '']]));
+    });
+  });
+});
+
+describe('Way 2, step 1: the mark is left by his edit and goes wherever its field goes', () => {
+  const row = (id: string, extra: Record<string, unknown> = {}) => ({ id, taskName: 'Framing', owner: '', contractor: '', notes: '', nextAction: '', milestone: '', ...extra }) as unknown as ScheduleItem;
+  const T1 = '2026-09-08T09:00:00.000Z', T2 = '2026-09-09T09:00:00.000Z', T3 = '2026-09-10T09:00:00.000Z';
+  const typed = (text: string, at: string) => ({ text, at });
+
+  it('the phone\'s and the iPad\'s edit leaves a mark for each such field it changes, a clear included, and is still text only', () => {
+    const edited = withProjectControlsEditMerged(row('G', { owner: 'Mike' }), { owner: '', notes: '' });
+    expect(edited).toEqual({ owner: '', notes: '', ownerSetByHand: { text: '', at: expect.any(String) } });
+    expect(scheduleItemChangeUsesDebouncedSync(withProjectControlsEditMerged(row('G'), { notes: NOTE }))).toBe(true);
+  });
+
+  it('his edit sent on from the replaced row takes its mark with it; one made on an older build brings none', () => {
+    const typedOn = row('F', { owner: 'Mike', ownerSetByHand: typed('Mike', T2), updatedAt: T2 });
+    const task = row('G', { revisedFromTaskIds: ['F'], textFromTask: { taskId: 'F', owner: '' } });
+    const sent = scheduleItemTextEditOnRow({ id: 'F', itemData: typedOn, changedFields: ['owner', 'ownerSetByHand', 'updatedAt'], base: { updatedAt: T1, fields: { owner: '', ownerSetByHand: null } } },
+      ['owner', 'ownerSetByHand', 'updatedAt'], task);
+    expect([sent!.itemData.owner, sent!.itemData.ownerSetByHand, sent!.changedFields]).toEqual(['Mike', typed('Mike', T2), ['owner', 'ownerSetByHand', 'updatedAt']]);
+    const older = scheduleItemTextEditOnRow({ id: 'F', itemData: { ...typedOn, ownerSetByHand: typed('Bob', T1) }, changedFields: ['owner', 'updatedAt'], base: { updatedAt: T1, fields: { owner: '' } } },
+      ['owner', 'updatedAt'], task);
+    expect([older!.itemData.owner, older!.itemData.ownerSetByHand ?? null, older!.changedFields]).toEqual(['Mike', null, ['owner', 'updatedAt']]);
+  });
+
+  it('a whole copy weighed against the cloud\'s row: each field\'s mark comes from the copy its text comes from', () => {
+    const was = row('G');
+    const local = row('G', { owner: 'Mike', ownerSetByHand: typed('Mike', T2) });
+    const remote = row('G', { notes: NOTE, notesSetByHand: typed(NOTE, T3) });
+    const out = scheduleItemWholeCopyAgainstCloud(local, local, scheduleItemWholeCopyBase(was), remote).itemData;
+    expect([out.owner, out.ownerSetByHand, out.notes, out.notesSetByHand]).toEqual(['Mike', typed('Mike', T2), NOTE, typed(NOTE, T3)]);
   });
 });

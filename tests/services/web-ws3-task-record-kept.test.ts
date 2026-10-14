@@ -221,6 +221,13 @@ describe('the whole task record through a web edit (review pass 1, web L9)', () 
     priority: 'High',
     priorityAsImported: 'Medium', // what the row's own import gave it (schedule batch S6, item 1): he set High himself
     prioritySetByHand: { priority: 'High', at: '2026-09-13T09:00:00.000Z' }, // the mark his edit of the priority left (review pass 1, P1-1 / P1-2 / P1-9)
+    // The marks his typing of each text field left, and what the row was made with in those fields (way 2 of the sync design note).
+    ownerSetByHand: { text: 'Project manager', at: '2026-09-12T09:30:00.000Z' },
+    contractorSetByHand: { text: 'Frame Co', at: '2026-09-12T09:31:00.000Z' },
+    notesSetByHand: { text: 'Walls up on the east side.', at: '2026-09-12T09:32:00.000Z' },
+    nextActionSetByHand: { text: 'Order trusses.', at: '2026-09-12T09:33:00.000Z' },
+    milestoneSetByHand: { text: 'Dry-in', at: '2026-09-12T09:34:00.000Z' },
+    textAsMade: { owner: '', contractor: 'Frame Co', notes: '', nextAction: '', milestone: 'Dry-in' },
     status: 'In Progress',
     notes: 'Walls up on the east side.',
     nextAction: 'Order trusses.',
@@ -256,11 +263,11 @@ describe('the whole task record through a web edit (review pass 1, web L9)', () 
    */
   const NEVER_SAVED = ['percentCompleteStated', 'savedLookaheadDates'];
 
-  it('a note typed on the web changes the note and the time of the edit, and nothing else of what the phone saved', () => {
+  it('a note typed on the web changes the note, its mark (way 2) and the time of the edit, and nothing else of what the phone saved', () => {
     const phoneSaved = EVERY_FIELD as ScheduleItem;
     const edited = webEdit(phoneSaved, { notes: 'Trusses ordered.' }) as unknown as Record<string, unknown>;
 
-    const expected: Record<string, unknown> = { ...EVERY_FIELD, notes: 'Trusses ordered.', updatedAt: WEB_EDIT_AT };
+    const expected: Record<string, unknown> = { ...EVERY_FIELD, notes: 'Trusses ordered.', notesSetByHand: { text: 'Trusses ordered.', at: WEB_EDIT_AT }, updatedAt: WEB_EDIT_AT };
     NEVER_SAVED.forEach(field => { delete expected[field]; });
     expect(Object.keys(EVERY_FIELD).filter(field => edited[field] === undefined)).toEqual(NEVER_SAVED);
     expect(edited).toEqual(expected);

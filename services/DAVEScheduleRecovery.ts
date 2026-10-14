@@ -1,8 +1,8 @@
 import type { ScheduleItem, ScheduleLookaheadOverlay } from '../types';
 import { mergeProjectControlsRevisions } from './VitruviusProjectControls';
 import {
-  scheduleItemActivityWithOtherRows, schedulePriorityAsRead, schedulePriorityHeSet, schedulePriorityIsHis, schedulePriorityMarkOfBoth, scheduleTaskEarlierIds,
-  scheduleTaskEarlierIdsOfBoth, scheduleTaskProjectKey,
+  scheduleItemActivityWithOtherRows, schedulePriorityAsRead, schedulePriorityHeSet, schedulePriorityHeSetLater, schedulePriorityIsHis, schedulePriorityMarkOfBoth,
+  scheduleTaskEarlierIds, scheduleTaskEarlierIdsOfBoth, scheduleTaskProjectKey, scheduleTextSetByHandAt,
 } from './ScheduleTaskRevisions';
 import { laterScheduleImportSourceRow, scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import {
@@ -630,6 +630,17 @@ export function scheduleItemsTakingCarriedText(
  * note on the new row (a lookahead's delete gives dates back on hidden rows
  * too) gives the note back once. (Not since review N3 R3 when the new row
  * says it took a note from the old row: see below.)
+ *
+ * Way 2 of the sync design note (14 Oct 2026, the coordinator's decisions;
+ * notes/sync-design/NOTE.txt): the four places below that compared the two
+ * ROWS' stamps now read, field by field, when he last typed that field on
+ * each row (its mark, scheduleTextSetByHandAt; the priority's own mark,
+ * schedulePriorityHeSetLater) with the record of what the row took. Text he
+ * typed on an older row follows unless the newer row has his own later
+ * typing of that field; a field he cleared stays cleared, whatever stamped
+ * the hidden row since. Both limits above go, for rows that keep the marks.
+ * A row that cannot say (made before, or written by a device or the web on
+ * an older build) is weighed by the stamps exactly as before.
  */
 function typedTextCarriedToRevisedTasks(
   records: ScheduleItem[],
@@ -643,17 +654,30 @@ function typedTextCarriedToRevisedTasks(
     answering.set(key, [...(answering.get(key) || []), record]);
   }));
   if (answering.size === 0) return records;
-  // For each newest row, the row it answers to that was changed last.
+  // For each newest row, the row it answers to that was changed last (and every row it answers to that was changed).
   const from = new Map<ScheduleItem, ScheduleItem>();
+  const lendersOf = new Map<ScheduleItem, ScheduleItem[]>();
   [...records, ...deleted].forEach(earlier => {
     const moved = timestamp(earlier.updatedAt) > 0 ? answering.get(normalized(earlier.id)) : undefined;
     if (!moved) return;
     const superseded = new Set(moved.flatMap(scheduleTaskEarlierIds).map(normalized));
     const newest = moved.filter(record => !superseded.has(normalized(record.id)));
     if (newest.length !== 1) return;
+    lendersOf.set(newest[0], [...(lendersOf.get(newest[0]) ?? []), earlier]);
     const taken = from.get(newest[0]);
     if (!taken || timestamp(earlier.updatedAt) > timestamp(taken.updatedAt)) from.set(newest[0], earlier);
   });
+  // Way 2, the first comparison: for one field, the row that he typed it on last, where every one of those rows says
+  // when (scheduleTextSetByHandAt) and one of them was typed in it; else none, and the row changed last lends, as before.
+  const typedLastOn = (record: ScheduleItem, field: TypedTextField): ScheduleItem | undefined => {
+    const lenders = lendersOf.get(record) ?? [];
+    const times = lenders.map(row => scheduleTextSetByHandAt(row, field));
+    if (times.some(at => at === undefined)) return undefined;
+    let last: ScheduleItem | undefined;
+    let lastAt = Number.NEGATIVE_INFINITY;
+    times.forEach((at, index) => { if (typeof at === 'number' && at > lastAt) { last = lenders[index]; lastAt = at; } });
+    return last;
+  };
   const byId = new Map(records.map(record => [normalized(record.id), record] as const));
   const deletedById = new Map(deleted.map(record => [normalized(record.id), record] as const));
   return records.map(record => {
@@ -684,11 +708,24 @@ function typedTextCarriedToRevisedTasks(
     // row with the text was changed after this row last was. The record says what the row held, not when: a blank
     // typed back over an owner set here reads as the blank taken (seed 9179 of the reviewer's run with two masters
     // apart: the owner of a card still open was written over the web's later clear).
+    // Way 2, the second comparison: not the two rows' stamps but, field by field, when he last typed it on this row and
+    // on each row in between (their marks) against when he typed the text on the row that has it. Not typed on them
+    // since they were made: that text is his later word, whatever stamped this row since (2.1e's cause). Typed there:
+    // only a text typed after it comes forward, so a clear of his stands whatever stamped the hidden row since (seed 9179,
+    // with marks). A row that cannot say (no marks: made before, or written by an older build) weighs by the stamps.
     const lender = (field: TypedTextField): ScheduleItem | null => {
       if (!replaced || answering.has(normalized(record.id)) || !asTaken(field) || text(record[field])) return null;
+      let typedSince: number | null | undefined = scheduleTextSetByHandAt(record, field);
       let row: ScheduleItem | undefined = replaced;
       for (let hops = 0; row && cloud!.has(normalized(row.id)) && hops < records.length; hops += 1) {
-        if (text(row[field])) return timestamp(row.updatedAt) > timestamp(own.updatedAt) ? row : null;
+        if (text(row[field])) {
+          const there = typedSince === undefined || typedSince === null ? null : scheduleTextSetByHandAt(row, field);
+          if (typedSince === undefined || there === undefined) return timestamp(row.updatedAt) > timestamp(own.updatedAt) ? row : null;
+          return typedSince === null || (there !== null && there > typedSince) ? row : null;
+        }
+        const between = scheduleTextSetByHandAt(row, field);
+        typedSince = typedSince === undefined || between === undefined ? undefined
+          : between === null ? typedSince : typedSince === null ? between : Math.max(typedSince, between);
         const before: ScheduleItem['textFromTask'] = row.textFromTask;
         if (!before || !Object.prototype.hasOwnProperty.call(before, field) || text(before[field])) return null;
         row = byId.get(normalized(before.taskId));
@@ -698,9 +735,20 @@ function typedTextCarriedToRevisedTasks(
     const lent = new Map(TYPED_TEXT_FIELDS.flatMap(field => { const row = lender(field); return row ? [[field, row] as const] : []; }));
     const filledFromEarlier = [...lent.keys()];
     const earlier = from.get(record);
-    const carried = earlier && timestamp(earlier.updatedAt) > timestamp(own.updatedAt)
-      ? TYPED_TEXT_FIELDS.filter(field => !text(record[field]) && Boolean(text(earlier[field])) && !recorded(field))
-      : [];
+    // Way 2, the third comparison (a field the row keeps no record of): from the row he typed it on last, when this row
+    // and every row it answers to say when, and he typed it there after he last did here (or never did here); else from
+    // the row changed last, when it was changed after this row, as before.
+    const carriedFrom = new Map(TYPED_TEXT_FIELDS.flatMap(field => {
+      if (text(record[field]) || recorded(field)) return [];
+      const here = scheduleTextSetByHandAt(record, field);
+      const typedOn = here === undefined ? undefined : typedLastOn(record, field);
+      if (typedOn && here !== undefined) {
+        const there = scheduleTextSetByHandAt(typedOn, field) as number;
+        return text(typedOn[field]) && (here === null || there > here) ? [[field, typedOn] as const] : [];
+      }
+      return earlier && timestamp(earlier.updatedAt) > timestamp(own.updatedAt) && text(earlier[field]) ? [[field, earlier] as const] : [];
+    }));
+    const carried = [...carriedFrom.keys()];
     // Schedule batch S5, item 1 (Medium; older): the task's activity notes and its priority follow it the same way.
     // The notes: the newest row of a task takes every note the rows it answers to hold that it lacks (a row this sync
     // drops too), each once and in the order of their dates. A note is only ever added, so there is no clear to mistake.
@@ -720,7 +768,9 @@ function typedTextCarriedToRevisedTasks(
     const priorityFrom = newest && priorityLender &&
       (tookPriority ? priorityAsRead(record.priority) === priorityAsRead(took!.priority) : !schedulePriorityIsHis(record) && schedulePriorityIsHis(priorityLender)) &&
       priorityAsRead(priorityLender.priority) !== priorityAsRead(record.priority) &&
-      timestamp(priorityLender.updatedAt) > timestamp(own.updatedAt) ? priorityAsRead(priorityLender.priority) : null;
+      // Way 2, the fourth comparison: by the marks his priority edits left on the two rows, where both say when; by the
+      // rows' stamps where one does not, as before.
+      schedulePriorityHeSetLater(priorityLender, own, timestamp(priorityLender.updatedAt) > timestamp(own.updatedAt)) ? priorityAsRead(priorityLender.priority) : null;
     // Review pass 1, P1-1 (the coordinator's decision): the mark that the priority is his goes with it, when the row
     // it comes from has one. Only with a priority this carry brings: where the two rows already hold the same priority
     // nothing is carried here (the mark reaches this row with his edit, sent on from the row he made it on, and at
@@ -735,7 +785,7 @@ function typedTextCarriedToRevisedTasks(
     // he types here later reads as his. (Not what came through a row in between: the record is of that row, still blank.)
     const fromReplaced = { ...Object.fromEntries(filledFromEarlier.filter(field => lent.get(field) === replaced).map(field => [field, replaced![field] ?? ''])), ...(priorityFrom ? { priority: priorityFrom } : {}) };
     const filled = {
-      ...record, ...fromEarlier, ...fromReplaced, ...Object.fromEntries(carried.map(field => [field, earlier![field]])),
+      ...record, ...fromEarlier, ...fromReplaced, ...Object.fromEntries(carried.map(field => [field, carriedFrom.get(field)![field]])),
       ...(notes ? { activity: notes } : {}),
       ...(markFrom ? { prioritySetByHand: markFrom } : {}),
       ...(took && Object.keys(fromReplaced).length > 0 ? { textFromTask: { ...took, ...fromReplaced } } : {}),

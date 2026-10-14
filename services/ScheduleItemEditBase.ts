@@ -5,7 +5,7 @@ import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
 import { scheduleLookaheadNoteWithLaterOwnPercentOf } from './DAVEScheduleRecovery';
 import {
   scheduleItemActivityWithOtherRows, schedulePriorityAsRead, schedulePriorityHeSet, schedulePriorityHeSetLater, schedulePriorityIsHis, schedulePriorityIsItsImports,
-  schedulePriorityItsImportGave, schedulePriorityMarkOfBoth, scheduleTaskEarlierIds,
+  schedulePriorityItsImportGave, schedulePriorityMarkOfBoth, scheduleTaskEarlierIds, SCHEDULE_TEXT_SET_BY_HAND,
 } from './ScheduleTaskRevisions';
 import { mergeProjectControlsRevisions, normalizeProjectControls } from './VitruviusProjectControls';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
@@ -82,7 +82,7 @@ const FIELDS_NEVER_ASKED: ReadonlySet<string> = new Set<string>([
   // What the row held before he first set its priority (schedule batch S6, item 1): written beside that edit, no edit of his.
   'priorityAsImported',
   // Goes with its field (FIELD_COMPANIONS).
-  'dependenciesUpdatedAt', 'prioritySetByHand',
+  'dependenciesUpdatedAt', 'prioritySetByHand', ...Object.values(SCHEDULE_TEXT_SET_BY_HAND),
 ]);
 
 /**
@@ -91,7 +91,14 @@ const FIELDS_NEVER_ASKED: ReadonlySet<string> = new Set<string>([
  * And the mark that a priority is one he set, and when (review pass 1, P1-1 /
  * P1-2 / P1-9): it goes with the priority by this same rule, not a second one.
  */
-const FIELD_COMPANIONS: Readonly<Record<string, readonly string[]>> = { dependencies: ['dependenciesUpdatedAt'], priority: ['prioritySetByHand'] };
+const FIELD_COMPANIONS: Readonly<Record<string, readonly string[]>> = {
+  dependencies: ['dependenciesUpdatedAt'], priority: ['prioritySetByHand'],
+  // Way 2 (14 Oct 2026): the mark of the text he typed in each of these fields, and when, the same way.
+  ...Object.fromEntries(Object.entries(SCHEDULE_TEXT_SET_BY_HAND).map(([field, mark]) => [field, [mark]])),
+};
+const TEXT_MARKS: ReadonlySet<string> = new Set<string>(Object.values(SCHEDULE_TEXT_SET_BY_HAND));
+/** The marks a companion goes with only when the edit itself brings it (one made on an older build brings none). */
+const MARKS_OF_HIS_EDIT: ReadonlySet<string> = new Set<string>(['prioritySetByHand', ...Object.values(SCHEDULE_TEXT_SET_BY_HAND)]);
 
 /** These fields with the stamps that go with them (FIELD_COMPANIONS). */
 export function scheduleItemFieldsWithCompanions(fields: readonly string[]): string[] {
@@ -487,6 +494,8 @@ export function scheduleItemEditBasesMerged(existing: EditScope, incoming: EditS
   (Array.isArray(incoming.changedFields) ? incoming.changedFields.map(String) : []).forEach(field => {
     if (overWaitingCarry(field) && Object.prototype.hasOwnProperty.call(later?.fields ?? {}, field)) { own[field] = [BLANK_UNDER_CARRY]; return; }
     if (field === 'updatedAt' || !earlierFields.has(field) || !Object.prototype.hasOwnProperty.call(earlier?.fields ?? {}, field)) return;
+    // (Not the mark his typing leaves beside a field, way 2: it is never weighed itself, it goes with its field.)
+    if (TEXT_MARKS.has(field)) return;
     const before = fieldValue(existing.itemData, field);
     if (before === fieldValue(incoming.itemData, field)) return;
     const mark = valueMark(before);
@@ -1372,7 +1381,7 @@ export function scheduleItemTextEditOnRow(
   if (typed.length === 0 && !notes && !marked) return null;
   // (A field goes with its stamp: his links with when he changed them; his priority with the mark his edit left, when
   // the edit brings one. An edit made on an older build brings none, and goes on as the priority alone.)
-  const withStamps = scheduleItemFieldsWithCompanions(typed).filter(field => field !== 'prioritySetByHand' || fields.includes(field));
+  const withStamps = scheduleItemFieldsWithCompanions(typed).filter(field => !MARKS_OF_HIS_EDIT.has(field) || fields.includes(field));
   const asTaken = (held: ScheduleItem, field: string) => (held.textFromTask && Object.prototype.hasOwnProperty.call(held.textFromTask, field)
     ? scheduleItemHoldsAsTaken(held, field) || (field === 'dependencies' && Boolean(taskOf) && value(held, field) === value(held.textFromTask, field))
     : isBlank(fieldValue(held, field)));
@@ -1582,7 +1591,9 @@ export function scheduleItemConflictCopyOnRow(
   const value = comparedBy(taskOf);
   const asked = scheduleItemConflictFields(copy).filter(field => value(data, field) !== value(row, field));
   if (asked.length === 0) return null;
-  const fields = scheduleItemFieldsWithCompanions(asked);
+  // (The mark his typing left goes with its field only when the card's copy has one: a card from before way 2 has none,
+  // and would otherwise take the row's mark off it.)
+  const fields = scheduleItemFieldsWithCompanions(asked).filter(field => !TEXT_MARKS.has(field) || Object.prototype.hasOwnProperty.call(data, field));
   const base = isEditBase(copy.base) ? copy.base : undefined;
   return {
     id: row.id,

@@ -356,7 +356,10 @@ describe('mergeProjectControlsEdit: an edit built on an older copy over the copy
 
   it('withProjectControlsEditMerged only touches an edit that carries Project controls', () => {
     const notes = { notes: 'Called the fabricator' };
-    expect(withProjectControlsEditMerged(TASK, notes)).toBe(notes);
+    // (Its controls, that is. A note he types leaves its mark beside it, the text and when: way 2 of the sync design note.)
+    expect(withProjectControlsEditMerged(TASK, notes)).toEqual({ ...notes, notesSetByHand: { text: notes.notes, at: expect.any(String) } });
+    const same = { notes: TASK.notes };
+    expect(withProjectControlsEditMerged(TASK, same)).toBe(same);
     const held = changedOnIPad(TASK, [{ approvalStatus: 'Approved' }]);
     const edit = { projectControls: editOf(base, { assignee: 'Maria' }) };
     expect(withProjectControlsEditMerged(held, edit).projectControls).toMatchObject({

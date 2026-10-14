@@ -1796,10 +1796,17 @@ export function mergeApprovedScheduleImportItems({
   const asImported = new Map(imported.map(item => [item.id, schedulePriorityAsRead(item.priority)]));
   const withPriorityAsImported = (item: ScheduleItem): ScheduleItem => ({ ...item, priorityAsImported: asImported.get(item.id) ?? schedulePriorityAsRead(item.priority) });
 
+  // Way 2 of the sync design note (14 Oct 2026): every row an import adds keeps what it was made with in each field he
+  // types (textAsMade); what is typed on it by hand from now on is marked (ownerSetByHand and the rest). A field with no
+  // mark that still holds what it was made with was not typed there since.
+  const withTextMarkedSinceMade = (item: ScheduleItem): ScheduleItem => ({
+    ...item, textAsMade: Object.fromEntries(TYPED_TEXT_FIELDS.map(field => [field, typeof item[field] === 'string' ? item[field] : ''])),
+  });
+
   // A task changed here from a copy as shown is saved on its saved dates unless its dates changed (owner answer Q25).
   const unchanged = new Set(existing);
   return {
     next: next.map(item => (unchanged.has(item) ? item : scheduleItemAsSaved(item))),
-    additions: additions.map(withLinksTakenNoted).map(withPriorityAsImported).map(scheduleRowAsTask), rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds,
+    additions: additions.map(withLinksTakenNoted).map(withPriorityAsImported).map(withTextMarkedSinceMade).map(scheduleRowAsTask), rehomedIds, carriedProgressIds, fileProgressIds, overlaidIds,
   };
 }

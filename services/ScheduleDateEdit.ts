@@ -1,5 +1,6 @@
 import type { ScheduleItem } from '../types';
 import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendarDay';
+import { SCHEDULE_TEXT_SET_BY_HAND, type ScheduleTypedTextField } from './ScheduleTaskRevisions';
 
 /**
  * Review N1 M1 (3 Oct 2026, caused by ada8ef6, owner answer Q25): a task a
@@ -127,6 +128,28 @@ export function scheduleEditWithDateChangedAlone(
  * Active, a schedule's delete, Keep Cloud), which brings the task's id and
  * its own word and mark.
  */
+/**
+ * Way 2 of the sync design note (14 Oct 2026): every edit of his that changes
+ * the owner, contractor, note, next step or milestone leaves a mark on the row
+ * for that field: the text he typed, and when (ownerSetByHand and the rest,
+ * SCHEDULE_TEXT_SET_BY_HAND). A clear included: that is what keeps a field he
+ * cleared cleared when an older row of the task holds text. Not his edit, and
+ * left as it is: a whole row saved over this one (it brings its own marks).
+ */
+export function scheduleEditWithTextNoted(
+  current: ScheduleItem,
+  edit: Partial<ScheduleItem>,
+  /** When the edit is made. */
+  at = new Date().toISOString(),
+): Partial<ScheduleItem> {
+  if ('id' in edit) return edit;
+  const read = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+  const typed = (Object.keys(SCHEDULE_TEXT_SET_BY_HAND) as ScheduleTypedTextField[])
+    .filter(field => typeof edit[field] === 'string' && !(SCHEDULE_TEXT_SET_BY_HAND[field] in edit) && read(edit[field]) !== read(current[field]));
+  if (typed.length === 0) return edit;
+  return { ...edit, ...Object.fromEntries(typed.map(field => [SCHEDULE_TEXT_SET_BY_HAND[field], { text: edit[field] as string, at }])) };
+}
+
 export function scheduleEditWithPriorityNoted(
   current: ScheduleItem,
   edit: Partial<ScheduleItem>,

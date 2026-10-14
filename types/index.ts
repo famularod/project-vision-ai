@@ -564,6 +564,8 @@ export type ScheduleStatus =
   | 'Complete';
 
 export type SchedulePriority = 'Low' | 'Medium' | 'High';
+/** Text David typed on a task's row by hand, and when (ScheduleItem.ownerSetByHand and the rest; way 2). */
+export type ScheduleTextSetByHand = { text: string; at: string };
 
 /**
  * The first Vitruvius-authored schedule release intentionally supports the
@@ -1022,6 +1024,31 @@ export type ScheduleItem = {
    * where the comparison with priorityAsImported decides as before.
    */
   prioritySetByHand?: { priority: SchedulePriority; at: string } | null;
+  /**
+   * Way 2 of the sync design note (14 Oct 2026; notes/sync-design/NOTE.txt):
+   * the owner, contractor, note, next step and milestone David last typed on
+   * this row by hand, and when, one mark per field. Left by his edit on the
+   * phone, the iPad and the web; it goes wherever that field goes between two
+   * copies of the row (an edit sent on, the sync's own writes), as the
+   * priority's mark does. The mark says something while the row still holds
+   * the text it names; else a device on an older build typed there since.
+   * The carry of his text between a task's rows (DAVEScheduleRecovery) reads
+   * these instead of the rows' stamps. Kept in the task's JSON record.
+   */
+  ownerSetByHand?: ScheduleTextSetByHand | null;
+  contractorSetByHand?: ScheduleTextSetByHand | null;
+  notesSetByHand?: ScheduleTextSetByHand | null;
+  nextActionSetByHand?: ScheduleTextSetByHand | null;
+  milestoneSetByHand?: ScheduleTextSetByHand | null;
+  /**
+   * Way 2: what the row held in each of those five fields when a master made
+   * it (mergeApprovedScheduleImportItems), on a build that leaves the marks
+   * above. A field with no mark that still holds that value was not typed on
+   * this row since it was made. Missing on a row made before, and dropped by
+   * a save on the web before it was updated (which drops the marks too): the
+   * carry then reads the rows' stamps, as before. Never changed after.
+   */
+  textAsMade?: Partial<Record<'owner' | 'contractor' | 'notes' | 'nextAction' | 'milestone', string>> | null;
   status: ScheduleStatus;
   notes: string;
   /** Smallest accountable step expected next. */

@@ -929,6 +929,38 @@ export function schedulePriorityItsImportGave(row: PriorityRecord): SchedulePrio
   return held === 'Low' ? 'Medium' : held;
 }
 
+/**
+ * Way 2 of the sync design note (14 Oct 2026, the coordinator's decisions; notes/sync-design/NOTE.txt). His typed
+ * text was brought forward from a task's earlier row by the ROWS' stamps: a row has one stamp for all its fields, so a
+ * row stamped for anything else read as "typed later" (2.1e; the carry's own two recorded limits). Each field he types
+ * now has its own mark on the row, as the priority has: the text he typed there by hand, and when.
+ */
+export const SCHEDULE_TEXT_SET_BY_HAND = {
+  owner: 'ownerSetByHand', contractor: 'contractorSetByHand', notes: 'notesSetByHand', nextAction: 'nextActionSetByHand', milestone: 'milestoneSetByHand',
+} as const;
+export type ScheduleTypedTextField = keyof typeof SCHEDULE_TEXT_SET_BY_HAND;
+const typedText = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
+
+/**
+ * When he last typed `field` on `row`, by the row's own marks: the time (ms); null when the row says it was not typed
+ * there since the row was made (a row a master made on this build, with no mark for the field, that still holds what
+ * it was made with: textAsMade); undefined when the marks cannot say: a row with no marks (made before, or written by
+ * the web before it was updated), a mark that no longer names the text the row holds, or no mark and other text than
+ * the row was made with (a device on an older build typed there since, or the sync brought text to it). Undefined
+ * keeps the rule by the rows' stamps.
+ */
+export function scheduleTextSetByHandAt(row: Partial<ScheduleItem> | null | undefined, field: ScheduleTypedTextField): number | null | undefined {
+  if (!row) return undefined;
+  const mark = row[SCHEDULE_TEXT_SET_BY_HAND[field]];
+  if (mark !== undefined && mark !== null) {
+    const at = mark && typeof mark === 'object' && typeof mark.at === 'string' ? Date.parse(mark.at) : Number.NaN;
+    return Number.isFinite(at) && typedText(mark.text) === typedText(row[field]) ? at : undefined;
+  }
+  const made = row.textAsMade;
+  if (!made || typeof made !== 'object' || !Object.prototype.hasOwnProperty.call(made, field)) return undefined;
+  return typedText(made[field]) === typedText(row[field]) ? null : undefined;
+}
+
 /** Whether the row's priority is one David set (above): only that follows the task. */
 export function schedulePriorityIsHis(row: PriorityRecord | null | undefined): boolean {
   if (!row) return false;

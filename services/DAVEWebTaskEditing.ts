@@ -19,7 +19,8 @@ import {
 } from './ProjectItemWorkflow';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
 import { sameScheduleCalendarDay, scheduleCalendarDay } from './ScheduleCalendarDay';
-import { scheduleEditWithPriorityNoted } from './ScheduleDateEdit';
+import { scheduleEditWithPriorityNoted, scheduleEditWithTextNoted } from './ScheduleDateEdit';
+import { SCHEDULE_TEXT_SET_BY_HAND, type ScheduleTypedTextField } from './ScheduleTaskRevisions';
 import { scheduleItemAsSaved } from './PIEScheduleReconciliation';
 import { scheduleProgressIsManagers } from './ScheduleProgressSource';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
@@ -531,6 +532,13 @@ export function buildDAVEWebScheduleItem({
       : current ? (noted => (noted ? { priorityAsImported: noted } : {}))(scheduleEditWithPriorityNoted(current as never, { priority: draft.priority }).priorityAsImported) : {}),
     // And the mark that a priority is one he set, and when (review pass 1, P1-1 / P1-2 / P1-9): kept, and left by a priority changed here.
     ...(mark => (mark ? { prioritySetByHand: mark } : {}))(current ? scheduleEditWithPriorityNoted(current as never, { priority: draft.priority }, now).prioritySetByHand ?? current.prioritySetByHand : null),
+    // Way 2 (14 Oct 2026): the marks of the owner, contractor, note, next step and milestone he typed on the row, kept, and
+    // one for each of them this save changes; and what the row was made with in those fields. Dropped by a save here, the
+    // carry between the task's rows would read the row by the stamps again (a field he cleared here could come back).
+    ...textMarksAfterWebSave(current, {
+      owner: draft.owner.trim(), contractor: draft.contractor.trim(), notes: draft.notes.trim(), nextAction: draft.nextAction.trim(), milestone: draft.milestone.trim(),
+    }, now),
+    ...(current?.textAsMade ? { textAsMade: current.textAsMade } : {}),
     // The rows of uploaded schedules waiting to restate it at Make Current (A5 pass 18 L3).
     ...(current?.scheduleRowsAwaitingCurrent?.length ? { scheduleRowsAwaitingCurrent: current.scheduleRowsAwaitingCurrent } : {}),
     sourceDocumentId: current?.sourceDocumentId ?? null,
@@ -814,6 +822,17 @@ function boundedPercent(value: number | string): number | null {
       ? Number(value.replace('%', '').trim())
       : Number.NaN;
   return Number.isFinite(parsed) ? Math.max(0, Math.min(100, Math.round(parsed))) : null;
+}
+
+/** Way 2: the marks of the text he typed on a task's row after a save on this page (above). */
+function textMarksAfterWebSave(current: DAVEWebScheduleItem | null, typed: Pick<ScheduleItem, ScheduleTypedTextField>, now: string): Partial<ScheduleItem> {
+  if (!current) return {};
+  const noted = scheduleEditWithTextNoted(current as never, typed, now) as Record<string, unknown>;
+  const held = current as unknown as Record<string, unknown>;
+  return Object.fromEntries(Object.values(SCHEDULE_TEXT_SET_BY_HAND).flatMap(mark => {
+    const value = noted[mark] ?? held[mark];
+    return value ? [[mark, value]] : [];
+  }));
 }
 
 export function scheduleItemForCloud(

@@ -498,7 +498,9 @@ describe('Review pass 1, P1-1, P1-2 and P1-9: every priority edit he makes leave
     expect([back.priority, back.priorityAsImported, back.prioritySetByHand, schedulePriorityIsHis(back), schedulePriorityIsItsImports(back)])
       .toEqual(['Medium', 'Medium', { priority: 'Medium', at: '2026-06-04T09:00:00.000Z' }, true, false]);
     const other = { owner: 'Mike' };
-    expect([withProjectControlsEditMerged(back, other), withProjectControlsEditMerged(back, { priority: 'Medium' })]).toEqual([other, { priority: 'Medium' }]);
+    // (No priority mark either way; the owner he types leaves its own mark, the text and when: way 2 of the sync design note.)
+    expect([withProjectControlsEditMerged(back, other), withProjectControlsEditMerged(back, { priority: 'Medium' })])
+      .toEqual([{ ...other, ownerSetByHand: { text: 'Mike', at: expect.any(String) } }, { priority: 'Medium' }]);
     // A mark the row's priority no longer agrees with (a device on an older build changed it since) says nothing:
     // the comparison with the import's decides, as on a row with no mark.
     expect([schedulePriorityIsHis({ ...high, priority: 'Medium' }), schedulePriorityIsHis({ ...back, priority: 'Low' })]).toEqual([false, true]);

@@ -1541,8 +1541,9 @@ describe('Review N1 finding 1: a card in Review Conflicts stays until David choo
     // Offline, the follow-up leaves the edit waiting as it was queued, with its fields and base.
     setOnline(phone, false);
     expect(await typed(phone, id, { notes: 'Crew short' })).toMatchObject({ uploaded: 0, queued: 1, conflicts: 0 });
+    // (With the mark his typing leaves beside the note, which goes with it: way 2 of the sync design note.)
     expect((await queueOf(phone)).map(item => [(item.payload as { changedFields?: string[] }).changedFields, (item.payload as { base?: { fields: unknown } }).base?.fields]))
-      .toEqual([[['notes', 'updatedAt'], { notes: 'Crew' }]]);
+      .toEqual([[['notes', 'notesSetByHand', 'updatedAt'], { notes: 'Crew', notesSetByHand: { text: 'Crew', at: '2026-09-08T10:00:00.000Z' } }]]);
   });
 
   it('a whole copy of the task never closes or replaces the card: one equal to the cloud\'s row, and one that ends in the older conflict', async () => {
