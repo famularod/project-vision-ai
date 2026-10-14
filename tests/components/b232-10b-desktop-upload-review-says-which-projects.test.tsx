@@ -15,6 +15,7 @@ import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 // project, Make Current Schedule then hid the other projects' tasks), and the
 // review says so in one line before he uploads, where the suggestion is.
 // Made-up projects; the shell harness of web-ws1-upload-review-lookahead.test.tsx.
+// Since item 10c the suggestion is the previous build's again, and the tests choose Full schedule themselves.
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -165,14 +166,29 @@ beforeEach(() => {
 describe('the desktop\'s upload review says which projects a full schedule is saved for (Build 232 item 10b)', () => {
   const FULL = 'Full schedule (replaces). Use this file as the whole schedule for its projects. It is saved as a prior version first, and replaces the schedule in use for them when you choose Make Current Schedule.';
   const LOOKAHEAD = 'Lookahead / partial (adds to the master). Keep the master schedule. A task in both files shows once, with this file’s dates and progress. Tasks only in this file are added. The master’s other tasks stay. It applies as soon as it is uploaded, and a newer lookahead for the same project replaces it.';
-  const SUGGESTED = 'Suggested: Full schedule (replaces), because there is no master schedule for Pilot project yet. You can change this before uploading.';
+  // What the form fills in for this file with every project ticked, since item 10c: Build 231's suggestion again
+  // (open item 4.58: a new project's first full schedule, suggested as a Lookahead because another ticked project
+  // has a long master).
+  const SUGGESTED = `Suggested: Lookahead / partial (adds to the master), because its dates cover 3 weeks and the master for ${LONG} covers about 16 months. You can change this before uploading.`;
   const SAVED_FOR = 'Every task in this file is for Pilot project, so as a full schedule it will be saved for Pilot project only, not for every project ticked above.';
   const forTheNewProject = () => csvFile('Schedule A.csv', [`Pour footings,${NEW},Lot,10/26/2026,10/30/2026,`, `Set steel,${NEW},Lot,11/02/2026,11/06/2026,`, `Deck and detail,${NEW},Lot,11/09/2026,11/13/2026,`]);
 
+  // CHANGED by item 10c (13 Oct 2026; the coordinator's decision on review pass 6). While items 10 and 10b part 1
+  // were in, "Full schedule" came filled in for this file and both tests below went on from there. The suggestion
+  // is Build 231's again and fills in Lookahead here, so each test now CHOOSES "Full schedule (replaces)" itself
+  // before it looks for the line. The line's own rule is not changed: it shows only while Full schedule is the
+  // choice. Item 10b part 2 (what a full schedule is saved for, and the line) is untouched.
   it('every project ticked, a file whose rows are all one project\'s: the line is under the suggestion, and the upload is for that project', async () => {
     const screen = render(<DesktopReadOnlyShell page="documents" />);
     await chooseFileForEveryProject(screen, forTheNewProject());
 
+    // As the form opens: Lookahead is the choice filled in, so the line is not there yet.
+    expect(screen.getByLabelText(LOOKAHEAD).props.accessibilityState.checked).toBe(true);
+    expect(screen.getByLabelText(FULL).props.accessibilityState.checked).toBe(false);
+    expect(screen.getByText(SUGGESTED)).toBeTruthy();
+    expect(screen.queryByText(SAVED_FOR)).toBeNull();
+    // He chooses Full schedule himself: the line is under the suggestion.
+    fireEvent.press(screen.getByLabelText(FULL));
     expect(screen.getByLabelText(FULL).props.accessibilityState.checked).toBe(true);
     expect(screen.getByText(SUGGESTED)).toBeTruthy();
     expect(screen.getByText(SAVED_FOR)).toBeTruthy();
@@ -193,6 +209,9 @@ describe('the desktop\'s upload review says which projects a full schedule is sa
   it('a task given to another ticked project in the review: the line names both, and once the rows name every ticked project it is gone and every ticked project is saved', async () => {
     const screen = render(<DesktopReadOnlyShell page="documents" />);
     await chooseFileForEveryProject(screen, forTheNewProject());
+    // Item 10c: Full schedule is no longer filled in for this file, so he chooses it himself (see above the first test).
+    expect(screen.queryByText(/^Every task in this file is for /)).toBeNull();
+    fireEvent.press(screen.getByLabelText(FULL));
     // Each task offers the ticked projects (the last three choices so named; the first is the page's own project
     // filter). The first task goes to the second project, then the second task to the first.
     const taskChoice = (taskIndex: number, project: string) => screen.getAllByRole('radio', { name: project }).slice(-3)[taskIndex];

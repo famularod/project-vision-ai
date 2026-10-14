@@ -1,20 +1,26 @@
 /**
- * Build 232 round, item 10 (13 Oct 2026). Seen on a simulated iPhone running
- * Build 231's code, three active projects: "2321 Compliance Project" with a
- * master of about 16 months, "2375 Compliance Project", and a new "Test
- * project" with no schedule. Tasks tab > Manage Schedule > Add Schedule or
- * Task > Schedule File, a CSV whose three rows all say Project "Test
- * project": the review preselected "Lookahead / partial (adds to the
- * master)", "because its dates cover 3 weeks and the master for 2321
- * Compliance Project covers about 16 months". The same for three more full
- * schedules of Test project (4 weeks, 3 weeks, 12 days). The preselected
- * choice is what Accept All saves.
+ * Build 232 round, item 10 (13 Oct 2026), AS ITEM 10c LEFT IT. Item 10 made
+ * the review's "Full schedule or Lookahead" suggestion read the file's own
+ * rows' projects in place of the file's label (every project the import
+ * could have used: from the Tasks tab every active project, on the desktop
+ * every project ticked), and item 10b part 1 narrowed that to the rows of
+ * the projects the file is being saved for. Review pass 6 (findings R-1 and
+ * R-2) found two files which that change filled in as "Full schedule" where
+ * the previous build filled in Lookahead, and a wrong Full schedule made
+ * current hides tasks, where a wrong Lookahead costs one tap. The
+ * coordinator's decision: the change is taken back out, and
+ * suggestScheduleImportRole (services/ScheduleLookahead.ts) is Build 231's
+ * again, word for word.
  *
- * Why: from the Tasks tab the file is labelled with every active project
- * until its approval narrows the label to its rows' projects (App.tsx
- * prepareScheduleImportFromAsset; ScheduleDocumentLabels), and the suggestion
- * read that label as the file's projects. It now reads the rows' projects,
- * and the label only when no row names a project.
+ * WHAT THIS FILE IS NOW: the 11 of item 10's 23 tests that hold on Build
+ * 231's function, kept as guards on what Build 231 does. The 12 that
+ * asserted the removed behaviour are gone (they are whole in the commits
+ * that added them). Open item 4.58 (a new project's first full schedule can
+ * be suggested as a Lookahead when another active project has a long master)
+ * is open again exactly as on Build 231: the test that states it, and the
+ * tests for R-1 and R-2, are in
+ * b232-10c-schedule-suggestion-is-the-previous-builds-again.test.tsx. This
+ * file keeps its name so that the notes of items 10 and 10b still find it.
  *
  * The phone's road is App.tsx's own importScheduleFile and
  * prepareScheduleImportFromAsset, compiled from App.tsx with the real
@@ -232,77 +238,20 @@ function afterApproval(saved: Saved, batch: PIEScheduleImportBatch, role: Schedu
   };
 }
 
-const FULL = 'Suggested: Full schedule (replaces), because';
 const LOOKAHEAD = 'Suggested: Lookahead / partial (adds to the master), because';
 const CHANGE = 'You can change this before saving.';
 
-describe('the four files seen: full schedules of a new project, three active projects, another has a 16-month master', () => {
-  it('the first file, with no schedule yet for Test project: Full schedule, and its sentence names Test project', async () => {
-    const first = await fromTheTasksTab(ACCOUNT, threeWeeks(TEST));
-    // The road: the file is labelled with every active project until its approval; its rows are all Test project's.
-    expect(first.batch.documents[0].projectNames).toEqual(ACTIVE);
-    expect([...new Set(first.batch.items.map(item => item.projectName))]).toEqual([TEST]);
-    expect(first.sentence).toBe(`${FULL} there is no master schedule for Test project yet. ${CHANGE}`);
-    expect(first.savedAs).toBe('master');
-  });
-
-  it('three more full schedules, Test project now with its 3-week master: Full schedule each time, against that master', async () => {
-    const first = await fromTheTasksTab(ACCOUNT, threeWeeks(TEST));
-    const saved = afterApproval(ACCOUNT, first.batch, 'master');
-    expect(saved.documents.find(document => document.id === first.batch.documents[0].id)?.projectNames).toEqual([TEST]);
-
-    const fourWeeks = await fromTheTasksTab(saved, csv('Schedule B.csv', [
-      ['Pour footings', TEST, '10/26/2026', '10/30/2026'],
-      ['Set steel', TEST, '11/02/2026', '11/13/2026'],
-      ['Roof and close in', TEST, '11/16/2026', '11/20/2026'],
-    ]));
-    expect(fourWeeks.sentence).toBe(`${FULL} its dates cover 4 weeks and the master for Test project covers 3 weeks. ${CHANGE}`);
-    expect(fourWeeks.savedAs).toBe('master');
-
-    const threeMore = await fromTheTasksTab(saved, csv('Schedule C.csv', [
-      ['Set steel', TEST, '11/02/2026', '11/06/2026'],
-      ['Deck and detail', TEST, '11/09/2026', '11/13/2026'],
-      ['Roof and close in', TEST, '11/16/2026', '11/20/2026'],
-    ]));
-    expect(threeMore.sentence).toBe(`${FULL} its dates cover 3 weeks and the master for Test project covers 3 weeks. ${CHANGE}`);
-    expect(threeMore.savedAs).toBe('master');
-
-    const twelveDays = await fromTheTasksTab(saved, csv('Schedule D.csv', [
-      ['Set steel', TEST, '11/02/2026', '11/06/2026'],
-      ['Deck and detail', TEST, '11/09/2026', '11/13/2026'],
-    ]));
-    expect(twelveDays.sentence).toBe(`${FULL} its dates cover 12 days and the master for Test project covers 3 weeks. ${CHANGE}`);
-    expect(twelveDays.savedAs).toBe('master');
-  });
-});
-
-describe('what is still suggested as a lookahead, and against which master', () => {
+/* ====================================================================================================================
+ * KEPT FROM BUILD 232 ITEMS 10 AND 10b, AS BUILD 231 DOES IT. Every test below holds on Build 231's
+ * suggestScheduleImportRole, which is the function in the app again (item 10c; the head of this file says why the
+ * change left). They are guards on what Build 231 does, not tests of a fix. Open item 4.58 is open again.
+ * ================================================================================================================== */
+describe('Kept from Build 232 item 10, as Build 231 does it: a real lookahead for the project with the long master', () => {
   it('a three-week file for the project WITH the 16-month master is still a lookahead', async () => {
     const lookahead = await fromTheTasksTab(ACCOUNT, threeWeeks(P2321, '2321 field plan.csv'));
     expect(lookahead.batch.documents[0].projectNames).toEqual(ACTIVE);
     expect(lookahead.sentence).toBe(`${LOOKAHEAD} its dates cover 3 weeks and the master for 2321 Compliance Project covers about 16 months. ${CHANGE}`);
     expect(lookahead.savedAs).toBe('lookahead');
-  });
-
-  it('a file whose rows span two projects is compared with the master one of THEM has, not with a third project\'s', async () => {
-    const two = await fromTheTasksTab(ACCOUNT, csv('Two projects.csv', [
-      ['Pour footings', TEST, '10/26/2026', '10/30/2026'],
-      ['Set steel', P2375, '11/02/2026', '11/06/2026'],
-      ['Deck and detail', TEST, '11/09/2026', '11/13/2026'],
-    ]));
-    expect([...new Set(two.batch.items.map(item => item.projectName))].sort()).toEqual([P2375, TEST]);
-    expect(two.sentence).toBe(`${LOOKAHEAD} its dates cover 3 weeks and the master for 2375 Compliance Project covers about 5 months. ${CHANGE}`);
-    expect(two.savedAs).toBe('lookahead');
-  });
-
-  it('rows spanning two projects, neither with a master: Full schedule, and only those two are named', async () => {
-    const only2321: Saved = { documents: [master2321], items: ACCOUNT.items.filter(item => item.projectName === P2321) };
-    const two = await fromTheTasksTab(only2321, csv('Two projects.csv', [
-      ['Pour footings', TEST, '10/26/2026', '10/30/2026'],
-      ['Set steel', P2375, '11/02/2026', '11/06/2026'],
-    ]));
-    expect(two.sentence).toBe(`${FULL} there is no master schedule for Test project, 2375 Compliance Project yet. ${CHANGE}`);
-    expect(two.savedAs).toBe('master');
   });
 });
 
@@ -326,21 +275,15 @@ const northOctober = csv('North October.csv', [
   ['Frame walls', NORTH, '10/12/2026', '10/16/2026'],
 ]);
 
-describe('an account whose master is saved for a Microsoft Project root, its tasks filed under the buildings', () => {
+describe('Kept from Build 232 item 10, as Build 231 does it: an account whose master is saved for a Microsoft Project root, its tasks filed under the buildings', () => {
   it('on the phone a file naming one building comes up unassigned (the name is the root\'s too), so the label is read, as before', async () => {
     const north = await fromTheTasksTab(CAMPUS, northOctober, HARBOR);
     expect(north.batch.items.map(item => [item.projectName, item.scheduleProjectName])).toEqual([['Needs Project', null], ['Needs Project', null]]);
     expect(north.sentence).toBe(`${LOOKAHEAD} its dates cover 12 days and the master for 2400 Compliance Project covers 16 weeks. ${CHANGE}`);
   });
-
-  it('a new project\'s first schedule in that account is a Full schedule', async () => {
-    const first = await fromTheTasksTab(CAMPUS, threeWeeks(TEST), HARBOR);
-    expect(first.sentence).toBe(`${FULL} there is no master schedule for Test project yet. ${CHANGE}`);
-    expect(first.savedAs).toBe('master');
-  });
 });
 
-describe('a file with no Project column: no row names a project, so the label is all there is to read', () => {
+describe('Kept from Build 232 item 10, as Build 231 does it: a file with no Project column, so the label is all there is to read', () => {
   it('from the Tasks tab the rows wait for a project, and the suggestion still reads the label (every active project)', async () => {
     const unnamed = await fromTheTasksTab(ACCOUNT, threeWeeks(null, 'No project column.csv'));
     expect([...new Set(unnamed.batch.items.map(item => item.projectName))]).toEqual(['Needs Project']);
@@ -350,53 +293,6 @@ describe('a file with no Project column: no row names a project, so the label is
     // Nothing is saved until each row has its project: Accept All is not offered yet.
     expect(unnamed.savedAs).toBeNull();
   });
-
-  it('picked for one project alone, it is that project\'s: its master, or none yet; "Needs Project" is never named', async () => {
-    const forTest = phone(ACCOUNT, threeWeeks(null, 'No project column.csv'));
-    const testBatch = await forTest.prepareScheduleImportFromAsset(forTest.file, [TEST]);
-    expect(testBatch?.documents[0].projectNames).toEqual([TEST]);
-    expect(suggestScheduleImportRole({ batch: testBatch!, documents: ACCOUNT.documents, scheduleItems: ACCOUNT.items }))
-      .toEqual({ role: 'master', reason: 'there is no master schedule for Test project yet' });
-
-    const for2321 = phone(ACCOUNT, threeWeeks(null, 'No project column.csv'));
-    const batch2321 = await for2321.prepareScheduleImportFromAsset(for2321.file, [P2321]);
-    expect(suggestScheduleImportRole({ batch: batch2321!, documents: ACCOUNT.documents, scheduleItems: ACCOUNT.items }))
-      .toEqual({ role: 'lookahead', reason: 'its dates cover 3 weeks and the master for 2321 Compliance Project covers about 16 months' });
-  });
-
-  it('some rows name a project and some do not: the named rows decide', async () => {
-    const mixed = await fromTheTasksTab(ACCOUNT, csv('Some unnamed.csv', [
-      ['Pour footings', TEST, '10/26/2026', '10/30/2026'],
-      ['Set steel', '', '11/02/2026', '11/06/2026'],
-      ['Deck and detail', TEST, '11/09/2026', '11/13/2026'],
-    ]));
-    expect([...new Set(mixed.batch.items.map(item => item.projectName))].sort()).toEqual(['Needs Project', TEST]);
-    expect(mixed.sentence).toBe(`${FULL} there is no master schedule for Test project yet. ${CHANGE}`);
-  });
-});
-
-describe('the other sentences that name a project name the file\'s own', () => {
-  const rows = (project: string) => [
-    { ...savedRow('n1', project, '10/26/2026', '10/30/2026', 'batch-new'), sourceDocumentId: 'new' },
-    { ...savedRow('n2', project, '11/09/2026', '11/13/2026', 'batch-new'), sourceDocumentId: 'new' },
-  ];
-  const labelledWithEveryProject = (project: string): Pick<PIEScheduleImportBatch, 'documents' | 'items'> => ({
-    documents: [savedDocument('new', ACTIVE, '2026-10-13T12:00:00.000Z', { importBatchId: 'batch-new' })],
-    items: rows(project),
-  });
-
-  it('"there is no master schedule for … yet" lists the rows\' project, not every active project', () => {
-    expect(suggestScheduleImportRole({ batch: labelledWithEveryProject(TEST), documents: [], scheduleItems: [] }))
-      .toEqual({ role: 'master', reason: 'there is no master schedule for Test project yet' });
-  });
-
-  it('"its dates could not be compared with the master for …" is not said of another project\'s master', () => {
-    // 2321's master has no dated task saved on this device.
-    expect(suggestScheduleImportRole({ batch: labelledWithEveryProject(TEST), documents: [master2321], scheduleItems: [] }))
-      .toEqual({ role: 'master', reason: 'there is no master schedule for Test project yet' });
-    expect(suggestScheduleImportRole({ batch: labelledWithEveryProject(P2321), documents: [master2321], scheduleItems: [] }))
-      .toEqual({ role: 'master', reason: 'its dates could not be compared with the master for 2321 Compliance Project' });
-  });
 });
 
 /**
@@ -405,7 +301,7 @@ describe('the other sentences that name a project name the file\'s own', () => {
  * copy's label (its rows' projects): reported in this item's notes and left as they are, because what they decide
  * is whether a pick or an Accept is refused, not which choice is preselected.
  */
-describe('the other readers of the label before approval, as they are now', () => {
+describe('Kept from Build 232 item 10, as Build 231 does it: the other readers of the label before approval', () => {
   const picked = threeWeeks(TEST);
   const bytes = utf8ToBytes(picked.contents);
   const scopeOf = (names: readonly string[]) => names.map(name => ({ id: `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-key`, importIdentity: `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-key`, name }));
@@ -444,9 +340,12 @@ describe('the other readers of the label before approval, as they are now', () =
     expect(fromTasksTab).toMatchObject({ alreadyImported: false, asLookahead: false });
     // Picked for Test project alone again, it is recognised.
     expect(pick(saved.documents, saved.items, [TEST])).toMatchObject({ alreadyImported: true, asLookahead: false });
-    // The review of that unrecognised second import: with this item, at least compared with Test project's own master.
+    // The review of that unrecognised second import. ITEM 10c: this last line said "Full schedule ... the master for
+    // [the new project] covers 3 weeks" while item 10 was in; it is restated as Build 231 says it (the longest master
+    // among the projects the pick was for: ACTIVE[0], the one with the 16-month master). Everything above it is
+    // unchanged.
     const review = await fromTheTasksTab(saved, picked);
-    expect(review.sentence).toBe(`${FULL} its dates cover 3 weeks and the master for Test project covers 3 weeks. ${CHANGE}`);
+    expect(review.sentence).toBe(`${LOOKAHEAD} its dates cover 3 weeks and the master for ${ACTIVE[0]} covers about 16 months. ${CHANGE}`);
   });
 
   it('scheduleFileFullCopyInUse: when the review opens it agrees with the pick, wide label or not', async () => {
@@ -499,7 +398,7 @@ describe('the other readers of the label before approval, as they are now', () =
   });
 });
 
-describe('the desktop\'s upload review: the same suggestion, from the same function', () => {
+describe('Kept from Build 232 items 10 and 10b, as Build 231 does it: the desktop\'s upload review, the same suggestion from the same function', () => {
   const picked = threeWeeks(TEST);
   const snapshot = { referenceDocuments: ACCOUNT.documents, scheduleItems: ACCOUNT.items, knownScheduleItems: ACCOUNT.items };
   const upload = (ticked: readonly string[], file: Picked = picked) => prepareDAVEWebDocumentUpload({
@@ -511,18 +410,11 @@ describe('the desktop\'s upload review: the same suggestion, from the same funct
     prepared: upload(ticked, file),
   });
 
-  it('with every project ticked, a full schedule of Test project is suggested as a Full schedule', () => {
-    const prepared = upload(ACTIVE);
-    expect(prepared.document.projectNames).toEqual(ACTIVE);
-    expect([...new Set(prepared.scheduleItems.map(item => item.projectName))]).toEqual([TEST]);
-    expect(suggestion(ACTIVE)).toEqual({ role: 'master', reason: 'there is no master schedule for Test project yet' });
-  });
-
-  // CHANGED by item 10b (review pass 4, C-5; the coordinator's decision). This test pinned "with another project
-  // ticked by mistake the rows still decide" (item 10's decision 4): Full schedule, "no master schedule for [the
-  // new project] yet". A row now names a project only where it is one the file is being saved for (a ticked one),
-  // so with another project ticked INSTEAD the file's project names are read, as on Build 231.
-  it('with the new project alone ticked it was right already; with another project ticked instead, the file is read for the ticked project (item 10b)', () => {
+  // Item 10 had pinned here "with another project ticked by mistake the rows still decide"; item 10b changed the
+  // test to what is below, which is also what Build 231 does: the file's project names (the ticks) are read, so
+  // with another project ticked INSTEAD it is that project's master the file is compared with (the one wrong tick).
+  // RETITLED by item 10c: the title ended "(item 10b)".
+  it('with the new project alone ticked it was right already; with another project ticked instead, the file is read for the ticked project (as on Build 231)', () => {
     expect(suggestion([TEST])).toEqual({ role: 'master', reason: 'there is no master schedule for Test project yet' });
     // The desktop keeps a row's project as the file writes it, ticked or not.
     expect([...new Set(upload([P2321]).scheduleItems.map(item => item.projectName))]).toEqual([TEST]);
@@ -534,32 +426,11 @@ describe('the desktop\'s upload review: the same suggestion, from the same funct
       .toEqual({ role: 'lookahead', reason: 'its dates cover 3 weeks and the master for 2321 Compliance Project covers about 16 months' });
   });
 
-  it('a file with no Project column: every row takes the first ticked project, which is then the file\'s project', () => {
-    const noColumn = threeWeeks(null, 'No project column.csv');
-    expect([...new Set(upload([TEST, P2321], noColumn).scheduleItems.map(item => item.projectName))]).toEqual([TEST]);
-    expect(suggestion([TEST, P2321], noColumn)).toEqual({ role: 'master', reason: 'there is no master schedule for Test project yet' });
-    expect(suggestion([P2321, TEST], noColumn))
-      .toEqual({ role: 'lookahead', reason: 'its dates cover 3 weeks and the master for 2321 Compliance Project covers about 16 months' });
-  });
-
-  it('REPORTED: a building\'s file without the root, its master saved for the root: "no master yet", now also with the root ticked', () => {
-    const campus = { referenceDocuments: CAMPUS.documents, scheduleItems: CAMPUS.items, knownScheduleItems: CAMPUS.items };
-    const suggested = (ticked: readonly string[]) => daveWebScheduleUploadRoleSuggestion({
-      snapshot: campus as unknown as Parameters<typeof daveWebScheduleUploadRoleSuggestion>[0]['snapshot'],
-      prepared: upload(ticked, northOctober),
-    });
-    expect(upload([NORTH], northOctober).scheduleItems.map(item => [item.projectName, item.scheduleProjectName])).toEqual([[NORTH, NORTH], [NORTH, NORTH]]);
-    // The building alone ticked: so before this item too (a row without its root cannot say whose master holds it).
-    expect(suggested([NORTH])).toEqual({ role: 'master', reason: 'there is no master schedule for Harbor North yet' });
-    // The root ticked as well: before this item the root's master was read through the label, and it was a lookahead.
-    expect(suggested([ROOT, NORTH])).toEqual({ role: 'master', reason: 'there is no master schedule for Harbor North yet' });
-  });
-
-  // CHANGED by item 10b (review pass 4, C-5). This test pinned item 10's decision 5, "the suggestion now follows
-  // [the file's spelling]": Full schedule, "there is no master schedule for [the file's spelling] yet". That was
-  // the finding: a real lookahead came filled in as a full schedule. Such a row now names no project, and the
-  // ticked project's master is read again, as before item 10.
-  it('a Project column that spells no project of the app: the desktop keeps the file\'s spelling on the rows, and the suggestion reads the ticked project (item 10b)', async () => {
+  // Item 10 had pinned here its decision 5, "the suggestion now follows [the file's spelling]" (review pass 4's
+  // finding C-5: a real lookahead came filled in as a full schedule); item 10b changed the test to what is below,
+  // which is also what Build 231 does: the ticked project's master is read through the file's project names.
+  // RETITLED by item 10c: the title ended "(item 10b)".
+  it('a Project column that spells no project of the app: the desktop keeps the file\'s spelling on the rows, and the suggestion reads the ticked project (as on Build 231)', async () => {
     const shortened = P2321.split(' ').slice(0, 2).join(' '); // the project's name without its last word
     const misspelt = threeWeeks(shortened, 'Field plan.csv');
     expect([...new Set(upload([P2321], misspelt).scheduleItems.map(item => item.projectName))]).toEqual([shortened]);
