@@ -37,7 +37,11 @@ import {
   type VitruviusLookaheadWeeks,
 } from '../../services/VitruviusLookahead';
 import { buildVitruviusCalendarExport } from '../../services/VitruviusCalendarExport';
-import { analyzeVitruviusSchedule } from '../../services/VitruviusScheduleAnalytics';
+import {
+  analyzeVitruviusListedSchedule,
+  analyzeVitruviusSchedule,
+  scheduleTasksLinkedWith,
+} from '../../services/VitruviusScheduleAnalytics';
 import {
   buildVitruviusScheduleChangeScenario,
   type VitruviusScheduleChangeScenario,
@@ -585,9 +589,10 @@ export function DesktopSchedulePage({
     return error.code === 'deleted' || error.code === 'not_found';
   };
 
+  // Open item 3.4: worked out with every task shown that the tasks listed are linked with, as the Gantt shows it.
   const applyDependencyDateChange = async (itemId: string) => {
     if (impactPendingItemId) return;
-    const analysis = analyzeVitruviusSchedule(tasks);
+    const analysis = analyzeVitruviusListedSchedule(tasks, scheduleTasks);
     if (!analysis.impactPreview.safeToApply) {
       setNotice({
         tone: 'danger',
@@ -633,7 +638,7 @@ export function DesktopSchedulePage({
 
   const applyAllDependencyDateChanges = async () => {
     if (impactPendingItemId) return;
-    const analysis = analyzeVitruviusSchedule(tasks);
+    const analysis = analyzeVitruviusListedSchedule(tasks, scheduleTasks);
     if (!analysis.impactPreview.safeToApply) {
       setNotice({
         tone: 'danger',
@@ -923,6 +928,7 @@ export function DesktopSchedulePage({
       ) : workspaceView === 'gantt' ? (
         <GanttWorkspace
           tasks={tasks}
+          shownTasks={scheduleTasks}
           zoom={ganttZoom}
           onZoomChange={setGanttZoom}
           onOpenItem={task => openEdit(task as DAVEWebScheduleItem)}
@@ -933,6 +939,7 @@ export function DesktopSchedulePage({
       ) : (
         <LookaheadWorkspace
           tasks={tasks}
+          shownTasks={scheduleTasks}
           weeks={lookaheadWeeks}
           onWeeksChange={setLookaheadWeeks}
           onOpenItem={task => openEdit(task as DAVEWebScheduleItem)}
@@ -944,6 +951,7 @@ export function DesktopSchedulePage({
 
 function GanttWorkspace({
   tasks,
+  shownTasks,
   zoom,
   onZoomChange,
   onOpenItem,
@@ -952,6 +960,12 @@ function GanttWorkspace({
   onApplyAllImpactItems,
 }: {
   tasks: readonly DAVEWebScheduleItem[];
+  /**
+   * The whole schedule the workspace shows (open item 3.4). With a project chosen at the top, `tasks` are the tasks
+   * filed under that schedule name: a link between a task he made by hand and a master's task leads out of them,
+   * and read as a missing predecessor.
+   */
+  shownTasks: readonly ScheduleItem[];
   zoom: VitruviusGanttZoom;
   onZoomChange: (zoom: VitruviusGanttZoom) => void;
   onOpenItem: (item: ScheduleItem) => void;
@@ -968,8 +982,8 @@ function GanttWorkspace({
     [tasks, zoom],
   );
   const analytics = useMemo(
-    () => analyzeVitruviusSchedule(tasks),
-    [tasks],
+    () => analyzeVitruviusListedSchedule(tasks, shownTasks),
+    [tasks, shownTasks],
   );
   const criticalIds = analytics.criticalPath.criticalItemIds;
   const lateBaselineCount = analytics.baselineVariance.filter(
@@ -1226,7 +1240,7 @@ function GanttWorkspace({
       {showImpactPreview ? (
         <ImpactPreviewPanel
           analytics={analytics}
-          tasks={tasks}
+          tasks={shownTasks}
           pendingItemId={impactPendingItemId}
           onApplyItem={onApplyImpactItem}
           onApplyAll={onApplyAllImpactItems}
@@ -1238,19 +1252,24 @@ function GanttWorkspace({
 
 function LookaheadWorkspace({
   tasks,
+  shownTasks,
   weeks,
   onWeeksChange,
   onOpenItem,
 }: {
   tasks: readonly DAVEWebScheduleItem[];
+  /** The whole schedule shown: its critical path is the Gantt's (open item 3.4). */
+  shownTasks: readonly ScheduleItem[];
   weeks: VitruviusLookaheadWeeks;
   onWeeksChange: (weeks: VitruviusLookaheadWeeks) => void;
   onOpenItem: (item: ScheduleItem) => void;
 }) {
   const lookahead = useMemo(
     // By building, as the Builder groups (A5 pass 13); the phone keeps the root.
-    () => buildVitruviusLookahead({ items: tasks, weeks, groupBy: 'appProject' }),
-    [tasks, weeks],
+    () => buildVitruviusLookahead({
+      items: tasks, weeks, groupBy: 'appProject', linkedTasksElsewhere: scheduleTasksLinkedWith(tasks, shownTasks),
+    }),
+    [tasks, shownTasks, weeks],
   );
   const groupedRows = useMemo(
     () => groupLookaheadRows(lookahead.rows),

@@ -66,6 +66,72 @@ export function analyzeVitruviusSchedule(
   });
 }
 
+/**
+ * The tasks shown that the tasks listed are linked with, through any number of links either way, wherever they are
+ * filed (open item 3.4, 14 Oct 2026). With a project chosen at the top, the computer's Schedule page lists the tasks
+ * filed under that one schedule name; a link between a task he made by hand (filed under its building's name) and a
+ * master's task (filed under the master's own name) leads out of that list.
+ */
+export function scheduleTasksLinkedWith(
+  listed: readonly ScheduleItem[],
+  shown: readonly ScheduleItem[],
+): ScheduleItem[] {
+  const listedIds = new Set(listed.map(item => item.id));
+  const shownById = new Map(shown.map(item => [item.id, item]));
+  const neighbours = new Map<string, string[]>();
+  const link = (from: string, to: string) => {
+    const existing = neighbours.get(from);
+    if (existing) existing.push(to);
+    else neighbours.set(from, [to]);
+  };
+  [...listed, ...shown].forEach(item => {
+    normalizeScheduleDependencies(item.dependencies).forEach(dependency => {
+      link(item.id, dependency.predecessorItemId);
+      link(dependency.predecessorItemId, item.id);
+    });
+  });
+  const linked = new Map<string, ScheduleItem>();
+  const queue = [...listedIds];
+  while (queue.length > 0) {
+    (neighbours.get(queue.shift()!) || []).forEach(id => {
+      const item = shownById.get(id);
+      if (!item || listedIds.has(id) || linked.has(id)) return;
+      linked.set(id, item);
+      queue.push(id);
+    });
+  }
+  return [...linked.values()];
+}
+
+/**
+ * The analytics of the tasks a page lists, worked out with every task shown they are linked with (open item 3.4):
+ * the critical path and the calculated dates are those the whole linked schedule gives, and only the listed tasks'
+ * marks, rows and date changes are returned. The notes name what is wrong anywhere in what was worked out. With
+ * nothing linked outside the list, this is analyzeVitruviusSchedule of the list, as before.
+ */
+export function analyzeVitruviusListedSchedule(
+  listed: readonly ScheduleItem[],
+  shown: readonly ScheduleItem[],
+): VitruviusScheduleAnalytics {
+  const linked = scheduleTasksLinkedWith(listed, shown);
+  if (linked.length === 0) return analyzeVitruviusSchedule(listed);
+  const listedIds = new Set(listed.map(item => item.id));
+  const whole = analyzeVitruviusSchedule([...listed, ...linked]);
+  return Object.freeze({
+    criticalPath: Object.freeze({
+      ...whole.criticalPath,
+      items: Object.freeze(whole.criticalPath.items.filter(item => listedIds.has(item.itemId))),
+      criticalItemIds: new Set([...whole.criticalPath.criticalItemIds].filter(id => listedIds.has(id))),
+    }),
+    baselineVariance: Object.freeze(whole.baselineVariance.filter(variance => listedIds.has(variance.itemId))),
+    impactPreview: Object.freeze({
+      ...whole.impactPreview,
+      items: Object.freeze(whole.impactPreview.items.filter(item => listedIds.has(item.id))) as unknown as ScheduleItem[],
+      changes: Object.freeze(whole.impactPreview.changes.filter(change => listedIds.has(change.itemId))) as unknown as VitruviusSchedulePreview['changes'],
+    }),
+  });
+}
+
 export function analyzeVitruviusCriticalPath(
   sourceItems: readonly ScheduleItem[],
 ): VitruviusCriticalPathAnalysis {
@@ -78,17 +144,19 @@ export function analyzeVitruviusCriticalPath(
   const sourceItemsById = new Map(sourceItems.map(item => [item.id, item]));
   let calculatedProjectCount = 0;
 
-  groups.forEach((items, projectName) => {
+  groups.forEach(items => {
     const itemIds = new Set(items.map(item => item.id));
     const network = buildPIEScheduleDependencyNetwork(items);
+    const nameOf = (itemId: string | undefined) => scheduleNameOf(sourceItemsById.get(itemId ?? ''));
     network.cycles.forEach(cycle => {
-      issues.push(`${projectName}: dependency cycle includes ${cycle.join(', ')}.`);
+      issues.push(`${nameOf(cycle[0])}: dependency cycle includes ${cycle.join(', ')}.`);
     });
     network.nodes.forEach(node => {
       node.unresolvedPredecessors.forEach(predecessorId => {
         // Review pass 1, web L4 (6 Oct 2026): a phase is left out of the critical path (above), so a task that
         // starts after one read "references missing predecessor <the phase's id>". The phase is not missing.
         const phase = sourceItemsById.get(predecessorId);
+        const projectName = nameOf(node.scheduleItemId);
         issues.push(phase?.isSummary === true
           ? `${projectName}: ${node.taskName} starts after the phase ${phase.taskName}, and the critical path counts tasks and milestones only.`
           : `${projectName}: ${node.taskName} references missing predecessor ${predecessorId}.`);
@@ -131,7 +199,7 @@ export function analyzeVitruviusCriticalPath(
       });
     }
     if (order.length !== items.length) {
-      issues.push(`${projectName}: the dependency order could not be calculated.`);
+      issues.push(`${scheduleNameOf(items[0])}: the dependency order could not be calculated.`);
       return;
     }
 
@@ -149,7 +217,11 @@ export function analyzeVitruviusCriticalPath(
       earliestFinish.set(itemId, finish);
     });
     const projectDuration = Math.max(0, ...earliestFinish.values());
-    projectDurationDays[projectName] = projectDuration;
+    // Each schedule name's own finish within the calculation (two names linked are worked out together, 3.4).
+    items.forEach(item => {
+      const name = scheduleNameOf(item);
+      projectDurationDays[name] = Math.max(projectDurationDays[name] ?? 0, earliestFinish.get(item.id) || 0);
+    });
     const latestStart = new Map<string, number>();
     const latestFinish = new Map<string, number>();
     [...order].reverse().forEach(itemId => {
@@ -171,7 +243,7 @@ export function analyzeVitruviusCriticalPath(
       );
       results.push(Object.freeze({
         itemId,
-        projectName,
+        projectName: scheduleNameOf(item),
         durationDays: criticalPathDuration(item),
         earliestStart: earliestStart.get(itemId) || 0,
         earliestFinish: earliestFinish.get(itemId) || 0,
@@ -261,16 +333,44 @@ function varianceResult(
   });
 }
 
+/**
+ * The tasks of each schedule name, worked out together. Open item 3.4 (14 Oct 2026): schedule names that a link
+ * joins are one group, so a link between a task he made by hand (filed under its building's name) and a master's
+ * task (filed under the master's own name) counts like any other. It read "references missing predecessor <id>",
+ * and the critical path was unavailable.
+ */
 function groupProjectTasks(items: readonly ScheduleItem[]) {
+  const itemsById = new Map(items.map(item => [item.id, item]));
+  const joinedTo = new Map<string, string>();
+  const groupOf = (name: string): string => {
+    const next = joinedTo.get(name);
+    return next === undefined || next === name ? name : groupOf(next);
+  };
+  items.forEach(item => {
+    const name = scheduleNameOf(item);
+    if (!joinedTo.has(name)) joinedTo.set(name, name);
+  });
+  items.forEach(item => {
+    normalizeScheduleDependencies(item.dependencies).forEach(dependency => {
+      const predecessor = itemsById.get(dependency.predecessorItemId);
+      if (!predecessor) return;
+      const left = groupOf(scheduleNameOf(item));
+      const right = groupOf(scheduleNameOf(predecessor));
+      if (left !== right) joinedTo.set(right, left);
+    });
+  });
   const groups = new Map<string, ScheduleItem[]>();
   items.forEach(item => {
-    const projectName = item.scheduleProjectName?.trim() || item.projectName?.trim() ||
-      'Unassigned Project';
-    const group = groups.get(projectName);
-    if (group) group.push(item);
-    else groups.set(projectName, [item]);
+    const group = groupOf(scheduleNameOf(item));
+    const members = groups.get(group);
+    if (members) members.push(item);
+    else groups.set(group, [item]);
   });
   return groups;
+}
+
+function scheduleNameOf(item: ScheduleItem | undefined) {
+  return item?.scheduleProjectName?.trim() || item?.projectName?.trim() || 'Unassigned Project';
 }
 
 /**
