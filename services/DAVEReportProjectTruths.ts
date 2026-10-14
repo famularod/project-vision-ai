@@ -9,6 +9,8 @@ import type { ProjectRecord } from './ProjectCoverPhotoService';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
 import { buildAutomaticReportDrawingReferences } from './ReportDrawingReferences';
 import { buildWrittenReportFacts } from './ReportWrittenFacts';
+import { reportTaskConfirmedAt } from './DAVEReportIntelligence';
+import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 
 export type DAVEReportProjectTruthsInput = {
   /** The report's projects in the order shown, each with the id its Project Truth carries. */
@@ -142,7 +144,11 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
       scheduleItems: scope.scheduleItems,
       now: truth.generatedAt,
     });
+    // HIGH item 1c: when each completed task's progress was confirmed, as Completed Work reads it from these tasks.
+    const completedWorkConfirmedAt = Object.fromEntries(scope.scheduleItems
+      .filter(item => scheduleProgressIsComplete(item))
+      .map(item => [item.id, reportTaskConfirmedAt(item)]));
     // In a stable order, so a sync that only reorders the saved rows changes nothing a report says (R4 item 4a).
-    return daveProjectTruthInStableOrder(truth, builtBefore, !sameUpdates, drawingCitations, writtenReportFacts);
+    return daveProjectTruthInStableOrder(truth, builtBefore, !sameUpdates, drawingCitations, writtenReportFacts, completedWorkConfirmedAt);
   });
 }

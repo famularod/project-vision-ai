@@ -265,6 +265,12 @@ export type DAVEProjectTruth = {
    * report's fingerprint; left out of 2.0 by name, so 2.0 is still the released build's.
    */
   writtenReportFacts?: DAVEWrittenReportFacts;
+  /**
+   * Only on a truth a report is written from: for each completed task, when its progress was confirmed (or a master's
+   * file completed it), as Completed Work's "Last updated" reads it from the saved tasks (HIGH item 1c). Read only by
+   * the report's fingerprint (3.0, as Completed Work prints it); left out of 2.0 by name.
+   */
+  completedWorkConfirmedAt?: Readonly<Record<string, string | null>>;
   verificationQueue: DAVEVerificationRequest[];
   briefing: DAVEPMBriefing;
 };
@@ -692,6 +698,8 @@ export function daveProjectTruthInStableOrder(
   drawingCitations: readonly DAVEReportDrawingCitation[] = [],
   /** What the phone's written report prints of the project's records that nothing else here holds (HIGH item 1). */
   writtenReportFacts: DAVEWrittenReportFacts | null = null,
+  /** For each completed task, when its progress was confirmed, as Completed Work reads it (HIGH item 1c). */
+  completedWorkConfirmedAt: Readonly<Record<string, string | null>> | null = null,
 ): DAVEProjectTruth {
   if (truthAsBuilt.has(truth)) return truth;
   const schedule = scheduleTruthInStableOrder(truth.schedule);
@@ -726,6 +734,7 @@ export function daveProjectTruthInStableOrder(
         }
       : {}),
     ...(writtenReportFacts ? { writtenReportFacts } : {}),
+    ...(completedWorkConfirmedAt ? { completedWorkConfirmedAt } : {}),
     verificationQueue,
     briefing: buildPMBriefing({
       projectName: truth.projectName,

@@ -7,7 +7,7 @@ import {
   reportSnapshotToSave,
   type DAVEReportSnapshot,
 } from '../../services/DAVEReportSnapshot';
-import { buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
+import { buildDAVEReportSourceOnPeriod } from '../../services/DAVEReportIntelligence';
 import { buildDAVEWebReportTruths } from '../../services/DAVEWebOperations';
 import type { DAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import { forgetDAVEWebReportPeriodSession } from '../../services/DAVEWebReportPeriod';
@@ -207,7 +207,8 @@ const PULLED = '2026-10-01T12:00:00.000Z';
 const phoneReport = (frame: number, pour: number, sentAt: string, before: DAVEReportSnapshot | null) => {
   const truths = buildDAVEWebReportTruths(webSnapshot(frame, PULLED, pour), null);
   return markReportSnapshotDelivered(reportSnapshotToSave(buildDAVEReportSnapshot({
-    truths, scopeKey: 'tower', sourceFingerprint: buildDAVEReportSourceFingerprint(truths), capturedAt: sentAt, reportFormat: 'project_manager',
+    // As the phone's Reports screen works it out since HIGH item 1c: against the report it counts from.
+    truths, scopeKey: 'tower', sourceFingerprint: buildDAVEReportSourceOnPeriod(truths, before).fingerprint, capturedAt: sentAt, reportFormat: 'project_manager',
   }), before) as DAVEReportSnapshot, sentAt, 'phone-install');
 };
 const ALREADY_SENT = /^Your other device already sent this report .*\. Approve it only if you want to send it a second time\.$/;

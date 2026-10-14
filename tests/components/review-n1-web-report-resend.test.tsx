@@ -7,7 +7,6 @@ import {
   reportSnapshotToSave,
   type DAVEReportSnapshot,
 } from '../../services/DAVEReportSnapshot';
-import { buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
 import { buildDAVEWebReportTruths } from '../../services/DAVEWebOperations';
 import type { DAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import { forgetDAVEWebReportPeriodSession } from '../../services/DAVEWebReportPeriod';
@@ -194,7 +193,8 @@ describe('review N1 (Low): a second Share of a report this computer already sent
     table = PHONE_AT_10();
     render(<DesktopReadOnlyShell page="reports" />);
     await approveOnWeb();
-    const facts = buildDAVEReportSourceFingerprint(buildDAVEWebReportTruths(mockAuth.snapshot, null));
+    // These facts as the page approved them (since HIGH item 1c, worked out against the report they count from).
+    const facts = String(sharedSnapshot()?.sourceFingerprint);
     // The page is on screen and hears the shared record, so the store is asked inside act.
     const recordSend = async (sourceFacts: string, sentAt: string) => {
       let answer: Awaited<ReturnType<typeof recordDAVEWebReportSend>> | undefined;

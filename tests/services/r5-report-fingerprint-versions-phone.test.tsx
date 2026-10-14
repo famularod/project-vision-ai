@@ -403,3 +403,42 @@ describe('HIGH item 1 (phone): a report made under 2.0 is today\'s report for th
     expect(screen.queryByText(/already sent this report/)).toBeNull();
   });
 });
+
+/**
+ * HIGH item 1c (reports review pass 1, H1R-2): a task saved again with nothing changed, on another device, after the
+ * period's last report: no line of "since the last report" prints for it, so the report on screen IS that report. The
+ * phone works its fingerprint out against the report the period's last one counted from (the shared period), as every
+ * device does.
+ */
+describe('HIGH item 1c (phone): a task saved again with nothing changed after a real period', () => {
+  // Tasks a master brought in (so a task saved again does not refresh what its record is "as of": a task entered by
+  // hand is dated by its saved time, and saving it again takes "Old project record ..." off SCHEDULE RISKS: a word).
+  const imported = (items: ScheduleItem[]) => items.map(item => ({ ...item, importedAt: '2026-09-01T12:00:00.000Z' } as ScheduleItem));
+  const resaved = (items: ScheduleItem[]) => items.map(item => (item.id === 'roof' ? { ...item, updatedAt: new Date(Date.now() + 120_000).toISOString() } as ScheduleItem : item));
+  /** The iPad sends R1 (nothing completed), then R2 with Frame walls completed, counting from R1. */
+  const twoReportsFromTheIpad = async () => {
+    visit('ipad', imported(tower(0)));
+    await approve();
+    await share('Copy Report');
+    await waitFor(() => expect(cloudRow()?.deliveredAt).toEqual(expect.any(String)), SLOW);
+    visit('ipad', imported(tower(1)));
+    await approve();
+    await share('Copy Report');
+    await waitFor(() => expect(cloudRow()?.snapshot.supersedes?.deliveredAt).toEqual(expect.any(String)), SLOW);
+    return cloudRow() as { snapshot: DAVEReportSnapshot; deliveredAt: string };
+  };
+
+  it('Set roof saved again on another device, nothing changed: the phone says the other device already sent this report', async () => {
+    const r2 = await twoReportsFromTheIpad();
+    visit('phone', resaved(imported(tower(1))));
+    expect(await screen.findByText(ALREADY_SENT(r2.deliveredAt), {}, SLOW)).toBeTruthy();
+  });
+
+  it('guard: a task completed since: not the report sent, and the notice is not shown', async () => {
+    await twoReportsFromTheIpad();
+    visit('phone', imported(tower(2)));
+    await approvable();
+    await settle();
+    expect(screen.queryByText(/already sent this report/)).toBeNull();
+  });
+});

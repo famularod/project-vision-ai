@@ -56,7 +56,7 @@ import type { PIEDecisionSyncMetadata } from '../services/PIEDecisionLedgerSync'
 import { buildDAVEReportProjectTruths } from '../services/DAVEReportProjectTruths';
 import {
   buildDAVEReportBriefing,
-  buildDAVEReportSourceFingerprint,
+  buildDAVEReportSourceOnPeriod,
   buildPMReportReviewWarnings,
   enhanceDAVEReportDraft,
   REPORT_PERIOD_WAITING_LINE,
@@ -380,9 +380,11 @@ export function ReportsScreen({
     selectedProjectNames,
     updates,
   ]);
+  // HIGH item 1c: worked out against the report this one counts from (the period's last report, as shared), where a
+  // task's saved time prints ("since the last report"); the same on every device that reads the same period.
   const reportSourceFingerprint = useMemo(
-    () => buildDAVEReportSourceFingerprint(reportTruths),
-    [reportTruths],
+    () => buildDAVEReportSourceOnPeriod(reportTruths, snapshotScopeLoaded ? previousReportSnapshot : null).fingerprint,
+    [previousReportSnapshot, reportTruths, snapshotScopeLoaded],
   );
   const reportSnapshotScopeKey = useMemo(
     () => daveReportSnapshotScopeKey(selectedProjectNames),
@@ -575,7 +577,9 @@ export function ReportsScreen({
     reportEditsPeriodIsCurrent &&
     !reportDeviceBehind &&
     snapshotScopeLoaded;
-  const reportApprovalMessage = !reportFactsAreCurrent
+  // HIGH item 1c: the report's fingerprint is worked out against the report it counts from, so a period that moved
+  // moves it too; where the period moved, that is the reason said (as before 1c), not "project facts changed".
+  const reportApprovalMessage = !reportFactsAreCurrent && reportEditsPeriodIsCurrent
       ? 'Project facts changed after you edited this report. Discard your edits to use the current report before approval.'
       : !snapshotScopeLoaded
         ? 'The reporting period is still loading.'

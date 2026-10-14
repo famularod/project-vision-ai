@@ -12,6 +12,8 @@ import {
   compareDAVEReportSnapshots,
   rememberLegacyReportSource,
   rememberVersion2ReportSource,
+  reportBaselineSnapshot,
+  sameReportSource,
   daveReportSnapshotScopeKey,
   reportPeriodWaitingForOtherDevice,
   reportTaskEarlierRows,
@@ -164,12 +166,22 @@ export type DAVEReportBriefing = Readonly<{
  */
 export function buildDAVEReportSourceFingerprint(
   truths: readonly DAVEProjectTruth[],
+  /**
+   * HIGH item 1c: the report this one counts "since the last report" from (none: a first report). Its lines, and
+   * Completed Work's, are where a task's saved time prints; 3.0 holds them as printed against it. On a screen, ask
+   * buildDAVEReportSourceOnPeriod, which chooses it as the screen does.
+   */
+  countedFrom: DAVEReportSnapshot | null = null,
 ): string {
-  // HIGH item 1b: with each project's facts, the ORDER the "since the last report" lines are written in (a task's
-  // saved time, of an open task, is held as that and nothing more).
+  // HIGH items 1b and 1c: with each project's facts (no saved time in them), what a report PRINTS of saved times: the
+  // "since the last report" lines counted from `countedFrom`, and Completed Work, each as written and in its order.
+  // And WHICH report it counts from (its own fingerprint and send): the report prints it ("Since the report sent
+  // Oct 13, 2026"), and two reports counted from two reports are two reports, even where both say "+0 completed; +0
+  // open; +0 overdue." and no more (else the period's next report, counted from the last one, could take that one's name).
   const fingerprint = `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify({
     projects: hashOfProjects(truths, truth => reportSourceFactsOf3(truth), LEFT_OUT_OF_REPORT_SOURCE_3_0),
-    recentChangesOrder: recentChangesOrder(truths),
+    printedOfSavedTimes: savedTimesAsPrinted(truths, countedFrom),
+    countedFrom: countedFrom ? { report: countedFrom.sourceFingerprint, sentAt: countedFrom.deliveredAt ?? null } : null,
   }))}`;
   // R7 item A (the coordinator's decision on review pass 1, F0): a 1.0 fingerprint is a name of these facts only
   // where this build's report counts the same field updates as Build 230's did for the same saved data. Where it
@@ -184,6 +196,33 @@ export function buildDAVEReportSourceFingerprint(
   // (unlike 1.0's): this version changes when a report is offered, not one word of it.
   rememberVersion2ReportSource(fingerprint, buildDAVEVersion2ReportSourceFingerprint(truths));
   return fingerprint;
+}
+
+/**
+ * HIGH item 1c (the coordinator's decision on reports review H1R-1 and H1R-2): today's fingerprint of a report on a
+ * screen whose last report is `period` (the period's last approved or sent report, the one report_snapshots shares
+ * between the devices), and the report it counts from.
+ *
+ * A task's saved time prints only through the "since the last report" lines (and Completed Work), and which lines
+ * print depends on the report this one counts from; so 3.0 is worked out against it. Which report that is depends on
+ * whether this report IS the period's last one (then it counts from what that one counted from, `supersedes`, as it
+ * did when it was approved), or another (then from the period's last send). So it is asked in that order, as
+ * reportBaselineSnapshot answers it: first against what the period's last report counted from; if that is the
+ * period's last report's own fingerprint, this is that report; if not, against the report the period now runs from.
+ * Every device reading the same period (the shared record) and holding the same records works out the same value.
+ */
+export function buildDAVEReportSourceOnPeriod(
+  truths: readonly DAVEProjectTruth[],
+  period: DAVEReportSnapshot | null | undefined,
+): Readonly<{ fingerprint: string; countedFrom: DAVEReportSnapshot | null }> {
+  if (!period) return { fingerprint: buildDAVEReportSourceFingerprint(truths, null), countedFrom: null };
+  // As the period's last report was counted (reportBaselineSnapshot of the same report).
+  const asThatReport = reportBaselineSnapshot(period, period.sourceFingerprint);
+  const same = buildDAVEReportSourceFingerprint(truths, asThatReport);
+  if (sameReportSource(period.sourceFingerprint, same)) return { fingerprint: same, countedFrom: asThatReport };
+  // Another report: counted from the period's last send (reportBaselineSnapshot of another report).
+  const countedFrom = reportBaselineSnapshot(period, '');
+  return { fingerprint: buildDAVEReportSourceFingerprint(truths, countedFrom), countedFrom };
 }
 
 /**
@@ -301,14 +340,15 @@ function reportSourceFactsOf(truth: DAVEProjectTruth): unknown {
  */
 function reportSourceFactsOf3(truth: DAVEProjectTruth): unknown {
   const {
-    briefing, entityLinks: _entityLinks, intelligence, reasoning, verificationQueue: _verificationQueue, schedule, evidence, correlations, ...facts
+    briefing, entityLinks: _entityLinks, intelligence, reasoning, verificationQueue: _verificationQueue, schedule, evidence, correlations,
+    completedWorkConfirmedAt: _heldAsCompletedWorkPrintsIt, ...facts
   } = truth as DAVEProjectTruth & Record<string, unknown>;
-  // HIGH item 1b (open item 7.46; the coordinator's decision): a record saved again with nothing a report prints
-  // changed moves nothing. Of a task: who last saved its settings (never printed); its saved time and the moment its
-  // percent was confirmed, for a task not complete (printed for a completed task only, in Completed Work's "Last
-  // updated" and its order; for any task the saved time decides only the order of the "since the last report" lines,
-  // held once for the report, recentChangesOrder). Of a schedule file: its notes (never printed).
-  const open = new Set((schedule ?? []).filter(task => !scheduleProgressIsComplete(task)).map(task => task.taskId));
+  // HIGH items 1b and 1c (open item 7.46; reports review H1R-1, H1R-2; the coordinator's decisions): a record saved
+  // again with nothing a report prints changed moves nothing. Of a task: who last saved its settings (never printed);
+  // its saved time and the moment its percent was confirmed, which print only through the "since the last report"
+  // lines and Completed Work, held as printed (savedTimesAsPrinted), not here. Of a schedule file: its notes (never
+  // printed).
+  const open = new Set((schedule ?? []).map(task => task.taskId));
   const recordAsPrinted = (record: DAVEProjectTruth['evidence']['records'][number]) => {
     if (record.kind === 'schedule' && open.has(record.taskId ?? '')) {
       const { capturedAt: _confirmedAt, ...kept } = record;
@@ -372,21 +412,42 @@ function reportSourceFactsOf3(truth: DAVEProjectTruth): unknown {
 }
 
 /**
- * HIGH item 1b: the order of the "since the last report" lines, as buildRecentChanges writes them: every task of the
- * report by its latest activity or saved time, newest first (projects by name where two are of one moment, then the
- * report's own task order). The saved time of a task not complete is in version 3.0 as this order and nothing more:
- * saved again later with nothing changed, it moves nothing a report prints, unless it moves the task in this order.
+ * HIGH item 1c: what a report prints of saved times, counted from `countedFrom`: the "since the last report" section
+ * (its counts, its lines in their order as the briefing keeps them, how many there are) and Completed Work (each line
+ * with its "Last updated" day, in its order). Worked out by the briefing's own code (compareDAVEReportSnapshots,
+ * buildRecentChanges, completedWorkLines), with each completed task's confirmation time as the report truth carries
+ * it (completedWorkConfirmedAt, from the same saved tasks the briefing reads). A task saved again moves this only
+ * where a line comes, goes or moves.
  */
-function recentChangesOrder(truths: readonly DAVEProjectTruth[]): string[] {
-  return truths
-    .flatMap(truth => (truth.schedule ?? []).map((task, index) => ({
-      project: normalized(truth.projectName),
-      index,
-      key: `${normalized(truth.projectName)}|${task.taskId}`,
-      at: dateValue(latestDate([task.latestActivityAt, task.updatedAt])) ?? 0,
-    })))
-    .sort((left, right) => right.at - left.at || left.project.localeCompare(right.project) || left.index - right.index)
-    .map(entry => entry.key);
+function savedTimesAsPrinted(selected: readonly DAVEProjectTruth[], countedFrom: DAVEReportSnapshot | null): unknown {
+  // The projects by name, not in the order they were ticked: as everywhere in 3.0, a combined report keeps one value
+  // and its edits and approval whichever order its projects were ticked in (A6 pass 6 #6; review pass 3's B).
+  const truths = [...selected].sort((left, right) => normalized(left.projectName).localeCompare(normalized(right.projectName)));
+  const projectNames = unique(truths.map(truth => truth.projectName));
+  const current = buildDAVEReportSnapshot({
+    truths,
+    scopeKey: daveReportSnapshotScopeKey(projectNames),
+    sourceFingerprint: '',
+    capturedAt: truths.map(truth => truth.generatedAt).sort().at(-1),
+  });
+  const period = compareDAVEReportSnapshots({
+    current,
+    previous: countedFrom,
+    tasksLeftByLookahead: reportTasksLeftByLookahead(truths),
+    earlierRows: reportTaskEarlierRows(truths),
+    lookaheadAddedTaskIds: reportTasksAddedByLookahead(truths),
+  });
+  const lines = buildRecentChanges({ truths, reportingPeriod: period });
+  const confirmedAt = new Map(truths.flatMap(truth => Object.entries(truth.completedWorkConfirmedAt ?? {})));
+  return {
+    since: {
+      basis: period.basis,
+      counts: [period.completeDelta, period.openDelta, period.overdueDelta],
+      lines: lines.slice(0, 12).map(change => change.summary),
+      count: lines.length + Math.max(0, (period.changeCount ?? 0) - period.changes.length),
+    },
+    completedWork: completedWorkLines(truths, task => latestDate([task.latestActivityAt, confirmedAt.get(task.taskId)]) || latestDate([task.updatedAt])),
+  };
 }
 
 /** `facts` without the id the truth is filed under, wherever an id carries it (see reportSourceFactsOf). */
@@ -514,17 +575,7 @@ export function buildDAVEReportBriefing({
   const recentChangeCount = allRecentChanges.length +
     Math.max(0, (reportingPeriod.changeCount ?? 0) - reportingPeriod.changes.length);
   const milestones = buildReportMilestones(truths);
-  const lastUpdatedAt = completedTaskLastUpdatedAt(scheduleItems);
-  const completedTasks = truths.flatMap(truth => truth.schedule
-    .filter(scheduleProgressIsComplete)
-    .sort((left, right) => reportCompletedTaskRank(left, lastUpdatedAt) - reportCompletedTaskRank(right, lastUpdatedAt))
-    .map(task => ({ truth, task, line: clean(reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt)) })));
-  // Two different tasks on one line say how many (A6 pass 19 L4); the same task twice says it once.
-  const tasksOnLine = new Map<string, Set<string>>();
-  completedTasks.forEach(({ task, line }) => tasksOnLine.set(line, new Set([...(tasksOnLine.get(line) || []), task.taskId])));
-  const completedWork = unique(completedTasks.map(({ truth, task, line }) =>
-    reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt, tasksOnLine.get(line)!.size)),
-  ).slice(0, 12);
+  const completedWork = completedWorkLines(truths, completedTaskLastUpdatedAt(scheduleItems));
   // Whole-app audit A6 pass 20 L1 (1 Oct 2026): two same-named open tasks in one area with the same status,
   // percent and due date printed one Current Work line. They say how many, as Completed Work does (A6 pass 19 L4).
   const currentTasks = truths.flatMap(truth => truth.schedule
@@ -716,11 +767,34 @@ type CompletedTaskLastUpdatedAt = (task: DAVEProjectTruth['schedule'][number]) =
  * (fileProgressPeak, Build 231). A task a master completed on an earlier
  * build has no such record and reads as before.
  */
+/** Completed Work's lines, in their order (one function for the briefing and for the fingerprint, HIGH item 1c). */
+function completedWorkLines(truths: readonly DAVEProjectTruth[], lastUpdatedAt: CompletedTaskLastUpdatedAt): string[] {
+  const completedTasks = truths.flatMap(truth => truth.schedule
+    .filter(scheduleProgressIsComplete)
+    .sort((left, right) => reportCompletedTaskRank(left, lastUpdatedAt) - reportCompletedTaskRank(right, lastUpdatedAt))
+    .map(task => ({ truth, task, line: clean(reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt)) })));
+  // Two different tasks on one line say how many (A6 pass 19 L4); the same task twice says it once.
+  const tasksOnLine = new Map<string, Set<string>>();
+  completedTasks.forEach(({ task, line }) => tasksOnLine.set(line, new Set([...(tasksOnLine.get(line) || []), task.taskId])));
+  return unique(completedTasks.map(({ truth, task, line }) =>
+    reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt, tasksOnLine.get(line)!.size)),
+  ).slice(0, 12);
+}
+
+/**
+ * When the manager confirmed a task's progress, or a master's file completed it: what Completed Work's "Last updated"
+ * reads beside the task's activity (A6 pass 14 L4, R5 item 3). The report truth carries it for each completed task
+ * (completedWorkConfirmedAt), so the fingerprint reads it as the briefing does (HIGH item 1c).
+ */
+export function reportTaskConfirmedAt(item: Pick<ScheduleItem, 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>): string | null {
+  return latestDate([scheduleProgressJudgedAt(item as ScheduleItem), completedByMasterAt(item)]);
+}
+
 function completedTaskLastUpdatedAt(
   scheduleItems: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>[] | undefined,
 ): CompletedTaskLastUpdatedAt {
   if (!scheduleItems) return task => latestDate([task.latestActivityAt, task.updatedAt]);
-  const confirmedAt = new Map(scheduleItems.map(item => [item.id, latestDate([scheduleProgressJudgedAt(item), completedByMasterAt(item)])]));
+  const confirmedAt = new Map(scheduleItems.map(item => [item.id, reportTaskConfirmedAt(item)]));
   return task => latestDate([task.latestActivityAt, confirmedAt.get(task.taskId)]) || latestDate([task.updatedAt]);
 }
 
@@ -1619,7 +1693,7 @@ const VOLATILE_REPORT_SOURCE_FIELDS = new Set([
  * Each is worked out from the saved tasks and schedules alone, the same on
  * the phone and on the web.
  */
-const LEFT_OUT_OF_REPORT_SOURCE_2_0: ReadonlySet<string> = new Set(['generatedAt', 'writtenReportFacts']);
+const LEFT_OUT_OF_REPORT_SOURCE_2_0: ReadonlySet<string> = new Set(['generatedAt', 'writtenReportFacts', 'completedWorkConfirmedAt']);
 /** What version 3.0 leaves out by name (HIGH item 1); what it leaves out of Project Truth is in reportSourceFactsOf3. */
 const LEFT_OUT_OF_REPORT_SOURCE_3_0: ReadonlySet<string> = new Set(['generatedAt']);
 

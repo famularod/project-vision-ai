@@ -13,7 +13,7 @@ import {
 } from './DAVEProjectTruth';
 import {
   buildDAVEReportBriefing,
-  buildDAVEReportSourceFingerprint,
+  buildDAVEReportSourceOnPeriod,
   type DAVEReportBriefing,
 } from './DAVEReportIntelligence';
 import { sameReportSource, type DAVEReportSnapshot } from './DAVEReportSnapshot';
@@ -1172,12 +1172,17 @@ export function buildDAVEWebReportSource(
    * arrived the page called that draft current, and it was approved and sent.
    */
   periodNotCounted = false,
+  /**
+   * HIGH item 1c: the period's last report (the shared record), which the report's facts are fingerprinted against
+   * (buildDAVEReportSourceOnPeriod), as the page's own fingerprint is. None: a first report.
+   */
+  period: DAVEReportSnapshot | null = null,
 ): DAVEWebReportSource {
   const truths = buildDAVEWebProjectTruths(snapshot, selectedProject);
   const evidenceRecords = truths.flatMap(truth => truth.evidence.records);
   const scopeNames = truths.map(truth => normalized(truth.projectName)).sort();
   const scopeKey = scopeNames.length > 0 ? scopeNames.join('|') : 'empty-scope';
-  const truthFingerprint = buildDAVEReportSourceFingerprint(truths);
+  const truthFingerprint = buildDAVEReportSourceOnPeriod(truths, period).fingerprint;
   const mediaFingerprint = stableWebReportSourceHash(
     canonicalWebReportSourceValue(
       snapshot.projectUpdates

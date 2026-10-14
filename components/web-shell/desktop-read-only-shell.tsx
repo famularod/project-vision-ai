@@ -167,7 +167,7 @@ import {
   projectItemWorkflowReadiness,
 } from '../../services/ProjectItemWorkflow';
 import { resolveWebReportWordMedia } from '../../services/ReportWordMedia.web';
-import { buildDAVEReportSourceFingerprint, REPORT_PERIOD_WAITING_LINE, reportPeriodMovementLines } from '../../services/DAVEReportIntelligence';
+import { buildDAVEReportSourceOnPeriod, REPORT_PERIOD_WAITING_LINE, reportPeriodMovementLines } from '../../services/DAVEReportIntelligence';
 import {
   buildDAVEReportSnapshot,
   daveReportSnapshotScopeKey,
@@ -5825,7 +5825,6 @@ function ReportWorkspace({
     () => buildDAVEWebReportTruths(snapshot, selectedProject),
     [selectedProject, snapshot],
   );
-  const reportFingerprint = useMemo(() => buildDAVEReportSourceFingerprint(reportTruths), [reportTruths]);
   const periodScopeKey = daveReportSnapshotScopeKey(reportTruths.map(truth => truth.projectName));
   const periodReadKey = `${periodScopeKey}|${reportAudience}`;
   const [periodRead, setPeriodRead] = useState<{ key: string; read: DAVEWebReportPeriodRead }>({
@@ -5851,6 +5850,13 @@ function ReportWorkspace({
   const currentPeriodRead: DAVEWebReportPeriodRead = periodRead.key === periodReadKey
     ? periodRead.read
     : { status: 'loading' };
+  // HIGH item 1c: worked out against the report this one counts from (the period's last report, as shared), where a
+  // task's saved time prints ("since the last report"); the same on the phone and the iPad reading the same period.
+  const currentPeriodSnapshot = periodRead.key === periodReadKey && periodRead.read.status !== 'loading' ? periodRead.read.snapshot ?? null : null;
+  const reportFingerprint = useMemo(
+    () => buildDAVEReportSourceOnPeriod(reportTruths, currentPeriodSnapshot).fingerprint,
+    [currentPeriodSnapshot, reportTruths],
+  );
   const period = daveWebReportPeriodState({
     read: currentPeriodRead,
     fingerprint: reportFingerprint,
@@ -5891,8 +5897,8 @@ function ReportWorkspace({
     [briefing, reportAudience, sinceSection],
   );
   const currentReportSource = useMemo(
-    () => buildDAVEWebReportSource(snapshot, selectedProject, period.periodKey, periodWaiting),
-    [period.periodKey, periodWaiting, selectedProject, snapshot],
+    () => buildDAVEWebReportSource(snapshot, selectedProject, period.periodKey, periodWaiting, currentPeriodSnapshot),
+    [currentPeriodSnapshot, period.periodKey, periodWaiting, selectedProject, snapshot],
   );
   const reportDocuments = documents.filter(document => reportRecordFromDocument(document));
   const [reportId, setReportId] = useState(() => createDAVEWebId('web-report'));
