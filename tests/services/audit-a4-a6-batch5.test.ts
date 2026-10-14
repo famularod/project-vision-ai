@@ -43,7 +43,9 @@ describe('A6 pass 4 lows', () => {
     // fingerprint alone. Behaviour in owner-q17-report-period-per-format.
     // Whole-app audit A6 pass 8 M1 (30 Sep 2026): the mark also carries the started report's session key
     // (sentStateKey), so the approval it sent moves to this send; the parameters are one per line.
-    expect(screen).toMatch(/const markReportDelivered = \(\n\s+sentFingerprint: string,\n\s+sentPeriod: [^\n]*,\n\s+sentStateKey: string,\n\s+\) => \{\n\s+const sentPeriodKey = reportPeriodKey\(sentPeriod\);\n\s+const pending = pendingReportSnapshotSaveRef\.current;\n\s+if \(pending && sameReportSource\(pending\.snapshot\.sourceFingerprint, sentFingerprint\) && reportPeriodKey\(pending\.snapshot\) === sentPeriodKey\) \{\n\s+void pending\.save\.then\(\(\) => markSavedReportDelivered\(pending\.snapshot, sentFingerprint, sentStateKey\), \(\) => undefined\);\n\s+return;\n\s+\}/);
+    // Open item 7.44 (13 Oct 2026, M2): and the sent report's edited text (sentText), handed on to the saved mark so the
+    // shared record keeps his words; pin updated deliberately.
+    expect(screen).toMatch(/const markReportDelivered = \(\n\s+sentFingerprint: string,\n\s+sentPeriod: [^\n]*,\n\s+sentStateKey: string,\n\s+sentText: [^\n]*,\n\s+\) => \{\n\s+const sentPeriodKey = reportPeriodKey\(sentPeriod\);\n\s+const pending = pendingReportSnapshotSaveRef\.current;\n\s+if \(pending && sameReportSource\(pending\.snapshot\.sourceFingerprint, sentFingerprint\) && reportPeriodKey\(pending\.snapshot\) === sentPeriodKey\) \{\n\s+void pending\.save\.then\(\(\) => markSavedReportDelivered\(pending\.snapshot, sentFingerprint, sentStateKey, undefined, null, sentText\), \(\) => undefined\);\n\s+return;\n\s+\}/);
     // Everyday item 1 (2 Oct 2026): the mark now resolves whether it saved (Mark as Sent says so), so the
     // guard returns Promise.resolve(false); pin updated deliberately. Behaviour in everyday-1-report-mark-sent.
     // R4 item 4a (deliberate): the saved report is known by the same facts, also when it was approved under the earlier fingerprint version.

@@ -64,7 +64,9 @@ describe('approval, review items and delivery on the Reports screen', () => {
   it('marks the started report delivered on every completed send, whatever the screen shows by then', () => {
     // Owner answer Q17 (30 Sep 2026): the mark also carries the started report's format period (was the fingerprint alone).
     // Whole-app audit A6 pass 8 M1 (30 Sep 2026): and the started report's session key, so its approval moves to this send.
-    expect(screen).toMatch(/const outcome = await communicate\(startedReport\);\n(?:\s*\/\/.*\n)*\s+if \(outcome === 'completed'\) markReportDelivered\(startedFingerprint, startedPeriod, startedStateKey\);\n\s+if \(\n\s+mountedRef\.current &&/);
+    // Open item 7.44 (13 Oct 2026, M2): the mark also carries the started report's edited text (startedText), so the
+    // shared record keeps his words; pin updated deliberately. Behaviour in m2-7.44's own test.
+    expect(screen).toMatch(/const outcome = await communicate\(startedReport\);\n(?:\s*\/\/.*\n)*\s+if \(outcome === 'completed'\) markReportDelivered\(startedFingerprint, startedPeriod, startedStateKey, startedText\);\n\s+if \(\n\s+mountedRef\.current &&/);
     expect(screen).toMatch(/\) \{\n\s+setCommunicationError\(''\);\n\s+\}\n\s+\} catch \{/);
   });
 });
