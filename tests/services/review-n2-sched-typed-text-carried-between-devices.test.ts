@@ -474,8 +474,9 @@ function relaunchModules(device: Device) {
 }
 
 /* Tasks ---------------------------------------------------------------------- */
+// (A first line that starts "Task," is the file's own header: a schedule with more columns, an Owner column say.)
 const rowsOf = (source: ReferenceDocument, lines: string[]) => (normalizeScheduleImport({
-  contents: ['Task,Project,Area,Start,Finish,Percent Complete', ...lines].join('\n'), sourceName: source.originalFileName,
+  contents: [...(lines[0]?.startsWith('Task,') ? [] : ['Task,Project,Area,Start,Finish,Percent Complete']), ...lines].join('\n'), sourceName: source.originalFileName,
   mimeType: 'text/csv', projects: ['Alpha'], projectAreas: [], now: new Date(source.importedAt as string),
 }).items as ScheduleItem[]).map((row, index) => ({ ...row, id: `${source.id}-${index + 1}`, importBatchId: source.importBatchId, sourceDocumentId: source.id }));
 const scheduleDoc = (id: string, importedAt: string, role?: 'lookahead'): ReferenceDocument => ({
@@ -6988,5 +6989,92 @@ describe('Way 2, step 1: the mark is left by his edit and goes wherever its fiel
     const remote = row('G', { notes: NOTE, notesSetByHand: typed(NOTE, T3) });
     const out = scheduleItemWholeCopyAgainstCloud(local, local, scheduleItemWholeCopyBase(was), remote).itemData;
     expect([out.owner, out.ownerSetByHand, out.notes, out.notesSetByHand]).toEqual(['Mike', typed('Mike', T2), NOTE, typed(NOTE, T3)]);
+  });
+});
+
+/**
+ * Way 2, step 2, part B: open item 2.49 (review pass 1 of Way 2 step 1, finding 2; Medium, older: the same on Build 232).
+ * A schedule FILE can fill a task's owner, contractor, note or milestone itself (an Owner, Notes or Milestone column).
+ * The new row a master makes then takes nothing for that field from the row it replaces, so it keeps no record of it
+ * (textFromTask has no entry: the file's value is not his to follow). He clears that field on the task. Later the old
+ * row, still holding its own file's value, is stamped by something else (a percent the other device enters on the row
+ * it still shows; a lookahead's delete giving it dates back). The carry by field asked every older row when he typed
+ * the field there, heard "not typed since it was made" from each, and then fell back to the rows' stamps: the old
+ * file's value came back over his clear, once per such stamp.
+ * Now: when this row says when he set the field here and every older row says it was not typed there since it was
+ * made, nothing of his is newer than his own word here, and it stands (his clear included). A row that cannot say
+ * (made by an older build, or typed on by one) keeps the rule by the stamps, as before.
+ */
+describe('Way 2, step 2 (2.49): a value he cleared on a field the new schedule file itself fills stays cleared', () => {
+  const T1 = '2026-09-08T09:00:00.000Z', T2 = '2026-09-09T09:00:00.000Z', T3 = '2026-09-10T09:00:00.000Z';
+  const TYPED = ['owner', 'contractor', 'notes', 'nextAction', 'milestone'] as const;
+  type Typed = typeof TYPED[number];
+  const markOf = (field: Typed) => `${field}SetByHand`;
+
+  describe('on the records alone', () => {
+    const row = (id: string, extra: Record<string, unknown> = {}) => ({
+      id, taskName: 'Framing', projectName: 'Alpha', locationName: 'Lot', startDate: '10/15/2026', finishDate: '10/25/2026', milestone: '',
+      owner: '', contractor: '', percentComplete: 0, priority: 'Medium', status: 'Not Started', notes: '', nextAction: '', createdAt: '2026-09-07T12:00:00.000Z',
+      importedAt: '2026-09-07T12:00:00.000Z', ...extra,
+    }) as unknown as ScheduleItem;
+    const merged = (rows: ScheduleItem[]) => recoverDAVEScheduleRecords({ local: rows, cloud: rows, deletedIds: [], allowCloudOnly: true });
+    const of = (rows: ScheduleItem[], id: string) => rows.find(item => item.id === id)!;
+    const madeWith = (text: Record<string, string> = {}) => ({ textAsMade: { owner: '', contractor: '', notes: '', nextAction: '', milestone: '', ...text } });
+    /** F's row as its own file made it, the field holding F's file's value; `extra` on top. */
+    const oldRow = (field: Typed, extra: Record<string, unknown> = {}) => row('F', { [field]: 'Ann (file F)', ...madeWith({ [field]: 'Ann (file F)' }), updatedAt: T3, ...extra });
+    /** G's row: made by a newer file that states the field (so no entry for it in what G took from F), then cleared by him at T2. */
+    const clearedOnTheNewRow = (field: Typed, extra: Record<string, unknown> = {}) => row('G', {
+      revisedFromTaskIds: ['F'], [field]: '', textFromTask: { taskId: 'F', ...Object.fromEntries(TYPED.filter(other => other !== field).map(other => [other, ''])) },
+      ...madeWith({ [field]: 'Ben (file G)' }), [markOf(field)]: { text: '', at: T2 }, updatedAt: T2, ...extra,
+    });
+
+    it.each(['owner', 'contractor', 'notes', 'milestone'] as const)(
+      '%s: the old row holds its own file\'s value and is stamped after his clear for something else: his clear stands (the reviewer\'s R1, R1b)', field => {
+        // (It was: "Ann (file F)" back on the task, by the stamps.)
+        expect(of(merged([oldRow(field), clearedOnTheNewRow(field)]), 'G')[field]).toBe('');
+      });
+    it('typed on the old row AFTER his clear: that later word follows the task, as before', () => {
+      const out = merged([oldRow('owner', { owner: 'Ann', ownerSetByHand: { text: 'Ann', at: T3 } }), clearedOnTheNewRow('owner')]);
+      expect(of(out, 'G').owner).toBe('Ann');
+    });
+    it('typed on the old row BEFORE his clear: his clear stands, as before', () => {
+      const out = merged([oldRow('owner', { owner: 'Ann', ownerSetByHand: { text: 'Ann', at: T1 } }), clearedOnTheNewRow('owner')]);
+      expect(of(out, 'G').owner).toBe('');
+    });
+    it('the old row cannot say (its text is not what it was made with and has no mark: typed by an older build): by the stamps, as before', () => {
+      const out = merged([oldRow('owner', { owner: 'Ann' }), clearedOnTheNewRow('owner')]);
+      expect(of(out, 'G').owner).toBe('Ann');
+    });
+    it('the new row cannot say (made by an older build: nothing says what it was made with, no mark): by the stamps, as before', () => {
+      const out = merged([oldRow('owner'), clearedOnTheNewRow('owner', { textAsMade: undefined, ownerSetByHand: undefined })]);
+      expect(of(out, 'G').owner).toBe('Ann (file F)');
+    });
+  });
+
+  describe('between two devices and the web, with schedules that have an Owner column', () => {
+    const OLD_ROW = 'MASTER F-1';
+    const NEW_ROW = 'MASTER G-1';
+    const HEADER = 'Task,Project,Area,Start,Finish,Percent Complete,Owner';
+    const SURVEY_NO_OWNER = 'Survey,Alpha,Lot,10/12/2026,10/14/2026,,';
+    const places = (phone: Device, ipad: Device) => [deviceShown(phone), deviceShown(ipad), webShown()]
+      .map(shown => framingOf(shown).map(item => [item.id, item.owner || '']));
+
+    it.each(['the phone', 'the web'] as const)(
+      'both files give Framing an owner; %s clears the owner on the task; the iPad, not having heard of the new master, enters a percent on the row it shows: the clear stands in all three places, nothing asked', async who => {
+        at('2026-09-07T12:00:00.000Z');
+        const { phone, ipad } = await startBoth(F, [HEADER, 'Framing,Alpha,Lot,10/15/2026,10/25/2026,,Ann', SURVEY_NO_OWNER]);
+        expect(places(phone, ipad)).toEqual(Array(3).fill([[OLD_ROW, 'Ann']]));
+        setOnline(ipad, false);
+        at(G.importedAt!); await approve(phone, G, [HEADER, 'Framing,Alpha,Lot,10/20/2026,10/30/2026,,Ben', SURVEY_NO_OWNER]);
+        shareDocuments(phone); await backgroundUpload(phone);
+        at('2026-09-11T09:00:00.000Z');
+        if (who === 'the phone') { await edit(phone, NEW_ROW, { owner: '' }); await backgroundUpload(phone); } else webWrite(webEdited(cloudRow(NEW_ROW)!, { owner: '' }));
+        at('2026-09-11T10:00:00.000Z'); await edit(ipad, OLD_ROW, { percentComplete: 30 });
+        at('2026-09-12T08:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+        await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+        // (It was: "Ann", the old file's owner, back on the task in all three places.)
+        expect(places(phone, ipad)).toEqual(Array(3).fill([[NEW_ROW, '']]));
+        expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
+      });
   });
 });

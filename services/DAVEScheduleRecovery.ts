@@ -669,11 +669,12 @@ function typedTextCarriedToRevisedTasks(
   });
   // Way 2, the first comparison: for one field, the row that he typed it on last, where every one of those rows says
   // when (scheduleTextSetByHandAt) and one of them was typed in it; else none, and the row changed last lends, as before.
-  const typedLastOn = (record: ScheduleItem, field: TypedTextField): ScheduleItem | undefined => {
+  // (Way 2 step 2, open item 2.49: null when every one of them says and none was typed in it since it was made.)
+  const typedLastOn = (record: ScheduleItem, field: TypedTextField): ScheduleItem | null | undefined => {
     const lenders = lendersOf.get(record) ?? [];
     const times = lenders.map(row => scheduleTextSetByHandAt(row, field));
     if (times.some(at => at === undefined)) return undefined;
-    let last: ScheduleItem | undefined;
+    let last: ScheduleItem | null = null;
     let lastAt = Number.NEGATIVE_INFINITY;
     times.forEach((at, index) => { if (typeof at === 'number' && at > lastAt) { last = lenders[index]; lastAt = at; } });
     return last;
@@ -746,6 +747,11 @@ function typedTextCarriedToRevisedTasks(
         const there = scheduleTextSetByHandAt(typedOn, field) as number;
         return text(typedOn[field]) && (here === null || there > here) ? [[field, typedOn] as const] : [];
       }
+      // Way 2 step 2 (open item 2.49; review pass 1 of step 1, finding 2): he set the field here (a clear included) and
+      // every row it answers to says it was not typed there since it was made, so what they hold is their own files'
+      // (a schedule with an Owner, Notes or Milestone column): nothing of his is later than his word here, and it stands,
+      // whatever stamped those rows since. (By the stamps, the old file's value came back over his clear.)
+      if (typedOn === null && typeof here === 'number') return [];
       return earlier && timestamp(earlier.updatedAt) > timestamp(own.updatedAt) && text(earlier[field]) ? [[field, earlier] as const] : [];
     }));
     const carried = [...carriedFrom.keys()];
