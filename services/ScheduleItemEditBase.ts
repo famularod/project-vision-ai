@@ -5,7 +5,7 @@ import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
 import { scheduleLookaheadNoteWithLaterOwnPercentOf } from './DAVEScheduleRecovery';
 import {
   scheduleItemActivityWithOtherRows, schedulePriorityAsRead, schedulePriorityHeSet, schedulePriorityHeSetLater, schedulePriorityIsHis, schedulePriorityIsItsImports,
-  schedulePriorityItsImportGave, schedulePriorityMarkOfBoth, scheduleTaskEarlierIds, SCHEDULE_TEXT_SET_BY_HAND,
+  schedulePriorityItsImportGave, schedulePriorityMarkOfBoth, scheduleTaskEarlierIds, scheduleTextSetByHandAt, SCHEDULE_TEXT_SET_BY_HAND,
 } from './ScheduleTaskRevisions';
 import { mergeProjectControlsRevisions, normalizeProjectControls } from './VitruviusProjectControls';
 import { normalizeScheduleDependencies } from './VitruviusScheduleEngine';
@@ -1029,6 +1029,8 @@ export function scheduleItemAgainstItsTask(
   task: ScheduleItem | null | undefined,
   bothChanged: 'ask' | 'row' | 'task',
   taskOf?: (rowId: string) => string,
+  /** Where nothing is asked: which row stands for a field he types changed on both, when his typing says (Way 2 step 2, part C). */
+  textStands?: (field: string) => 'row' | 'task' | undefined,
 ): Readonly<{ row: ScheduleItem; asked: string[]; base: ScheduleItemEditBase }> {
   const taken = row.textFromTask;
   const none = { row, asked: [], base: { updatedAt: null, fields: {} } };
@@ -1042,7 +1044,7 @@ export function scheduleItemAgainstItsTask(
     const here = fieldValue(row, field);
     const theirs = fieldValue(task, field);
     if (theirs === here) return;
-    const decides = field === 'priority' ? priorityStands : bothChanged;
+    const decides = field === 'priority' ? priorityStands : (bothChanged !== 'ask' && textStands?.(field)) || bothChanged;
     if (!scheduleItemHoldsAsTaken(row, field)) {
       // Set or cleared on this row: it stands unless the task's row has changed since too.
       if (theirs === fieldValue(taken, field) || decides === 'row') return;
@@ -1214,7 +1216,13 @@ export function scheduleItemNewRowMetAgain(
  * changed from Dana to Sam on the task showed as Dana again, and the report
  * said "owner changed from Sam to Dana". The same row when nothing differs.
  */
-export function scheduleItemWithItsNewRow(row: ScheduleItem, newRow: ScheduleItem, newRowLater: boolean): ScheduleItem {
+export function scheduleItemWithItsNewRow(
+  row: ScheduleItem,
+  newRow: ScheduleItem,
+  newRowLater: boolean,
+  /** For a field he types changed on both: whether the newer row holds his later typing, when the two rows say (Way 2 step 2, part C). */
+  textLaterOnNewRow?: (field: string) => boolean | undefined,
+): ScheduleItem {
   const taken = newRow.textFromTask;
   if (!taken || taken.taskId !== row.id) return row;
   const next: Record<string, unknown> = {};
@@ -1223,7 +1231,7 @@ export function scheduleItemWithItsNewRow(row: ScheduleItem, newRow: ScheduleIte
   SCHEDULE_FIELDS_TAKEN_FROM_TASK.filter(field => Object.prototype.hasOwnProperty.call(taken, field)).forEach(field => {
     const here = fieldValue(row, field);
     if (scheduleItemHoldsAsTaken(newRow, field) || fieldValue(newRow, field) === here) return;
-    if (here !== fieldValue(taken, field) && !(field === 'priority' ? priorityLater : newRowLater)) return;
+    if (here !== fieldValue(taken, field) && !(field === 'priority' ? priorityLater : textLaterOnNewRow?.(field) ?? newRowLater)) return;
     next[field] = valueTaken(newRow, field);
   });
   // Schedule batch S6, item 1: the newer row took no priority and holds one he set since: it shows here too, unless
@@ -1233,6 +1241,21 @@ export function scheduleItemWithItsNewRow(row: ScheduleItem, newRow: ScheduleIte
   // And the mark that it is his, with it or alone where the two rows hold the same priority (review pass 1, P1-1).
   const his = priorityMarkTaken(row, Object.prototype.hasOwnProperty.call(next, 'priority') ? next.priority : row.priority, newRow);
   return Object.keys(next).length === 0 && Object.keys(his).length === 0 ? row : { ...row, ...next, ...his } as ScheduleItem;
+}
+
+/**
+ * Way 2 step 2, part C: of two rows of one task, whether `one` holds his later typing of a field he types than
+ * `other`, by each row's mark (scheduleTextSetByHandAt; a row not typed in it since it was made says "never"). True or
+ * false where both rows say and at least one was typed; undefined where either cannot say (made, or typed on, by an
+ * older build) or neither was typed: then the rows' stamps decide, as before. Not a field he types: undefined.
+ */
+function scheduleTextTypedLaterOn(one: ScheduleItem, other: ScheduleItem, field: string): boolean | undefined {
+  if (!(SCHEDULE_TYPED_TEXT_FIELDS as readonly string[]).includes(field)) return undefined;
+  const typedField = field as typeof SCHEDULE_TYPED_TEXT_FIELDS[number];
+  const there = scheduleTextSetByHandAt(one, typedField);
+  const here = scheduleTextSetByHandAt(other, typedField);
+  if (there === undefined || here === undefined || (there === null && here === null)) return undefined;
+  return here === null || (there !== null && there > here);
 }
 
 /**
@@ -1260,6 +1283,11 @@ export function scheduleItemAsLastSetOnItsOtherRow(
 ): ScheduleItem | null {
   const timeOf = (when: string | null | undefined) => { const time = Date.parse(when || ''); return Number.isFinite(time) ? time : 0; };
   const hiddenLater = timeOf(hidden.updatedAt) > timeOf(shown.updatedAt);
+  // Way 2 step 2, part C (as the carry between rows, DAVEScheduleRecovery, since Way 2): for a field he types, whether
+  // the hidden row holds his later typing of it than the row shown, by the two rows' marks (scheduleTextTypedLaterOn);
+  // where either row cannot say, the rows' stamps (hiddenLater), as before. A row is stamped by much that is not his
+  // typing (a percent entered on it, a lookahead), and his earlier word stood over his later one, with nothing asked.
+  const hiddenTypedLater = (field: string) => scheduleTextTypedLaterOn(hidden, row, field);
   // Review N3 R3, review P4 F1 and L1: one of the two rows replaced the other, and a row says what it took of his text
   // from the row it replaced (textFromTask). That record is the copy both rows are weighed from, field by field: one
   // only the hidden row has changed since shows on this row (he typed over it on the task, or cleared it, since the
@@ -1276,18 +1304,21 @@ export function scheduleItemAsLastSetOnItsOtherRow(
   // changed since its import holds no clear of his" is said of a row against its own record only.)
   const apart = base && base !== newer!.textFromTask ? { updatedAt: newer!.updatedAt || now } : {};
   const weighed = !base ? row
-    : newer === shown ? { ...scheduleItemAgainstItsTask({ ...row, updatedAt: shown.updatedAt, ...apart, textFromTask: base }, hidden, hiddenLater ? 'task' : 'row').row,
+    : newer === shown ? { ...scheduleItemAgainstItsTask({ ...row, updatedAt: shown.updatedAt, ...apart, textFromTask: base }, hidden, hiddenLater ? 'task' : 'row', undefined,
+        field => { const later = hiddenTypedLater(field); return later === undefined ? undefined : later ? 'task' : 'row'; }).row,
         // (And the shown row's own record is of the row in between: it stays as it is.)
         ...(row.textFromTask?.taskId === hidden.id ? {} : { textFromTask: row.textFromTask }) }
-    : scheduleItemWithItsNewRow(row, { ...hidden, ...apart, textFromTask: base }, hiddenLater);
+    : scheduleItemWithItsNewRow(row, { ...hidden, ...apart, textFromTask: base }, hiddenLater, hiddenTypedLater);
   const changed = base && JSON.stringify({ ...weighed, updatedAt: row.updatedAt }) !== JSON.stringify(row) ? weighed : row;
-  // A field with no such record (a row saved before rows kept one): the hidden row's fills a blank when it was the row
-  // changed later, as before.
+  // A field with no such record (a row saved before rows kept one, or one its own file states): the hidden row's fills
+  // a blank when it holds his later typing of it (part C; so a clear of his here stands against a file's value there,
+  // as in the carry, open item 2.49), or, where either row cannot say, when it was the row changed later, as before.
   const recorded = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => Object.prototype.hasOwnProperty.call(base ?? {}, field));
   const lender = recorded.length === 0 ? hidden : { ...hidden, ...Object.fromEntries(recorded.map(field => [field, ''])) };
   // His project controls come whichever row was changed later (review N3 C): each field of them has its own time,
   // and the later entry stands.
-  const blanks = hiddenLater ? SCHEDULE_TYPED_TEXT_FIELDS.filter(field => isBlank(fieldValue(changed, field)) && !isBlank(fieldValue(lender, field))) : [];
+  const blanks = SCHEDULE_TYPED_TEXT_FIELDS.filter(field => isBlank(fieldValue(changed, field)) && !isBlank(fieldValue(lender, field)) &&
+    (scheduleTextTypedLaterOn(hidden, changed, field) ?? hiddenLater));
   // The priority with no record at all (schedule batch S6, items 1 and 4 a; rows saved before rows said what they
   // took): one he set on the hidden row shows here when this row's is not known to be his and the hidden row was the
   // one changed later. On such rows only a Low is known to be his.

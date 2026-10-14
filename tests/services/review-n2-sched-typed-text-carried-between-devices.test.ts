@@ -245,6 +245,7 @@ import { scheduleProgressUndoPoint, scheduleTalkUndo } from '../../services/Sche
 import { scheduleItemFieldsWithOwnProgress, scheduleItemLaterPercentGivenBack } from '../../services/ScheduleItemEditBase';
 import { scheduleItemAgainstItsTask, scheduleItemAsOwnWaitingEditLeavesIt, scheduleItemNewRowMetAgain, scheduleItemTextEditOnRow, scheduleTaskOfRowId, scheduleItemWholeCopyAgainstCloud, scheduleItemWholeCopyOverCloud } from '../../services/ScheduleItemEditBase';
 import { scheduleItemChangedSinceMade, scheduleItemEditBaseOf, scheduleItemWholeCopyBaseSinceMade, scheduleItemWholeCopyFieldByField, SCHEDULE_ITEM_AS_MADE } from '../../services/ScheduleItemEditBase';
+import { scheduleItemAsLastSetOnItsOtherRow } from '../../services/ScheduleItemEditBase';
 import { normalizeProjectControls, reviseProjectControls } from '../../services/VitruviusProjectControls';
 import type { ProjectControls } from '../../types';
 
@@ -7076,5 +7077,83 @@ describe('Way 2, step 2 (2.49): a value he cleared on a field the new schedule f
         expect(places(phone, ipad)).toEqual(Array(3).fill([[NEW_ROW, '']]));
         expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
       });
+  });
+});
+
+/**
+ * Way 2, step 2, part C. Set Active (phone and iPad), Make Current (web) and a schedule's delete show another row of
+ * a task and bring across what he set on the row they hide (scheduleItemAsLastSetOnItsOtherRow). Where a field he
+ * types was changed on BOTH rows since one took it from the other, nothing is asked there: the row changed last won,
+ * by the rows' stamps. So did a blank on the row shown that keeps no record of the field. A row is stamped by much
+ * that is not his typing (a percent, a lookahead), so his later word could lose to his earlier one, with no card.
+ * Now, as in the carry between rows (Way 2 step 1, and part B): where both rows say when he typed the field there
+ * (their marks; a row not typed in it since it was made says "never"), his later typing stands; where either cannot
+ * say (made or typed by an older build), the rows' stamps decide, as before. The priority already went by its marks.
+ */
+describe('Way 2, step 2, part C: Set Active and Make Current weigh a field changed on both rows by his typing, not by the rows\' last change', () => {
+  const T1 = '2026-09-08T09:00:00.000Z', T2 = '2026-09-09T09:00:00.000Z', T3 = '2026-09-10T09:00:00.000Z', NOW = '2026-09-11T09:00:00.000Z';
+  const row = (id: string, extra: Record<string, unknown> = {}) => ({
+    id, taskName: 'Framing', projectName: 'Alpha', locationName: 'Lot', startDate: '10/15/2026', finishDate: '10/25/2026', milestone: '',
+    owner: '', contractor: '', percentComplete: 0, priority: 'Medium', status: 'Not Started', notes: '', nextAction: '', createdAt: '2026-09-07T12:00:00.000Z',
+    importedAt: '2026-09-07T12:00:00.000Z', textAsMade: { owner: '', contractor: '', notes: '', nextAction: '', milestone: '' }, ...extra,
+  }) as unknown as ScheduleItem;
+  const typed = (text: string, at: string) => ({ text, at });
+  /** G replaced F and took a blank owner and note from it. */
+  const g = (extra: Record<string, unknown>) => row('G', { revisedFromTaskIds: ['F'], textFromTask: { taskId: 'F', owner: '', notes: '' }, ...extra });
+  /** The row shown after the change: the function's answer, or the row as it was when nothing differs. */
+  const shownAfter = (hidden: ScheduleItem, shown: ScheduleItem) => scheduleItemAsLastSetOnItsOtherRow(hidden, shown, shown, NOW) ?? shown;
+
+  describe('on the records alone', () => {
+    it('Make Current / Set Active forward: typed on the old row, then later on the new row; the old row stamped after both for something else: the new row\'s later owner stands', () => {
+      const F_ = row('F', { owner: 'Ana', ownerSetByHand: typed('Ana', T1), updatedAt: T3 });
+      const G_ = g({ owner: 'Bob', ownerSetByHand: typed('Bob', T2), updatedAt: T2 });
+      // (It was: Ana, the earlier word, because the old row was stamped last.)
+      expect(shownAfter(F_, G_).owner).toBe('Bob');
+    });
+    it('the same the other way: typed on the new row, then later on the old row (the web on a master made current again); the new row stamped after both: the old row\'s later owner shows', () => {
+      const F_ = row('F', { owner: 'Ana', ownerSetByHand: typed('Ana', T2), updatedAt: T2 });
+      const G_ = g({ owner: 'Bob', ownerSetByHand: typed('Bob', T1), updatedAt: T3 });
+      expect(shownAfter(F_, G_).owner).toBe('Ana');
+    });
+    it('Set Active back to the older master: typed on the new row, then later on the old row; the new row stamped after both: the old row keeps his later owner', () => {
+      const F_ = row('F', { owner: 'Ana', ownerSetByHand: typed('Ana', T2), updatedAt: T2 });
+      const G_ = g({ owner: 'Bob', ownerSetByHand: typed('Bob', T1), updatedAt: T3 });
+      // (It was: Bob, the earlier word, because the new row was stamped last.)
+      expect(shownAfter(G_, F_).owner).toBe('Ana');
+    });
+    it('a note cleared on the row shown that keeps no record of it (its file states notes), the hidden row holding its own file\'s note and stamped later: the clear stands', () => {
+      const F_ = row('F', { notes: 'Note of file F', textAsMade: { owner: '', contractor: '', notes: 'Note of file F', nextAction: '', milestone: '' }, updatedAt: T3 });
+      const G_ = row('G', { revisedFromTaskIds: ['F'], textFromTask: { taskId: 'F', owner: '' }, textAsMade: { owner: '', contractor: '', notes: 'Note of file G', nextAction: '', milestone: '' },
+        notesSetByHand: typed('', T2), updatedAt: T2 });
+      // (It was: the old file's note back over his clear.)
+      expect(shownAfter(F_, G_).notes).toBe('');
+    });
+    it('guards, as before: rows that cannot say (no marks, made by an older build) go by the stamps; a field changed on one row only follows', () => {
+      const old = (extra: Record<string, unknown>) => row('F', { textAsMade: undefined, ...extra });
+      const neu = (extra: Record<string, unknown>) => g({ textAsMade: undefined, ...extra });
+      expect(shownAfter(old({ owner: 'Ana', updatedAt: T3 }), neu({ owner: 'Bob', updatedAt: T2 })).owner).toBe('Ana');
+      expect(shownAfter(old({ owner: 'Ana', updatedAt: T1 }), neu({ owner: 'Bob', updatedAt: T2 })).owner).toBe('Bob');
+      expect(shownAfter(row('F', { owner: 'Ana', ownerSetByHand: typed('Ana', T1), updatedAt: T1 }), g({ updatedAt: T3 })).owner).toBe('Ana');
+    });
+  });
+
+  it('two devices and the web: he sets Bob on the task, makes the older master current, types Ana on the web; the iPad, not having heard, enters a percent on the newer row; he makes the newer master current again: Ana in all three places, nothing asked', async () => {
+    const OLD_ROW = 'MASTER F-1';
+    const NEW_ROW = 'MASTER G-1';
+    const places = (phone: Device, ipad: Device) => [deviceShown(phone), deviceShown(ipad), webShown()].map(shown => framingOf(shown).map(item => [item.id, item.owner || '']));
+    const { phone, ipad } = await start();
+    at(G.importedAt!); await approve(phone, G, [G_ROW, SURVEY]); shareDocuments(phone); await backgroundUpload(phone); await settle(phone, ipad);
+    at('2026-09-11T08:00:00.000Z'); await edit(phone, NEW_ROW, { owner: 'Bob' }); await backgroundUpload(phone); await settle(phone, ipad);
+    setOnline(ipad, false);
+    at('2026-09-11T09:00:00.000Z'); await setActiveOn(phone, F); shareDocuments(phone); await backgroundUpload(phone);
+    at('2026-09-11T10:00:00.000Z'); webWrite(webEdited(cloudRow(OLD_ROW)!, { owner: 'Ana' }));
+    at('2026-09-11T11:00:00.000Z'); await edit(ipad, NEW_ROW, { percentComplete: 30 });
+    at('2026-09-11T12:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad); await backgroundUpload(ipad);
+    await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+    at('2026-09-11T13:00:00.000Z'); await setActiveOn(phone, G); shareDocuments(phone); await backgroundUpload(phone);
+    await settle(phone, ipad); await refresh(phone); await refresh(ipad);
+    // (It was: Bob, his earlier word, in all three places: the iPad's percent had stamped the newer row last.)
+    expect(places(phone, ipad)).toEqual(Array(3).fill([[NEW_ROW, 'Ana']]));
+    expect([await conflictsOf(phone), await conflictsOf(ipad)]).toEqual([[], []]);
   });
 });
