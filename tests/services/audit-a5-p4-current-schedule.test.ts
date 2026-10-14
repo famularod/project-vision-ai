@@ -89,7 +89,7 @@ describe('a newer lookahead no longer strands the combined master (A5 pass 4 #2)
       activateSharedReferenceDocument: (input: Parameters<typeof activateSharedReferenceDocument>[0]) => activateSharedReferenceDocument({ ...input, activate }),
       scheduleRetirementMessage, scheduleDocumentIsCurrentEverywhere,
       getSupabaseClient: () => ({ rpc: jest.fn(async () => ({ data: 'project', error: null })) }) as unknown as SupabaseClient,
-      projectDocumentSharedRecordSync: { flush: () => false },
+      projectDocumentSharedRecordSync: { flush: () => false, ownEditsSince: () => new Map() }, // S1e (14 Oct, the final review's F2): what this device typed itself during the press (nothing here)
       listReferenceDocuments: jest.fn().mockResolvedValueOnce({ ok: true, stubbed: false, data: documents })
         .mockResolvedValue({ ok: true, stubbed: false, data: cloudAfter }),
       normalizeReferenceDocuments: (rows: unknown) => rows,

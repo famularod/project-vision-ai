@@ -108,7 +108,7 @@ async function press(label: string, local: ReferenceDocument[], opts: { staleUpl
     projectDocumentSharedRecordSync: { flush: (id: string) => {
       void queueReferenceDocumentRecord(referenceDocumentsCurrentRef.current.find(document => document.id === id)!, false);
       return true;
-    } },
+    }, ownEditsSince: () => new Map() }, // S1e (14 Oct, the final review's F2): what this device typed itself during the press (nothing here)
     activateSharedReferenceDocument: (args: Parameters<typeof activateSharedReferenceDocument>[0]) => activateSharedReferenceDocument({
       ...args,
       loadRetirementScope: async () => 'project',

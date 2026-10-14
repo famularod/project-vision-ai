@@ -204,7 +204,7 @@ describe('after this phone\'s Make Current, the typed text is queued again and s
       projectDocumentSharedRecordSync: { flush: (id: string) => {
         void queueReferenceDocumentRecord(referenceDocumentsCurrentRef.current.find(document => document.id === id)!, false);
         return true;
-      } },
+      }, ownEditsSince: () => new Map() }, // S1e (14 Oct, the final review's F2): what this device typed itself during the press (nothing here)
       // The activation call returns before that upload started.
       activateSharedReferenceDocument: async () => {
         await new Promise(resolve => setTimeout(resolve, 5));

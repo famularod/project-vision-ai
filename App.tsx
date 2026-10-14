@@ -11017,7 +11017,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       return false;
     }
     currentReferenceActivationIdsRef.current.add(documentId);
-    const documentsAtPress = referenceDocumentsCurrentRef.current; // what is typed on a card while the press is on its way goes on after it (review pass 6, H6S-2)
+    const pressStartedAt = Date.now(); // what THIS device types on a card while the press is on its way goes on after it (review pass 6 H6S-2; final review F2)
     projectDocumentSharedRecordSync.flush(documentId); // text typed just before goes first (whole-app audit A8 pass 2 #7)
     try {
       const outcome = await activateSharedReferenceDocument({
@@ -11075,7 +11075,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
           cloud: [...outcome.documents],
           deletedIds,
         }),
-      ), documentsAtPress, referenceDocumentsCurrentRef.current);
+      ), projectDocumentSharedRecordSync.ownEditsSince(pressStartedAt));
       const mergedDocuments = typedDuring.documents;
       const carried = new Map(scheduleProgressCarriedOnActivation({ items: scheduleItemsCurrentRef.current as unknown as import('./types').ScheduleItem[], documentsBefore: referenceDocumentsCurrentRef.current, documentsAfter: mergedDocuments }).map(item => [item.id, item as unknown as ScheduleItem])); // progress recorded since the import follows the task now shown (A5 pass 4 #3)
       markReferenceDocumentsAuthorityReady(true);
@@ -11321,6 +11321,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     markReferenceDocumentsAuthorityReady(true);
     referenceDocumentsCurrentRef.current = updatedReferences;
     setReferenceDocuments(updatedReferences);
+    projectDocumentSharedRecordSync.noteOwnEdit(synchronizedDocument.id, sharedDocument, synchronizedDocument); // his own edit on this device (S1e)
     projectDocumentSharedRecordSync.queueAfterChange(synchronizedDocument.id, next);
   }
 

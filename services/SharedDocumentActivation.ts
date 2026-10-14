@@ -81,30 +81,43 @@ function revisionOf(document: ReferenceDocument): number {
 }
 
 /**
+ * The details a person types or picks that differ between two copies of one document (`after`'s values): what one
+ * edit of his changed. The card's text sync records them as this device's own (noteOwnEdit; S1e).
+ */
+export function personDetailsChanged(before: ReferenceDocument, after: ReferenceDocument): Record<string, unknown> {
+  const text = (document: ReferenceDocument, name: string) => {
+    const value = (document as unknown as Record<string, unknown>)[name];
+    return typeof value === 'string' ? value.trim() : '';
+  };
+  return Object.fromEntries(PERSON_DETAIL_KEYS.filter(name => text(before, name) !== text(after, name))
+    .map(name => [name, (after as unknown as Record<string, unknown>)[name]]));
+}
+
+/**
  * Review pass 6's H6S-2 (14 Oct 2026, Low): a note typed on a document's card WHILE Make Current was on its way (after
  * the press read the cloud, before the cloud answered) stayed on this phone's card only: the activation's answer
  * outranked the copy typed meanwhile, the press left the shared copy with the old note, and the upload that followed
  * sent nothing (with no cloud stamp here: caused by 3.1; with the pause in typing after the press: older).
- * The documents the press leaves on this device (`merged`, the cloud's answer merged in), with the details typed on any
- * of them during the press (what `typedAt` holds now that `atPress` did not) put back, stamped just after the cloud's
- * copy so they outrank it here and on the other devices; the cloud's current flags stay. `carried` are the ones to
- * send. Nothing typed during the press: the same documents, nothing carried.
+ * The documents the press leaves on this device (`merged`, the cloud's answer merged in), with what THIS device typed
+ * on any of them during the press (`ownEdits`: document id to the details its card text sync recorded as its own
+ * since the press began) put back, stamped just after the cloud's copy so they outrank it here and on the other
+ * devices; the cloud's current flags stay. `carried` are the ones to send.
+ * The final review's F2 (14 Oct 2026, Low, caused by S1d): S1d took any card whose words changed on this device during
+ * the press as typed here, words received from another device included, and sent another device's OLDER words as the
+ * newest. Only this device's own edits are put back now; a card it did not type on is left as the cloud has it.
  */
 export function withDetailsTypedDuringActivation<T extends ReferenceDocument>(
   merged: readonly T[],
-  atPress: readonly ReferenceDocument[],
-  typedAt: readonly ReferenceDocument[],
+  ownEdits: ReadonlyMap<string, Readonly<Record<string, unknown>>>,
   now = Date.now(),
 ): Readonly<{ documents: T[]; carried: T[] }> {
-  const before = new Map(atPress.map(document => [document.id, personDetails(document)]));
-  const typed = new Map(typedAt.filter(document => before.has(document.id) && before.get(document.id) !== personDetails(document))
-    .map(document => [document.id, document]));
   const carried: T[] = [];
   const documents = merged.map(document => {
-    const mine = typed.get(document.id);
-    if (!mine || personDetails(mine) === personDetails(document)) return document;
-    const details = Object.fromEntries(PERSON_DETAIL_KEYS.map(name => [name, (mine as unknown as Record<string, unknown>)[name]]));
-    const next = { ...document, ...details, updatedAt: new Date(Math.max(now, revisionOf(document) + 1)).toISOString() } as T;
+    const mine = ownEdits.get(document.id);
+    if (!mine) return document;
+    const changed = personDetailsChanged(document, { ...document, ...mine } as T);
+    if (Object.keys(changed).length === 0) return document;
+    const next = { ...document, ...changed, updatedAt: new Date(Math.max(now, revisionOf(document) + 1)).toISOString() } as T;
     carried.push(next);
     return next;
   });

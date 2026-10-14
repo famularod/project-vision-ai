@@ -93,7 +93,9 @@ function componentFunction(name: string): string {
   throw new Error('unbalanced function');
 }
 
-beforeEach(() => { mockStorageValues.clear(); mockCloud.clear(); mockUpsertReferenceDocument.mockClear(); mockListOverride = null; });
+/** S1e (14 Oct, the final review's F2): what this phone typed itself, as its card text sync records it (noteOwnEdit). */
+const ownEdits = new Map<string, Record<string, unknown>>();
+beforeEach(() => { mockStorageValues.clear(); mockCloud.clear(); mockUpsertReferenceDocument.mockClear(); mockListOverride = null; ownEdits.clear(); });
 
 const TYPED_DURING_AT = '2026-10-14T12:00:01.000Z'; // typed after the press read the cloud, before the activation ran
 const duringNote = 'Rev 6 - Lot 4 pour moved to Thursday';
@@ -114,6 +116,8 @@ async function press(label: string, local: ReferenceDocument[], opts: { staleUpl
       },
       // S1d: the card's text sync queues the shared copy as this list holds it, as App.tsx's own does (its onReady).
       queueNow: (id: string) => { void queueReferenceDocumentRecord(referenceDocumentsCurrentRef.current.find(document => document.id === id)!, false); },
+      // S1e: the details this phone typed itself during the press (all typing here is inside it).
+      ownEditsSince: () => new Map(ownEdits),
     },
     activateSharedReferenceDocument: (args: Parameters<typeof activateSharedReferenceDocument>[0]) => activateSharedReferenceDocument({
       ...args,
@@ -127,6 +131,7 @@ async function press(label: string, local: ReferenceDocument[], opts: { staleUpl
           // writes the shared copy in this list (updateProjectDocument), and its upload is queued once typing pauses.
           const typed = { ...referenceDocumentsCurrentRef.current.find(document => document.id === 'rev6')!, notes: duringNote, updatedAt: TYPED_DURING_AT };
           referenceDocumentsCurrentRef.current = referenceDocumentsCurrentRef.current.map(document => (document.id === 'rev6' ? typed : document));
+          ownEdits.set('rev6', { notes: duringNote }); // S1e: typed on THIS phone's card, recorded as the card's edit is
           if (opts.typeDuring === 'queued') await queueReferenceDocumentRecord(typed, false);
         }
         activateInCloud(documentId);
