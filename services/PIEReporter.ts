@@ -1639,7 +1639,51 @@ function onlyFromTheSavedModel(sourceEvidenceIds: readonly string[]) {
   return sourceEvidenceIds.length > 0 && sourceEvidenceIds.every(id => id === SAVED_MODEL_EVIDENCE_ID);
 }
 
+/**
+ * Item 4c (the coordinator's decision, 13 Oct 2026; review pass 9, R9-1): a
+ * plain note takes only a place Build 231 left empty. His plain notes (item 4
+ * part B: in whatChanged and not verified progress) were filed with the
+ * progress lines, so a plain note of any age took the "first progress" place
+ * and pushed out a newer problem or request that Build 231 printed. Now the
+ * area's lines are chosen as Build 231 chose them, the plain notes not
+ * counted; then the plain notes fill the places left, newest first
+ * (whatChanged is in the updates' own date order, items 2 and 3), after those
+ * lines. "See Image N" stays where Build 231 put it; a plain note carries it
+ * only as the area's ONLY line.
+ */
 function buildReportBulletsFromUnderstanding(
+  area: PIEWorkAreaUnderstanding,
+  actionItems: PIEReportActionItem[],
+): PIEReportBullet[] {
+  const chosen = linesAsBuild231ChoseThem(area, actionItems);
+  const progressKeys = new Set(area.progress.map(item => normalizeName(item.summary)));
+  const printedKeys = new Set(chosen.map(bullet => normalizeName(bullet.text)));
+  const filling = area.whatChanged
+    .filter(summary => summary && !progressKeys.has(normalizeName(summary)) && !shouldSuppressReportBullet(summary))
+    .map(ensureSentence)
+    .filter(text => {
+      const key = normalizeName(text);
+      if (printedKeys.has(key)) return false;
+      printedKeys.add(key);
+      return true;
+    })
+    .slice(0, Math.max(0, 3 - chosen.length))
+    .map((text, index): PIEReportBullet => ({
+      id: slug(`bullet-${area.id}-plain-${index}`),
+      text,
+      kind: 'progress',
+      sourceEvidenceIds: area.sourceEvidenceIds,
+      needsReview: area.status === 'Needs Review',
+    }));
+
+  if (chosen.length === 1 && chosen[0].kind === 'image_reference' && filling.length === 1) {
+    return [{ ...filling[0], text: `${stripTerminalPunctuation(filling[0].text)}. ${chosen[0].text}` }];
+  }
+
+  return [...chosen, ...filling];
+}
+
+function linesAsBuild231ChoseThem(
   area: PIEWorkAreaUnderstanding,
   actionItems: PIEReportActionItem[],
 ): PIEReportBullet[] {
@@ -1647,8 +1691,9 @@ function buildReportBulletsFromUnderstanding(
   // What the lines are chosen from: the area's progress lines, problems and
   // next steps WITHOUT the ones made from the saved model alone (item 4b), in
   // each of its forms. A line of his own with the same words stays: it has
-  // evidence of his.
-  const progressLines = area.whatChanged.filter(summary => !onlyFromTheSavedModel(area.progress
+  // evidence of his. The progress lines are his verified progress only, as on
+  // Build 231 (item 4c): his plain notes are not counted here.
+  const progressLines = uniqueText(area.progress.map(item => item.summary)).filter(summary => !onlyFromTheSavedModel(area.progress
     .filter(item => normalizeName(item.summary) === normalizeName(summary))
     .flatMap(item => item.sourceEvidenceIds)));
   const issues = area.issues.filter(issue => !onlyFromTheSavedModel(issue.sourceEvidenceIds));
@@ -2631,7 +2676,8 @@ function isVerifiedConstructionProgressEvidence(item: PIEReportSourceEvidence) {
  * lateral. Dana to call the city." It is listed with the progress notes, a
  * plain observation: in the same order (newest first) and under the same
  * allowance of lines. It is printed among the progress lines and is not
- * counted as verified construction progress.
+ * counted as verified construction progress. Item 4c: it is printed only in a
+ * place the area's other lines leave empty (buildReportBulletsFromUnderstanding).
  */
 function isPlainFieldNote(item: PIEReportSourceEvidence) {
   return item.source === 'note' &&

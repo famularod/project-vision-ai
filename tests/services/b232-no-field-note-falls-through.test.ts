@@ -49,7 +49,11 @@ describe('B232 item 4 part B: no field note falls through', () => {
     ]);
   });
 
-  it('it is listed with the progress notes, newest first, under the same limit of three lines', () => {
+  // Changed by item 4c (the coordinator's decision; review pass 9, R9-1). This test pinned the plain note in the
+  // area's FIRST progress place, which pushed out a line Build 231 printed ("Trench is backfilled at the site
+  // lateral."). Now Build 231's lines are chosen first, the plain notes not counted, and the plain notes fill only
+  // the places left, newest first: here one place, so "Called the office about parking." has none.
+  it('it is printed after the lines Build 231 chose, newest first, in the places they leave (item 4c)', () => {
     expect(printed([
       note('u4', 'Site', '2026-10-12', 'Plumber found a broken cleanout at the site lateral. Dana to call the city.'),
       note('u3', 'Site', '2026-10-10', 'Underground plumbing passed the pressure test.'),
@@ -58,9 +62,9 @@ describe('B232 item 4 part B: no field note falls through', () => {
     ])).toEqual([{
       area: 'Harbor Lofts — Site',
       lines: [
-        'Plumber found a broken cleanout at the site lateral. Dana to call the city.',
         'Underground plumbing passed the pressure test.',
-        'Called the office about parking.',
+        'Trench is backfilled at the site lateral.',
+        'Plumber found a broken cleanout at the site lateral. Dana to call the city.',
       ],
     }]);
   });
