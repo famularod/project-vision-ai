@@ -23,6 +23,7 @@ import {
   type PIEScheduleImportBatch,
 } from './PIEScheduleImportBatch';
 import {
+  bestScheduleProjectMatch,
   normalizeMicrosoftProjectWebPdfPages,
   normalizeScheduleImport,
 } from './PIEScheduleIntelligence';
@@ -157,6 +158,12 @@ export type DAVEWebPreparedUpload = Readonly<{
    * when every row named one of his projects exactly, or named none.
    */
   fileProjectNames?: Readonly<Record<string, string>>;
+  /**
+   * For each name the file gives that waits for a project (High item 2, review pass 1 L-1, L-3): the projects of his
+   * it fits equally (two or more), or the one it looks like (bestScheduleProjectMatch, the PDF reader's own guess),
+   * else none. Absent when no task waits.
+   */
+  waitingProjectNames?: Readonly<Record<string, Readonly<{ fitsEqually: readonly string[]; looksLike: string | null }>>>;
 }>;
 
 type DAVEWebDocumentPreparationInput = Readonly<{
@@ -317,8 +324,12 @@ export function prepareDAVEWebDocumentUpload({
         now: new Date(now),
       });
   const readItems = pdfSchedule ? positionedPdfItems : normalizedImport?.items || [];
-  // High item 2: each row's project as the phone resolves it, among his projects (daveWebRowProjects).
-  const rowProjects = daveWebRowProjects(readItems, uniqueNames([...selectedProjectNames, ...(openProjectNames?.length ? openProjectNames : projects)]));
+  // High item 2: each row's project as the phone resolves it, among his projects (daveWebRowProjects). The cloud's
+  // list of his open projects when the page has it, even empty (review pass 1, L-4: the page's own list also holds
+  // names known only from saved tasks); without it (an older caller), the page's list.
+  const rowProjects = daveWebRowProjects(readItems, uniqueNames([...selectedProjectNames, ...(openProjectNames ?? projects)]));
+  // The duplicate check compares a waiting row by the name the FILE gives, so two names the app does not know stay two
+  // rows (review pass 1, H1S-1: two "Needs Project" rows of one task on one day were one); then the row waits.
   const items = dedupeScheduleImportItems(
     rowProjects.items.map(item => ({
       ...item,
@@ -326,7 +337,11 @@ export function prepareDAVEWebDocumentUpload({
       projectName: item.projectName || selectedProjectNames[0],
       importedFrom: cleanName,
     })),
-  );
+  ).map(item => (rowProjects.waiting.has(item.id) ? {
+    ...item,
+    projectName: SCHEDULE_IMPORT_NEEDS_PROJECT,
+    scheduleProjectName: item.scheduleProjectName === item.projectName ? SCHEDULE_IMPORT_NEEDS_PROJECT : item.scheduleProjectName,
+  } : item));
   if (items.length === 0) {
     return Object.freeze({
       document,
@@ -353,6 +368,7 @@ export function prepareDAVEWebDocumentUpload({
     extractionStatus: 'ready',
     everyRowNamedAProject: readItems.every(item => Boolean(item.projectName?.trim())),
     ...(Object.keys(rowProjects.fileProjectNames).length > 0 ? { fileProjectNames: Object.freeze(rowProjects.fileProjectNames) } : {}),
+    ...(Object.keys(rowProjects.waitingProjectNames).length > 0 ? { waitingProjectNames: Object.freeze(rowProjects.waitingProjectNames) } : {}),
   });
 }
 
@@ -367,10 +383,15 @@ export function prepareDAVEWebDocumentUpload({
  * finds its schedule (scheduleProjectScopeKey: "Garden-shed" is Garden shed; the coordinator's decision). A row
  * that is still none of his projects is "Needs Project", as on the phone, and the upload waits until he gives it
  * one (daveWebScheduleUploadProjectReview). A row that named no project is left as before.
+ * Such a row keeps the file's name here (in `waiting`), so the duplicate check compares what the file said; the
+ * caller marks it "Needs Project" after that check. For each waiting name: the projects it fits equally by the same
+ * comparison (two or more), or the one the app's own guess from a name points to (review pass 1, L-1 and L-3).
  */
 function daveWebRowProjects(items: readonly ScheduleItem[], ownProjects: readonly string[]): {
   items: ScheduleItem[];
+  waiting: Set<string>;
   fileProjectNames: Record<string, string>;
+  waitingProjectNames: Record<string, { fitsEqually: string[]; looksLike: string | null }>;
 } {
   const named = items.filter(item => item.projectName?.trim());
   const selectedProjects = ownProjects.map(name => ({ id: name, name }));
@@ -384,15 +405,28 @@ function daveWebRowProjects(items: readonly ScheduleItem[], ownProjects: readonl
     })),
   }).itemResults;
   const fileProjectNames: Record<string, string> = {};
+  const waiting = new Set<string>();
+  const waitingProjectNames: Record<string, { fitsEqually: string[]; looksLike: string | null }> = {};
   const resolved = new Map(named.map((item, index) => {
     const result = exact[index].assignment === 'selected_project' ? exact[index] : respelled[index];
-    const projectName = result.assignment === 'selected_project' ? result.item.projectName : SCHEDULE_IMPORT_NEEDS_PROJECT;
-    if (projectName !== item.projectName) fileProjectNames[item.id] = item.projectName.trim();
-    return [item, projectName] as const;
+    if (result.assignment !== 'selected_project') {
+      const fileName = item.projectName.trim();
+      waiting.add(item.id);
+      if (fileName !== SCHEDULE_IMPORT_NEEDS_PROJECT) fileProjectNames[item.id] = fileName;
+      const fitsEqually = ownProjects.filter(project => scheduleProjectScopeKey(project) === scheduleProjectScopeKey(fileName));
+      waitingProjectNames[fileName] ??= fitsEqually.length > 1
+        ? { fitsEqually, looksLike: null }
+        : { fitsEqually: [], looksLike: bestScheduleProjectMatch(fileName, [...ownProjects]) || null };
+      return [item, item.projectName] as const;
+    }
+    if (result.item.projectName !== item.projectName) fileProjectNames[item.id] = item.projectName.trim();
+    return [item, result.item.projectName] as const;
   }));
   return {
     items: items.map(item => (resolved.has(item) && resolved.get(item) !== item.projectName ? { ...item, projectName: resolved.get(item)! } : item)),
+    waiting,
     fileProjectNames,
+    waitingProjectNames,
   };
 }
 
@@ -659,24 +693,52 @@ export type DAVEWebScheduleUploadProjectReview = Readonly<{
   savedUnderLine: string | null;
 }>;
 
-const quotedNames = (names: readonly string[]) => {
-  const quoted = names.map(name => `"${name}"`);
-  return quoted.length > 1 ? `${quoted.slice(0, -1).join(', ')} and ${quoted[quoted.length - 1]}` : quoted.join('');
-};
+const listedNames = (names: readonly string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}` : names.join(''));
+const quotedNames = (names: readonly string[]) => listedNames(names.map(name => `"${name}"`));
+
+type DAVEWebUploadWaiting = Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'fileProjectNames' | 'waitingProjectNames'>;
+
+/** The tasks still waiting for a project, by the name the file gives them, in the file's order. */
+function daveWebUploadWaitingNames(prepared: DAVEWebUploadWaiting | null) {
+  const byName = new Map<string, number>();
+  (prepared?.scheduleItems ?? []).filter(daveWebScheduleUploadRowNeedsProject).forEach(item => {
+    const name = prepared?.fileProjectNames?.[item.id] ?? item.projectName.trim();
+    byName.set(name, (byName.get(name) ?? 0) + 1);
+  });
+  return byName;
+}
+
+/**
+ * The projects of his a waiting name points to that are NOT ticked (review pass 1, L-1): the one it looks like, or,
+ * when it fits several equally and none of them is ticked, those. Empty when it points to a ticked one, or to none.
+ */
+function daveWebUploadNamePointsElsewhere(prepared: DAVEWebUploadWaiting | null, name: string): string[] {
+  const pointer = prepared?.waitingProjectNames?.[name];
+  const ticked = new Set((prepared?.document.projectNames ?? []).map(normalized));
+  const candidates = pointer ? (pointer.fitsEqually.length > 1 ? pointer.fitsEqually : pointer.looksLike ? [pointer.looksLike] : []) : [];
+  return candidates.some(project => ticked.has(normalized(project))) ? [] : [...candidates];
+}
 
 /**
  * High item 2: what the upload review says about the tasks' projects, from the rows as he leaves them. Nothing is
  * given a project without his press: the one button (exactly one project ticked, every waiting task named alike
  * by the file) says in its own words what it does, and the line under it says where they will be saved.
  */
-export function daveWebScheduleUploadProjectReview(prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'fileProjectNames'> | null): DAVEWebScheduleUploadProjectReview {
-  const named = (item: ScheduleItem) => prepared?.fileProjectNames?.[item.id] ?? item.projectName.trim();
-  const waiting = (prepared?.scheduleItems ?? []).filter(daveWebScheduleUploadRowNeedsProject);
-  const names = [...new Set(waiting.map(named))];
-  const count = waiting.length;
-  const heldLine = count === 0 ? null : `${count} ${count === 1 ? 'task needs' : 'tasks need'} a project before you can upload: the file names ${count === 1 ? 'its project' : names.length === 1 ? 'their project' : 'their projects'} ${quotedNames(names)}, which ${names.length === 1 ? 'is not one of your open projects' : 'are not among your open projects'}. Choose a project for ${count === 1 ? 'it' : 'each of them'} above.`;
+export function daveWebScheduleUploadProjectReview(prepared: DAVEWebUploadWaiting | null): DAVEWebScheduleUploadProjectReview {
+  const waitingNames = daveWebUploadWaitingNames(prepared);
+  const names = [...waitingNames.keys()];
+  const count = [...waitingNames.values()].reduce((total, tasks) => total + tasks, 0);
+  // Review pass 1, L-3: a name that fits two or more of his projects equally is said to, not "not one of them".
+  const several = names.filter(name => (prepared?.waitingProjectNames?.[name]?.fitsEqually.length ?? 0) > 1);
+  const none = names.filter(name => !several.includes(name));
+  const reasons = [
+    none.length > 0 ? `${quotedNames(none)}, which ${none.length === 1 ? 'is not one of your open projects' : 'are not among your open projects'}` : '',
+    several.length > 0 ? `${quotedNames(several)}, which ${several.length === 1 ? 'matches' : 'each match'} more than one of your open projects` : '',
+  ].filter(Boolean).join(', and ');
+  const heldLine = count === 0 ? null : `${count} ${count === 1 ? 'task needs' : 'tasks need'} a project before you can upload: the file names ${count === 1 ? 'its project' : names.length === 1 ? 'their project' : 'their projects'} ${reasons}. Choose a project for ${count === 1 ? 'it' : 'each of them'} above.`;
   const ticked = prepared?.document.projectNames ?? [];
-  const useForAll = count > 0 && names.length === 1 && ticked.length === 1
+  // Review pass 1, L-1: never for a name that points to another of his projects (a wrong tick must not be one press).
+  const useForAll = count > 0 && names.length === 1 && ticked.length === 1 && daveWebUploadNamePointsElsewhere(prepared, names[0]).length === 0
     ? { project: ticked[0], label: count === 1 ? `Use ${ticked[0]} for the task named "${names[0]}"` : `Use ${ticked[0]} for all ${count} tasks named "${names[0]}"` }
     : null;
   const given = new Map<string, number>();
@@ -691,6 +753,21 @@ export function daveWebScheduleUploadProjectReview(prepared: Pick<DAVEWebPrepare
     return `${total} ${total === 1 ? 'task' : 'tasks'} named "${file}" in the file will be saved under ${project}.`;
   }).join(' ') || null;
   return { heldLine, useForAll, savedUnderLine };
+}
+
+/**
+ * Review pass 1, L-1: where a waiting name points to a project of his that is not ticked, which one, and how to tick
+ * it (ticking clears the review, so the file is chosen again); else null. Shown in place of the one button there.
+ */
+export function daveWebScheduleUploadOtherProjectLine(prepared: DAVEWebUploadWaiting | null): string | null {
+  return [...daveWebUploadWaitingNames(prepared)].flatMap(([name, tasks]) => {
+    const elsewhere = daveWebUploadNamePointsElsewhere(prepared, name);
+    const these = tasks === 1 ? 'this task' : 'these tasks';
+    if (elsewhere.length === 0) return [];
+    return [elsewhere.length === 1
+      ? `"${name}" in the file looks like your project ${elsewhere[0]}, which is not ticked. To file ${these} under it, tick it under Projects above and choose the file again.`
+      : `"${name}" in the file matches your projects ${listedNames(elsewhere)}, and ${elsewhere.length === 2 ? 'neither is' : 'none of them is'} ticked. To file ${these} under one of them, tick it under Projects above and choose the file again.`];
+  }).join(' ') || null;
 }
 
 /** The one button: every task still waiting for a project is given that project, as the review's own choice does. */

@@ -821,7 +821,7 @@ function scheduleMatchTokens(value: string) {
     .filter(token => token && !ignored.has(token));
 }
 
-function bestScheduleProjectMatch(value: string, projects: string[]) {
+export function bestScheduleProjectMatch(value: string, projects: string[]) {
   const direct = findNameMatch(value, projects);
   if (direct) return direct;
 

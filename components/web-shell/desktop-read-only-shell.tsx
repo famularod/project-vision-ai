@@ -115,6 +115,7 @@ import {
   daveWebScheduleDocumentDeleteNote,
   daveWebScheduleImportPairingQuestions,
   daveWebScheduleUploadRoleRefusal,
+  daveWebScheduleUploadOtherProjectLine,
   daveWebScheduleUploadProjectReview,
   daveWebScheduleUploadRowNeedsProject,
   daveWebScheduleUploadRowProject,
@@ -4830,6 +4831,7 @@ function DocumentManagementWorkspace({
               ))}
               {projectReview.savedUnderLine ? <Text style={styles.dataMeta}>{projectReview.savedUnderLine}</Text> : null}
               {projectReview.heldLine ? <Text style={styles.errorText}>{projectReview.heldLine}</Text> : null}
+              {daveWebScheduleUploadOtherProjectLine(preparedUpload) ? <Text style={styles.dataMeta}>{daveWebScheduleUploadOtherProjectLine(preparedUpload)}</Text> : null}
               {useForAll ? (
                 <Pressable
                   style={({ pressed }) => [styles.secondaryButton, pressed && styles.buttonPressed]}
