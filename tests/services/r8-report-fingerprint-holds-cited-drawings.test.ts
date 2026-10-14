@@ -155,7 +155,6 @@ describe('R8 item 2: and still nothing that belongs to a device', () => {
     ['where the cloud keeps the file, its size and checksum', { storagePath: 'owner-1/doc-a201/another.pdf', sizeBytes: 204800 }],
     ['the text read out of the file', { extractedText: null }],
     ['the text of the page, and of the region the Lot was found in', { extractedPages: [{ ...PAGE, text: null, regions: [{ ...REGION, text: 'LOT', evidenceText: 'SITE PLAN - LOT' }] }] }],
-    ['where on the page the Lot is', { extractedPages: [{ ...PAGE, regions: [{ ...REGION, x: 0.12, y: 0.08, width: 0.41, height: 0.29 }] }] }],
     ['which reader read the file', { extractionMethod: 'embedded_text_and_ocr', extractionStatus: 'partial' }],
     ['drawing details the citation does not print', { drawingDiscipline: 'Civil', drawingIssuedAt: '2026-09-19' }],
   ])('%s: the same citation, the same fingerprint, and the report is the one already sent', (_what, change) => {
@@ -168,6 +167,20 @@ describe('R8 item 2: and still nothing that belongs to a device', () => {
     // The truth a report is written from still holds none of it.
     expect(Object.keys(now.truths[0].intelligence.referenceDocuments.find(document => document.id === 'doc-a201') ?? {}).sort())
       .toEqual(['category', 'id', 'importedAt', 'isCurrent', 'name', 'notes', 'originalFileName', 'projectId', 'projectName', 'projectNames', 'uri']);
+  });
+
+  // HIGH item 1f (the final review's F1; the coordinator's decision: a report holds everything it prints in any of its
+  // outputs). Where on the page the Lot is decides the excerpt the Word file and the Reports screen show. Since high item 3
+  // every device cites a drawing from the list's own copy of its page index, so it is the same on each device (the next
+  // case): it no longer belongs to a device, and it is held. (R8 item 2 kept it out as a device's own.) The citation as
+  // printed does not change; the picture does.
+  it('where on the page the Lot is: the same citation, another part of the page shown: another report', () => {
+    const change = { extractedPages: [{ ...PAGE, regions: [{ ...REGION, x: 0.12, y: 0.08, width: 0.41, height: 0.29 }] }] };
+    const sent = reports([SCHEDULE, DRAWING]);
+    const now = reports(withDrawing(change));
+    expect(now.cites).toEqual(sent.cites);
+    expect(now.fingerprint).not.toBe(sent.fingerprint);
+    expect(alreadySent([SCHEDULE, DRAWING], withDrawing(change))).toBe(false);
   });
 
   it('the phone and the web, the drawing\'s row as the upload cuts its page index down: the same citation and the same fingerprint', async () => {

@@ -189,7 +189,9 @@ export function buildDAVEReportSourceFingerprint(
   // more (else the period's next report, counted from the last one, could take that one's name).
   const fingerprint = `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify({
     format,
-    projects: format === 'executive' ? null : hashOfProjects(truths, reportSourceFactsOf3, LEFT_OUT_OF_REPORT_SOURCE_3_0),
+    projects: format === 'executive'
+      ? hashOfProjects(truths, executiveReportFilesOf, LEFT_OUT_OF_REPORT_SOURCE_3_0)
+      : hashOfProjects(truths, reportSourceFactsOf3, LEFT_OUT_OF_REPORT_SOURCE_3_0),
     printed: reportAsPrinted(truths, countedFrom, format),
     countedFrom: countedFrom ? { report: countedFrom.sourceFingerprint, sentAt: countedFrom.deliveredAt ?? null } : null,
   }))}`;
@@ -428,6 +430,25 @@ function reportSourceFactsOf3(truth: DAVEProjectTruth): unknown {
           })),
         }
       : correlations,
+  });
+}
+
+/**
+ * HIGH item 1f (the final review's F1, the coordinator's decision): what the Executive report prints in its files and on
+ * its screens beside what its briefing writes. Every Word file of a report (Download Word Report, Outlook; the phone's
+ * and the desktop's) carries the drawings it cites ("Current Drawing References"), and so does the phone's Reports
+ * screen (its Drawing References panel); the desktop's Word file carries every photo of the report's updates, each with
+ * its caption, where and when it was recorded and the task (ReportWordMediaDescription). The Executive report holds
+ * them as those files print them: each drawing's citation and the part of the page its picture shows (`wordDrawings`).
+ * (The Project Manager report holds them with its records: `drawingCitations`, and `wordDrawings` and `wordPhotos` in
+ * writtenReportFacts.) Its e-mail and text attach no photo: its body numbers none.
+ */
+function executiveReportFilesOf(truth: DAVEProjectTruth): unknown {
+  return withoutReportProjectId(truth, {
+    projectName: truth.projectName,
+    drawingCitations: truth.drawingCitations ?? [],
+    wordDrawings: truth.writtenReportFacts?.wordDrawings ?? [],
+    wordPhotos: truth.writtenReportFacts?.wordPhotos ?? [],
   });
 }
 

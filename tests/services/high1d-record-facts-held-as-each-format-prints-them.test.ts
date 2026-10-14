@@ -34,7 +34,9 @@ import { buildDAVEReportSnapshot, daveReportSnapshotScopeKey, markReportSnapshot
 import { buildDAVEWebReportSource, buildDAVEWebReportTruths, formatDAVEWebReport } from '../../services/DAVEWebOperations';
 import { loadDAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import { daveWebReportAlreadySentElsewhereAt } from '../../services/DAVEWebReportPeriod';
-import { compactECOSDocumentIndexForCloud } from '../../services/ECOSDocumentIndexPersistence';
+import { compactECOSDocumentIndexForCloud, referenceDocumentsCitedAsListed } from '../../services/ECOSDocumentIndexPersistence';
+import { buildAutomaticReportDrawingReferences } from '../../services/ReportDrawingReferences';
+import { desktopOutputs, phoneOutputs, type ReportOutputDraft } from '../fixtures/report-every-output';
 import { buildPIECoreIntelligence } from '../../services/PIECoreIntelligence';
 import { buildPIEReportDraft } from '../../services/PIEReporter';
 import type { DAVEWrittenScheduleLine } from '../../services/ReportScheduleLine';
@@ -243,77 +245,30 @@ type Desk = Awaited<ReturnType<typeof desktopSnapshot>>;
 const deskTruthsOf = (desk: Desk, names: readonly string[]) => buildDAVEWebReportTruths(desk, names.length > 1 ? null : names[0]);
 const deskWorld = (desk: Desk): World => ({ saved: desk.knownScheduleItems as never, documents: desk.referenceDocuments as never, shown: desk.scheduleItems as never, updates: desk.projectUpdates.map(record => record.updateData) as never });
 
-const short = (value: string | null) => {
-  if (!value) return 'Not set';
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
-};
-const signed = (value: number) => (value === 0 ? '0' : `${value > 0 ? '+' : ''}${value}`);
-const variance = (value: number | null) => (value === null ? 'Not set' : value === 0 ? 'On baseline' : `${value > 0 ? '+' : ''}${value} day${Math.abs(value) === 1 ? '' : 's'}`);
-type Briefing = ReturnType<typeof RI.buildDAVEReportBriefing>;
-/** Every word the phone's Reports screen shows of the report in `format` (ReportsScreen DAVEReportOverview, opened). */
-function screenWords(briefing: Briefing, format: Format): string[] {
-  const executive = format === 'executive';
-  const period = briefing.reportingPeriod;
-  const counted = period.basis === 'previous_approved_report';
-  const action = (item: Briefing['nextActions'][number]) => [
-    item.taskName, [item.projectName, item.areaName].filter(Boolean).join(' · '), item.dueDate ? short(item.dueDate) : '', item.issue, item.impact, item.action,
-    `Owner: ${item.owner} · ${item.timing}${item.scheduleImpactDays !== null ? ` · ${item.scheduleImpactDays} schedule day${Math.abs(item.scheduleImpactDays) === 1 ? '' : 's'}` : ''}`,
-  ].join(' | ');
-  const milestone = (item: Briefing['milestones'][number]) => `${item.taskName} | ${[item.projectName, item.areaName, short(item.finishDate)].filter(Boolean).join(' · ')}`;
-  const health = briefing.dashboard.scheduleHealth;
-  const status = briefing.dashboard.taskStatus;
-  const controls = briefing.dashboard.controls;
-  const area = (item: Briefing['dashboard']['workAreas'][number]) => `${item.areaName} ${item.averagePercent}% ${item.completeTaskCount} of ${item.taskCount} task${item.taskCount === 1 ? '' : 's'} complete`;
-  return [
-    briefing.conditionLabel, briefing.executiveSnapshot, period.label,
-    ...(period.waitingForOtherDevice ? [RI.REPORT_PERIOD_WAITING_LINE] : counted ? [`Completed ${signed(period.completeDelta)}`, `Open ${signed(period.openDelta)}`, `Overdue ${signed(period.overdueDelta)}`] : [RI.REPORT_FIRST_PERIOD_LINE]),
-    ...(counted && briefing.recentChanges.length ? briefing.recentChanges.slice(0, executive ? 5 : 8).map(change => change.summary) : counted && !period.waitingForOtherDevice ? ['No material task changes were recorded in this period.'] : []),
-    ...briefing.projectConditions.flatMap(condition => [condition.projectName, `${condition.percentComplete}%`, condition.currentReality, condition.schedule, `Forecast ${short(condition.forecastFinish)}`, `Baseline ${short(condition.baselineFinish)}`, `Variance ${variance(condition.forecastVarianceDays)}`]),
-    ...(briefing.completedWork.length ? briefing.completedWork.slice(0, 8) : ['No completed work is recorded in the current project scope.']).map((line, index) => `${index + 1}. ${line}`),
-    ...(executive
-      ? [...briefing.nextActions.slice(0, 4).map(action), ...briefing.milestones.slice(0, 5).map(milestone)]
-      : [
-          ...briefing.nextActions.slice(0, 6).map(action),
-          ...briefing.currentWork.slice(0, 6).map((line, index) => `${index + 1}. ${line}`),
-          ...briefing.milestones.slice(0, 8).map(milestone),
-          `Total ${status.total}`, ...[['Complete', status.complete], ['In Progress', status.inProgress], ['Waiting', status.waiting], ['Not Started', status.notStarted]].filter(([, value]) => Number(value) > 0).map(([label, value]) => `${label} ${value}`),
-          ...[['Approvals', controls.pendingApprovals], ['Responses due', controls.responsesDue], ['Unassigned', controls.unassignedOpenWork], ['Checklist items', controls.incompleteChecklistItems]].filter(([, value]) => Number(value) > 0).map(([label, value]) => `${label} ${value}`),
-          ...briefing.dashboard.workAreas.map(area),
-        ]),
-    `On Track ${health.onTrack}`, `Blocked ${health.blocked}`, `Due Soon ${health.dueSoon}`, `Overdue ${health.overdue}`,
-    ...briefing.projectConditions.map(condition => `${briefing.projectConditions.length > 1 ? `${condition.projectName}: ` : ''}${condition.currentReality}`).filter(item => item.replace(/^[^:]+:\s*/, '').trim()),
-    ...briefing.schedulePosition, ...briefing.criticalRisks, ...briefing.decisionsRequired,
-  ];
-}
 type Draft = Readonly<{ body: string; locationGroups: ReadonlyArray<{ title: string; workAreas: ReadonlyArray<{ title: string; bullets: ReadonlyArray<{ text: string; kind?: string }>; imageReferences: ReadonlyArray<{ imageNumber: number; caption?: string; areaName: string }> }> }> }>;
-/** The Project Manager screen's Work Areas & Photos panel. */
-const panelWords = (draft: Draft): string[] => draft.locationGroups.flatMap(group => [group.title, ...group.workAreas.flatMap(area => {
-  const bullets = area.bullets.map(bullet => ({ kind: bullet.kind, text: RI.reportBulletText(bullet) })).filter(bullet => bullet.text);
-  return [area.title, `${bullets.length} updates · ${area.imageReferences.length} photos`, ...bullets.map(bullet => `${bullet.kind}: ${bullet.text}`),
-    ...area.imageReferences.map(reference => `Photo ${reference.imageNumber} — ${reference.caption || `Project photo from ${reference.areaName}`}`)];
-})]);
-/** What each device prints of the report in `format`, counted from `previous`. */
+/**
+ * What each device prints of the report in `format`, counted from `previous`: EVERY output (HIGH item 1f,
+ * tests/fixtures/report-every-output): the phone's written report, Reports screen, Drawing References and Work Areas &
+ * Photos panels, Word file and the photos e-mail and text attach; the desktop's report and Word file.
+ */
 function printed(truths: unknown, world: World, now: string, previous: unknown, names: readonly string[], format: Format, device: 'phone' | 'computer'): string {
   fakeNow(now);
   try {
     const briefing = RI.buildDAVEReportBriefing({ truths, selectedProjectNames: names, previousSnapshot: previous, scheduleItems: world.saved } as never);
-    if (device === 'computer') {
-      const since = RI.reportPeriodMovementLines(briefing);
-      return formatDAVEWebReport(briefing, format, since ? { label: briefing.reportingPeriod.label, lines: since } : null).split('\n').filter(text => !/^Generated: /.test(text)).join('\n');
-    }
+    // The drawings each device cites, as its Reports screen and its Word file work them out.
+    const drawingReferences = buildAutomaticReportDrawingReferences({
+      documents: referenceDocumentsCitedAsListed([...world.documents]), scheduleItems: [...world.shown], selectedProjectNames: [...names],
+    });
+    const inScope = world.updates.filter(update => names.includes(update.projectName));
+    if (device === 'computer') return desktopOutputs({ briefing, format, drawingReferences, updates: inScope });
     const reportType = names.length > 1 ? 'combined_project_update' : 'daily_project_update';
     // The project open in the app (App.tsx hands it as the runtime's project): the same whichever order he ticked.
     const openProject = [...names].sort()[0];
     const draft = buildPIECoreIntelligence({
       runtimeContext: { projectName: openProject, projectNames: names, reportType, updates: world.updates, scheduleItems: world.shown, knownScheduleItems: world.saved, currentUpdate: null, projectAreas: AREAS, contacts: { contacts: [] }, referenceDocuments: world.documents, surface: 'reports' } as never,
       reportType: reportType as never, reportProjectNames: names, organizationId: 'local-unverified-anonymous', projectId: `project-${slug(openProject)}`,
-    } as never).reportDraft as unknown as Draft;
-    return [
-      String(RI.enhanceDAVEReportDraft(draft as never, briefing, format).body),
-      ...screenWords(briefing, format),
-      ...(format === 'project_manager' ? panelWords(draft) : []),
-    ].join('\n');
+    } as never).reportDraft as unknown as ReportOutputDraft;
+    return phoneOutputs({ briefing, draft, format, drawingReferences, updates: world.updates });
   } finally { jest.useRealTimers(); }
 }
 

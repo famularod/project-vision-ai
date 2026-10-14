@@ -3,6 +3,7 @@ import { isConstructionRelevantObservation } from './dave-construction-relevance
 import { extractScheduleEvidence, fieldUpdatesNewestFirst, whatChangedForWrittenReport } from './PIEEvidenceFusion';
 import { buildPhotoProgress, type PIEPhotoProgressEvidence } from './PIEPhotoProgress';
 import { scheduleLineAsWritten, type DAVEWrittenScheduleLine } from './ReportScheduleLine';
+import { reportWordPhotoDescription } from './ReportWordMediaDescription';
 
 /**
  * HIGH item 1 (the owner's instruction of 13 Oct 2026, the three high items; the Build 232 round's F2 to F6b): what
@@ -126,6 +127,29 @@ export type DAVEWrittenReportFacts = Readonly<{
    * the morning the quote leaves the report, and when its summary is reworded.
    */
   quotedComparison: Readonly<{ photoId: string; summary: string; areaName: string }> | null;
+  /**
+   * HIGH item 1f: each photo of each of the report's updates as the Word report prints it (its caption, where and when it
+   * was recorded, the task it was recorded against, why it is there: ReportWordMediaDescription, the Word builders' own
+   * description), with its place in its update. The desktop's Word file prints every photo of the report's updates, in
+   * either format, so the report holds them in either format.
+   */
+  wordPhotos: readonly Readonly<{
+    updateId: string;
+    photoId: string;
+    place: number;
+    caption: string;
+    projectName: string | null;
+    areaName: string | null;
+    linkedTaskName: string | null;
+    recordedAt: string | null;
+    reasonForInclusion: string;
+  }>[];
+  /**
+   * HIGH item 1f: what decides each drawing excerpt's picture in the Word files and on the Reports screen, beside its
+   * citation (DAVEProjectTruth `drawingCitations`: document, revision, page, region id, label): the part of the page it
+   * shows. Set by the report recipe (DAVEReportProjectTruths) from the same drawing references.
+   */
+  wordDrawings?: readonly Readonly<{ referenceId: string; pageNumber: number; region: Readonly<{ x: number; y: number; width: number; height: number }> }>[];
 }>;
 
 const photoKind = (category: unknown): 'issue' | 'safety' | 'photo' =>
@@ -184,5 +208,20 @@ export function buildWrittenReportFacts({
     quotedComparison: quoted
       ? { photoId: quoted.confirmed.currentPhotoId, summary: quoted.confirmed.summary, areaName: text(quoted.confirmed.areaName) }
       : null,
+    wordPhotos: updates.flatMap(update => (update.photos ?? []).map((photo: UpdatePhoto, place: number) => {
+      const described = reportWordPhotoDescription(photo, update);
+      // As the Word file reads each: trimmed, and nothing where it has nothing (it prints no "Area:" or "Task:" then).
+      return {
+        updateId: update.id,
+        photoId: photo.id,
+        place,
+        caption: described.caption,
+        projectName: text(described.projectName) || null,
+        areaName: text(described.areaName) || null,
+        linkedTaskName: text(described.linkedTaskName) || null,
+        recordedAt: text(described.recordedAt) || null,
+        reasonForInclusion: described.reasonForInclusion,
+      };
+    })),
   };
 }
