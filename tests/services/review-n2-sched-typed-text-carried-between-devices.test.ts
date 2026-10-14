@@ -6243,3 +6243,195 @@ describe('Q47: a master turns a task it leaves on its dates High, between two de
     await nothingAskedOrWaiting(phone, ipad);
   });
 });
+
+/* ============================================================================================================== */
+/* Review pass 10, O-9 (older: the same on Build 231). A newer schedule is deleted WITH its items ("Delete PDF +     */
+/* Items") on the phone with no signal, while the iPad, with no signal, has a note waiting on a task that schedule  */
+/* moved. The phone gets signal first: its restored row of the task goes up, its deletion records wait for its next */
+/* Sync Now. The restored row and the deleted row then each name the other as an earlier row of the task, and the   */
+/* iPad's upload sent his note on from one to the other for ever: it never finished, and memory grew without end.  */
+/* Now his note is sent on to each row of the task once, and stops: it lands on the restored row, the row the task  */
+/* lives on after the delete (and, until the phone's deletion records arrive, on the deleted row, never shown).     */
+/* Every upload here is bounded: one that runs away fails the test at once instead of eating memory.               */
+/* ============================================================================================================== */
+const O9_J_ROWS = ['Framing,Alpha,Lot,10/06/2026,10/16/2026,', SURVEY];
+/** The memory and the processor time an upload may add before it counts as running away (the rig's clock is fake, and a
+ * loop of promises never lets a timer fire, so the bound is checked from inside: at every 10,000th list filter). */
+const O9_HEAP_LIMIT = 400_000_000;
+const O9_CPU_LIMIT_MICROSECONDS = 30_000_000;
+let o9FilterCalls = 0;
+async function o9Bounded(run: () => Promise<unknown>): Promise<'finished' | 'RUN-AWAY'> {
+  const filter = Array.prototype.filter;
+  const heapAtStart = process.memoryUsage().heapUsed;
+  const cpuAtStart = process.cpuUsage();
+  let ranAway = false;
+  (Array.prototype as unknown as { filter: unknown }).filter = function bounded(this: unknown[], ...args: unknown[]) {
+    o9FilterCalls += 1;
+    if (ranAway || (o9FilterCalls % 10_000 === 0 && (process.memoryUsage().heapUsed > heapAtStart + O9_HEAP_LIMIT ||
+      process.cpuUsage(cpuAtStart).user > O9_CPU_LIMIT_MICROSECONDS))) {
+      ranAway = true;
+      throw new Error('O-9: the upload did not finish');
+    }
+    return (filter as (...a: unknown[]) => unknown).apply(this, args);
+  };
+  try { await run(); } catch (error) { if (!ranAway) throw error; } finally { Array.prototype.filter = filter; }
+  return ranAway ? 'RUN-AWAY' : 'finished';
+}
+const o9IdOf = (device: Device, name: string) => deviceShown(device).find(item => item.taskName === name)!.id;
+async function o9ApproveOn(device: Device, doc: ReferenceDocument, lines: string[], lookahead = false) {
+  at(doc.importedAt as string);
+  await approve(device, doc, lines, lookahead);
+  shareDocuments(device);
+  await backgroundUpload(device);
+}
+const o9Row = (item: ScheduleItem) => [item.id, item.taskName, item.startDate, item.finishDate, item.notes || ''];
+async function o9Places(phone: Device, ipad: Device) {
+  return {
+    phone: deviceShown(phone).map(o9Row), ipad: deviceShown(ipad).map(o9Row), web: webShown().map(o9Row),
+    cards: (await conflictsOf(phone)).length + (await conflictsOf(ipad)).length,
+    waiting: (await queueOf(phone)).length + (await queueOf(ipad)).length,
+  };
+}
+/** The cloud's rows that hold his note, and the rows that name another as an earlier row of the task. */
+const o9Cloud = () => ({
+  withNote: cloudItems().filter(row => row.notes === NOTE).map(row => row.id).sort(),
+  naming: cloudItems().filter(row => (row.revisedFromTaskIds || []).length > 0).map(row => `${row.id}<-${(row.revisedFromTaskIds || []).join('/')}`).sort(),
+});
+/** The phone's waiting deletion records go up (Sync Now), everything is heard and sent, then a Full Sync on both. */
+async function o9Finish(phone: Device, ipad: Device) {
+  const phoneFull = await o9Bounded(() => fullSync(phone));
+  const settled = await o9Bounded(() => settle(phone, ipad));
+  const afterSettle = await o9Places(phone, ipad);
+  const synced = await o9Bounded(async () => { await fullSync(phone); await fullSync(ipad); await settle(phone, ipad); });
+  const w0 = cloudWrites();
+  const again = await o9Bounded(async () => { await settle(phone, ipad); await fullSync(phone); await fullSync(ipad); await settle(phone, ipad); });
+  return { runs: [phoneFull, settled, synced, again], afterSettle, end: await o9Places(phone, ipad), writesWhenNothingHappens: cloudWrites() - w0, cloud: o9Cloud() };
+}
+const O9_RESULTS: Record<string, unknown> = {};
+afterAll(() => { if (process.env.O9_OUT) fs.writeFileSync(process.env.O9_OUT, `${JSON.stringify(O9_RESULTS, null, 1)}\n`); });
+/** Framing on F's row with his note, Survey on F's, in every place; nothing asked, nothing waiting. */
+const O9_LANDED = [['MASTER F-1', 'Framing', '10/15/2026', '10/25/2026', NOTE], ['MASTER F-2', 'Survey', '10/12/2026', '10/14/2026', '']];
+const O9_SETTLED = { phone: O9_LANDED, ipad: O9_LANDED, web: O9_LANDED, cards: 0, waiting: 0 };
+const O9_SURVEY_ROWS = [['MASTER F-1', 'Framing', '10/15/2026', '10/25/2026', ''], ['MASTER F-2', 'Survey', '10/12/2026', '10/14/2026', 'Stakes out']];
+const O9_SURVEY_NOTE = { phone: O9_SURVEY_ROWS, ipad: O9_SURVEY_ROWS, web: O9_SURVEY_ROWS, cards: 0, waiting: 0 };
+
+describe('Review pass 10, O-9: a note waiting on the iPad while the phone deletes the newer schedule with its items', () => {
+  it('O9a: a master the web uploaded and never made current: the iPad\'s upload finishes, and his note lands on F\'s row at once', async () => {
+    const { phone, ipad } = await start();
+    at('2026-09-12T09:00:00.000Z'); webUploads('MASTER J', O9_J_ROWS); await settle(phone, ipad);
+    setOnline(phone, false); setOnline(ipad, false);
+    at('2026-09-12T10:00:00.000Z'); const typedOn = o9IdOf(ipad, 'Framing'); await edit(ipad, typedOn, { notes: NOTE });
+    at('2026-09-12T11:00:00.000Z'); await deleteWithItems(phone, { id: 'MASTER J' } as ReferenceDocument);
+    at('2026-09-12T12:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    const phoneUp = await o9Bounded(() => backgroundUpload(phone)); await refresh(phone);
+    at('2026-09-12T12:30:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+    const ipadUp = await o9Bounded(() => backgroundUpload(ipad));
+    const atOnce = o9Cloud();
+    const ipadAgain = await o9Bounded(() => backgroundUpload(ipad));
+    at('2026-09-12T13:00:00.000Z');
+    const end = await o9Finish(phone, ipad);
+    O9_RESULTS.O9a = { typedOn, phoneUp, ipadUp, atOnce, ipadAgain, ...end };
+    expect([phoneUp, ipadUp, ipadAgain]).toEqual(['finished', 'finished', 'finished']);
+    expect(typedOn).toBe('MASTER F-1');
+    expect(atOnce.naming).toEqual(['MASTER F-1<-MASTER J-1', 'MASTER J-1<-MASTER F-1']);
+    expect(atOnce.withNote).toEqual(['MASTER F-1', 'MASTER J-1']);
+    expect(end.runs).toEqual(['finished', 'finished', 'finished', 'finished']);
+    expect(end.afterSettle).toEqual(O9_SETTLED);
+    expect(end.end).toEqual(O9_SETTLED);
+    expect(end.writesWhenNothingHappens).toBe(0);
+    expect(end.cloud.withNote).toEqual(['MASTER F-1']);
+  });
+
+  it('O9c: the master in use: the iPad\'s upload finishes, and his note, typed on G\'s row, lands on F\'s row at once', async () => {
+    const { phone, ipad } = await start();
+    await o9ApproveOn(phone, G, [G_ROW, SURVEY]); await settle(phone, ipad);
+    setOnline(phone, false); setOnline(ipad, false);
+    at('2026-09-12T10:00:00.000Z'); const typedOn = o9IdOf(ipad, 'Framing'); await edit(ipad, typedOn, { notes: NOTE });
+    at('2026-09-12T11:00:00.000Z'); await deleteWithItems(phone, G);
+    at('2026-09-12T12:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    const phoneUp = await o9Bounded(() => backgroundUpload(phone)); await refresh(phone);
+    at('2026-09-12T12:30:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+    const ipadUp = await o9Bounded(() => backgroundUpload(ipad));
+    const atOnce = o9Cloud();
+    at('2026-09-12T13:00:00.000Z');
+    const end = await o9Finish(phone, ipad);
+    // The master in use is gone, so no master is current until he makes F current again (as before this fix).
+    at('2026-09-12T14:00:00.000Z'); await setActiveOn(phone, F);
+    const afterSetActive = await o9Bounded(async () => { await backgroundUpload(phone); await settle(phone, ipad); });
+    const shownAgain = await o9Places(phone, ipad);
+    O9_RESULTS.O9c = { typedOn, phoneUp, ipadUp, atOnce, ...end, afterSetActive, shownAgain, cloudAfterSetActive: o9Cloud() };
+    expect([phoneUp, ipadUp]).toEqual(['finished', 'finished']);
+    expect(typedOn).toBe('MASTER G-1');
+    expect(atOnce.naming).toEqual(['MASTER F-1<-MASTER G-1', 'MASTER G-1<-MASTER F-1']);
+    expect(atOnce.withNote).toEqual(['MASTER F-1', 'MASTER G-1']);
+    expect(end.runs).toEqual(['finished', 'finished', 'finished', 'finished']);
+    expect(end.afterSettle).toEqual({ phone: [], ipad: [], web: [], cards: 0, waiting: 0 });
+    expect(end.end).toEqual({ phone: [], ipad: [], web: [], cards: 0, waiting: 0 });
+    expect(end.writesWhenNothingHappens).toBe(0);
+    expect(end.cloud.withNote).toEqual(['MASTER F-1']);
+    expect(afterSetActive).toBe('finished');
+    expect(shownAgain).toEqual(O9_SETTLED);
+  });
+
+  // The reviewer's four controls, which never ran away: they end as they did before.
+  it('O9b: the phone HAS signal when it deletes J (its deletion records go up at once)', async () => {
+    const { phone, ipad } = await start();
+    at('2026-09-12T09:00:00.000Z'); webUploads('MASTER J', O9_J_ROWS); await settle(phone, ipad);
+    setOnline(ipad, false);
+    at('2026-09-12T10:00:00.000Z'); await edit(ipad, o9IdOf(ipad, 'Framing'), { notes: NOTE });
+    at('2026-09-12T11:00:00.000Z'); await deleteWithItems(phone, { id: 'MASTER J' } as ReferenceDocument); shareDocuments(phone);
+    const phoneUp = await o9Bounded(() => backgroundUpload(phone)); await refresh(phone);
+    at('2026-09-12T12:30:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+    const ipadUp = await o9Bounded(() => backgroundUpload(ipad));
+    const end = await o9Finish(phone, ipad);
+    O9_RESULTS.O9b = { phoneUp, ipadUp, ...end };
+    expect([phoneUp, ipadUp, ...end.runs]).toEqual(Array(6).fill('finished'));
+    expect([end.afterSettle, end.end, end.writesWhenNothingHappens, end.cloud.withNote]).toEqual([O9_SETTLED, O9_SETTLED, 0, ['MASTER F-1']]);
+  });
+
+  it('O9d: a lookahead moved Framing, and the phone deletes the lookahead with its items', async () => {
+    const { phone, ipad } = await start();
+    await o9ApproveOn(phone, L, [L_ROW], true); await settle(phone, ipad);
+    setOnline(phone, false); setOnline(ipad, false);
+    at('2026-09-12T10:00:00.000Z'); await edit(ipad, o9IdOf(ipad, 'Framing'), { notes: NOTE });
+    at('2026-09-12T11:00:00.000Z'); await deleteWithItems(phone, L);
+    at('2026-09-12T12:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    const phoneUp = await o9Bounded(() => backgroundUpload(phone)); await refresh(phone);
+    at('2026-09-12T12:30:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+    const ipadUp = await o9Bounded(() => backgroundUpload(ipad));
+    const end = await o9Finish(phone, ipad);
+    O9_RESULTS.O9d = { phoneUp, ipadUp, ...end };
+    expect([phoneUp, ipadUp, ...end.runs]).toEqual(Array(6).fill('finished'));
+    expect([end.afterSettle, end.end, end.writesWhenNothingHappens, end.cloud.withNote]).toEqual([O9_SETTLED, O9_SETTLED, 0, ['MASTER F-1']]);
+  });
+
+  it('O9e: as O9a, but the iPad\'s waiting note is on a task J did not move (Survey)', async () => {
+    const { phone, ipad } = await start();
+    at('2026-09-12T09:00:00.000Z'); webUploads('MASTER J', O9_J_ROWS); await settle(phone, ipad);
+    setOnline(phone, false); setOnline(ipad, false);
+    at('2026-09-12T10:00:00.000Z'); await edit(ipad, o9IdOf(ipad, 'Survey'), { notes: 'Stakes out' });
+    at('2026-09-12T11:00:00.000Z'); await deleteWithItems(phone, { id: 'MASTER J' } as ReferenceDocument);
+    at('2026-09-12T12:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    const phoneUp = await o9Bounded(() => backgroundUpload(phone)); await refresh(phone);
+    at('2026-09-12T12:30:00.000Z'); setOnline(ipad, true); shareDocuments(ipad);
+    const ipadUp = await o9Bounded(() => backgroundUpload(ipad));
+    const end = await o9Finish(phone, ipad);
+    O9_RESULTS.O9e = { phoneUp, ipadUp, ...end };
+    expect([phoneUp, ipadUp, ...end.runs]).toEqual(Array(6).fill('finished'));
+    expect([end.afterSettle, end.end, end.writesWhenNothingHappens, end.cloud.withNote]).toEqual([O9_SURVEY_NOTE, O9_SURVEY_NOTE, 0, []]);
+  });
+
+  it('O9f: as O9a, but the phone, which deletes J, has the note waiting (typed before the delete)', async () => {
+    const { phone, ipad } = await start();
+    at('2026-09-12T09:00:00.000Z'); webUploads('MASTER J', O9_J_ROWS); await settle(phone, ipad);
+    setOnline(phone, false);
+    at('2026-09-12T10:00:00.000Z'); await edit(phone, o9IdOf(phone, 'Framing'), { notes: NOTE });
+    at('2026-09-12T11:00:00.000Z'); await deleteWithItems(phone, { id: 'MASTER J' } as ReferenceDocument);
+    at('2026-09-12T12:00:00.000Z'); setOnline(phone, true); shareDocuments(phone);
+    const phoneUp = await o9Bounded(() => backgroundUpload(phone));
+    const end = await o9Finish(phone, ipad);
+    O9_RESULTS.O9f = { phoneUp, ...end };
+    expect([phoneUp, ...end.runs]).toEqual(Array(5).fill('finished'));
+    expect([end.afterSettle, end.end, end.writesWhenNothingHappens, end.cloud.withNote]).toEqual([O9_SETTLED, O9_SETTLED, 0, ['MASTER F-1']]);
+  });
+});

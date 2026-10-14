@@ -7844,6 +7844,9 @@ async function cloudRowToWeighAgain<T extends { id: string }>(
   return row;
 }
 
+// Review pass 10, O-9: the rows an edit sent on to the task's row has come through (below, "rows that answer to this one").
+const scheduleRowsSentOnThrough = new WeakMap<SyncQueueItem, ReadonlySet<string>>();
+
 async function uploadQueueItem(
   item: SyncQueueItem,
   context: QueueUploadContext,
@@ -8008,14 +8011,19 @@ async function uploadQueueItem(
     // Not to a row in between (he missed two masters): it is hidden, and a card about it would ask the same twice.
     // What those rows hold tells a value that came down untouched from one typed on the way.
     if (remote && changedFields) {
+      // (Review pass 10, O-9: each row once. A schedule deleted with its items gives its row of a task back to the row it
+      // replaced, which then names it too; the two named each other, and the edit went from one to the other for ever.)
+      const passed = new Set([...(scheduleRowsSentOnThrough.get(item) ?? []), payload.id]);
       const answering = [...context.scheduleItemsById.values()].filter(row => row.id !== payload.id && scheduleTaskEarlierIds(row).includes(payload.id));
-      const rowsNow = answering.filter(row => !answering.some(other => other !== row && scheduleTaskEarlierIds(other).includes(row.id)));
+      const rowsNow = answering.filter(row => !passed.has(row.id) && !answering.some(other => other !== row && scheduleTaskEarlierIds(other).includes(row.id)));
       const askedHere = rowsNow.length > 0 ? scheduleItemEditAgainstCloud(payload.itemData, changedFields, payload.base, remote, taskOfRow).asked : [];
       for (const rowNow of rowsNow) {
         const onRowNow = scheduleItemTextEditOnRow(payload, changedFields.filter(field => !askedHere.includes(field)), rowNow,
           answering.filter(row => row !== rowNow && scheduleTaskEarlierIds(rowNow).includes(row.id)), taskOfRow);
         if (!onRowNow) continue;
-        const followed = await uploadQueueItem({ ...item, payload: onRowNow as unknown as ScheduleItemRecordPayload }, context);
+        const sentOn = { ...item, payload: onRowNow as unknown as ScheduleItemRecordPayload };
+        scheduleRowsSentOnThrough.set(sentOn, passed);
+        const followed = await uploadQueueItem(sentOn, context);
         if (followed !== 'uploaded' && followed !== 'conflict') return followed;
       }
     }
