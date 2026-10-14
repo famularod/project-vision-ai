@@ -76,20 +76,24 @@ describe('the desktop\'s upload review after the first independent review (High 
     expect(review(give(groups, 0, QUAY)).heldLine).toBe('1 task needs a project before you can upload: the file names its project "Quay", which is not one of your open projects. Choose a project for it above.');
   });
 
-  it('L-1: no one button for a name that plainly names another of his projects; a line says which, and how to tick it', () => {
+  // CHANGED by 2c (review pass 2, H2S-1; the coordinator's decision): the line named the project the app's guess from a
+  // name pointed to ("looks like your project 6102 Mill Yard"), and that guess named wrong projects of his (a year, a
+  // street number, a short name inside a longer one). The button is still withheld here, but the line names no project
+  // from a guess, and only with one tick (where it says why there is no button).
+  it('L-1: no one button for a name that plainly names another of his projects; a neutral line says why (2c)', () => {
     const mill = prepare([QUAY], csv(fieldPlan('6102')));
     expect(review(mill).useForAll).toBeNull();
     expect(review(mill).heldLine).toBe('3 tasks need a project before you can upload: the file names their project "6102", which is not one of your open projects. Choose a project for each of them above.');
-    expect(otherProjectLine(mill)).toBe('"6102" in the file looks like your project 6102 Mill Yard, which is not ticked. To file these tasks under it, tick it under Projects above and choose the file again.');
+    expect(otherProjectLine(mill)).toBe('"6102" in the file may stand for one of your other projects, so there is no button for all of them. Choose the project on each of these tasks above; if the right project is not offered, tick it under Projects above and choose the file again.');
     // The review's second case: Garden shed ticked, two rows of Garden shed and two "6101".
     const mixed = prepare([SHED], csv([['Slab', SHED, '10/26/2026', '10/30/2026'], ['Walls', SHED, '11/02/2026', '11/06/2026'], ['Pour footings', '6101', '10/26/2026', '10/30/2026'], ['Set steel', '6101', '11/02/2026', '11/06/2026']]));
     expect(review(mixed).useForAll).toBeNull();
-    expect(otherProjectLine(mixed)).toBe('"6101" in the file looks like your project 6101 Quay Works, which is not ticked. To file these tasks under it, tick it under Projects above and choose the file again.');
-    // Several ticked, the project it looks like not among them: the line too. Among them: no line.
-    expect(otherProjectLine(prepare([QUAY, SHED], csv(fieldPlan('6102'))))).toBe('"6102" in the file looks like your project 6102 Mill Yard, which is not ticked. To file these tasks under it, tick it under Projects above and choose the file again.');
+    expect(otherProjectLine(mixed)).toBe('"6101" in the file may stand for one of your other projects, so there is no button for all of them. Choose the project on each of these tasks above; if the right project is not offered, tick it under Projects above and choose the file again.');
+    // Several ticked: no one button anyway, and no line from a guess (2c). Among them: no line.
+    expect(otherProjectLine(prepare([QUAY, SHED], csv(fieldPlan('6102'))))).toBeNull();
     expect(otherProjectLine(prepare([QUAY, MILL], csv(fieldPlan('6102'))))).toBeNull();
     // One task: "this task".
-    expect(otherProjectLine(prepare([QUAY], csv([['Survey', '6102', '10/26/2026', '10/30/2026']])))).toBe('"6102" in the file looks like your project 6102 Mill Yard, which is not ticked. To file this task under it, tick it under Projects above and choose the file again.');
+    expect(otherProjectLine(prepare([QUAY], csv([['Survey', '6102', '10/26/2026', '10/30/2026']])))).toBe('"6102" in the file may stand for one of your other projects, so there is no button for it. Choose the project on this task above; if the right project is not offered, tick it under Projects above and choose the file again.');
     // Unchanged: the name looks like the ticked project, or like none of his projects: the button is offered, no line.
     for (const name of ['6101', 'PLZ 6101 Quay Works', 'Shed']) {
       const offered = prepare([QUAY], csv(fieldPlan(name)));
@@ -98,20 +102,23 @@ describe('the desktop\'s upload review after the first independent review (High 
     }
   });
 
-  it('L-3: a name that fits two of his projects equally waits, and the line says it matches more than one', () => {
+  // CHANGED by 2c (review pass 2, L2S-2; the coordinator's decision): with one of the two ticked, the name is now the
+  // ticked one (the ticked projects are read first by the scope key), so that after he ticks the project the line
+  // names, the tasks are filed there. The name still waits, with the reason below, where none or both are ticked.
+  it('L-3: a name that fits two of his projects equally waits where none or both are ticked, and the line says it matches more than one', () => {
     const twins = { projects: [...ALL, 'Garden-shed'], openProjectNames: [...ALL, 'Garden-shed'] };
-    const both = prepare([SHED], csv(fieldPlan('Garden_shed')), twins);
+    const one = prepare([SHED], csv(fieldPlan('Garden_shed')), twins);
+    expect(one.scheduleItems.map(item => item.projectName)).toEqual([SHED, SHED, SHED]);
+    const both = prepare([SHED, 'Garden-shed'], csv(fieldPlan('Garden_shed')), twins);
     expect(both.scheduleItems.map(item => item.projectName)).toEqual(['Needs Project', 'Needs Project', 'Needs Project']);
     expect(review(both).heldLine).toBe('3 tasks need a project before you can upload: the file names their project "Garden_shed", which matches more than one of your open projects. Choose a project for each of them above.');
-    // The ticked project is one of the two: the button is offered, and no other line.
-    expect(review(both).useForAll).toEqual({ project: SHED, label: 'Use Garden shed for all 3 tasks named "Garden_shed"' });
     expect(otherProjectLine(both)).toBeNull();
     // Neither is ticked: no button, and the line names both.
     const neither = prepare([QUAY], csv(fieldPlan('Garden_shed')), twins);
     expect(review(neither).useForAll).toBeNull();
     expect(otherProjectLine(neither)).toBe('"Garden_shed" in the file matches your projects Garden shed and Garden-shed, and neither is ticked. To file these tasks under one of them, tick it under Projects above and choose the file again.');
     // With a name that is none of his projects as well, each name gets its own reason.
-    const mixed = prepare([SHED], csv([...fieldPlan('Garden_shed').slice(0, 2), ['Survey', 'Shed', '11/16/2026', '11/20/2026']]), twins);
+    const mixed = prepare([QUAY], csv([...fieldPlan('Garden_shed').slice(0, 2), ['Survey', 'Shed', '11/16/2026', '11/20/2026']]), twins);
     expect(review(mixed).heldLine).toBe('3 tasks need a project before you can upload: the file names their projects "Shed", which is not one of your open projects, and "Garden_shed", which matches more than one of your open projects. Choose a project for each of them above.');
   });
 

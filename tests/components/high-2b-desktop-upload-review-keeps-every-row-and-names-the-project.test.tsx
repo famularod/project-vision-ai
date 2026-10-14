@@ -182,13 +182,15 @@ describe('the desktop\'s upload review keeps every row and names the project the
     expect(uploadButtonDisabled(screen)).toBe(true);
   });
 
-  it('L-1: Quay Works ticked, the file says "6102" (Mill Yard\'s number): no one button; a line says the file points to 6102 Mill Yard and how to tick it', async () => {
+  // CHANGED by 2c (review pass 2, H2S-1; the coordinator's decision): the line named the project the app's guess pointed
+  // to; it now names none (the guess named wrong projects of his), and says why there is no button.
+  it('L-1: Quay Works ticked, the file says "6102" (Mill Yard\'s number): no one button; a neutral line says why (2c)', async () => {
     const screen = render(<DesktopReadOnlyShell page="documents" />);
     await chooseFile(screen, [QUAY], fieldPlan('6102'));
 
     expect(screen.getByText('3 tasks need a project before you can upload: the file names their project "6102", which is not one of your open projects. Choose a project for each of them above.')).toBeTruthy();
     expect(screen.queryByText(/^Use .* for (all \d+ tasks|the task) named /)).toBeNull();
-    expect(screen.getByText('"6102" in the file looks like your project 6102 Mill Yard, which is not ticked. To file these tasks under it, tick it under Projects above and choose the file again.')).toBeTruthy();
+    expect(screen.getByText('"6102" in the file may stand for one of your other projects, so there is no button for all of them. Choose the project on each of these tasks above; if the right project is not offered, tick it under Projects above and choose the file again.')).toBeTruthy();
     expect(uploadButtonDisabled(screen)).toBe(true);
     await pressUpload(screen);
     expect(mockAuth.uploadDocument).not.toHaveBeenCalled();

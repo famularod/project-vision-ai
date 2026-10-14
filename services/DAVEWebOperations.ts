@@ -160,11 +160,13 @@ export type DAVEWebPreparedUpload = Readonly<{
    */
   fileProjectNames?: Readonly<Record<string, string>>;
   /**
-   * For each name the file gives that waits for a project (High item 2, review pass 1 L-1, L-3): the projects of his
-   * it fits equally (two or more), or the one it looks like (bestScheduleProjectMatch, the PDF reader's own guess),
-   * else none. Absent when no task waits.
+   * For each name the file gives that waits for a project (High item 2, review passes 1 and 2): the projects of his
+   * it IS by the strict rule (scheduleProjectScopeKey; two or more, else none), and whether it may stand for another
+   * project of his (the app's guess from a name, bestScheduleProjectMatch, points to an unticked project and reads
+   * none of the ticked ones). The guessed project itself is not kept: the page never states a guess. Absent when no
+   * task waits.
    */
-  waitingProjectNames?: Readonly<Record<string, Readonly<{ fitsEqually: readonly string[]; looksLike: string | null }>>>;
+  waitingProjectNames?: Readonly<Record<string, Readonly<{ fitsEqually: readonly string[]; mayBeAnother: boolean }>>>;
 }>;
 
 type DAVEWebDocumentPreparationInput = Readonly<{
@@ -328,9 +330,11 @@ export function prepareDAVEWebDocumentUpload({
   // High item 2: each row's project as the phone resolves it, among his projects (daveWebRowProjects). The cloud's
   // list of his open projects when the page has it, even empty (review pass 1, L-4: the page's own list also holds
   // names known only from saved tasks); without it (an older caller), the page's list.
-  const rowProjects = daveWebRowProjects(readItems, uniqueNames([...selectedProjectNames, ...(openProjectNames ?? projects)]));
+  const rowProjects = daveWebRowProjects(readItems, uniqueNames([...selectedProjectNames, ...(openProjectNames ?? projects)]), selectedProjectNames);
   // The duplicate check compares a waiting row by the name the FILE gives, so two names the app does not know stay two
-  // rows (review pass 1, H1S-1: two "Needs Project" rows of one task on one day were one); then the row waits.
+  // rows (review pass 1, H1S-1: two "Needs Project" rows of one task on one day were one); then the row waits. Two
+  // spellings of one name by scheduleProjectScopeKey are one name there (review pass 2, L2S-3: "Shed Annex" and
+  // "Shed-Annex" for one task on one day are one row): daveWebRowProjects hands such a row its first spelling.
   const items = dedupeScheduleImportItems(
     rowProjects.items.map(item => ({
       ...item,
@@ -388,37 +392,49 @@ export function prepareDAVEWebDocumentUpload({
  * caller marks it "Needs Project" after that check. For each waiting name: the projects it fits equally by the same
  * comparison (two or more), or the one the app's own guess from a name points to (review pass 1, L-1 and L-3).
  */
-function daveWebRowProjects(items: readonly ScheduleItem[], ownProjects: readonly string[]): {
+function daveWebRowProjects(items: readonly ScheduleItem[], ownProjects: readonly string[], ticked: readonly string[]): {
   items: ScheduleItem[];
   waiting: Set<string>;
   fileProjectNames: Record<string, string>;
-  waitingProjectNames: Record<string, { fitsEqually: string[]; looksLike: string | null }>;
+  waitingProjectNames: Record<string, { fitsEqually: string[]; mayBeAnother: boolean }>;
 } {
   const named = items.filter(item => item.projectName?.trim());
-  const selectedProjects = ownProjects.map(name => ({ id: name, name }));
   const spellings = [...new Set(named.map(item => item.projectName.trim()))];
-  const exact = validateScheduleImportScope({ items: named, selectedProjects }).itemResults;
-  const respelled = validateScheduleImportScope({
+  const byScopeKey = (projects: readonly string[]) => validateScheduleImportScope({
     items: named,
-    selectedProjects: selectedProjects.map(project => ({
-      ...project,
-      aliases: spellings.filter(spelling => scheduleProjectScopeKey(spelling) === scheduleProjectScopeKey(project.name)),
+    selectedProjects: projects.map(name => ({
+      id: name,
+      name,
+      aliases: spellings.filter(spelling => scheduleProjectScopeKey(spelling) === scheduleProjectScopeKey(name)),
     })),
   }).itemResults;
+  const exact = validateScheduleImportScope({ items: named, selectedProjects: ownProjects.map(name => ({ id: name, name })) }).itemResults;
+  // Review pass 2, L2S-2: by the scope key the ticked projects are read first, so a name that fits two of his
+  // projects, one of them ticked, is the ticked one (where the page told him to tick one of them, that one).
+  const respelledTicked = byScopeKey(ticked);
+  const respelled = byScopeKey(ownProjects);
   const fileProjectNames: Record<string, string> = {};
   const waiting = new Set<string>();
-  const waitingProjectNames: Record<string, { fitsEqually: string[]; looksLike: string | null }> = {};
+  const waitingProjectNames: Record<string, { fitsEqually: string[]; mayBeAnother: boolean }> = {};
+  const firstSpelling = new Map<string, string>();
+  const tickedKeys = new Set(ticked.map(normalized));
   const resolved = new Map(named.map((item, index) => {
-    const result = exact[index].assignment === 'selected_project' ? exact[index] : respelled[index];
+    const result = [exact[index], respelledTicked[index], respelled[index]].find(each => each.assignment === 'selected_project') ?? respelled[index];
     if (result.assignment !== 'selected_project') {
       const fileName = item.projectName.trim();
       waiting.add(item.id);
       if (fileName !== SCHEDULE_IMPORT_NEEDS_PROJECT) fileProjectNames[item.id] = fileName;
       const fitsEqually = ownProjects.filter(project => scheduleProjectScopeKey(project) === scheduleProjectScopeKey(fileName));
-      waitingProjectNames[fileName] ??= fitsEqually.length > 1
-        ? { fitsEqually, looksLike: null }
-        : { fitsEqually: [], looksLike: bestScheduleProjectMatch(fileName, [...ownProjects]) || null };
-      return [item, item.projectName] as const;
+      // Review pass 2, H2S-1: the guess only says "may be another project"; it never names one (it read a year, a
+      // street number, a short name inside a longer one as a project), and not where it also reads a ticked one.
+      const guess = bestScheduleProjectMatch(fileName, [...ownProjects]);
+      waitingProjectNames[fileName] ??= {
+        fitsEqually: fitsEqually.length > 1 ? fitsEqually : [],
+        mayBeAnother: fitsEqually.length < 2 && Boolean(guess) && !tickedKeys.has(normalized(guess)) && !bestScheduleProjectMatch(fileName, [...ticked]),
+      };
+      const key = scheduleProjectScopeKey(fileName);
+      if (!firstSpelling.has(key)) firstSpelling.set(key, item.projectName);
+      return [item, firstSpelling.get(key)!] as const;
     }
     if (result.item.projectName !== item.projectName) fileProjectNames[item.id] = item.projectName.trim();
     return [item, result.item.projectName] as const;
@@ -670,6 +686,20 @@ export function daveWebScheduleUploadRoleRefusal(
     : null;
 }
 
+/**
+ * Review pass 2 (an older race, the same on the build before): the review is made with the ticks of the moment the
+ * file was chosen, and a photo or PDF is read for seconds. Whether the review was made with the projects ticked now;
+ * where it was not, the page clears it and says so, and he chooses the file again.
+ */
+export function daveWebUploadMadeWithTicks(prepared: Pick<DAVEWebPreparedUpload, 'document'>, ticked: readonly string[]): boolean {
+  const made = new Set((prepared.document.projectNames ?? []).map(normalized));
+  const now = new Set(ticked.map(normalized).filter(Boolean));
+  return made.size === now.size && [...now].every(name => made.has(name));
+}
+
+export const DAVE_WEB_UPLOAD_TICKS_CHANGED_TEXT =
+  'The ticked projects changed while the file was being read, so its review was cleared. Choose the file again.';
+
 /** A task the review lists as waiting for one of his projects (High item 2). */
 export function daveWebScheduleUploadRowNeedsProject(item: Pick<ScheduleItem, 'projectName'>): boolean {
   return (item.projectName || '').trim() === SCHEDULE_IMPORT_NEEDS_PROJECT;
@@ -710,14 +740,15 @@ function daveWebUploadWaitingNames(prepared: DAVEWebUploadWaiting | null) {
 }
 
 /**
- * The projects of his a waiting name points to that are NOT ticked (review pass 1, L-1): the one it looks like, or,
- * when it fits several equally and none of them is ticked, those. Empty when it points to a ticked one, or to none.
+ * Where a waiting name may belong to a project of his that is not ticked (review passes 1 and 2): the projects it IS
+ * by the strict rule when none of them is ticked (named on the page), or, from the guess alone, none named (the page
+ * stays neutral). Null when it points to no other project.
  */
-function daveWebUploadNamePointsElsewhere(prepared: DAVEWebUploadWaiting | null, name: string): string[] {
+function daveWebUploadNamePointsElsewhere(prepared: DAVEWebUploadWaiting | null, name: string): Readonly<{ named: readonly string[] }> | null {
   const pointer = prepared?.waitingProjectNames?.[name];
   const ticked = new Set((prepared?.document.projectNames ?? []).map(normalized));
-  const candidates = pointer ? (pointer.fitsEqually.length > 1 ? pointer.fitsEqually : pointer.looksLike ? [pointer.looksLike] : []) : [];
-  return candidates.some(project => ticked.has(normalized(project))) ? [] : [...candidates];
+  if (pointer && pointer.fitsEqually.length > 1) return pointer.fitsEqually.some(project => ticked.has(normalized(project))) ? null : { named: pointer.fitsEqually };
+  return pointer?.mayBeAnother ? { named: [] } : null;
 }
 
 /**
@@ -739,7 +770,7 @@ export function daveWebScheduleUploadProjectReview(prepared: DAVEWebUploadWaitin
   const heldLine = count === 0 ? null : `${count} ${count === 1 ? 'task needs' : 'tasks need'} a project before you can upload: the file names ${count === 1 ? 'its project' : names.length === 1 ? 'their project' : 'their projects'} ${reasons}. Choose a project for ${count === 1 ? 'it' : 'each of them'} above.`;
   const ticked = prepared?.document.projectNames ?? [];
   // Review pass 1, L-1: never for a name that points to another of his projects (a wrong tick must not be one press).
-  const useForAll = count > 0 && names.length === 1 && ticked.length === 1 && daveWebUploadNamePointsElsewhere(prepared, names[0]).length === 0
+  const useForAll = count > 0 && names.length === 1 && ticked.length === 1 && !daveWebUploadNamePointsElsewhere(prepared, names[0])
     ? { project: ticked[0], label: count === 1 ? `Use ${ticked[0]} for the task named "${names[0]}"` : `Use ${ticked[0]} for all ${count} tasks named "${names[0]}"` }
     : null;
   const given = new Map<string, number>();
@@ -757,17 +788,23 @@ export function daveWebScheduleUploadProjectReview(prepared: DAVEWebUploadWaitin
 }
 
 /**
- * Review pass 1, L-1: where a waiting name points to a project of his that is not ticked, which one, and how to tick
- * it (ticking clears the review, so the file is chosen again); else null. Shown in place of the one button there.
+ * In place of the one button, where a waiting name may belong to a project of his that is not ticked (review passes
+ * 1 and 2); else null. Projects are named only where the file's name IS them by the strict rule (none of them
+ * ticked): then ticking one of them and choosing the file again files the tasks under it. From the guess alone the
+ * line names no project (review pass 2, H2S-1), and says it only where it is why there is no one button (one tick).
  */
 export function daveWebScheduleUploadOtherProjectLine(prepared: DAVEWebUploadWaiting | null): string | null {
+  const oneTick = (prepared?.document.projectNames ?? []).length === 1;
   return [...daveWebUploadWaitingNames(prepared)].flatMap(([name, tasks]) => {
     const elsewhere = daveWebUploadNamePointsElsewhere(prepared, name);
     const these = tasks === 1 ? 'this task' : 'these tasks';
-    if (elsewhere.length === 0) return [];
-    return [elsewhere.length === 1
-      ? `"${name}" in the file looks like your project ${elsewhere[0]}, which is not ticked. To file ${these} under it, tick it under Projects above and choose the file again.`
-      : `"${name}" in the file matches your projects ${listedNames(elsewhere)}, and ${elsewhere.length === 2 ? 'neither is' : 'none of them is'} ticked. To file ${these} under one of them, tick it under Projects above and choose the file again.`];
+    if (!elsewhere) return [];
+    if (elsewhere.named.length > 1) {
+      return [`"${name}" in the file matches your projects ${listedNames(elsewhere.named)}, and ${elsewhere.named.length === 2 ? 'neither is' : 'none of them is'} ticked. To file ${these} under one of them, tick it under Projects above and choose the file again.`];
+    }
+    return oneTick
+      ? [`"${name}" in the file may stand for one of your other projects, so there is no button for ${tasks === 1 ? 'it' : 'all of them'}. Choose the project on ${tasks === 1 ? 'this task' : 'each of these tasks'} above; if the right project is not offered, tick it under Projects above and choose the file again.`]
+      : [];
   }).join(' ') || null;
 }
 

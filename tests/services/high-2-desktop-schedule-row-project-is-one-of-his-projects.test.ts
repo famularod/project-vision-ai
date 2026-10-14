@@ -166,8 +166,10 @@ describe('the desktop saves a schedule row under one of his projects (High item 
     // A project of his that is not ticked is his project, as before (open item 4.88, not this item): Mill Yard.
     expect(resolvedAs('6102 mill yard')).toBe(MILL);
     // Two projects of his that differ only in punctuation: the exact name decides; another spelling of both waits.
-    const twins = (spelling: string) => prepare([SHED], csv([['Survey', spelling, '10/26/2026', '10/30/2026']]), { projects: [SHED, 'Garden-shed'] }).scheduleItems[0].projectName;
-    expect([twins('Garden shed'), twins('Garden-shed'), twins('GARDEN_SHED')]).toEqual([SHED, 'Garden-shed', 'Needs Project']);
+    // CHANGED by 2c (review pass 2, L2S-2; the coordinator's decision): another spelling of both is the TICKED one when
+    // one of them is ticked (the ticked projects are read first by the scope key); with neither ticked it waits.
+    const twins = (spelling: string, ticked = [SHED]) => prepare(ticked, csv([['Survey', spelling, '10/26/2026', '10/30/2026']]), { projects: [SHED, 'Garden-shed', QUAY] }).scheduleItems[0].projectName;
+    expect([twins('Garden shed'), twins('Garden-shed'), twins('GARDEN_SHED'), twins('GARDEN_SHED', [QUAY])]).toEqual([SHED, 'Garden-shed', SHED, 'Needs Project']);
   });
 
   it('his projects are his OPEN projects in the cloud when the desktop knows them: a name the list only has from saved tasks, or a closed project, waits', () => {
