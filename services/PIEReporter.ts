@@ -2586,13 +2586,16 @@ function groupUnderstandingByLocation(
 }
 
 function selectedProjectsFromInput(input: PIEReportDraftInput) {
+  // HIGH item 1e: by name, not in the order they were ticked: a combined report's line filed under its first project
+  // (the open update's project, else the first selected) is the same however he ticked them, as the report's own order is.
+  const byName = (name: string) => name.replace(/[^a-z0-9]+/g, ' ').trim();
   return resolvePIEReportProjectNames({
     selectedProjectNames: input.selectedProjectNames,
     fallbackProjectNames: [
       input.currentUpdate?.projectName,
       ...(input.savedUpdates || []).map(update => update.projectName),
     ],
-  }).map(normalizeName);
+  }).map(normalizeName).sort((left, right) => byName(left).localeCompare(byName(right)));
 }
 
 /**

@@ -1292,7 +1292,7 @@ export function ReportsScreen({
   const reportHeader = (
     <ScreenHeader
       title="Reports"
-      subtitle={`${selectedProjectNames.join(', ')} · Current task status, recent field updates, and next steps.`}
+      subtitle={`${[...selectedProjectNames].sort((left, right) => reportProjectKey(left).localeCompare(reportProjectKey(right))).join(', ')} · Current task status, recent field updates, and next steps.`}
     />
   );
   const preparedReport = (

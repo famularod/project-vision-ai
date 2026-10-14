@@ -203,8 +203,10 @@ export function buildDAVEReportSourceFingerprint(
   rememberLegacyReportSource(fingerprint, EARLIER_VERSION_NAMES_STAND && countsWhatBuild230Counted ? buildDAVELegacyReportSourceFingerprint(truths) : null);
   // HIGH item 1 (d): the 2.0 fingerprint of the same facts, so that a report approved or sent under 2.0 (Builds 231
   // and 232) is known for exactly what 2.0 itself knew it, until the next report replaces it. Its name stands
-  // (unlike 1.0's): this version changes when a report is offered, not one word of it.
-  rememberVersion2ReportSource(fingerprint, buildDAVEVersion2ReportSourceFingerprint(truths));
+  // (unlike 1.0's): this version changes when a report is offered, not one word of it. HIGH item 1e: except for a
+  // combined report, whose projects 2.0's builds printed in the order they were ticked and this build prints by name:
+  // the same facts may read in another order, so, as R10 decided for 1.0, it is offered once after the update.
+  rememberVersion2ReportSource(fingerprint, truths.length > 1 ? '' : buildDAVEVersion2ReportSourceFingerprint(truths));
   return fingerprint;
 }
 
@@ -570,7 +572,7 @@ export function buildDAVEReportBriefing({
 
 /** The briefing (buildDAVEReportBriefing), with Completed Work's "Last updated" as `lastUpdatedAt` reads it. */
 function briefingOf({
-  truths,
+  truths: ticked,
   selectedProjectNames,
   previousSnapshot,
   readAsEarlierVersionReport = false,
@@ -584,6 +586,10 @@ function briefingOf({
   waitingForOtherDevice?: boolean;
   lastUpdatedAt: CompletedTaskLastUpdatedAt;
 }): DAVEReportBriefing {
+  // HIGH item 1e (the coordinator's decision on review pass 3's case B and A6 pass 6 #6): a combined report prints its
+  // projects by name, as its fingerprint works them out (1c), not in the order they were ticked: the same text, in the
+  // same order, under the same value, on every device and in every body written from this briefing.
+  const truths = [...ticked].sort((left, right) => normalized(left.projectName).localeCompare(normalized(right.projectName)));
   const projectNames = unique(
     (selectedProjectNames?.length ? selectedProjectNames : truths.map(truth => truth.projectName))
       .map(clean)

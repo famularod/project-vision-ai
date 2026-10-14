@@ -303,9 +303,11 @@ function printed(truths: unknown, world: World, now: string, previous: unknown, 
       return formatDAVEWebReport(briefing, format, since ? { label: briefing.reportingPeriod.label, lines: since } : null).split('\n').filter(text => !/^Generated: /.test(text)).join('\n');
     }
     const reportType = names.length > 1 ? 'combined_project_update' : 'daily_project_update';
+    // The project open in the app (App.tsx hands it as the runtime's project): the same whichever order he ticked.
+    const openProject = [...names].sort()[0];
     const draft = buildPIECoreIntelligence({
-      runtimeContext: { projectName: names[0], projectNames: names, reportType, updates: world.updates, scheduleItems: world.shown, knownScheduleItems: world.saved, currentUpdate: null, projectAreas: AREAS, contacts: { contacts: [] }, referenceDocuments: world.documents, surface: 'reports' } as never,
-      reportType: reportType as never, reportProjectNames: names, organizationId: 'local-unverified-anonymous', projectId: `project-${slug(names[0])}`,
+      runtimeContext: { projectName: openProject, projectNames: names, reportType, updates: world.updates, scheduleItems: world.shown, knownScheduleItems: world.saved, currentUpdate: null, projectAreas: AREAS, contacts: { contacts: [] }, referenceDocuments: world.documents, surface: 'reports' } as never,
+      reportType: reportType as never, reportProjectNames: names, organizationId: 'local-unverified-anonymous', projectId: `project-${slug(openProject)}`,
     } as never).reportDraft as unknown as Draft;
     return [
       String(RI.enhanceDAVEReportDraft(draft as never, briefing, format).body),
@@ -719,5 +721,65 @@ describe('HIGH 1d: news since the report sent is never taken for it', () => {
     expect({ phone: seen.phone, computer: seen.computer, oneValue: seen.oneValue }).toEqual({ phone: false, computer: false, oneValue: true });
     const same = await look(world, r0, text, [LARCH], format);
     expect({ phone: same.phone, computer: same.computer }).toEqual({ phone: true, computer: true });
+  });
+});
+
+/**
+ * HIGH item 1e (the coordinator's decision on review pass 3's case B and A6 pass 6 #6: both). A combined report is
+ * worked out with its projects by name (1c), and now PRINTS them by name too, on every device and in every body: ticked
+ * in another order, it is the same text, in the same order, under the same value (case B), and its edits and approval
+ * stay with it (A6 #6, owner-q17). A combined report the released build sent (2.0, its projects in the order ticked) is
+ * no longer taken for today's (its words may be in another order): it is offered once after the update.
+ */
+describe('HIGH 1e: a combined report prints its projects in name order, whichever order they were ticked', () => {
+  it.each(FORMATS)('ticked Wren Point first or Larch Hollow first: the same words on the phone and the computer, one value, %s', async format => {
+    const world = both(larchHollow(), wrenPoint());
+    const read = async (names: readonly string[]) => {
+      const truths = phoneTruths(world, T2, names);
+      const desk = await desktopSnapshot(world, T2, names);
+      const deskTruths = deskTruthsOf(desk, names);
+      return {
+        phone: printed(truths, world, T2, null, names, format, 'phone'),
+        computer: printed(deskTruths, deskWorld(desk), T2, null, names, format, 'computer'),
+        phoneValue: fpOn(truths, null, format),
+        computerValue: fpOn(deskTruths, null, format),
+      };
+    };
+    const larchFirst = await read([LARCH, WREN]);
+    const wrenFirst = await read([WREN, LARCH]);
+    expect(wrenFirst).toEqual(larchFirst);
+    expect(larchFirst.phoneValue).toBe(larchFirst.computerValue);
+    // By name: in the section that lists every project's tasks or position, Larch Hollow's before Wren Point's.
+    const section = (text: string, heading: string) => {
+      const lines = text.split('\n');
+      const from = lines.indexOf(heading);
+      expect(from).toBeGreaterThanOrEqual(0);
+      const to = lines.findIndex((line, index) => index > from && !line.trim());
+      return lines.slice(from + 1, to < 0 ? undefined : to).join('\n');
+    };
+    const sections = format === 'executive'
+      ? [section(larchFirst.phone, 'PROJECT POSITION'), section(larchFirst.computer, '## Project Status')]
+      : [section(larchFirst.phone, 'CURRENT WORK'), section(larchFirst.computer, '## Current Work')];
+    for (const text of sections) {
+      expect(text.indexOf('Larch Hollow')).toBeGreaterThanOrEqual(0);
+      expect(text.indexOf('Larch Hollow')).toBeLessThan(text.indexOf('Wren Point'));
+      expect(text.lastIndexOf('Larch Hollow')).toBeLessThan(text.indexOf('Wren Point'));
+    }
+  });
+
+  it.each(FORMATS)('after a real period, ticked in the other order: still the report sent, read word for word as sent, %s', async format => {
+    const world = both(larchHollow(), wrenPoint());
+    const r0 = phoneSends(onRow(world, world.shown[0].id, item => ({ ...item, percentComplete: 5 } as ScheduleItem)), T0, null, [LARCH, WREN], format);
+    const r1 = phoneSends(world, T1, r0, [LARCH, WREN], format);
+    const text = await asSent(world, T1, r1, [LARCH, WREN], format);
+    const seen = await look(world, r1, text, [WREN, LARCH], format);
+    expect(seen).toEqual({ phone: true, computer: true, oneValue: true, onPhone: true, onComputer: true });
+  });
+
+  it.each(FORMATS)('a combined report sent on Build 231 or 232 (2.0) is offered once after the update; a one-project report is still known, %s', format => {
+    const combined = phoneTruths(both(larchHollow(), wrenPoint()), T2, [LARCH, WREN]);
+    expect(sameReportSource(RI.buildDAVEVersion2ReportSourceFingerprint(combined), fpOn(combined, null, format))).toBe(false);
+    const single = phoneTruths(larchHollow(), T2, [LARCH]);
+    expect(sameReportSource(RI.buildDAVEVersion2ReportSourceFingerprint(single), fpOn(single, null, format))).toBe(true);
   });
 });
