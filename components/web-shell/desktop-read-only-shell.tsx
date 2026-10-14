@@ -115,6 +115,7 @@ import {
   daveWebScheduleDocumentDeleteNote,
   daveWebScheduleImportPairingQuestions,
   daveWebScheduleUploadRoleRefusal,
+  daveWebFullScheduleProjectsLine,
   daveWebScheduleUploadRoleSuggestion,
   withDAVEWebScheduleUploadRole,
   formatDAVEWebReport,
@@ -4750,6 +4751,7 @@ function DocumentManagementWorkspace({
                 <DesktopScheduleUploadRole
                   suggestion={roleSuggestion}
                   chosen={chosenRole}
+                  savedFor={daveWebFullScheduleProjectsLine(preparedUpload, reviewedRole)}
                   disabled={uploading}
                   onChoose={role => setRoleReview(current => (current ? { ...current, chosen: role } : current))}
                 />

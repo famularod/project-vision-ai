@@ -148,6 +148,8 @@ export type DAVEWebPreparedUpload = Readonly<{
   extractionStatus: 'not_applicable' | 'ready' | 'needs_manual_review';
   /** David's answers at the upload review to which same-named task each row is (owner answer Q30, review N1). */
   pairingChoices?: Readonly<Record<string, string | null>> | null;
+  /** Whether every row the file gave named a project itself (a row that named none took the first ticked one). */
+  everyRowNamedAProject?: boolean;
 }>;
 
 type DAVEWebDocumentPreparationInput = Readonly<{
@@ -304,8 +306,9 @@ export function prepareDAVEWebDocumentUpload({
         projectAreas: [],
         now: new Date(now),
       });
+  const readItems = pdfSchedule ? positionedPdfItems : normalizedImport?.items || [];
   const items = dedupeScheduleImportItems(
-    (pdfSchedule ? positionedPdfItems : normalizedImport?.items || []).map(item => ({
+    readItems.map(item => ({
       ...item,
       scheduleProjectName: item.scheduleProjectName || item.projectName || selectedProjectNames[0],
       projectName: item.projectName || selectedProjectNames[0],
@@ -336,6 +339,7 @@ export function prepareDAVEWebDocumentUpload({
     scheduleItems: Object.freeze(batch.items),
     reviewMessage: `${batch.items.length} schedule ${batch.items.length === 1 ? 'activity' : 'activities'} extracted for ${selectedProjectNames.length} selected project${selectedProjectNames.length === 1 ? '' : 's'}. Review each task's project, dates, area, status, and percent complete before upload.`,
     extractionStatus: 'ready',
+    everyRowNamedAProject: readItems.every(item => Boolean(item.projectName?.trim())),
   });
 }
 
@@ -498,6 +502,35 @@ export const DAVE_WEB_LOOKAHEAD_NEEDS_TASK_TEXT =
   'A lookahead needs at least one task from the file. Keep a task in the list above, or choose Full schedule.';
 
 /**
+ * Build 232 round, item 10b (review pass 4, O-3; the coordinator's decision,
+ * 13 Oct 2026): the projects a full schedule is saved for when they are
+ * fewer than the ticked ones, else null (its label stays every ticked
+ * project, as before). With three projects ticked and a file whose rows were
+ * all one project's, the full schedule was saved for all three: Make Current
+ * Schedule asked nothing, the other two projects' masters stopped being
+ * current and those projects showed no tasks on any device. Only when every
+ * row the file gave named a project itself, each row names one project (its
+ * schedule project is that same project) and every project so named is
+ * ticked. The names are compared as the phone compares them when it narrows
+ * such a label on its next load (narrowScheduleDocumentLabels), so that
+ * repair then finds nothing to do. No saved schedule is rewritten.
+ */
+function daveWebFullScheduleProjects(prepared: Pick<DAVEWebPreparedUpload, 'document' | 'scheduleItems' | 'everyRowNamedAProject'>): string[] | null {
+  const nameKey = (name: string | null | undefined) => (name || '').trim().toLowerCase();
+  const ticked = prepared.document.projectNames || [];
+  const named = new Set(prepared.scheduleItems.map(item => nameKey(item.projectName)));
+  const oneEach = prepared.scheduleItems.every(item => nameKey(item.projectName) && nameKey(item.scheduleProjectName || item.projectName) === nameKey(item.projectName));
+  const kept = ticked.filter(name => named.has(nameKey(name)));
+  return prepared.everyRowNamedAProject && oneEach && kept.length > 0 && kept.length === named.size && kept.length < ticked.length ? kept : null;
+}
+
+/** What the review says, in one line, before a full schedule is saved for fewer projects than are ticked; else null. */
+export function daveWebFullScheduleProjectsLine(prepared: DAVEWebPreparedUpload | null, role: ScheduleImportRole | null): string | null {
+  const names = prepared && role === 'master' ? daveWebFullScheduleProjects(prepared)?.join(' and ') : null;
+  return names ? `Every task in this file is for ${names}, so as a full schedule it will be saved for ${names} only, not for every project ticked above.` : null;
+}
+
+/**
  * The reviewed upload as the role David chose (WS1 item 2). "Lookahead": the
  * schedule file is marked as the phone's review marks it
  * (withScheduleImportRole) and labelled with the projects its rows belong
@@ -509,14 +542,19 @@ export const DAVE_WEB_LOOKAHEAD_NEEDS_TASK_TEXT =
  * lookahead ADDS carries once saved, importedAsLookahead, stays: the phone's
  * merge writes it, because such a task outlives its file, which can be
  * deleted on its own while the task is kept.)
- * "Full schedule": the upload as every schedule uploaded before.
+ * "Full schedule": the upload as every schedule uploaded before, but for
+ * its label in one case (daveWebFullScheduleProjects, below).
  */
 export function withDAVEWebScheduleUploadRole<T extends DAVEWebPreparedUpload>(prepared: T, role: ScheduleImportRole): T {
   if (normalized(prepared.document.category) !== 'schedules') return prepared;
   if (role !== 'lookahead') {
-    if (prepared.document.scheduleRole !== 'lookahead') return prepared;
-    const { scheduleRole: _role, ...document } = prepared.document;
-    return { ...prepared, document: { ...document, webContentReview: 'Schedule activities must be reviewed before this file can become current.' } };
+    const projectNames = daveWebFullScheduleProjects(prepared);
+    const full = projectNames
+      ? { ...prepared, document: { ...prepared.document, projectNames, projectName: projectNames.length === 1 ? projectNames[0] : null } }
+      : prepared;
+    if (full.document.scheduleRole !== 'lookahead') return full;
+    const { scheduleRole: _role, ...document } = full.document;
+    return { ...full, document: { ...document, webContentReview: 'Schedule activities must be reviewed before this file can become current.' } };
   }
   const scheduleItems = prepared.scheduleItems;
   const marked = withScheduleImportRole({ documents: [prepared.document] }, 'lookahead').documents;

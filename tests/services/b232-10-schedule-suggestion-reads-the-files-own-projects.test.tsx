@@ -570,8 +570,14 @@ describe('the desktop\'s upload review: the same suggestion, from the same funct
     expect(onThePhone.sentence).toBe(`${LOOKAHEAD} its dates cover 3 weeks and the master for 2321 Compliance Project covers about 16 months. ${CHANGE}`);
   });
 
-  it('what the upload then saves is as before (REPORTED, not changed): a Full schedule keeps every ticked project as its label, a Lookahead its rows\' projects', () => {
-    expect(withDAVEWebScheduleUploadRole(upload(ACTIVE), 'master').document.projectNames).toEqual(ACTIVE);
+  // CHANGED by item 10b, part 2 (review pass 4, O-3; the coordinator's decision). This test pinned what item 10
+  // reported and left (its decision 7): "a Full schedule keeps every ticked project as its label". With every
+  // project ticked and rows that are all one project's, Make Current Schedule on such a file took the other
+  // projects' masters out of use. A full schedule whose rows all name ticked projects, but fewer than are ticked,
+  // is now saved for the projects its rows name; where the rows name every ticked project, every one is kept.
+  it('what the upload then saves: a Full schedule its rows\' projects where those are fewer than the ticked ones (item 10b), a Lookahead its rows\' projects as before', () => {
+    expect(withDAVEWebScheduleUploadRole(upload(ACTIVE), 'master').document.projectNames).toEqual([TEST]);
+    expect(withDAVEWebScheduleUploadRole(upload([TEST]), 'master').document.projectNames).toEqual([TEST]);
     expect(withDAVEWebScheduleUploadRole(upload(ACTIVE), 'lookahead').document.projectNames).toEqual([TEST]);
   });
 });
