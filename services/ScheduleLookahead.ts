@@ -1508,6 +1508,17 @@ function spanWords(count: number): string {
  * months", and Accept All saves the preselected choice. The label is read
  * only when no row names a project (a row still waiting for its project,
  * "Needs Project", names none).
+ *
+ * Build 232 round, item 10b (review pass 4, C-5; the coordinator's decision):
+ * a row names a project only where it is one of the projects the file is
+ * being saved for (that same label), compared as a project finds its current
+ * schedule (scheduleProjectScopeKey). The web keeps a row's project as the
+ * file writes it, so a real lookahead whose Project column spelled the ticked
+ * project another way (its number alone, "(Phase 2)" after it) came filled in
+ * as a full schedule, "because there is no master schedule for [that
+ * spelling] yet". Such a row now names none, like a row waiting for its
+ * project; where no row names one the label is read, as before item 10. A
+ * file with no label is read by its rows.
  */
 export function suggestScheduleImportRole({
   batch,
@@ -1529,11 +1540,16 @@ export function suggestScheduleImportRole({
   const distinct = (names: readonly string[]) =>
     [...new Map(names.map(name => name.trim()).filter(Boolean).map(name => [key(name), name] as const)).values()];
   // Each row's app project, not its Microsoft Project root (whole-app audit A5 pass 12 K1, above); the file's own
-  // label only when no row names a project (Build 232 item 10, above).
-  const rowProject = (item: ScheduleItem) =>
-    (item.projectName?.trim() === SCHEDULE_IMPORT_NEEDS_PROJECT ? '' : item.projectName) || item.scheduleProjectName || '';
+  // label only when no row names a project (Build 232 item 10, above); a row names one only where it is one of
+  // the label's (item 10b, above).
+  const label = distinct(file?.projectNames || []);
+  const savedFor = new Set(label.map(scheduleProjectScopeKey));
+  const rowProject = (item: ScheduleItem) => {
+    const name = (item.projectName?.trim() === SCHEDULE_IMPORT_NEEDS_PROJECT ? '' : item.projectName) || item.scheduleProjectName || '';
+    return savedFor.size === 0 || savedFor.has(scheduleProjectScopeKey(name)) ? name : '';
+  };
   const rowProjects = distinct(batch.items.map(rowProject));
-  const projects = rowProjects.length > 0 ? rowProjects : distinct(file?.projectNames || []);
+  const projects = rowProjects.length > 0 ? rowProjects : label;
   const current = currentScheduleDocumentsByProject(documents);
   // A master saved for the root itself (an app project made from it) is still the root's.
   const masters = distinct([...projects, ...batch.items.map(item => item.scheduleProjectName || '')])

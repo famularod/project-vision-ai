@@ -518,11 +518,15 @@ describe('the desktop\'s upload review: the same suggestion, from the same funct
     expect(suggestion(ACTIVE)).toEqual({ role: 'master', reason: 'there is no master schedule for Test project yet' });
   });
 
-  it('with Test project alone ticked it was right already, and with another project ticked by mistake the rows still decide', () => {
+  // CHANGED by item 10b (review pass 4, C-5; the coordinator's decision). This test pinned "with another project
+  // ticked by mistake the rows still decide" (item 10's decision 4): Full schedule, "no master schedule for [the
+  // new project] yet". A row now names a project only where it is one the file is being saved for (a ticked one),
+  // so with another project ticked INSTEAD the file's project names are read, as on Build 231.
+  it('with the new project alone ticked it was right already; with another project ticked instead, the file is read for the ticked project (item 10b)', () => {
     expect(suggestion([TEST])).toEqual({ role: 'master', reason: 'there is no master schedule for Test project yet' });
     // The desktop keeps a row's project as the file writes it, ticked or not.
     expect([...new Set(upload([P2321]).scheduleItems.map(item => item.projectName))]).toEqual([TEST]);
-    expect(suggestion([P2321])).toEqual({ role: 'master', reason: 'there is no master schedule for Test project yet' });
+    expect(suggestion([P2321])).toEqual({ role: 'lookahead', reason: `its dates cover 3 weeks and the master for ${P2321} covers about 16 months` });
   });
 
   it('a real lookahead for the project with the long master is still suggested as one, every project ticked', () => {
@@ -551,11 +555,15 @@ describe('the desktop\'s upload review: the same suggestion, from the same funct
     expect(suggested([ROOT, NORTH])).toEqual({ role: 'master', reason: 'there is no master schedule for Harbor North yet' });
   });
 
-  it('REPORTED: a Project column that spells no project of the app: the desktop keeps the file\'s spelling, and the suggestion now follows it', async () => {
-    const misspelt = threeWeeks('2321 Compliance', '2321 field plan.csv');
-    expect([...new Set(upload([P2321], misspelt).scheduleItems.map(item => item.projectName))]).toEqual(['2321 Compliance']);
-    // Before this item the ticked project's master was read through the label, and it was a lookahead.
-    expect(suggestion([P2321], misspelt)).toEqual({ role: 'master', reason: 'there is no master schedule for 2321 Compliance yet' });
+  // CHANGED by item 10b (review pass 4, C-5). This test pinned item 10's decision 5, "the suggestion now follows
+  // [the file's spelling]": Full schedule, "there is no master schedule for [the file's spelling] yet". That was
+  // the finding: a real lookahead came filled in as a full schedule. Such a row now names no project, and the
+  // ticked project's master is read again, as before item 10.
+  it('a Project column that spells no project of the app: the desktop keeps the file\'s spelling on the rows, and the suggestion reads the ticked project (item 10b)', async () => {
+    const shortened = P2321.split(' ').slice(0, 2).join(' '); // the project's name without its last word
+    const misspelt = threeWeeks(shortened, 'Field plan.csv');
+    expect([...new Set(upload([P2321], misspelt).scheduleItems.map(item => item.projectName))]).toEqual([shortened]);
+    expect(suggestion([P2321], misspelt)).toEqual({ role: 'lookahead', reason: `its dates cover 3 weeks and the master for ${P2321} covers about 16 months` });
     // On the phone such a row is left without a project, so the label is read, as before.
     const onThePhone = await fromTheTasksTab(ACCOUNT, misspelt);
     expect([...new Set(onThePhone.batch.items.map(item => item.projectName))]).toEqual(['Needs Project']);
