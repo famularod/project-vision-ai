@@ -39,7 +39,17 @@ export type SharedDocumentActivationOutcome =
   | Readonly<{ status: 'activated'; documents: readonly ReferenceDocument[] | null }>
   | Readonly<{ status: 'refresh_required' }>
   | Readonly<{ status: 'cancelled' }>
-  | Readonly<{ status: 'not_prepared' | 'failed'; message: string }>;
+  | Readonly<{ status: 'not_prepared' | 'failed'; message: string }>
+  /** A schedule the cloud has never had: this device's copy has not finished uploading (open item 3.1). */
+  | Readonly<{ status: 'not_uploaded'; message: string }>;
+
+/**
+ * Open item 3.1 (13 Oct 2026; the A5 / A8 recorded Medium). Just after an import, a schedule this device has not
+ * finished uploading was refused with "Refresh required ... Sign in and refresh the project documents": not true, and
+ * no refresh helps. It is made current only by the cloud, so on every device or on none: it says so.
+ */
+export const SCHEDULE_NOT_UPLOADED_YET =
+  'This schedule has not finished uploading, so your other devices do not have it yet. Nothing was changed on any device. It uploads by itself when this device has signal (Sync Now sends it at once); then try again.';
 
 /** What making a schedule current does to another project's schedule. */
 export type ScheduleRetirementEffect = Readonly<{
@@ -79,7 +89,9 @@ export async function activateSharedReferenceDocument({
   loadRetirementScope?: (client: SupabaseClient) => Promise<ScheduleRetirementScope | null>;
 }>): Promise<SharedDocumentActivationOutcome> {
   const target = documents.find(document => document.id === documentId);
-  if (!client || !target?.cloudUpdatedAt) return { status: 'refresh_required' };
+  // A schedule this device never heard back about is looked for in the cloud below (open item 3.1).
+  if (!client || !target || (!target.cloudUpdatedAt && !isScheduleDocument(target))) return { status: 'refresh_required' };
+  let expectedUpdatedAt = target.cloudUpdatedAt || '';
 
   // What the owner is told comes from the cloud's own current flags. The
   // phone shows one current schedule per project, so an older schedule the
@@ -99,7 +111,11 @@ export async function activateSharedReferenceDocument({
     }
     scope = knownScope;
     const cloudTarget = cloud.find(document => document.id === documentId);
-    if (!cloudTarget) return { status: 'refresh_required' };
+    // Never in the cloud: still uploading from this device (3.1). Once there and gone since: a refresh shows why.
+    if (!cloudTarget) return target.cloudUpdatedAt ? { status: 'refresh_required' } : { status: 'not_uploaded', message: SCHEDULE_NOT_UPLOADED_YET };
+    // Uploaded since this device last heard: made current by the cloud's own revision (3.1).
+    expectedUpdatedAt ||= cloudTarget.cloudUpdatedAt || '';
+    if (!expectedUpdatedAt) return { status: 'refresh_required' };
     retiring = scheduleActivationEffects(cloudTarget, cloud, scope);
   }
   if (retiring.length > 0 && !(await confirmRetiringProjects(retiring))) {
@@ -109,7 +125,7 @@ export async function activateSharedReferenceDocument({
   let activation = await activate({
     client,
     documentId,
-    expectedUpdatedAt: target.cloudUpdatedAt,
+    expectedUpdatedAt,
   });
   if (activation.status === 'conflict') {
     // The record changed first (often this phone's own queued upload). Try
@@ -296,6 +312,28 @@ export function phoneScheduleActivationTarget(
     importedAt: document.importedAt,
     projectName,
   };
+}
+
+/**
+ * Open item 3.1 (13 Oct 2026; the A5 / A8 recorded Medium). Make Current on a phone schedule card with no shared copy
+ * (never shared, or its file still uploading) made a shared record current on this phone only and marked the others
+ * not current here alone; the cloud kept its own flags, so the other devices never changed, and the card's own upload
+ * finishing then linked it to a second copy that was not current. It is now made current only by the cloud. Such a
+ * card is not made current: an uploaded card never shared is shared first (`share`), and the line says what to do.
+ */
+export function phoneScheduleCardNotSharedYet(
+  card: Readonly<{ status?: string | null; storagePath?: string | null; referenceDocumentId?: string | null }>,
+): Readonly<{ share: boolean; message: string }> {
+  if (card.status === 'failed') {
+    return { share: false, message: 'This schedule did not finish uploading from this device, so your other devices do not have it. Nothing was changed on any device. Tap Retry on its card; once it has uploaded, use Make Current again.' };
+  }
+  if (card.status !== 'uploaded' || !card.storagePath?.trim()) {
+    return { share: false, message: 'This schedule has not finished uploading from this device, so your other devices do not have it yet. Nothing was changed on any device. Once it has uploaded, use Make Current again.' };
+  }
+  if (card.referenceDocumentId?.trim()) {
+    return { share: false, message: 'This schedule’s shared copy is no longer on this device, so it cannot be made current on your other devices. Nothing was changed on any device. Add the file again to share it.' };
+  }
+  return { share: true, message: 'This schedule was not yet shared with your other devices. It is being shared now; nothing was changed on any device. Once it has uploaded, use Make Current again (Sync Now sends it at once when you have signal).' };
 }
 
 /**

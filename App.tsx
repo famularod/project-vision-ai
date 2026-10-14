@@ -323,7 +323,7 @@ import {
 } from './services/AuthoritativeDocumentSystem';
 import { buildECOSDocumentReadiness } from './services/ECOSDocumentReadiness';
 import { compactECOSReferenceDocumentsForOperationalRead } from './services/ECOSDocumentIndexPersistence';
-import { activateSharedReferenceDocument, importedScheduleOfPhoneSchedule, loadECOSScheduleRetirementScope, phoneScheduleActivationTarget, phoneScheduleCardIsCurrent, scheduleDocumentsAfterActivation, scheduleImportOfFile, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning } from './services/SharedDocumentActivation';
+import { activateSharedReferenceDocument, importedScheduleOfPhoneSchedule, loadECOSScheduleRetirementScope, phoneScheduleActivationTarget, phoneScheduleCardIsCurrent, phoneScheduleCardNotSharedYet, scheduleImportOfFile, scheduleRetirementMessage, scheduleTasksHiddenByActivation, scheduleTasksHiddenWarning } from './services/SharedDocumentActivation';
 import {
   createECOSMobileDrawingControls,
   mobileDrawingMetadataForUpload,
@@ -11355,99 +11355,26 @@ Note: This update was opened through Outlook because PLZ email security may reje
       { text: 'Import This Schedule', onPress: () => { void reviewProjectScheduleDocumentImport(document, projectName); } },
       { text: 'Make Current', onPress: () => { void makeProjectScheduleDocumentCurrent(documentId, true); } },
     ]);
-    const referenceUpdatedAt = new Date().toISOString();
-
-    let referenceDocument = importedCopy || (document.referenceDocumentId
+    const referenceDocument = importedCopy || (document.referenceDocumentId
       ? referenceDocuments.find(item => item.id === document.referenceDocumentId)
       : null);
-    const alreadyShared = Boolean(referenceDocument);
-
-    try {
-      if (!referenceDocument) {
-        const readableDocument = await ensureVerifiedProjectDocumentBytes(document);
-        if (!readableDocument.localUri) throw new Error('Verified schedule path is missing.');
-        const directory = await ensureReferenceDocumentsDirectory();
-        const originalFileName = document.name;
-        const targetUri = `${directory}${uid()}-${sanitizeFilename(originalFileName)}`;
-        await FileSystem.copyAsync({ from: readableDocument.localUri, to: targetUri });
-
-        const matchingProjectDocuments = projectDocuments.filter(item =>
-          item.category === 'Schedule' &&
-          item.name === document.name &&
-          item.mimeType === document.mimeType &&
-          item.sizeBytes === document.sizeBytes &&
-          Math.abs(Date.parse(item.importedAt) - Date.parse(document.importedAt)) < 5 * 60 * 1000,
-        );
-        const matchingProjectIds = new Set(
-          matchingProjectDocuments.map(item => item.projectId),
-        );
-        const projectName = matchingProjectIds.size === 1
-          ? projects.find(name => authorityProjectId(name) === document.projectId) || null
-          : null;
-        const ownedRecord = document.ownedFileId
-          ? parseOwnedLocalFileManifest(document.ownedFileManifest).files[document.ownedFileId]
-          : null;
-
-        referenceDocument = normalizeReferenceDocument({
-          id: uid(),
-          name: originalFileName.replace(/\.[^/.]+$/, ''),
-          originalFileName,
-          uri: targetUri,
-          mimeType: document.mimeType,
-          category: 'Schedules',
-          notes: document.note || '',
-          isCurrent: true,
-          importedAt: document.importedAt,
-          projectId: projectName ? document.projectId : null,
-          projectName,
-          storagePath: document.storagePath,
-          sizeBytes: document.sizeBytes,
-          contentSha256: ownedRecord?.sha256 || null,
-          updatedAt: referenceUpdatedAt,
-        });
-
-        const linkedReferenceDocumentId = referenceDocument.id;
-        const linkMatchingUploads = (documents: ProjectDocument[]) =>
-          documents.map(item => matchingProjectDocuments.some(match => match.id === item.id)
-            ? { ...item, referenceDocumentId: linkedReferenceDocumentId }
-            : item);
-        setProjectDocuments(linkMatchingUploads);
-        setDraft(prev => ({
-          ...prev,
-          documents: linkMatchingUploads(prev.documents || []),
-        }));
-        setSavedUpdates(prev => prev.map(update => ({
-          ...update,
-          documents: linkMatchingUploads(update.documents || []),
-        })));
-      }
-    } catch {
-      Alert.alert(
-        'Current schedule not changed',
-        'The schedule file could not be verified and copied into the shared schedule record.',
-      );
-      return;
+    // Open item 3.1: made current only by the cloud, so on every device or on none. A card with no shared copy (never
+    // shared, or still uploading) is shared first and made current by nobody here; the line says what to do.
+    if (!referenceDocument) {
+      const notYet = phoneScheduleCardNotSharedYet(document);
+      if (notYet.share) await publishUploadedProjectDocument(document, bindProjectDocumentUploadToAccount()).catch(() => undefined);
+      return Alert.alert('Current schedule not changed', notYet.message);
     }
-
-    const selectedReferenceDocument = referenceDocument;
     // A schedule already shared is made current by the cloud; a flag flipped
     // here never reached it (audit A5 F4).
-    if (alreadyShared && !(await activateReferenceDocument(selectedReferenceDocument.id))) return;
-    // By the cloud's rule, not every schedule of every project retired (owner answer Q15).
-    const nextReferenceDocuments = alreadyShared ? referenceDocumentsCurrentRef.current
-      : scheduleDocumentsAfterActivation(selectedReferenceDocument, referenceDocuments, retirement, referenceUpdatedAt);
+    if (!(await activateReferenceDocument(referenceDocument.id))) return;
 
-    if (!alreadyShared) {
-      markReferenceDocumentsAuthorityReady(true);
-      setReferenceDocuments(nextReferenceDocuments);
-    }
-
-    const updatedAt = referenceUpdatedAt;
+    const updatedAt = new Date().toISOString();
     const markCurrent = (documents: ProjectDocument[]) =>
       markCurrentProjectScheduleDocument({
         documents,
         documentId,
-        referenceDocumentId: selectedReferenceDocument.id,
+        referenceDocumentId: referenceDocument.id,
         updatedAt,
       });
 
@@ -11462,20 +11389,6 @@ Note: This update was opened through Outlook because PLZ email security may reje
         documents: markCurrent(update.documents || []),
       })),
     );
-
-    if (alreadyShared) return;
-    referenceDocumentsCurrentRef.current = nextReferenceDocuments;
-    const queueResults = await Promise.allSettled(
-      nextReferenceDocuments
-        .filter(item => !referenceDocuments.includes(item))
-        .map(document => queueReferenceDocumentRecord(document)),
-    );
-    if (queueResults.some(result => result.status === 'rejected')) {
-      Alert.alert(
-        'Current schedule saved on this device',
-        'The shared cloud record could not be updated yet. Use Sync Now when connected.',
-      );
-    }
   }
 
   async function reviewProjectScheduleDocumentImport(document: ProjectDocument, projectName: string | null) {
