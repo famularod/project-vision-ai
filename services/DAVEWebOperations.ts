@@ -25,6 +25,7 @@ import {
 } from './PIEScheduleImportBatch';
 import {
   bestScheduleProjectMatch,
+  normalizeImportedScheduleNote,
   normalizeMicrosoftProjectWebPdfPages,
   normalizeScheduleImport,
 } from './PIEScheduleIntelligence';
@@ -45,11 +46,13 @@ import {
   type ScheduleImportRoleSuggestion,
 } from './ScheduleLookahead';
 import { scheduleDocumentsAfterApproval, scheduleRowProjectNames } from './ScheduleDocumentLabels';
-import { scheduleTaskProjectKey } from './ScheduleTaskRevisions';
+import { scheduleSavedTasksOfProjects, scheduleTaskProjectKey } from './ScheduleTaskRevisions';
 import { scheduleItemIdsDeletedWithTask } from './DAVEDeletedTaskEvidence';
 import { dependencyChangesForDeletedTask } from './VitruviusScheduleEngine';
 import { daveWebTaskUpdatedAtIsCloudRowTime, scheduleItemForCloud, type DAVEWebScheduleItem } from './DAVEWebTaskEditing';
 import { buildDAVEReportProjectTruths } from './DAVEReportProjectTruths';
+import { buildCombinedReportAuthorityScope, buildDailyReportAuthorityScope } from './ReportAuthorityScope';
+import { parseMonthNameDateParts } from './ProjectDateTime';
 import { daveWebListedDocuments } from './DAVEWebDocumentManagement';
 import { referenceDocumentsCitedAsListed, withoutListedPageIndexes } from './ECOSDocumentIndexPersistence';
 import { scheduleTaskIsComplete } from './dave-project-schedule-rollup';
@@ -1453,6 +1456,7 @@ function buildDAVEWebProjectTruths(
   const projects = snapshot.projects.filter(project =>
     !selectedProject || normalized(project.name) === normalized(selectedProject),
   );
+  if (projects.length === 0) return [];
   const projectRecords = snapshot.projects.map(project => ({
     id: project.id,
     name: project.name,
@@ -1466,29 +1470,98 @@ function buildDAVEWebProjectTruths(
   // to the report, so the truth as Build 230 built it (for the 1.0 fingerprint only) is still built from the
   // loader's tasks as they are. The loader says which tasks had no updatedAt of their own
   // (daveWebTaskUpdatedAtIsCloudRowTime); a real edit time is the task's own and stays.
+  // Open item 7.61 (N761e): and with its dates and an imported note as every phone and iPad hold the same row once
+  // downloaded (daveWebScheduleItemAsThePhoneHoldsIt).
   const cloudRowTimeOnly = daveWebTaskUpdatedAtIsCloudRowTime;
-  const asSaved = <T extends readonly DAVEWebScheduleItem[] | undefined>(items: T): T => (items && items.some(cloudRowTimeOnly)
-    ? items.map(item => { if (!cloudRowTimeOnly(item)) return item; const { updatedAt: _cloudRowTime, ...saved } = item; return saved as DAVEWebScheduleItem; }) as unknown as T
-    : items);
+  const asSaved = <T extends readonly DAVEWebScheduleItem[] | undefined>(items: T): T => {
+    if (!items) return items;
+    let changed = false;
+    const held = items.map(item => {
+      const { updatedAt: _cloudRowTime, ...withoutRowTime } = item;
+      const saved = cloudRowTimeOnly(item) ? withoutRowTime as DAVEWebScheduleItem : item;
+      const onThePhone = daveWebScheduleItemAsThePhoneHoldsIt(saved);
+      if (onThePhone !== item) changed = true;
+      return onThePhone;
+    });
+    return (changed ? held : items) as unknown as T;
+  };
   const scheduleItems = asSaved(snapshot.scheduleItems);
   const knownScheduleItems = asSaved(snapshot.knownScheduleItems as readonly DAVEWebScheduleItem[] | undefined);
   const handedAsBefore = scheduleItems !== snapshot.scheduleItems || knownScheduleItems !== snapshot.knownScheduleItems;
-  // One recipe with the phone's Reports screen (open item, 6 Oct 2026).
-  return buildDAVEReportProjectTruths({
-    projects: projects.map(project => ({ name: project.name, projectId: project.id || normalized(project.name) })),
+  // Open item 7.61 (N761e): one recipe with the phone's Reports screen, IN ITS TWO STEPS, so that the computer works
+  // out the same report (and fingerprint) from the same cloud rows as the phone and the iPad. The phone first takes
+  // the project's records as the App's own scope for the report has them (App.tsx liveAuthorityInput: the daily
+  // report's scope, or the combined report's, over the owner's projects), and its Reports screen then works out the
+  // truths of those records with the projects known by NAME alone (ReportsScreen.tsx reportTruths). The web did the
+  // second step only, over every record, with the projects known by their cloud ids too: a document bound to the
+  // project's cloud id (a schedule shared from a Documents card, a file added on the computer) was in the computer's
+  // report and in no phone's, and the computer printed "<Category> document added: <name>." in What changed for 14
+  // days after it was added; so it never knew the phone's sent report ("already sent") and offered Approve again.
+  const names = projects.map(project => project.name);
+  const appScopeInput = {
+    selectedProjectNames: names,
     projectRecords,
     updates: snapshot.projectUpdates.map(update => update.updateData),
-    scheduleItems,
-    knownScheduleItems,
+    scheduleItems: scheduleItems as readonly ScheduleItem[],
+    knownScheduleItems: (knownScheduleItems ?? scheduleItems) as readonly ScheduleItem[],
+    currentUpdate: null,
+    // A document the cloud marks archived is not counted (owner answer Q44; review of D1, L10); with none, this is the list itself.
+    referenceDocuments: daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds) as unknown as ReferenceDocument[],
+  };
+  const appScope = names.length === 1
+    ? buildDailyReportAuthorityScope({ ...appScopeInput, selectedProjectName: names[0] })
+    : buildCombinedReportAuthorityScope(appScopeInput);
+  return buildDAVEReportProjectTruths({
+    projects: projects.map(project => ({ name: project.name, projectId: project.id || normalized(project.name) })),
+    // The Reports screen's: the report's projects by name.
+    projectRecords: names.map(name => ({ name })),
+    updates: appScope.updates,
+    scheduleItems: appScope.scheduleItems,
+    knownScheduleItems: scheduleSavedTasksOfProjects(appScopeInput.knownScheduleItems, appScope.scheduleItems, appScope.projectNames),
     ...(handedAsBefore ? { asBuiltBefore: { scheduleItems: snapshot.scheduleItems, knownScheduleItems: snapshot.knownScheduleItems } } : {}),
     // The web's Word report cites drawings from every document downloaded (the Reports page), so the fingerprint does (R8 item 2).
     // High item 3: a drawing piece only from the list's copy of its index (the phone's rule); the documents as before.
     drawingDocuments: referenceDocumentsCitedAsListed([...snapshot.referenceDocuments] as ReferenceDocument[]),
     knownScheduleDocuments: snapshot.referenceDocuments,
-    // A document the cloud marks archived is not counted (owner answer Q44; review of D1, L10); with none, this is the list itself.
-    referenceDocuments: withoutListedPageIndexes(daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds) as unknown as ReferenceDocument[]),
+    referenceDocuments: withoutListedPageIndexes([...appScope.referenceDocuments]),
     now: snapshot.refreshedAt,
   });
+}
+
+/**
+ * Open item 7.61 (N761e): a task as every phone and iPad hold its cloud row once downloaded (App.tsx
+ * normalizeScheduleItem, run on every download): its start and finish dates in the phone's own wording (MM/DD/YYYY,
+ * from "10/5/2026", "2026-10-05" or "Oct 5, 2026"; any other text as it is, trimmed), and a note an import wrote
+ * cleaned as the phone cleans it (normalizeImportedScheduleNote). The web keeps the row as written: a task whose dates
+ * the computer or an earlier import wrote in another form ("2026-10-05", "Oct 5, 2026") read "due 2026-10-05" in the
+ * computer's report and "due 10/05/2026" in the phone's, so the two reports were never the same report. The same task
+ * when nothing differs.
+ */
+export function daveWebScheduleItemAsThePhoneHoldsIt<T extends ScheduleItem>(item: T): T {
+  const startDate = typeof item.startDate === 'string' ? scheduleDateAsThePhoneSavesIt(item.startDate) : '';
+  const finishDate = typeof item.finishDate === 'string' ? scheduleDateAsThePhoneSavesIt(item.finishDate) : '';
+  const notes = normalizeImportedScheduleNote(item.notes, item.importedFrom);
+  if (startDate === item.startDate && finishDate === item.finishDate && notes === item.notes) return item;
+  return { ...item, startDate, finishDate, notes };
+}
+
+/** App.tsx formatAppDate (with its parseFlexibleDate), to the letter: the phone's saved form of a task's date. */
+function scheduleDateAsThePhoneSavesIt(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  const calendarDay = (year: number, month: number, day: number) => {
+    const date = new Date(year, month - 1, day);
+    return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day ? date : null;
+  };
+  const us = trimmed.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+  const iso = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const named = parseMonthNameDateParts(trimmed);
+  const date = (us ? calendarDay(Number(us[3]), Number(us[1]), Number(us[2])) : null) ??
+    (iso ? calendarDay(Number(iso[1]), Number(iso[2]), Number(iso[3])) : null) ??
+    (named ? new Date(named.year, named.month - 1, named.day) : null);
+  if (!date) return trimmed;
+  const pad = (part: number) => part.toString().padStart(2, '0');
+  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())}/${date.getFullYear()}`;
 }
 
 export function buildDAVEWebReportTitle(
