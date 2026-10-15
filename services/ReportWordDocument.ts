@@ -496,7 +496,7 @@ function addInlinePhotoReferences(
       if (!eligibleSections.has(section)) return;
       let prepared = preparedLines.get(index);
       if (!prepared) {
-        prepared = prepareReportLine(rawLine);
+        prepared = prepareReportLine(rawLine, section);
         preparedLines.set(index, prepared);
       }
       const match = reportLinePhotoMatch(prepared, target);
@@ -541,6 +541,8 @@ const REPORT_LINE_MATCH_RANK: Readonly<Record<ReportLineMatch, number>> = { 'oth
 type ReportPhotoMatchTarget = Readonly<{
   project: string;
   area: string;
+  /** The photo's area as it records it ("Unit 4 (rear"): read after a task in brackets, whatever its own (P2-1). */
+  areaText: string;
   /** The task's name with letters and digits of any script ("Покраска" is a name, R1), and as Latin letters only. */
   task: string;
   taskLatin: string;
@@ -557,6 +559,7 @@ function reportPhotoMatchTarget(photo: ReportWordMedia): ReportPhotoMatchTarget 
   return {
     project,
     area,
+    areaText: (photo.areaName || '').trim(),
     task,
     taskLatin: normalizedReportMatchText(taskName),
     taskEndsInBracket: taskName.endsWith(')'),
@@ -578,6 +581,8 @@ type PreparedReportLine = Readonly<{
   taskEnds: readonly number[];
   /** " (<area>): ", " (<area>) is ", " (<area>) has ": where the area a task line prints after the task begins and ends. */
   areaAfter: ReadonlyMap<number, readonly [number, number]>;
+  /** A line of DECISIONS REQUIRED ("<project> — <task>: <action>"): there ": " ends a task's name (P2-2). */
+  decisions: boolean;
 }>;
 
 /** " (<area>): ", " (<area>) is ", " (<area>) has ": the area a task line prints after the task (one nested pair kept). */
@@ -585,7 +590,10 @@ const REPORT_TASK_AREA_THEN_TEXT = / \(((?:[^()]|\([^()]*\))*)\)(?:: | is | has 
 /** What Completed / Current Work prints after a task with no area: "<status>; N% complete" (reportTaskFact). */
 const REPORT_TASK_FACT_STATUS = /(?:Not Started|In Progress|Waiting|Complete); \d{1,3}% complete/y;
 
-function prepareReportLine(rawLine: string): PreparedReportLine {
+/** What a task line prints after its area in brackets: ": " (Completed / Current Work), " is ", " has " (Schedule Risks). */
+const REPORT_TASK_AREA_FOLLOWERS = [': ', ' is ', ' has '] as const;
+
+function prepareReportLine(rawLine: string, section: string): PreparedReportLine {
   const text = rawLine.trim().replace(/^[-*•]\s+/, '');
   const starts = (separator: string) => {
     const found: number[] = [];
@@ -612,6 +620,7 @@ function prepareReportLine(rawLine: string): PreparedReportLine {
     issues,
     taskEnds: sorted(parens, colons, starts(' is '), starts(' has '), issues),
     areaAfter,
+    decisions: section === 'DECISIONS REQUIRED',
   };
 }
 
@@ -624,7 +633,9 @@ function prepareReportLine(rawLine: string): PreparedReportLine {
  * N773b: the task's name keeps letters of any script (R1); an Action Plan line's area may hold ": " ("Bldg A: Level 2",
  * R4), and its area is never read as a task (R5a); a task read up to ": ", " is ", " has " does not take in the
  * line's "(<area>)" ("Paint (Lobby)" is not "Paint lobby", R5b). Each name is compared where it stands on the line,
- * read once (R7).
+ * read once (R7). N773c: the photo's own area is read after the task whatever brackets it holds (P2-1); a " — " line
+ * ends a task at ": " only before its status or in Decisions Required (P2-2); an Action Plan area ends at a later ": "
+ * only where it is the photo's own (P2-3); names keep the marks of other scripts (P2-4).
  */
 function reportLinePhotoMatch(line: PreparedReportLine, photo: ReportPhotoMatchTarget): ReportLineMatch | null {
   if (!line.words.includes(` ${photo.area} `)) return null;
@@ -644,21 +655,34 @@ function reportLinePhotoMatch(line: PreparedReportLine, photo: ReportPhotoMatchT
     const dash = text.startsWith(' — ', projectEnd);
     const start = projectEnd + (dash ? 3 : 2);
 
-    // Action Plan: "<project> — <area>: <task>. Issue: …", trying each ": " before the ". Issue: " as the area's end.
+    // Action Plan: "<project> — <area>: <task>. Issue: …", trying each ": " before the ". Issue: " as the area's end. A
+    // later ": " ends it only where the text before it is the photo's own area ("Bldg A: Level 2"): "Building A: Level 3:
+    // Drywall" is the task "Level 3: Drywall" in Building A, not Drywall in "Building A: Level 3" (P2-3).
     let actionPlan = false;
     let issue = 0;
+    let laterColon = false;
     for (const colon of line.colons) {
       if (colon < start) continue;
       while (issue < line.issues.length && line.issues[issue] < colon + 2) issue += 1;
       if (issue >= line.issues.length) break;
       if (dash) actionPlan = true;
-      if (namesTask(colon + 2, line.issues[issue])) take(areaMatch(start, colon));
+      const later = laterColon;
+      laterColon = true;
+      if (!namesTask(colon + 2, line.issues[issue])) continue;
+      const area = areaMatch(start, colon);
+      if (!later || area === 'area') take(area);
     }
     // There the text before ": " is the area, never a task (a task named "Roof" in area Roof is not "Roof: Flashing").
     if (actionPlan) continue;
 
     for (const end of line.taskEnds) {
       if (end <= start) continue;
+      // The photo's own area after the task, as the photo records it, whatever brackets it holds: "Paint (Unit 4 (rear):
+      // …", "Paint (Lot 3)) is overdue …" (P2-1; the reading below keeps one level of paired brackets).
+      const close = end + 2 + photo.areaText.length;
+      if (text.startsWith(' (', end) && text.startsWith(')', close) &&
+        REPORT_TASK_AREA_FOLLOWERS.some(follower => text.startsWith(follower, close + 1)) &&
+        text.startsWith(photo.areaText, end + 2) && namesTask(start, end)) take('area');
       const area = line.areaAfter.get(end);
       if (area) {
         if (namesTask(start, end)) take(areaMatch(area[0], area[1]));
@@ -673,8 +697,12 @@ function reportLinePhotoMatch(line: PreparedReportLine, photo: ReportPhotoMatchT
       if (text[end - 1] === ')' && !photo.taskEndsInBracket) continue;
       if (!namesTask(start, end)) continue;
       if (text.startsWith(': ', end)) {
+        // "<project> — <task>: …" ends the task at ": " only where the report writes one there: before its status (a
+        // task with no area) or in Decisions Required. "Electrical: trim (Level 2): …" is not Electrical's line (P2-2).
         REPORT_TASK_FACT_STATUS.lastIndex = end + 2;
-        take(dash && REPORT_TASK_FACT_STATUS.test(text) ? 'other area' : 'unknown');
+        if (!dash) take('unknown');
+        else if (REPORT_TASK_FACT_STATUS.test(text)) take('other area');
+        else if (line.decisions) take('unknown');
       } else {
         take(dash ? 'other area' : 'unknown');
       }
@@ -691,14 +719,14 @@ function reportLinePhotoMatch(line: PreparedReportLine, photo: ReportPhotoMatchT
 type ReportMatchText = Readonly<{ text: string; at: Int32Array }>;
 
 const REPORT_MATCH_LATIN = /[A-Za-z0-9]/;
-const REPORT_MATCH_ANY_SCRIPT = /[\p{L}\p{N}]/u;
-const REPORT_MATCH_ANY_SCRIPT_MARK = /\p{M}/u;
+/** Letters, digits and marks of any script: a Hindi vowel sign, a Thai vowel, a Japanese voicing mark are part of a
+ * name ("\u0915\u093e\u092e" is not "\u0915\u092e"); only the Latin accents are dropped, as in the Latin reading (P2-4). */
+const REPORT_MATCH_ANY_SCRIPT = /[\p{L}\p{N}\p{M}]/u;
 const REPORT_MATCH_LATIN_MARK = /[\u0300-\u036f]/;
 
 function matchTextByPosition(value: string, anyScript: boolean): ReportMatchText {
   const at = new Int32Array(value.length + 1);
   const keep = anyScript ? REPORT_MATCH_ANY_SCRIPT : REPORT_MATCH_LATIN;
-  const mark = anyScript ? REPORT_MATCH_ANY_SCRIPT_MARK : REPORT_MATCH_LATIN_MARK;
   let text = '';
   const add = (part: string) => {
     if (part !== ' ') text += part;
@@ -712,11 +740,12 @@ function matchTextByPosition(value: string, anyScript: boolean): ReportMatchText
     const code = character.charCodeAt(0);
     const parts = code < 128 ? character : character.normalize('NFKD');
     for (const part of parts) {
+      if (REPORT_MATCH_LATIN_MARK.test(part)) continue;
       if (part === '&') {
         add(' '); add('AND'); add(' ');
       } else if (keep.test(part)) {
         add(part.toUpperCase());
-      } else if (!mark.test(part)) {
+      } else {
         add(' ');
       }
     }
