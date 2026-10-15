@@ -17,8 +17,7 @@ import type { PIEScheduleImportBatch } from './PIEScheduleImportBatch';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
 import { scheduleEditWithDateChangedAlone } from './ScheduleDateEdit';
-import { SCHEDULE_PROGRESS_FIELDS, scheduleItemAsLastSetOnItsOtherRow, scheduleItemFieldAsRead } from './ScheduleItemEditBase';
-import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
+import { SCHEDULE_PROGRESS_FIELDS, scheduleItemAsLastSetOnItsOtherRow } from './ScheduleItemEditBase';
 import {
   SCHEDULE_UPDATE_PROGRESS_CONFIRMER,
   scheduleProgressIsManagers,
@@ -947,6 +946,15 @@ const putBackFields = (): readonly string[] => ['startDate', 'finishDate', 'look
  * changes there, and weighs the rest of the copy (his edit that waited, his notes) as before. Null, and the copy goes
  * as before, for any other copy, or where the copy's dates and percent are not the delete's own (made on the copy it
  * started from the delete would not give them: something else of his changed them too).
+ *
+ * W6-3 (review pass 6 of Way 2, Medium, caused by step 2 part A past this guard; 14 Oct 2026): the phone, with no
+ * signal, entered 30% on Survey and deleted lookahead L1 with its items (one waiting copy); the iPad, not having heard,
+ * approved L2 moving Survey again; when the phone got signal Survey went to the master's dates everywhere, L2 gone from
+ * its note, no card. One device in order (and Build 232) shows L2's dates at his 30%. The copy's percent is his own,
+ * not the delete's, so the guard sent it the old way. Now, where the copy's dates and lookaheads are the delete's own
+ * and its progress differs only by his own percent (his entry, before or after the delete, in the same waiting copy),
+ * the delete is still made again on the cloud's row; his progress is laid on top, weighed against the copy it started
+ * from as any edit of his is.
  */
 export function scheduleLookaheadDeleteMadeOnCloudRow(
   local: ScheduleItem,
@@ -969,7 +977,10 @@ export function scheduleLookaheadDeleteMadeOnCloudRow(
   const same = (one: ScheduleItem, other: ScheduleItem) => sameScheduleCalendarDay(one.startDate, other.startDate) &&
     sameScheduleCalendarDay(one.finishDate, other.finishDate) && percentOf(one) === percentOf(other) && key(one.status) === key(other.status) &&
     JSON.stringify(batchesOf(one)) === JSON.stringify(batchesOf(other));
-  if (!same(onCopy, local)) return null;
+  // W6-3: his own percent joined to the delete in the same waiting copy (the rest the delete's own) is his, laid on top.
+  const his = !same(onCopy, local) && sameScheduleCalendarDay(onCopy.startDate, local.startDate) && sameScheduleCalendarDay(onCopy.finishDate, local.finishDate) &&
+    JSON.stringify(batchesOf(onCopy)) === JSON.stringify(batchesOf(local)) && scheduleProgressIsManagers(local) && !scheduleProgressIsManagers(onCopy);
+  if (!same(onCopy, local) && !his) return null;
   const onCloud = deletedOn(remote) as unknown as Record<string, unknown>;
   const itemData = { ...local } as unknown as Record<string, unknown>;
   const startedFrom: Record<string, unknown> = { ...copy };
@@ -977,7 +988,7 @@ export function scheduleLookaheadDeleteMadeOnCloudRow(
     if (source[field] === undefined) delete target[field];
     else target[field] = source[field];
   };
-  putBackFields().forEach(field => {
+  putBackFields().filter(field => !his || !SCHEDULE_PROGRESS_FIELDS.includes(field)).forEach(field => {
     take(itemData, onCloud, field);
     take(startedFrom, remote as unknown as Record<string, unknown>, field);
   });
@@ -1043,48 +1054,24 @@ export function scheduleLookaheadDeleteMadeOnApproval(
  * device's whole copy going up over the cloud's row), both copies had changed the task's lookahead note, so the sync
  * merge kept one copy's note whole (lookaheadNoteOfBoth keeps the base copy's list): it named only the newer
  * lookahead. Deleting that one with its items then put the task back on the master's dates on every device, though the
- * older lookahead is still in effect; one device doing the steps in order goes back to the older one's dates. And where
- * only the older lookahead stated a percent, the merge took the newer copy's progress, which its lookahead had left
- * alone (one device keeps the older one's percent). The same merge kept a lookahead the other device had deleted
- * meanwhile in the note of a copy approved before that device's delete was heard.
+ * older lookahead is still in effect; one device doing the steps in order goes back to the older one's dates. The same
+ * merge kept a lookahead the other device had deleted meanwhile in the note of a copy approved before that device's
+ * delete was heard.
  *
  * At that merge only: where the copy merged kept the note of one copy, and that copy named lookaheads of its own
  * (approved since the copy the save started from), the note names what one device in order would: the other copy's own
- * lookaheads too, just before the kept copy's own (so the task stays on the dates of the kept copy's newest), less the
- * lookaheads the other copy no longer names (deleted there). Part B: the progress goes with the copy that changed it,
- * when only one did (the weighing field by field's own rule). Null, and the merged copy goes as before, for any other
- * copy (no copy it started from, a note neither copy changed that way, or nothing to add or take off).
+ * lookaheads too, each entry as that device noted it, just before the kept copy's own (so the task stays on the dates
+ * of the kept copy's newest), less the lookaheads the other copy no longer names (deleted there). S-2 (review pass 4 of
+ * Way 2): each of the other copy's goes just before the first of the kept copy's own approved after it, where every
+ * entry says when it was approved (approvedTimeOf, W5-1) and each of the other's is older than the kept copy's newest;
+ * else before the kept copy's own. W4-2 / W5-2 (review passes 4 and 5): where the note's percent is his own and he did
+ * not type it before the other copy's lookahead was approved, that entry comes in with no percent, as one device clears
+ * it at the next file, so a delete going back to it gives his percent (as 6b066e9a gave it), not the lookahead's.
  *
- * Part B, W3-1 (review pass 3 of Way 2, Medium, caused by part B; 14 Oct 2026): Framing at 0%; the phone approved
- * lookahead A saying 70%, the iPad with no signal the newer B saying 0%. B's 0% over a task at 0% changed nothing part B
- * could see, so the task took A's 70% with B's dates on every device; one device in order (and Build 232) shows 0%. The
- * task's note already says whether a lookahead gave a percent (its entry's percentComplete, null when it left progress
- * alone): where the kept copy's newest lookahead gave one, that copy counts as having changed the progress, so the other
- * copy's change no longer stands over it alone (both changed: the merge's progress, as before part B).
- *
- * W4-1 (review pass 4 of Way 2, Medium, narrow, caused by part B; 14 Oct 2026): three lookaheads, the iPad with no signal
- * approving two (the earlier stating the 0% the task had, the later none), the phone's older one stating 70%: W3-1's
- * question read only the newest (none), and the task took 70% everywhere; one device in order shows 0%. Part B now
- * compares when each copy last stated its progress: its newest new lookahead that gave a percent (by the entry's
- * importedAt). The later copy's progress stands, where every copy that changed its progress says when and no percent of
- * his own is in play (on either copy, the copy it started from or a note); else as before (the copy that changed it, when
- * only one did; his own percents keep their rules, a file's percent never below his).
- * W4-2 (Low, caused by part A): the phone approved A (70%); the iPad, no signal, took Framing to 30% by hand, then
- * approved B. Deleting B later gave A's 70% back, copied from the phone's note; one device gives his 30% (his percent,
- * typed after A, took A's percent out of the note). The other copy's lookahead copied in now gives no percent where the
- * note's percent is his own and was not typed before that lookahead was imported (as one device at the next file).
- * S-2 (older, Low, the same lines): the other copy's lookahead imported between two of the kept copy's own goes between
- * them, so deleting the newest goes back to its dates, as one device in order; by every entry's importedAt, only where
- * each is older than the kept copy's newest (else before the kept copy's own, as before).
- *
- * W5-1 (review pass 5 of Way 2, Medium, narrow, caused by W4-1's cure) and W5-2 (Low, caused by W4-2's): the app reads
- * a lookahead file in when it is chosen (importedAt) and approves it later, at its review card. The iPad, no signal,
- * read A in (70%) and left the card open; the phone (or the computer) read in and approved B (30%); the iPad approved
- * A: the task took A's dates (the merge keeps the copy approved last) at B's 30% everywhere; one device in order shows
- * A's 70%. And his percent typed between A's reading-in and its approval counted as typed after A. The three rules
- * above now compare when each lookahead was APPROVED (approvedTimeOf: its entry's approvedAt, noted where it differs
- * from importedAt), as one device and the merge do; an entry with none (approved when read in, or noted before this)
- * keeps importedAt, as before.
+ * The task's percent is the merge's, as it was before this rule (N213e, 14 Oct 2026, the coordinator's decision after
+ * review pass 6's W6-1: c770d34e's part B, W3-1's question and W4-1 / W5-1's time rule are taken out; their shapes go
+ * to the percent stage, 2.3 / 2.67). Null, and the merged copy goes as before, for any other copy (no copy it started
+ * from, a note neither copy changed that way, or nothing to add or take off).
  */
 export function scheduleLookaheadApprovalsOfBoth(
   merged: ScheduleItem,
@@ -1124,31 +1111,7 @@ export function scheduleLookaheadApprovalsOfBoth(
   const placed = byApproval ? own.flatMap(mine => [...theirs.filter(entry => slotOf(entry) === mine), mine]) : [...theirs, ...own];
   const lookaheads = [...note.lookaheads.slice(0, first), ...placed]
     .filter(entry => !dropped.includes(key(entry.batchId)));
-  const next = { ...merged } as unknown as Record<string, unknown>;
-  // Part B: the progress of the copy that changed it, when only one did.
-  const asRead = (item: ScheduleItem, field: string) => {
-    const value = scheduleItemFieldAsRead(field, (item as unknown as Record<string, unknown>)[field]);
-    return value === undefined || value === null ? 'null' : canonicalScheduleItemJson(value);
-  };
-  // (W3-1: the kept copy's newest lookahead gave a percent, by its own entry, though maybe the one the task had.)
-  const newestGave = typeof (overlayOf(kept.item)?.lookaheads ?? []).slice(-1)[0]?.percentComplete === 'number';
-  const fieldsChanged = sides.map(side => SCHEDULE_PROGRESS_FIELDS.some(field => asRead(side.item, field) !== asRead(before, field)));
-  const progressChanged = sides.map((side, index) => (side === kept && newestGave) || fieldsChanged[index]);
-  // W4-1: when each copy last stated its progress: its newest new lookahead that gave a percent (when approved, W5-1);
-  // null where one that gave a percent says no time. The later stands, where each copy that changed its progress says
-  // when, and no percent of his own is in play (his keep their own rules: a file's percent never below his); else as before.
-  const statedAt = sides.map(side => {
-    const gave = (overlayOf(side.item)?.lookaheads ?? [])
-      .filter(entry => side.added.includes(key(entry.batchId)) && typeof entry.percentComplete === 'number').map(entry => approvedTimeOf(entry));
-    return gave.some(time => time === 0) ? null : Math.max(0, ...gave);
-  });
-  const hisInPlay = [local, remote, before].some(item => scheduleProgressIsManagers(item) || notedPercentIsManagers(overlayOf(item) ?? ({} as ScheduleLookaheadOverlay)));
-  const [one, two] = statedAt;
-  const byTime = !hisInPlay && one !== null && two !== null && one !== two && statedAt.every((time, index) => (time ?? 0) > 0 || !fieldsChanged[index]);
-  const progressOf = (byTime ? sides[one! > two! ? 0 : 1].item
-    : progressChanged[0] !== progressChanged[1] ? sides[progressChanged[0] ? 0 : 1].item : null) as unknown as Record<string, unknown> | null;
-  if (progressOf) SCHEDULE_PROGRESS_FIELDS.forEach(field => { if (progressOf[field] === undefined) delete next[field]; else next[field] = progressOf[field]; });
-  return withOverlay(next as unknown as ScheduleItem, { ...note, lookaheads });
+  return withOverlay(merged, { ...note, lookaheads });
 }
 
 /**

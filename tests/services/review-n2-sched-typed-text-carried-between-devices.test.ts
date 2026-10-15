@@ -7624,14 +7624,14 @@ describe('Open item 2.13: two lookaheads approved apart on two devices: the note
       const apart = await steps(order, pa, pb, false);
       // (It was: after the approvals the note named the newer lookahead alone, and where only the older stated a percent,
       // 0%; with the newer deleted, the master's 10/15 - 10/25 at 0% in all three places, no lookahead note, no card.)
-      expect({ afterApprovals: apart.afterApprovals, end: apart.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+      percentStageOrOneDevice({ afterApprovals: apart.afterApprovals, end: apart.end }, { afterApprovals: inOrder.afterApprovals, end: inOrder.end });
     });
   });
 
   it.each(['the phone\'s first, the iPad\'s later', 'the iPad\'s first, the phone\'s later'] as Order[])('%s, each device then syncing by Full Sync and starting the app again: the same, as one device in order', async order => {
     const inOrder = await steps(order, '', '', true);
     const apart = await steps(order, '', '', false, true);
-    expect({ afterApprovals: apart.afterApprovals, end: apart.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+    percentStageOrOneDevice({ afterApprovals: apart.afterApprovals, end: apart.end }, { afterApprovals: inOrder.afterApprovals, end: inOrder.end });
   });
 
   it.each(['the phone\'s first, the iPad\'s later', 'the iPad\'s first, the phone\'s later'] as Order[])('%s, the answer to the iPad\'s write lost (it reached the cloud) and the task sent again: no card, as one device in order', async order => {
@@ -7639,7 +7639,7 @@ describe('Open item 2.13: two lookaheads approved apart on two devices: the note
     const apart = await steps(order, '', '', false, false, true);
     // (It was, on the change without part C: a whole-task card on the iPad with nothing on either side; and the
     // iPad's-first order had that card before this change too.)
-    expect({ afterApprovals: apart.afterApprovals, end: apart.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+    percentStageOrOneDevice({ afterApprovals: apart.afterApprovals, end: apart.end }, { afterApprovals: inOrder.afterApprovals, end: inOrder.end });
   });
 
   it('a lookahead the phone deleted while the iPad, with no signal and not having heard, approved another one: the deleted one is not brought back, as one device in order', async () => {
@@ -7660,7 +7660,7 @@ describe('Open item 2.13: two lookaheads approved apart on two devices: the note
     // One device in order: the delete gives back the master's 0%, then the second lookahead's dates, its note alone.
     expect(inOrder).toEqual({ places: Array(3).fill([{ dates: B_DATES, percent: 0, lookaheads: [L2.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
     // (It was: the deleted lookahead named again in the note, before the second, at its 70%, in all three places.)
-    expect(await run(false)).toEqual(inOrder);
+    percentStageOrOneDevice(await run(false), inOrder);
   });
 });
 
@@ -7887,7 +7887,7 @@ describe('W3-1 (2.13, part B): two lookaheads approved apart: the newer one\'s p
       const apart = await steps(start, order, pa, pb, false);
       // (It was, where the newer states the start itself and the older another percent: the older one's percent with the
       // newer one's dates in all three places, no card; after the delete as one device.)
-      expect({ afterApprovals: apart.afterApprovals, end: apart.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+      percentStageOrOneDevice({ afterApprovals: apart.afterApprovals, end: apart.end }, { afterApprovals: inOrder.afterApprovals, end: inOrder.end });
     });
   });
 });
@@ -7987,7 +7987,7 @@ describe('W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a pe
         // (It was, where P1 states the start itself and P2 none: S's 70% in all three places, after the approvals and after
         // the delete, no card. Where S falls between P1 and P2: the note named S before P1, and the delete went to P1's
         // 10/20 - 10/30.)
-        expect({ afterApprovals: apart.afterApprovals, end: apart.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+        percentStageOrOneDevice({ afterApprovals: apart.afterApprovals, end: apart.end }, { afterApprovals: inOrder.afterApprovals, end: inOrder.end });
       });
 
       // His own percent keeps its rules: typed on the pair's device after all three, it stands (one device: his 30%), though
@@ -8002,7 +8002,7 @@ describe('W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a pe
         expect(inOrder.afterApprovals).toEqual({ places: Array(3).fill([{ dates: datesOn('21'), percent: 30, lookaheads: steps.map(batch) }]), cards: [0, 0], waiting: [0, 0] });
         expect(inOrder.end).toEqual({ places: Array(3).fill([{ dates: datesOn(remaining[remaining.length - 1].day), percent: 30, lookaheads: remaining.map(batch) }]), cards: [0, 0], waiting: [0, 0] });
         const apart = await three(start, pair, steps, false, true);
-        expect({ afterApprovals: apart.afterApprovals, end: apart.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+        percentStageOrOneDevice({ afterApprovals: apart.afterApprovals, end: apart.end }, { afterApprovals: inOrder.afterApprovals, end: inOrder.end });
       });
     });
   });
@@ -8053,7 +8053,7 @@ describe('W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a pe
         expect(inOrder.end).toEqual({ places: Array(3).fill([{ dates: datesOn('18'), percent: endPercent, lookaheads: [LA.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
         const apart = await typed(holder, when, pa, pb, false);
         // (It was, his 30% typed after A, A 70%: after B's delete, A's dates at A's 70% in all three places, no card.)
-        expect({ afterApprovals: apart.afterApprovals, end: apart.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+        percentStageOrOneDevice({ afterApprovals: apart.afterApprovals, end: apart.end }, { afterApprovals: inOrder.afterApprovals, end: inOrder.end });
       });
     });
   });
@@ -8154,7 +8154,7 @@ describe('W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each
         const twoDevices = await apart(start, steps, deleted, false);
         // (It was, A read in first and approved last, both stating a percent: A's dates at B's percent in all three places,
         // after the approvals and after the delete, no card.)
-        expect({ afterApprovals: twoDevices.afterApprovals, end: twoDevices.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+        percentStageOrOneDevice({ afterApprovals: twoDevices.afterApprovals, end: twoDevices.end }, { afterApprovals: inOrder.afterApprovals, end: inOrder.end });
       });
     });
   });
@@ -8221,7 +8221,7 @@ describe('W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each
       if (deleteB) expect(inOrder.end).toEqual({ places: Array(3).fill([{ dates: datesOn('18'), percent: Number(pa || 0), lookaheads: [LA.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
       const twoDevices = await steps(pa, pb, deleteB, false);
       // (It was, B stating a percent: A's dates at B's percent in all three places, and after B's delete, no card.)
-      expect({ afterApprovals: twoDevices.afterApprovals, end: twoDevices.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+      percentStageOrOneDevice({ afterApprovals: twoDevices.afterApprovals, end: twoDevices.end }, { afterApprovals: inOrder.afterApprovals, end: inOrder.end });
     });
   });
 
@@ -8270,7 +8270,7 @@ describe('W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each
         expect(inOrder.end).toEqual({ places: Array(3).fill([{ dates: datesOn('18'), percent: endPercent, lookaheads: [LA.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
         const twoDevices = await typed(holder, his, pa, pb, false);
         // (It was, his 30% typed after A was read in and before it was approved: after B's delete, A's dates at his 30%.)
-        expect({ afterApprovals: twoDevices.afterApprovals, end: twoDevices.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+        percentStageOrOneDevice({ afterApprovals: twoDevices.afterApprovals, end: twoDevices.end }, { afterApprovals: inOrder.afterApprovals, end: inOrder.end });
       });
     });
   });
@@ -8325,8 +8325,264 @@ describe('W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each
         const twoDevices = await three(pair, steps, false);
         // (It was: the note named S before P1 (by reading-in), so deleting P2 went to P1's 10/20 - 10/30; and where S and P1
         // both state a percent, P1's stood.)
-        expect({ afterApprovals: twoDevices.afterApprovals, end: twoDevices.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+        percentStageOrOneDevice({ afterApprovals: twoDevices.afterApprovals, end: twoDevices.end }, { afterApprovals: inOrder.afterApprovals, end: inOrder.end });
       });
+    });
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * N213e (14 Oct 2026): the coordinator's decision after review pass 6 of Way 2. The lookahead PERCENT refinement ends.
+ * Where two lookahead approvals meet, the task's percent is the merge's, as on 6b066e9a (before 2.13's rule): c770d34e's
+ * part B (the older lookahead's percent kept), W3-1's question and W4-1 / W5-1's time rule are taken out. 2.13's part A
+ * (the note names both lookaheads; a delete goes back to the older one's dates), part C, the list order (S-2, by when
+ * each was approved) and W4-2 / W5-2's entry (his own percent typed after the other device's lookahead) stay.
+ *
+ * The shapes those rules had made as one device go back to open, with the percent stage (2.3 / 2.67): one lookahead
+ * states a percent and a newer one, approved on the other device, states none (one device keeps the older one's
+ * percent; the merge keeps the newer copy's), and the delete that 2.13's A2 test makes (the deleted lookahead's percent
+ * kept, as 6b066e9a). PERCENT_STAGE lists each such test by name with the percent it now ends on after the approvals
+ * and after the delete (6b066e9a's, compared in runs-n213e/S01, S02); in everything else (dates, the note, cards,
+ * nothing waiting, in all three places) each still ends as one device. Every test not listed: exactly as one device.
+ */
+const PERCENT_STAGE: Record<string, number[]> = {
+  // one device 70/70%
+  "Open item 2.13: two lookaheads approved apart on two devices: the note names both, and deleting the newer one goes back to the older one the phone's first, the iPad's later the older states 70%, the newer none: as one device doing the steps in order, the note names both, then the task goes back to the older lookahead's dates and percent": [0, 0],
+  // one device 70/70%
+  "Open item 2.13: two lookaheads approved apart on two devices: the note names both, and deleting the newer one goes back to the older one the iPad's first, the phone's later the older states 70%, the newer none: as one device doing the steps in order, the note names both, then the task goes back to the older lookahead's dates and percent": [0, 0],
+  // one device 0%
+  "Open item 2.13: two lookaheads approved apart on two devices: the note names both, and deleting the newer one goes back to the older one a lookahead the phone deleted while the iPad, with no signal and not having heard, approved another one: the deleted one is not brought back, as one device in order": [70],
+  // one device 70/70%
+  "W3-1 (2.13, part B): two lookaheads approved apart: the newer one's percent stands, even the one the task already had the phone's A older, the iPad's B newer from 0%, A states 70% (above the start), B states none: as one device doing the steps in order, after the approvals and after the newer is deleted": [0, 0],
+  // one device 70/70%
+  "W3-1 (2.13, part B): two lookaheads approved apart: the newer one's percent stands, even the one the task already had the phone's A older, the iPad's B newer from 40%, A states 70% (above the start), B states none: as one device doing the steps in order, after the approvals and after the newer is deleted": [40, 40],
+  // one device 20/20%
+  "W3-1 (2.13, part B): two lookaheads approved apart: the newer one's percent stands, even the one the task already had the phone's A older, the iPad's B newer from 40%, A states 20% (below the start), B states none: as one device doing the steps in order, after the approvals and after the newer is deleted": [40, 40],
+  // one device 80/80%
+  "W3-1 (2.13, part B): two lookaheads approved apart: the newer one's percent stands, even the one the task already had the iPad's B older, the phone's A newer from 0%, A states none, B states 80% (above the start): as one device doing the steps in order, after the approvals and after the newer is deleted": [0, 0],
+  // one device 80/80%
+  "W3-1 (2.13, part B): two lookaheads approved apart: the newer one's percent stands, even the one the task already had the iPad's B older, the phone's A newer from 40%, A states none, B states 80% (above the start): as one device doing the steps in order, after the approvals and after the newer is deleted": [40, 40],
+  // one device 10/10%
+  "W3-1 (2.13, part B): two lookaheads approved apart: the newer one's percent stands, even the one the task already had the iPad's B older, the phone's A newer from 40%, A states none, B states 10% (below the start): as one device doing the steps in order, after the approvals and after the newer is deleted": [40, 40],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the iPad (no signal) holds the pair from 0%, S older than both states 70%, P1 none, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [0, 0],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the iPad (no signal) holds the pair from 0%, S between them states 70%, P1 0% (the start), P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [0, 0],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the iPad (no signal) holds the pair from 0%, S between them states 70%, P1 50%, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [50, 50],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the iPad (no signal) holds the pair from 0%, S between them states 70%, P1 none, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [0, 0],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the iPad (no signal) holds the pair from 40%, S older than both states 70%, P1 none, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [40, 40],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the iPad (no signal) holds the pair from 40%, S between them states 70%, P1 40% (the start), P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [40, 40],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the iPad (no signal) holds the pair from 40%, S between them states 70%, P1 20%, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [20, 20],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the iPad (no signal) holds the pair from 40%, S between them states 70%, P1 none, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [40, 40],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the phone holds the pair from 0%, S older than both states 70%, P1 none, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [0, 0],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the phone holds the pair from 0%, S between them states 70%, P1 0% (the start), P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [0, 0],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the phone holds the pair from 0%, S between them states 70%, P1 50%, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [50, 50],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the phone holds the pair from 0%, S between them states 70%, P1 none, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [0, 0],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the phone holds the pair from 40%, S older than both states 70%, P1 none, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [40, 40],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the phone holds the pair from 40%, S between them states 70%, P1 40% (the start), P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [40, 40],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the phone holds the pair from 40%, S between them states 70%, P1 20%, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [20, 20],
+  // one device 70/70%
+  "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the phone holds the pair from 40%, S between them states 70%, P1 none, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [40, 40],
+  // one device 70/70%
+  "W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each was approved, not when its file was read in W5-1: two lookaheads, each file read in on one device and approved in the other order the phone's A read in first, approved last from 0%, A states none, B states 70%, then the last approved deleted: as one device doing the steps in order": [0, 0],
+  // one device 70/70%
+  "W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each was approved, not when its file was read in W5-1: two lookaheads, each file read in on one device and approved in the other order the iPad's A read in first, approved last from 0%, A states none, B states 70%, then the last approved deleted: as one device doing the steps in order": [0, 0],
+  // one device 70/70%
+  "W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each was approved, not when its file was read in W5-1: two lookaheads, each file read in on one device and approved in the other order A read in and approved first (as before) from 0%, A states 70%, B states none, then the last approved deleted: as one device doing the steps in order": [0, 0],
+  // one device 70/70%
+  "W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each was approved, not when its file was read in W5-1 in S-2's placing: the other device's lookahead read in before the pair, approved between them the iPad (no signal) holds the pair S states 70%, P1 0%, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [0, 0],
+  // one device 70/70%
+  "W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each was approved, not when its file was read in W5-1 in S-2's placing: the other device's lookahead read in before the pair, approved between them the iPad (no signal) holds the pair S states 70%, P1 none, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [0, 0],
+  // one device 70/70%
+  "W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each was approved, not when its file was read in W5-1 in S-2's placing: the other device's lookahead read in before the pair, approved between them the iPad (no signal) holds the pair S states 70%, P1 30%, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [30, 30],
+  // one device 70/70%
+  "W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each was approved, not when its file was read in W5-1 in S-2's placing: the other device's lookahead read in before the pair, approved between them the phone holds the pair S states 70%, P1 0%, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [0, 0],
+  // one device 70/70%
+  "W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each was approved, not when its file was read in W5-1 in S-2's placing: the other device's lookahead read in before the pair, approved between them the phone holds the pair S states 70%, P1 none, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [0, 0],
+  // one device 70/70%
+  "W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each was approved, not when its file was read in W5-1 in S-2's placing: the other device's lookahead read in before the pair, approved between them the phone holds the pair S states 70%, P1 30%, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [30, 30],
+};
+function percentStageOrOneDevice(twoDevices: Record<string, unknown>, oneDevice: Record<string, unknown>) {
+  const name = expect.getState().currentTestName ?? '';
+  if (process.env.N213E_OUT) fs.appendFileSync(process.env.N213E_OUT, JSON.stringify({ test: name, twoDevices, oneDevice }) + '\n');
+  const recorded = PERCENT_STAGE[name];
+  const withPercent = (ending: unknown, percent: number) => {
+    const copy = JSON.parse(JSON.stringify(ending)) as { places: Array<Array<{ percent: number }>> };
+    copy.places.forEach(place => place.forEach(row => { row.percent = percent; }));
+    return copy;
+  };
+  const expected = !recorded ? oneDevice
+    : 'afterApprovals' in oneDevice ? { afterApprovals: withPercent(oneDevice.afterApprovals, recorded[0]), end: withPercent(oneDevice.end, recorded[1]) }
+      : withPercent(oneDevice, recorded[0]);
+  expect(twoDevices).toEqual(expected);
+}
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * W6-1 (review pass 6 of Way 2, Medium, narrow; caused by b1428d03's part B time rule, carried by 314873a4 into every
+ * reading-in order). Two lookaheads for Framing approved apart, the iPad with no signal: B on the phone at 12:15 (sent),
+ * A on the iPad at 12:30; at 12:50 something else is saved on Framing on the phone's side (the office's note on the
+ * computer, an activity note, a priority, an owner). When the copies met, Framing showed the OLDER lookahead's dates
+ * (the merge keeps the copy saved last: 2.13's recorded dates part, on every build) but the NEWER one's percent; and
+ * after A was deleted it stayed on B's dates at A's (the deleted lookahead's) percent everywhere. 6b066e9a and Build 232:
+ * B's dates at B's percent after the sync, and after the delete the same, as one device in order. With the time rule
+ * taken out the task's percent is the merge's again: B's dates and B's percent together, then as one device.
+ * The mirror: A approved first on the iPad (no signal) with an owner typed there after it; B on the phone.
+ *
+ * W6-3 (Medium; caused by 945e68d4, Way 2 step 2 part A, past part F's guard): lookahead L1 moves Survey (10/16 - 10/18,
+ * 80%) and every device has it. The phone, with no signal, enters 30% on Survey and deletes L1 with its items (one
+ * waiting copy); the iPad, not having heard, approves L2 (Survey 10/18 - 10/20, no percent). When the phone got signal,
+ * Survey went to the master's 10/12 - 10/14 everywhere, L2 gone from its note, no card. One device in order (and Build
+ * 232's dates) is L2's 10/18 - 10/20 at his 30%. Part F's guard now takes his own percent joined to the delete as his:
+ * the delete is made again on the cloud's row that holds L2, his percent laid on top.
+ */
+describe('W6-1 / W6-3 (N213e): the merge\'s percent where two lookahead approvals meet; a delete with his percent joined to it still made on the copy holding the newer lookahead', () => {
+  const lookaheadsOf = (item: ScheduleItem) => ((item as unknown as { lookaheadOverlay?: { lookaheads?: Array<{ batchId?: string }> } }).lookaheadOverlay?.lookaheads ?? []).map(entry => entry.batchId);
+  const seen = (items: readonly ScheduleItem[], name: string) => items.filter(item => item.taskName === name).map(item => ({
+    dates: `${item.startDate} - ${item.finishDate}`, percent: item.percentComplete, lookaheads: lookaheadsOf(item),
+  }));
+  const ending = async (phone: Device, ipad: Device, name = 'Framing') => ({
+    places: [seen(deviceShown(phone), name), seen(deviceShown(ipad), name), seen(webShown(), name)],
+    cards: [(await conflictsOf(phone)).length, (await conflictsOf(ipad)).length], waiting: [(await queueOf(phone)).length, (await queueOf(ipad)).length],
+  });
+  const heardEverywhere = async (device: Device, other: Device) => { shareDocuments(device); await backgroundUpload(device); await settle(device, other); };
+  const T = (hhmm: string) => `2026-09-09T${hhmm}:00.000Z`;
+  const A_DATES = '10/18/2026 - 10/28/2026';
+  const B_DATES = '10/20/2026 - 10/30/2026';
+
+  describe('W6-1: something else saved on the task after the older lookahead, then the newer one deleted', () => {
+    type Edit = 'the office types a note on the computer' | 'the phone adds an activity note' | 'the phone sets a priority' | 'the phone sets an owner';
+    /**
+     * Framing at 0% (master 10/15 - 10/25). B (10/20 - 10/30, `pb`) is read in at `readB` and approved at 12:15 on the phone,
+     * sent; A (10/18 - 10/28, `pa`) is read in at `readA` and approved at 12:30 on the iPad (no signal); at 12:50 `what`;
+     * the iPad gets signal at 16:00; then the phone deletes A (approved last) with its items. One device: all on the phone.
+     */
+    async function steps(oneDevice: boolean, readA: string, readB: string, what: Edit, pa: string, pb: string) {
+      const { phone, ipad } = await start();
+      if (!oneDevice) setOnline(ipad, false);
+      const A = scheduleDoc('LOOKAHEAD W61 A', T(readA), 'lookahead');
+      const B = scheduleDoc('LOOKAHEAD W61 B', T(readB), 'lookahead');
+      at(T('12:15')); await approve(phone, B, [`Framing,Alpha,Lot,10/20/2026,10/30/2026,${pb}`], true, T('12:15')); shareDocuments(phone); await backgroundUpload(phone);
+      const devA = oneDevice ? phone : ipad;
+      at(T('12:30')); await approve(devA, A, [`Framing,Alpha,Lot,10/18/2026,10/28/2026,${pa}`], true, T('12:30'));
+      if (isOnline(devA)) { shareDocuments(devA); await backgroundUpload(devA); }
+      at(T('12:50'));
+      if (what === 'the office types a note on the computer') {
+        const row = webShown().find(item => item.taskName === 'Framing')!;
+        webWrite(webEdited(cloudRow(row.id)!, { notes: 'Crane booked (typed on the computer)' }));
+        await refresh(phone);
+      } else if (what === 'the phone adds an activity note') {
+        const row = theRow(phone);
+        await edit(phone, row.id, { activity: [...(row.activity ?? []), { id: 'activity-w61', message: 'Rebar checked', author: 'David', createdAt: new Date().toISOString() }] } as Partial<ScheduleItem>);
+        await backgroundUpload(phone);
+      } else {
+        await edit(phone, theRow(phone).id, (what === 'the phone sets a priority' ? { priority: 'High' } : { owner: 'Ana' }) as Partial<ScheduleItem>);
+        await backgroundUpload(phone);
+      }
+      at('2026-09-09T16:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad); await backgroundUpload(ipad);
+      await settle(phone, ipad);
+      const afterApprovals = await ending(phone, ipad);
+      at('2026-09-10T12:00:00.000Z'); await deleteWithItems(phone, A); await heardEverywhere(phone, ipad);
+      await refresh(phone); await refresh(ipad);
+      return { afterApprovals, end: await ending(phone, ipad), A, B };
+    }
+    it.each([
+      ...(['A read in first', 'B read in first'] as const).flatMap(read => (['the office types a note on the computer', 'the phone adds an activity note', 'the phone sets a priority', 'the phone sets an owner'] as Edit[])
+        .flatMap(what => [['70', '30'], ['30', '70']].map(([pa, pb]) => [read, what, pa, pb] as [string, Edit, string, string]))),
+    ])('%s, then %s; A %s%, B %s%: after the sync B\'s dates at B\'s percent (as 6b066e9a and Build 232), after A\'s delete as one device', async (read, what, pa, pb) => {
+      const [readA, readB] = read === 'A read in first' ? ['12:00', '12:10'] : ['12:00', '11:45'];
+      const inOrder = await steps(true, readA, readB, what, pa, pb);
+      // One device in order: A (approved last) shows, at its percent; after A's delete, B's dates at B's percent.
+      expect(inOrder.afterApprovals).toEqual({ places: Array(3).fill([{ dates: A_DATES, percent: Number(pa), lookaheads: [inOrder.B.importBatchId, inOrder.A.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
+      expect(inOrder.end).toEqual({ places: Array(3).fill([{ dates: B_DATES, percent: Number(pb), lookaheads: [inOrder.B.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
+      const twoDevices = await steps(false, readA, readB, what, pa, pb);
+      // After the sync: B's dates (the merge keeps the copy saved last: 2.13's recorded dates part, older) with B's own
+      // percent, the note naming both. (It was: B's dates at A's percent everywhere; and after A's delete, B's dates at
+      // A's, the deleted lookahead's, percent in all three places, no card.)
+      expect(twoDevices.afterApprovals).toEqual({ places: Array(3).fill([{ dates: B_DATES, percent: Number(pb), lookaheads: [inOrder.A.importBatchId, inOrder.B.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
+      expect(twoDevices.end).toEqual(inOrder.end);
+    });
+
+    it.each([['70', '30'], ['30', '70']])('the mirror: A approved first on the iPad (no signal) with an owner typed there after it, B on the phone; A %s%, B %s%: A\'s dates at A\'s percent after the sync, as one device after B\'s delete', async (pa, pb) => {
+      const run = async (oneDevice: boolean) => {
+        const { phone, ipad } = await start();
+        if (!oneDevice) setOnline(ipad, false);
+        const A = scheduleDoc('LOOKAHEAD W61M A', T('12:00'), 'lookahead');
+        const B = scheduleDoc('LOOKAHEAD W61M B', T('12:10'), 'lookahead');
+        const devA = oneDevice ? phone : ipad;
+        at(T('12:15')); await approve(devA, A, [`Framing,Alpha,Lot,10/18/2026,10/28/2026,${pa}`], true, T('12:15'));
+        if (isOnline(devA)) { shareDocuments(devA); await backgroundUpload(devA); }
+        at(T('12:30')); await approve(phone, B, [`Framing,Alpha,Lot,10/20/2026,10/30/2026,${pb}`], true, T('12:30')); shareDocuments(phone); await backgroundUpload(phone);
+        at(T('12:50')); await edit(devA, theRow(devA).id, { owner: 'Ana' });
+        if (isOnline(devA)) await backgroundUpload(devA);
+        at('2026-09-09T16:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad); await backgroundUpload(ipad);
+        await settle(phone, ipad);
+        const afterApprovals = await ending(phone, ipad);
+        at('2026-09-10T12:00:00.000Z'); await deleteWithItems(phone, B); await heardEverywhere(phone, ipad);
+        await refresh(phone); await refresh(ipad);
+        return { afterApprovals, end: await ending(phone, ipad), A, B };
+      };
+      const inOrder = await run(true);
+      expect(inOrder.afterApprovals).toEqual({ places: Array(3).fill([{ dates: B_DATES, percent: Number(pb), lookaheads: [inOrder.A.importBatchId, inOrder.B.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
+      expect(inOrder.end).toEqual({ places: Array(3).fill([{ dates: A_DATES, percent: Number(pa), lookaheads: [inOrder.A.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
+      const twoDevices = await run(false);
+      // (It was: A's dates at B's percent after the sync, in all three places, no card.)
+      expect(twoDevices.afterApprovals).toEqual({ places: Array(3).fill([{ dates: A_DATES, percent: Number(pa), lookaheads: [inOrder.B.importBatchId, inOrder.A.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
+      expect(twoDevices.end).toEqual(inOrder.end);
+    });
+  });
+
+  describe('W6-3: his percent and a delete waiting on the phone (no signal) while the iPad approves a newer lookahead', () => {
+    const L1 = scheduleDoc('LOOKAHEAD W63 L1', '2026-09-07T13:00:00.000Z', 'lookahead');
+    const D = (hhmm: string) => `2026-09-08T${hhmm}:00.000Z`;
+    /**
+     * L1 (Survey 10/16 - 10/18, 80%) approved on the phone and heard everywhere. The phone loses signal at 08:00; it
+     * deletes L1 with its items at 10:00, his 30% on Survey at `pct` (or none); the iPad (signal), not having heard,
+     * approves L2 (Survey 10/18 - 10/20, no percent) at `l2`. The phone gets signal at 16:00. One device: all on the phone,
+     * in time order.
+     */
+    async function steps(oneDevice: boolean, pct: 'none' | '09:00' | '11:00', l2: '12:00' | '10:30') {
+      const { phone, ipad } = await start();
+      at(L1.importedAt!); await approve(phone, L1, ['Survey,Alpha,Lot,10/16/2026,10/18/2026,80'], true); shareDocuments(phone); await backgroundUpload(phone);
+      await settle(phone, ipad);
+      if (!oneDevice) { at(D('08:00')); setOnline(phone, false); }
+      const devL2 = oneDevice ? phone : ipad;
+      const L2 = scheduleDoc('LOOKAHEAD W63 L2', D(l2), 'lookahead');
+      const events: Array<[string, () => Promise<void>]> = [
+        [D('10:00'), async () => { await deleteWithItems(phone, L1); if (isOnline(phone)) { shareDocuments(phone); await backgroundUpload(phone); } }],
+        [D(l2), async () => { await approve(devL2, L2, ['Survey,Alpha,Lot,10/18/2026,10/20/2026,'], true); if (isOnline(devL2)) { shareDocuments(devL2); await backgroundUpload(devL2); } }],
+        ...(pct === 'none' ? [] : [[D(pct), async () => {
+          const row = deviceShown(phone).find(item => item.taskName === 'Survey')!;
+          await edit(phone, row.id, { percentComplete: 30 }); if (isOnline(phone)) await backgroundUpload(phone);
+        }] as [string, () => Promise<void>]]),
+      ];
+      for (const [when, run] of events.sort((x, y) => Date.parse(x[0]) - Date.parse(y[0]))) { at(when); await run(); }
+      at(D('16:00')); setOnline(phone, true); shareDocuments(phone); await backgroundUpload(phone);
+      await settle(phone, ipad);
+      return { ending: await ending(phone, ipad, 'Survey'), L2 };
+    }
+    it.each([
+      ['09:00', '12:00'], ['09:00', '10:30'], ['11:00', '12:00'], ['11:00', '10:30'], ['none', '12:00'], ['none', '10:30'],
+    ] as Array<['none' | '09:00' | '11:00', '12:00' | '10:30']>)('his 30%% at %s (the delete at 10:00), L2 approved at %s: as one device in order, on L2\'s dates', async (pct, l2) => {
+      const inOrder = await steps(true, pct, l2);
+      // One device in order: L2's dates, his 30% (L2 states no percent; with none of his, the 0% the delete gave back), L2 alone in the note.
+      expect(inOrder.ending).toEqual({ places: Array(3).fill([{ dates: '10/18/2026 - 10/20/2026', percent: pct === 'none' ? 0 : 30, lookaheads: [inOrder.L2.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
+      // (It was, with his 30%: the master's 10/12 - 10/14 at 30% in all three places, no lookahead note, no card.)
+      expect((await steps(false, pct, l2)).ending).toEqual(inOrder.ending);
     });
   });
 });
