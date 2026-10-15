@@ -504,6 +504,16 @@ function addInlinePhotoReferences(
   });
 }
 
+/**
+ * Whether a report line is the line of the photo's own task, so that it may say the photo "shows this work" (open item
+ * 7.73, reports review pass 3 P3-2). It said so of any line naming the photo's project and area, so in a combined
+ * report (every task line names its project) and on a single project's Action Plan line, a photo whose field update
+ * has no task was said to show the work of every task of its area, and a task's photo that of a task or project whose
+ * name contains its own ("Paint" in "Paint lobby", "Lark Hill" in "Lark Hill Annex"). Now a photo whose update is
+ * linked to no task shows no task's work; otherwise the line must be its task's, as the report writes a task's line:
+ * its project, then its task (reportLineNamesTask), and the photo's area as whole words. Every line that names a photo
+ * now named it before; the photo's own citation ("See Image N") is in the report's words and does not move.
+ */
 function reportLineMatchesPhotoContext(
   line: string,
   photo: ReportWordMedia,
@@ -514,11 +524,43 @@ function reportLineMatchesPhotoContext(
   const project = normalizedReportMatchText(photo.projectName || '');
   const area = normalizedReportMatchText(photo.areaName || '');
   const task = normalizedReportMatchText(photo.linkedTaskName || '');
-  if (!project || !area) return false;
-  if (!normalizedLine.includes(project) || !normalizedLine.includes(area)) {
-    return false;
+  if (!project || !area || !task) return false;
+  if (!` ${normalizedLine} `.includes(` ${area} `)) return false;
+  return reportLineNamesTask(line, project, task);
+}
+
+/**
+ * Whether a line is about this task of this project, as the report writes a task: "<project> — <task> (<area>): …"
+ * (Completed / Current Work), "<project> — <task> (<area>) is overdue …" (Schedule Risks), "<project>: <task> (<area>):
+ * …" (a risk the project's records state about the task), "<project> — <task>: …" (a task with no area, Decisions
+ * Required), "<project> — <area>: <task>. Issue: …" (Action Plan). Names are compared as normalizedReportMatchText
+ * reads them, the whole name: the project before its " — " or ": ", the task up to where the report ends it.
+ */
+function reportLineNamesTask(line: string, project: string, task: string): boolean {
+  const text = line.trim().replace(/^[-*•]\s+/, '');
+  return separatorEnds(text, [' — ', ': ']).some(projectEnd => {
+    const separator = text.startsWith(' — ', projectEnd) ? ' — ' : ': ';
+    if (normalizedReportMatchText(text.slice(0, projectEnd)) !== project) return false;
+    const rest = text.slice(projectEnd + separator.length);
+    const taskFirst = separatorEnds(rest, [' (', ': ', ' is ', ' has ', '. Issue: ']).some(taskEnd =>
+      (!rest.startsWith(' (', taskEnd) || REPORT_TASK_AREA_THEN_TEXT.test(rest.slice(taskEnd))) &&
+      normalizedReportMatchText(rest.slice(0, taskEnd)) === task);
+    if (taskFirst) return true;
+    const areaEnd = rest.indexOf(': ');
+    const issueAt = areaEnd < 0 ? -1 : rest.indexOf('. Issue: ', areaEnd + 2);
+    return issueAt >= 0 && normalizedReportMatchText(rest.slice(areaEnd + 2, issueAt)) === task;
+  });
+}
+
+/** " (<area>): ", " (<area>) is ", " (<area>) has ": the area a task line prints after the task (one nested pair kept). */
+const REPORT_TASK_AREA_THEN_TEXT = /^ \((?:[^()]|\([^()]*\))*\)(?:: | is | has )/;
+
+function separatorEnds(text: string, separators: readonly string[]): number[] {
+  const ends: number[] = [];
+  for (let index = 1; index < text.length; index += 1) {
+    if (separators.some(separator => text.startsWith(separator, index))) ends.push(index);
   }
-  return task ? normalizedLine.includes(task) : true;
+  return ends;
 }
 
 function photoReferenceGuide(
