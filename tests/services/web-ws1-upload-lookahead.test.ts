@@ -137,6 +137,7 @@ describe('a lookahead uploaded on the web (WS1 item 2)', () => {
       syncTombstones: cloud.tables.dave_sync_tombstones,
     }) as never);
   });
+  afterEach(() => jest.useRealTimers());
 
   function prepare(name: string, lines: readonly Line[], projects: readonly string[] = ['Alpha']) {
     day += 1;
@@ -283,6 +284,9 @@ describe('a lookahead uploaded on the web (WS1 item 2)', () => {
     const prepared = withDAVEWebScheduleUploadRole(prepare('Alpha 3 Week Lookahead', L1), 'lookahead');
     const saved = before.knownScheduleItems!.map(scheduleItemForCloud);
     const documents = [...before.referenceDocuments, prepared.document as ReferenceDocument];
+    // Both approvals stamp "approved at" from the clock; hold it still so the two are compared at the same moment
+    // (they were a millisecond apart on a busy Mac).
+    jest.useFakeTimers({ now: new Date('2026-10-15T05:48:42.822Z'), doNotFake: ['nextTick', 'setImmediate', 'setTimeout', 'setInterval', 'queueMicrotask'] });
     const phone = mergeApprovedScheduleImportItems({
       existing: saved,
       imported: prepared.scheduleItems,
@@ -294,6 +298,7 @@ describe('a lookahead uploaded on the web (WS1 item 2)', () => {
     const phoneShown = selectAuthoritativeScheduleItems({ scheduleItems: [...phone.additions, ...phone.next], scheduleDocuments: documents });
 
     const plan = planDAVEWebScheduleImport({ snapshot: before, importedScheduleItems: prepared.scheduleItems, document: prepared.document });
+    jest.useRealTimers();
     const revised = new Map(plan.revisions.map(revision => [revision.item.id, revision.item]));
     const webShown = selectAuthoritativeScheduleItems({
       scheduleItems: [...plan.additions, ...saved.map(item => revised.get(item.id) || item)],
