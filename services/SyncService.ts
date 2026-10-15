@@ -8156,8 +8156,8 @@ async function uploadQueueItem(
     const notesOfBoth = merged && remote && !byField ? scheduleItemActivityWithOtherRows(merged.activity, wholeCopy.activity, remote.activity) : null;
     const mergedWithNotes = notesOfBoth ? { ...merged!, activity: notesOfBoth, updatedAt: scheduleItemStampAfter(payload.itemData.updatedAt, remote!.updatedAt) } : merged;
     // Open item 2.13: where two lookahead approvals meet (or an approval meets a lookahead deleted elsewhere), the merge
-    // kept one copy's note: it now names the lookaheads of both copies, as one device in order (and the progress goes
-    // with the copy that changed it, when only one did); stamped just after the later copy so each device takes it.
+    // kept one copy's note: it now names the lookaheads of both copies, as one device in order; the task's percent is
+    // the merge's own, as on Build 232 (open items 2.3 / 2.67); stamped just after the later copy so each device takes it.
     const approvalsOfBoth = mergedWithNotes && remote && !byField && isEditBase(payload.base) ? scheduleLookaheadApprovalsOfBoth(mergedWithNotes, wholeCopy, payload.base.copy, remote) : null;
     const mergedOfBoth = approvalsOfBoth ? { ...approvalsOfBoth, updatedAt: scheduleItemStampAfter(payload.itemData.updatedAt, remote!.updatedAt) } : mergedWithNotes;
     const recovered = remote && !changedFields && !payload.forceLocal ? restUnchanged ? payload.itemData : byField?.itemData ?? mergedOfBoth : null;
