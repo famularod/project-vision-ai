@@ -23,8 +23,12 @@ export type ReportApprovalPolicy = {
 };
 
 // The report would describe nothing real, or the wrong project. These cannot be
-// waved through by a reviewer; the project data has to change.
-const BLOCKING_FLAG = /no supporting|no evidence|missing supporting|missing project|project assignment/i;
+// waved through by a reviewer; the project data has to change. (R232b: one
+// rule was these words together; the second now depends on the flag's kind.)
+// No evidence:
+const NO_EVIDENCE_FLAG = /no supporting|no evidence|missing supporting/i;
+// An included item with no project:
+const NO_PROJECT_FLAG = /missing project|project assignment/i;
 
 /**
  * Open item 7.63: the kind of review flag that quotes a schedule check (services/PIEReporter.ts makes it from the
@@ -37,9 +41,42 @@ const BLOCKING_FLAG = /no supporting|no evidence|missing supporting|missing proj
  */
 export const SCHEDULE_CHECK_REVIEW_FLAG = 'Schedule check: ';
 
+/**
+ * R232 review pass 1, R2 (open item 7.63 again): the kinds of review flag that QUOTE another check's sentence after
+ * their own lead-in (services/PIEReporter.ts, the runtime's review flags: the Scientific Method, Reflection, Pattern
+ * Intelligence, beliefs, Predictive Reality, the current situation, Executive Reasoning and Executive Judgment). The
+ * schedule check's sentence about a task ("Inspection is missing project, area, or finish-date information ...", said
+ * of a task with no AREA) came back quoted in "Scientific Method identified uncertainty: ...", and those words blocked
+ * Approve Report with "Assign each included item to the correct project". A quote is never an included item with no
+ * project: what it quotes is a task's details or an engine's note ("Fill missing project context."). So its kind
+ * decides: the words "missing project" or "project assignment" inside a quote never block. Every other rule stands:
+ * no evidence still blocks, quoted or not, and a flag of any other kind blocks on those words as before.
+ */
+export const QUOTING_REVIEW_FLAG_KINDS: readonly string[] = Object.freeze([
+  'Scientific Method identified uncertainty: ',
+  'Verify the weakest assumption: ',
+  'Reflection recommends more evidence: ',
+  'Pattern Intelligence found a recurring warning: ',
+  'Belief needs verification: ',
+  'Future reality risk needs verification: ',
+  'Current situation is blocked: ',
+  'Current situation needs verification: ',
+  'Current situation needs evidence: ',
+  'Executive Reasoning identified growing risk: ',
+  'Executive decision needs review: ',
+  'Executive action needs verification: ',
+  'Executive Judgment identified escalation risk: ',
+  'Escalation is not justified yet: ',
+  'Wait for evidence before final recommendation: ',
+  'Decision timing requires verification: ',
+  'Decision Memory says wait: ',
+]);
+
 function reviewFlagKind(flag: string, text: string): ReportReviewItem['kind'] {
   if (flag.startsWith(SCHEDULE_CHECK_REVIEW_FLAG)) return 'advisory';
-  return BLOCKING_FLAG.test(flag) || BLOCKING_FLAG.test(text) ? 'blocking' : 'advisory';
+  if (NO_EVIDENCE_FLAG.test(flag) || NO_EVIDENCE_FLAG.test(text)) return 'blocking';
+  if (QUOTING_REVIEW_FLAG_KINDS.some(kind => flag.startsWith(kind))) return 'advisory';
+  return NO_PROJECT_FLAG.test(flag) || NO_PROJECT_FLAG.test(text) ? 'blocking' : 'advisory';
 }
 
 const AUTHORITY_ADVISORY: Partial<Record<PIELiveAuthorityStateName, string>> = {

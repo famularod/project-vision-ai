@@ -70,7 +70,9 @@ import {
   type DAVEReportEditedText,
   type DAVEReportSnapshot,
   reportSentText,
+  reportTextKey,
   sameReportSource,
+  withReportAppTextKey,
   withReportEditedText,
 } from '../services/DAVEReportSnapshot';
 import {
@@ -545,10 +547,16 @@ export function ReportsScreen({
   // Share Report there, nothing to review again). The approval it went out under was kept for the app session only, so
   // a relaunch, or a review item that came and went straight after the send (the app's cloud check), offered the same
   // report again with Approve Report. A change since, or his edit, is another report, offered as before.
+  // R232 review pass 1, R1: and the app writes the same report as when it went out (`appTextKey`). The fingerprint
+  // alone said "sent" over a reworded field note in a project named with no Latin letter or digit ("Башня Север"), or
+  // only "the", "building", "project": such a name's notes are not in it. A send recorded before Build 233 kept no
+  // key, and keeps the fingerprint's rule.
+  const builtReportTextKey = useMemo(() => reportTextKey(builtReportDraft), [builtReportDraft]);
   const sentFromHereAt = snapshotScopeLoaded && !snapshotLoadFailed &&
     typeof previousReportSnapshot?.deliveredAt === 'string' &&
     ownReportSendTimes().has(previousReportSnapshot.deliveredAt) &&
     sameReportSource(previousReportSnapshot.sourceFingerprint, reportSourceFingerprint) &&
+    (typeof previousReportSnapshot.appTextKey !== 'string' || previousReportSnapshot.appTextKey === builtReportTextKey) &&
     effectiveReportDraft.title === pieReportDraft.title && effectiveReportDraft.body === pieReportDraft.body
     ? previousReportSnapshot.deliveredAt
     : null;
@@ -913,6 +921,8 @@ export function ReportsScreen({
     const startedReport = effectiveReportDraft;
     // His words, if they are not the app's own for these facts: recorded with the send (7.44).
     const startedText = reportEditedText(effectiveReportDraft, builtReportDraft);
+    // R232b R1: and the key of the report the app wrote for these facts as the send started.
+    const startedAppTextKey = builtReportTextKey;
     // The facts the approval was given on, so a change the report text does
     // not show (stage, checklist, next action) or a sync landing between
     // Approve and Share still records the approved report as sent (whole-app
@@ -961,7 +971,7 @@ export function ReportsScreen({
         // screen shows by now (a sync can land while the composer is open);
         // its own fingerprint and format's period scope the mark (audit A6
         // pass 3; owner answer Q17).
-        if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod, startedStateKey, startedText);
+        if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod, startedStateKey, startedText, startedAppTextKey);
         if (
           mountedRef.current &&
           pendingCommunicationTokenRef.current === communicationToken &&
@@ -1090,7 +1100,9 @@ export function ReportsScreen({
     // never went out (audit A6). Open item 7.44: it keeps his words when he
     // changed the report, so a send recorded later (Mark as Sent) has them.
     const approvedText = reportEditedText(effectiveReportDraft, builtReportDraft);
-    const snapshotToSave = reportSnapshotToSave(withReportEditedText(currentReportSnapshot, approvedText), previousReportSnapshot);
+    // R232b R1: and the key of the report the app wrote for these facts, so a send recorded later (Mark as Sent) has it.
+    const approvedAppTextKey = builtReportTextKey;
+    const snapshotToSave = reportSnapshotToSave(withReportAppTextKey(withReportEditedText(currentReportSnapshot, approvedText), approvedAppTextKey), previousReportSnapshot);
     if (!snapshotToSave) {
       // Review N2 (5 Oct 2026): the same report is already the approval waiting in the shared period, saved by
       // the other device, and this device holds no copy of it. Approved on the iPad and emailed (Mail said
@@ -1103,7 +1115,7 @@ export function ReportsScreen({
       // 7.44: approved again with other words (edited, or edits discarded), the approval waiting keeps the words
       // approved now.
       const toKeep = sameReportSource(waiting.sourceFingerprint, reportSourceFingerprint)
-        ? withReportEditedText(waiting, approvedText)
+        ? withReportAppTextKey(withReportEditedText(waiting, approvedText), approvedAppTextKey)
         : waiting;
       if (approvalSavedHereKey === waitingKey && toKeep === waiting) return;
       // A send can complete before this lands, as below: the delivered mark waits for it, and is never held up
@@ -1179,28 +1191,31 @@ export function ReportsScreen({
     sentPeriod: Readonly<{ scopeKey: string; reportFormat: ReportFormat }>,
     sentStateKey: string,
     sentText: DAVEReportEditedText | null,
+    appTextKey: string,
   ) => {
     const sentPeriodKey = reportPeriodKey(sentPeriod);
     const pending = pendingReportSnapshotSaveRef.current;
     if (pending && sameReportSource(pending.snapshot.sourceFingerprint, sentFingerprint) && reportPeriodKey(pending.snapshot) === sentPeriodKey) {
-      void pending.save.then(() => markSavedReportDelivered(pending.snapshot, sentFingerprint, sentStateKey, undefined, null, sentText), () => undefined);
+      void pending.save.then(() => markSavedReportDelivered(pending.snapshot, sentFingerprint, sentStateKey, undefined, null, sentText, appTextKey), () => undefined);
       return;
     }
     const shown = previousReportSnapshotRef.current;
     if (shown && reportPeriodKey(shown) === sentPeriodKey) {
-      void markSavedReportDelivered(shown, sentFingerprint, sentStateKey, undefined, null, sentText);
+      void markSavedReportDelivered(shown, sentFingerprint, sentStateKey, undefined, null, sentText, appTextKey);
       return;
     }
     // The screen moved to the other format (or other projects) while the send
     // was open. Both formats of the same projects share a fingerprint, so the
     // shown snapshot is never marked for it; the sent period's own is (Q17).
     void loadDAVEReportSnapshot(sentPeriod.scopeKey, sentPeriod.reportFormat)
-      .then(saved => markSavedReportDelivered(saved, sentFingerprint, sentStateKey, undefined, null, sentText), () => undefined);
+      .then(saved => markSavedReportDelivered(saved, sentFingerprint, sentStateKey, undefined, null, sentText, appTextKey), () => undefined);
   };
   /**
    * Records `saved` as sent: at `deliveredAt` (now for a send from the app),
    * with `markedSentAt` when the owner recorded it afterwards (everyday item
    * 1), and with `sentText`, his words when he changed the report (7.44).
+   * `appTextKey` (R232b R1): the key of the report the app wrote as the send
+   * started; none for a send recorded afterwards (the approval's is kept).
    * Resolves true once this device's copy is saved.
    */
   const markSavedReportDelivered = (
@@ -1210,6 +1225,7 @@ export function ReportsScreen({
     deliveredAt: string = new Date().toISOString(),
     markedSentAt: string | null = null,
     sentText: DAVEReportEditedText | null = null,
+    appTextKey: string | null = null,
   ): Promise<boolean> => {
     if (!saved || !sameReportSource(saved.sourceFingerprint, sentFingerprint) || saved.deliveredAt !== null) return Promise.resolve(false);
     // This device's send, kept for the app session so reading it back after
@@ -1224,7 +1240,7 @@ export function ReportsScreen({
     return reportSenderId()
       .catch(() => null)
       .then(sentBy => {
-        const delivered = markReportSnapshotDelivered(saved, deliveredAt, sentBy, markedSentAt, sentText);
+        const delivered = markReportSnapshotDelivered(saved, deliveredAt, sentBy, markedSentAt, sentText, appTextKey);
         return saveDAVEReportSnapshot(delivered).then(() => {
           if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(delivered)) {
             previousReportSnapshotRef.current = delivered;

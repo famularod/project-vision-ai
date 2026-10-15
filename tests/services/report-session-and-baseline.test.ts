@@ -73,7 +73,8 @@ describe('the reporting period runs from the report the owner has', () => {
   it('is what the screen uses: the briefing, the approval save, and the delivered mark on a completed send', () => {
     expect(screen).toContain('? reportBaselineSnapshot(previousReportSnapshot, reportSourceFingerprint)');
     // Open item 7.44 (13 Oct 2026): the snapshot saved carries his words when he changed the report; pin updated deliberately.
-    expect(screen).toContain('const snapshotToSave = reportSnapshotToSave(withReportEditedText(currentReportSnapshot, approvedText), previousReportSnapshot);');
+    // R232b R1 (Build 233): and the key of the report the app wrote for these facts (`appTextKey`); pin updated deliberately.
+    expect(screen).toContain('const snapshotToSave = reportSnapshotToSave(withReportAppTextKey(withReportEditedText(currentReportSnapshot, approvedText), approvedAppTextKey), previousReportSnapshot);');
     // Owner answer Q17 (30 Sep 2026): a save lands only on the period it was made for, which is now the
     // projects and the report format (was the projects' scope key alone).
     expect(screen).toContain('if (mountedRef.current && reportPeriodKeyRef.current === reportPeriodKey(snapshotToSave)) {');
@@ -81,7 +82,8 @@ describe('the reporting period runs from the report the owner has', () => {
     // and (Q17) its own format's period, since both formats of the same projects share a fingerprint.
     // Whole-app audit A6 pass 8 M1 (30 Sep 2026): with the started report's session key, so its approval moves to this send.
     // Open item 7.44: and with the words that send carried (none when they were the app's own); pin updated deliberately.
-    expect(screen).toContain("if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod, startedStateKey, startedText);");
+    // R232b R1: and the key of the report the app wrote as that send started; pin updated deliberately.
+    expect(screen).toContain("if (outcome === 'completed') markReportDelivered(startedFingerprint, startedPeriod, startedStateKey, startedText, startedAppTextKey);");
     // Everyday item 1 (2 Oct 2026): the mark now resolves whether it saved (Mark as Sent says so), so the
     // guard returns Promise.resolve(false); pin updated deliberately. Behaviour in everyday-1-report-mark-sent.
     // R4 item 4a (deliberate): the saved report is known by the same facts, also when it was approved under the earlier fingerprint version.

@@ -189,7 +189,33 @@ export type DAVEReportSnapshot = Readonly<{
    * before then is read as before. Absent on reports saved before then.
    */
   outOfPlan?: DAVEReportOutOfPlan;
+  /**
+   * R232 review pass 1, R1 (Build 233): the report the app wrote for these facts, as one short key
+   * (`reportTextKey` of its title and text; never the text): when it was approved, then, at a send from the app, as
+   * that send had it. Whatever he changed is in `editedText`. "This device sent this report" is said only while the
+   * app still writes this report for the period, not over other words under the same fingerprint (a project name with
+   * no Latin letter or digit, or only "the", "building", "project", leaves its field notes out of the fingerprint).
+   * Absent on reports approved or sent before then (those keep the fingerprint's rule), and ignored by builds before.
+   */
+  appTextKey?: string;
 }>;
+
+/**
+ * R232b R1: the key of a report's title and text (`appTextKey`): two FNV-1a passes, 16 hex digits. The same words
+ * give the same key on every device; any other words, another key.
+ */
+export function reportTextKey(text: Readonly<{ title: string; body: string }>): string {
+  const value = `${text.title}\n${text.body}`;
+  // The second pass starts from another offset basis, so the two are independent.
+  return `${contentHash(value)}${contentHash(value, 0xdacd7450)}`;
+}
+
+/** `snapshot` holding `appTextKey` (none for null), the same object when it already does (R232b R1). */
+export function withReportAppTextKey(snapshot: DAVEReportSnapshot, appTextKey: string | null): DAVEReportSnapshot {
+  if ((snapshot.appTextKey ?? null) === appTextKey) return snapshot;
+  const { appTextKey: _earlier, ...report } = snapshot;
+  return Object.freeze(appTextKey ? { ...report, appTextKey } : report);
+}
 
 /** The tasks earlier reports listed that a report's plan does not hold, as last listed (open items 7.12, 7.17). */
 export type DAVEReportOutOfPlan = Readonly<{ since: string; tasks: readonly DAVEReportSnapshotTask[] }>;
@@ -463,6 +489,8 @@ function withReportBefore(snapshot: DAVEReportSnapshot): DAVEReportSnapshot {
  * `markedSentAt`: the owner recorded the send afterwards, at that time (everyday item 1).
  * `sentText` (open item 7.44): the words that went out when the owner changed the report; none (the app's own text
  * went out) when absent. A send records what IT carried, never an approval's words it did not.
+ * `appTextKey` (R232b R1): the key of the report the app wrote for these facts when the send started; absent (a send
+ * recorded afterwards, Mark as Sent), the approval's is kept: that approval is what went out.
  */
 export function markReportSnapshotDelivered(
   snapshot: DAVEReportSnapshot,
@@ -470,6 +498,7 @@ export function markReportSnapshotDelivered(
   sentBy?: string | null,
   markedSentAt?: string | null,
   sentText?: DAVEReportEditedText | null,
+  appTextKey?: string | null,
 ): DAVEReportSnapshot {
   const { sentBy: _earlierSender, markedSentAt: _earlierMark, editedText: _approvedText, ...approved } = snapshot;
   return Object.freeze({
@@ -478,6 +507,7 @@ export function markReportSnapshotDelivered(
     ...(sentBy ? { sentBy } : {}),
     ...(markedSentAt ? { markedSentAt } : {}),
     ...(sentText ? { editedText: Object.freeze({ title: sentText.title, body: sentText.body }) } : {}),
+    ...(appTextKey ? { appTextKey } : {}),
   });
 }
 
@@ -1561,8 +1591,8 @@ function sameContent(prior: DAVEReportSnapshotTask, task: DAVEReportSnapshotTask
 }
 
 /** FNV-1a, as the report's fingerprint hashes (DAVEReportIntelligence). */
-function contentHash(value: string): string {
-  let hash = 2166136261;
+function contentHash(value: string, offsetBasis = 2166136261): string {
+  let hash = offsetBasis;
   for (let index = 0; index < value.length; index += 1) {
     hash ^= value.charCodeAt(index);
     hash = Math.imul(hash, 16777619);
