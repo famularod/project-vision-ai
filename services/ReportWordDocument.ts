@@ -486,15 +486,31 @@ function addInlinePhotoReferences(
   });
 
   const referencesByLine = new Map<number, number[]>();
+  const preparedLines = new Map<number, PreparedReportLine>();
   for (const photo of numbered) {
+    const target = reportPhotoMatchTarget(photo.item);
+    if (!target) continue;
+    const matches: Array<{ index: number; match: ReportLineMatch }> = [];
     lines.forEach((rawLine, index) => {
       const section = sectionByLine.get(index) || '';
       if (!eligibleSections.has(section)) return;
-      if (!reportLineMatchesPhotoContext(rawLine, photo.item)) return;
-      const existing = referencesByLine.get(index) || [];
-      if (existing.includes(photo.number)) return;
-      referencesByLine.set(index, [...existing, photo.number]);
+      let prepared = preparedLines.get(index);
+      if (!prepared) {
+        prepared = prepareReportLine(rawLine);
+        preparedLines.set(index, prepared);
+      }
+      const match = reportLinePhotoMatch(prepared, target);
+      if (match) matches.push({ index, match });
     });
+    // N773b (R5): a line printing the photo's own area takes the photo from lines of a same-named task printed in
+    // another area or with none ("Level 2 (Level 2)" over "Level 2 (Lobby)" and "Level 2: In Progress ...").
+    const ownAreaLine = matches.some(({ match }) => match === 'area');
+    for (const { index, match } of matches) {
+      if (ownAreaLine && match === 'other area') continue;
+      const existing = referencesByLine.get(index) || [];
+      if (existing.includes(photo.number)) continue;
+      referencesByLine.set(index, [...existing, photo.number]);
+    }
   }
 
   return lines.map((line, index) => {
@@ -505,62 +521,217 @@ function addInlinePhotoReferences(
 }
 
 /**
- * Whether a report line is the line of the photo's own task, so that it may say the photo "shows this work" (open item
- * 7.73, reports review pass 3 P3-2). It said so of any line naming the photo's project and area, so in a combined
- * report (every task line names its project) and on a single project's Action Plan line, a photo whose field update
- * has no task was said to show the work of every task of its area, and a task's photo that of a task or project whose
- * name contains its own ("Paint" in "Paint lobby", "Lark Hill" in "Lark Hill Annex"). Now a photo whose update is
- * linked to no task shows no task's work; otherwise the line must be its task's, as the report writes a task's line:
- * its project, then its task (reportLineNamesTask), and the photo's area as whole words. Every line that names a photo
- * now named it before; the photo's own citation ("See Image N") is in the report's words and does not move.
+ * How a report line names a photo's task (open item 7.73, reports review pass 3 P3-2; N773b). It said a photo "shows
+ * this work" on any line naming the photo's project and area, so in a combined report (every task line names its
+ * project) and on a single project's Action Plan line, a photo whose field update has no task was said to show the work
+ * of every task of its area, and a task's photo that of a task or project whose name contains its own ("Paint" in "Paint
+ * lobby", "Lark Hill" in "Lark Hill Annex"). Now a photo whose update is linked to no task shows no task's work; otherwise
+ * the line must be its task's, as the report writes a task's line (reportLinePhotoMatch), and name the photo's area as
+ * whole words. Every line that names a photo named it before 7.73 too (1f445154); the photo's own citation ("See Image
+ * N") is in the report's words and does not move.
+ *  - 'area': the line prints the task's area, and it is the photo's area;
+ *  - 'other area': the line is of a form that always prints its task's area (Completed / Current Work, Schedule Risks,
+ *    Action Plan), and prints another area or none: a same-named task elsewhere, unless the photo was recorded away from
+ *    its task's area (7.75: the Word file knows the photo's area and task name, not which task);
+ *  - 'unknown': a line that may leave out its task's area (a risk stated about the task, Decisions Required).
  */
-function reportLineMatchesPhotoContext(
-  line: string,
-  photo: ReportWordMedia,
-): boolean {
-  const normalizedLine = normalizedReportMatchText(line);
-  if (!normalizedLine) return false;
+type ReportLineMatch = 'area' | 'unknown' | 'other area';
+const REPORT_LINE_MATCH_RANK: Readonly<Record<ReportLineMatch, number>> = { 'other area': 1, unknown: 2, area: 3 };
 
+type ReportPhotoMatchTarget = Readonly<{
+  project: string;
+  area: string;
+  /** The task's name with letters and digits of any script ("Покраска" is a name, R1), and as Latin letters only. */
+  task: string;
+  taskLatin: string;
+  /** "Paint (west wall)": a task whose own name ends in brackets (R5b). */
+  taskEndsInBracket: boolean;
+}>;
+
+function reportPhotoMatchTarget(photo: ReportWordMedia): ReportPhotoMatchTarget | null {
   const project = normalizedReportMatchText(photo.projectName || '');
   const area = normalizedReportMatchText(photo.areaName || '');
-  const task = normalizedReportMatchText(photo.linkedTaskName || '');
-  if (!project || !area || !task) return false;
-  if (!` ${normalizedLine} `.includes(` ${area} `)) return false;
-  return reportLineNamesTask(line, project, task);
+  const taskName = (photo.linkedTaskName || '').trim();
+  const task = matchTextByPosition(taskName, true).text.trim();
+  if (!project || !area || !task) return null;
+  return {
+    project,
+    area,
+    task,
+    taskLatin: normalizedReportMatchText(taskName),
+    taskEndsInBracket: taskName.endsWith(')'),
+  };
+}
+
+/** A report line read once for every photo: its separators and its names by position (R7: no slice is normalized again). */
+type PreparedReportLine = Readonly<{
+  text: string;
+  /** ` ${normalizedReportMatchText(line)} `: the photo's area is looked for here as whole words. */
+  words: string;
+  latin: ReportMatchText;
+  letters: ReportMatchText;
+  /** Where each ": " starts; where a project's name may end (" — ", ": "); each ". Issue: "; where a task's name may end
+   * (" (", ": ", " is ", " has ", ". Issue: "). */
+  colons: readonly number[];
+  projectEnds: readonly number[];
+  issues: readonly number[];
+  taskEnds: readonly number[];
+  /** " (<area>): ", " (<area>) is ", " (<area>) has ": where the area a task line prints after the task begins and ends. */
+  areaAfter: ReadonlyMap<number, readonly [number, number]>;
+}>;
+
+/** " (<area>): ", " (<area>) is ", " (<area>) has ": the area a task line prints after the task (one nested pair kept). */
+const REPORT_TASK_AREA_THEN_TEXT = / \(((?:[^()]|\([^()]*\))*)\)(?:: | is | has )/y;
+/** What Completed / Current Work prints after a task with no area: "<status>; N% complete" (reportTaskFact). */
+const REPORT_TASK_FACT_STATUS = /(?:Not Started|In Progress|Waiting|Complete); \d{1,3}% complete/y;
+
+function prepareReportLine(rawLine: string): PreparedReportLine {
+  const text = rawLine.trim().replace(/^[-*•]\s+/, '');
+  const starts = (separator: string) => {
+    const found: number[] = [];
+    for (let index = text.indexOf(separator, 1); index >= 0; index = text.indexOf(separator, index + 1)) found.push(index);
+    return found;
+  };
+  const colons = starts(': ');
+  const issues = starts('. Issue: ');
+  const parens = starts(' (');
+  const areaAfter = new Map<number, readonly [number, number]>();
+  for (const paren of parens) {
+    REPORT_TASK_AREA_THEN_TEXT.lastIndex = paren;
+    const area = REPORT_TASK_AREA_THEN_TEXT.exec(text);
+    if (area) areaAfter.set(paren, [paren + 2, paren + 2 + area[1].length]);
+  }
+  const sorted = (...lists: number[][]) => Array.from(new Set(lists.flat())).sort((a, b) => a - b);
+  return {
+    text,
+    words: ` ${normalizedReportMatchText(rawLine)} `,
+    latin: matchTextByPosition(text, false),
+    letters: matchTextByPosition(text, true),
+    colons,
+    projectEnds: sorted(starts(' — '), colons),
+    issues,
+    taskEnds: sorted(parens, colons, starts(' is '), starts(' has '), issues),
+    areaAfter,
+  };
 }
 
 /**
- * Whether a line is about this task of this project, as the report writes a task: "<project> — <task> (<area>): …"
- * (Completed / Current Work), "<project> — <task> (<area>) is overdue …" (Schedule Risks), "<project>: <task> (<area>):
- * …" (a risk the project's records state about the task), "<project> — <task>: …" (a task with no area, Decisions
- * Required), "<project> — <area>: <task>. Issue: …" (Action Plan). Names are compared as normalizedReportMatchText
- * reads them, the whole name: the project before its " — " or ": ", the task up to where the report ends it.
+ * Whether, and how, a line is this photo's task's line, as the report writes a task: "<project> — <task> (<area>): …"
+ * (Completed / Current Work; "<task>: <status>; N% complete" with no area), "<project> — <task> (<area>) is overdue …"
+ * (Schedule Risks), "<project>: <task> (<area>): …" (a risk the project's records state about the task), "<project> —
+ * <task>: …" (Decisions Required), "<project> — <area>: <task>. Issue: …" / "<project>: <task>. Issue: …" (Action
+ * Plan). The project is the whole name before its " — " or ": ", the task the whole name up to where the report ends it.
+ * N773b: the task's name keeps letters of any script (R1); an Action Plan line's area may hold ": " ("Bldg A: Level 2",
+ * R4), and its area is never read as a task (R5a); a task read up to ": ", " is ", " has " does not take in the
+ * line's "(<area>)" ("Paint (Lobby)" is not "Paint lobby", R5b). Each name is compared where it stands on the line,
+ * read once (R7).
  */
-function reportLineNamesTask(line: string, project: string, task: string): boolean {
-  const text = line.trim().replace(/^[-*•]\s+/, '');
-  return separatorEnds(text, [' — ', ': ']).some(projectEnd => {
-    const separator = text.startsWith(' — ', projectEnd) ? ' — ' : ': ';
-    if (normalizedReportMatchText(text.slice(0, projectEnd)) !== project) return false;
-    const rest = text.slice(projectEnd + separator.length);
-    const taskFirst = separatorEnds(rest, [' (', ': ', ' is ', ' has ', '. Issue: ']).some(taskEnd =>
-      (!rest.startsWith(' (', taskEnd) || REPORT_TASK_AREA_THEN_TEXT.test(rest.slice(taskEnd))) &&
-      normalizedReportMatchText(rest.slice(0, taskEnd)) === task);
-    if (taskFirst) return true;
-    const areaEnd = rest.indexOf(': ');
-    const issueAt = areaEnd < 0 ? -1 : rest.indexOf('. Issue: ', areaEnd + 2);
-    return issueAt >= 0 && normalizedReportMatchText(rest.slice(areaEnd + 2, issueAt)) === task;
-  });
+function reportLinePhotoMatch(line: PreparedReportLine, photo: ReportPhotoMatchTarget): ReportLineMatch | null {
+  if (!line.words.includes(` ${photo.area} `)) return null;
+  const { text } = line;
+  let best: ReportLineMatch | null = null;
+  const take = (match: ReportLineMatch) => {
+    if (!best || REPORT_LINE_MATCH_RANK[match] > REPORT_LINE_MATCH_RANK[best]) best = match;
+  };
+  const namesTask = (start: number, end: number) =>
+    reportMatchTextEquals(line.letters, start, end, photo.task) &&
+    reportMatchTextEquals(line.latin, start, end, photo.taskLatin);
+  const areaMatch = (start: number, end: number): ReportLineMatch =>
+    reportMatchTextEquals(line.latin, start, end, photo.area) ? 'area' : 'other area';
+
+  for (const projectEnd of line.projectEnds) {
+    if (!reportMatchTextEquals(line.latin, 0, projectEnd, photo.project)) continue;
+    const dash = text.startsWith(' — ', projectEnd);
+    const start = projectEnd + (dash ? 3 : 2);
+
+    // Action Plan: "<project> — <area>: <task>. Issue: …", trying each ": " before the ". Issue: " as the area's end.
+    let actionPlan = false;
+    let issue = 0;
+    for (const colon of line.colons) {
+      if (colon < start) continue;
+      while (issue < line.issues.length && line.issues[issue] < colon + 2) issue += 1;
+      if (issue >= line.issues.length) break;
+      if (dash) actionPlan = true;
+      if (namesTask(colon + 2, line.issues[issue])) take(areaMatch(start, colon));
+    }
+    // There the text before ": " is the area, never a task (a task named "Roof" in area Roof is not "Roof: Flashing").
+    if (actionPlan) continue;
+
+    for (const end of line.taskEnds) {
+      if (end <= start) continue;
+      const area = line.areaAfter.get(end);
+      if (area) {
+        if (namesTask(start, end)) take(areaMatch(area[0], area[1]));
+        continue;
+      }
+      if (text.startsWith(' (', end)) continue;
+      if (text.startsWith('. Issue: ', end)) {
+        if (namesTask(start, end)) take(dash ? 'unknown' : 'other area');
+        continue;
+      }
+      // "Paint (Lobby): …" is the task Paint in Lobby, not a task "Paint lobby", unless the task's own name ends in brackets.
+      if (text[end - 1] === ')' && !photo.taskEndsInBracket) continue;
+      if (!namesTask(start, end)) continue;
+      if (text.startsWith(': ', end)) {
+        REPORT_TASK_FACT_STATUS.lastIndex = end + 2;
+        take(dash && REPORT_TASK_FACT_STATUS.test(text) ? 'other area' : 'unknown');
+      } else {
+        take(dash ? 'other area' : 'unknown');
+      }
+    }
+  }
+  return best;
 }
 
-/** " (<area>): ", " (<area>) is ", " (<area>) has ": the area a task line prints after the task (one nested pair kept). */
-const REPORT_TASK_AREA_THEN_TEXT = /^ \((?:[^()]|\([^()]*\))*\)(?:: | is | has )/;
+/**
+ * A text's letters and digits by position, as normalizedReportMatchText reads them (accents dropped, "&" as AND, the
+ * rest as single spaces, upper case), with Latin letters only or letters of any script: `at[i]` is how much of `text`
+ * comes before the value's i-th character, so any part of the value reads as `text.slice(at[start], at[end])`, trimmed.
+ */
+type ReportMatchText = Readonly<{ text: string; at: Int32Array }>;
 
-function separatorEnds(text: string, separators: readonly string[]): number[] {
-  const ends: number[] = [];
-  for (let index = 1; index < text.length; index += 1) {
-    if (separators.some(separator => text.startsWith(separator, index))) ends.push(index);
+const REPORT_MATCH_LATIN = /[A-Za-z0-9]/;
+const REPORT_MATCH_ANY_SCRIPT = /[\p{L}\p{N}]/u;
+const REPORT_MATCH_ANY_SCRIPT_MARK = /\p{M}/u;
+const REPORT_MATCH_LATIN_MARK = /[\u0300-\u036f]/;
+
+function matchTextByPosition(value: string, anyScript: boolean): ReportMatchText {
+  const at = new Int32Array(value.length + 1);
+  const keep = anyScript ? REPORT_MATCH_ANY_SCRIPT : REPORT_MATCH_LATIN;
+  const mark = anyScript ? REPORT_MATCH_ANY_SCRIPT_MARK : REPORT_MATCH_LATIN_MARK;
+  let text = '';
+  const add = (part: string) => {
+    if (part !== ' ') text += part;
+    else if (text && !text.endsWith(' ')) text += ' ';
+  };
+  let index = 0;
+  for (const character of value) {
+    at[index] = text.length;
+    if (character.length > 1) at[index + 1] = text.length;
+    index += character.length;
+    const code = character.charCodeAt(0);
+    const parts = code < 128 ? character : character.normalize('NFKD');
+    for (const part of parts) {
+      if (part === '&') {
+        add(' '); add('AND'); add(' ');
+      } else if (keep.test(part)) {
+        add(part.toUpperCase());
+      } else if (!mark.test(part)) {
+        add(' ');
+      }
+    }
   }
-  return ends;
+  at[value.length] = text.length;
+  return { text, at };
+}
+
+/** Whether `value.slice(start, end)` reads as `target` (a name read as matchTextByPosition / normalizedReportMatchText do). */
+function reportMatchTextEquals(value: ReportMatchText, start: number, end: number, target: string): boolean {
+  let from = value.at[start];
+  let to = value.at[end];
+  if (from < to && value.text.charCodeAt(from) === 32) from += 1;
+  if (to > from && value.text.charCodeAt(to - 1) === 32) to -= 1;
+  return to - from === target.length && value.text.startsWith(target, from);
 }
 
 function photoReferenceGuide(
