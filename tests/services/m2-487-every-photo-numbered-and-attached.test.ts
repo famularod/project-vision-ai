@@ -85,8 +85,10 @@ describe('4.87: every photo he records is numbered and attached', () => {
     const section = draft.body.split('\n');
     // The note with no area carries the photo taken with it.
     expect(section).toContain('• Progress: Neighbor asked about weekend hours. See Image 3.');
-    // The photo alone in the Yard is cited on the Yard's line.
-    expect(section).toContain('• Progress: Conduit was trenched along the yard fence. See Image 4.');
+    // The photo alone in the Yard is cited in the Yard, on a line of its own: the Yard's line is another update's note
+    // (open item 7.62; 4.87 cited it on that line).
+    expect(section).toContain('• Progress: Conduit was trenched along the yard fence.');
+    expect(section).toContain('• Evidence: See Image 4.');
     // A photo alone in an area with nothing else: a line of its own, its caption where it has one.
     expect(section).toContain('• Evidence: See Image 2.');
     expect(section).toContain('• Progress: Visitor sign at the gate. See Image 1.');
@@ -136,14 +138,17 @@ describe('4.87: every photo he records is numbered and attached', () => {
     expect(lineCiting(busy, 1)).toHaveLength(1);
   });
 
-  it('a report in which every photo was already attached is not changed by one word', () => {
+  it('a report in which every photo was already attached is not changed by one word (but for 7.62)', () => {
     const before = write(ATTACHED_BEFORE);
     keep('487-unchanged.txt', before.body);
     expect(before.body).toBe(UNCHANGED);
   });
 });
 
-/** The writer's text for ATTACHED_BEFORE on the base (b962c3cf), letter for letter. */
+/**
+ * The writer's text for ATTACHED_BEFORE on the base (b962c3cf), letter for letter, but for open item 7.62: Image 3,
+ * the photo of the anchor bolts, ended the steel columns note ("See Images 3, 4, and 5."); it is cited on its own note.
+ */
 const UNCHANGED = [
   'Please review the updates below and look for action items assigned to your name.',
   '',
@@ -157,8 +162,8 @@ const UNCHANGED = [
   '• Progress: Piles were driven at grid 6. See Images 1 and 2.',
   '',
   '2. Warehouse',
-  '• Progress: Steel columns were set on line A. See Images 3, 4, and 5.',
-  '• Progress: Anchor bolts were checked at column C4.',
+  '• Progress: Steel columns were set on line A. See Images 4 and 5.',
+  '• Progress: Anchor bolts were checked at column C4. See Image 3.',
   '',
   '3. Yard',
   '• Progress: Conduit was trenched along the yard fence.',

@@ -144,9 +144,10 @@ assert(
 );
 assert(
   reporter.includes('].filter((item): item is string => Boolean(item))).slice(0, 5)') &&
-    reporter.includes('return selectConciseAreaBullets(uniqueBullets(bullets))') &&
+    // Open item 7.62: the concise choice also says which photos no chosen line is the photo's own (pin changed).
+    reporter.includes('const concise = selectConciseAreaBullets(uniqueBullets(bullets), area, madeFrom);') &&
     reporter.includes('].slice(0, 3)') &&
-    reporter.includes('return selected;') &&
+    reporter.includes('return { lines: selected, uncited };') &&
     !reporter.includes('text: shortenReportBullet(bullet.text)'),
   'Generated reports must use a concise executive summary and preserve the full text of selected work-area bullets.',
 );

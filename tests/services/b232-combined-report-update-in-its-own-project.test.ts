@@ -102,8 +102,9 @@ const DAILY_HARBOR = [
   'Harbor',
   '',
   '1. Site',
-  '• Progress: Rebar is tied at the north footing. See Images 1, 3, and 4.',
-  '• Action: Footing excavation is complete at the north side.',
+  // Open item 7.62: Images 3 and 4 were taken with the footing excavation note; they were cited on the rebar note.
+  '• Progress: Rebar is tied at the north footing. See Image 1.',
+  '• Action: Footing excavation is complete at the north side. See Images 3 and 4.',
   '• Progress: Rebar tied at the north footing.',
   '• Issue: Pour slab, due 11/20/2026, status Waiting, owner Dana.',
   '• Action: Dana – Please confirm what is blocking Pour slab.',
@@ -131,8 +132,9 @@ const DAILY_HARBOR_HANDED_RIDGES_TASK = [
   '1. Site',
   // Open item 4.87 (13 Oct 2026): Harbor's three Site photos were in no line and attached nowhere here (their lines
   // are printed under Ridge, the case this test keeps as it was); each now goes with the lines of its own update.
-  '• Progress: Rebar is tied at the north footing. See Images 1, 3, and 4.',
-  '• Action: Footing excavation is complete at the north side.',
+  // Open item 7.62: Images 3 and 4 were taken with the footing excavation note; they were cited on the rebar note.
+  '• Progress: Rebar is tied at the north footing. See Image 1.',
+  '• Action: Footing excavation is complete at the north side. See Images 3 and 4.',
   '• Progress: Rebar tied at the north footing.',
   '',
   'Harbor',

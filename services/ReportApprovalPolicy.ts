@@ -26,6 +26,22 @@ export type ReportApprovalPolicy = {
 // waved through by a reviewer; the project data has to change.
 const BLOCKING_FLAG = /no supporting|no evidence|missing supporting|missing project|project assignment/i;
 
+/**
+ * Open item 7.63: the kind of review flag that quotes a schedule check (services/PIEReporter.ts makes it from the
+ * schedule-and-field comparison's warnings). Such a flag is the reviewer's to read and mark reviewed, never a block:
+ * it is about a task's dates, area or status, and the report it stands under is about the right project with its
+ * evidence. Its kind decides, not its words: it quotes the warning's own sentence and the task's name, and "Pour slab
+ * is missing project, area, or finish-date information" (said of a task that only lacks an AREA) read as "missing
+ * project", so a task added without an area blocked Approve Report with "Assign each included item to the correct
+ * project".
+ */
+export const SCHEDULE_CHECK_REVIEW_FLAG = 'Schedule check: ';
+
+function reviewFlagKind(flag: string, text: string): ReportReviewItem['kind'] {
+  if (flag.startsWith(SCHEDULE_CHECK_REVIEW_FLAG)) return 'advisory';
+  return BLOCKING_FLAG.test(flag) || BLOCKING_FLAG.test(text) ? 'blocking' : 'advisory';
+}
+
 const AUTHORITY_ADVISORY: Partial<Record<PIELiveAuthorityStateName, string>> = {
   degraded_local_only:
     'This report uses the information saved on this device. Cloud confirmation is not available right now.',
@@ -79,7 +95,7 @@ export function evaluateReportApprovalPolicy({
   flags.forEach(flag => {
     const text = plainReportReviewFlag(flag);
     const id = reviewItemId(text);
-    const kind = BLOCKING_FLAG.test(flag) || BLOCKING_FLAG.test(text) ? 'blocking' : 'advisory';
+    const kind = reviewFlagKind(flag, text);
     const existing = items.find(item => item.id === id);
     if (existing) {
       if (kind === 'blocking') existing.kind = 'blocking';

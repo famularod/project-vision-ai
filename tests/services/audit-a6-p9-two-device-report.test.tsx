@@ -263,6 +263,15 @@ afterEach(() => {
 const settle = () => act(async () => {
   await new Promise(resolve => setTimeout(resolve, 0));
 });
+/**
+ * Open item 7.61: the report this device sent last for the period, the same report, shows as sent here (Share Report
+ * there, no Approve Report), after a relaunch too. Waits for it.
+ */
+const shownAsSentHere = async () => {
+  await screen.findByText(/^This device sent this report /, {}, SLOW);
+  expect(screen.getByRole('button', { name: 'Share Report' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Approve Report' })).toBeNull();
+};
 const approvable = () =>
   screen.findByText('Copy, Email, and Text unlock after approval. No report is sent automatically.', {}, SLOW);
 const shareable = () => screen.findByRole('button', { name: 'Share Report' }, SLOW);
@@ -422,9 +431,9 @@ describe('"already sent" is said on opening Reports, not only when an approval w
     expect(mockDevices.get('ipad')?.get(SENDER_ID_KEY)).toBeUndefined();
     await waitFor(() => expect((cloudRow()?.snapshot as DAVEReportSnapshot | undefined)?.sentBy).toBe(own.sentBy), SLOW);
     phone.unmount();
-    // A relaunch: nothing remembered in memory.
+    // A relaunch: nothing remembered in memory. Open item 7.61: it shows as this device's send (it was offered again).
     open('phone', tower(1));
-    await approvable();
+    await shownAsSentHere();
     expect(screen.queryByText(/^Your other device/)).toBeNull();
   });
 
@@ -439,7 +448,8 @@ describe('"already sent" is said on opening Reports, not only when an approval w
     mockCloud.set('tower|project_manager', { ...row, snapshot: withoutId(row.snapshot) as DAVEReportSnapshot });
     phone.unmount();
     const relaunched = open('phone', tower(1));
-    await approvable();
+    // Open item 7.61: known as this device's send, it shows as sent here.
+    await shownAsSentHere();
     expect(screen.queryByText(/^Your other device/)).toBeNull();
     relaunched.unmount();
 

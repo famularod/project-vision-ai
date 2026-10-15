@@ -239,9 +239,12 @@ const ALREADY_SENT = (sentAt: string) => `Your other device already sent this re
 /** The section as the phone that recorded all five wrote it BEFORE item 2, to the letter, but for the last line's date (and, since item 4, without the model's two lines). */
 const THE_SECTION = [
   'WORK AREAS / PHOTO NOTES',
-  '• Tower — Level 1: West bay rebar failed inspection. Pour is on hold. See Images 1, 2, and 5.',
+  // Open item 7.62: Images 2 and 5 were taken with the 3 Oct and 1 Oct notes, which the area's three lines leave out:
+  // they were cited on the 5 Oct note; now on a line of their own, after the area's three.
+  '• Tower — Level 1: West bay rebar failed inspection. Pour is on hold. See Image 1.',
   '• Tower — Level 1: West bay rebar failed inspection. Pour is on hold.',
   '• Tower — Level 1: West bay rebar.',
+  '• Tower — Level 1: See Images 2 and 5.',
   '• Tower — Roof: Roof trusses were delivered. See Image 3.',
   // Open item 4.87 (13 Oct 2026): Level 2's photo, Image 4, was attached to the e-mail and the Word file and cited by
   // no line (its "See Image 4." line was the area's fourth and was cut); it is cited on the area's first line now.
@@ -322,7 +325,7 @@ describe('B232 item 2: "Your other device already sent this report" is said of t
       });
       // Level 1 has three notes (1 Oct, 3 Oct, 5 Oct): the one of 5 Oct leads.
       expect({ device, leads: lines.find(line => line.includes('Tower — Level 1:')) }).toEqual({
-        device, leads: '• Tower — Level 1: West bay rebar failed inspection. Pour is on hold. See Images 1, 2, and 5.',
+        device, leads: '• Tower — Level 1: West bay rebar failed inspection. Pour is on hold. See Image 1.',
       });
     }
     expect(reports.ipad).toBe(reports.phone);

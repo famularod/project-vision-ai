@@ -207,7 +207,11 @@ const edit = async (approvedAlready = false) => {
 };
 /** The report as the screen shows it under "Full written report". */
 const shownReport = async () => {
-  await approvable();
+  // Loaded: offered for approval, or (open item 7.61) shown as sent from this device, Share Report there.
+  await waitFor(() => expect(
+    screen.queryByText('Copy, Email, and Text unlock after approval. No report is sent automatically.') ??
+    screen.queryByRole('button', { name: 'Share Report' }),
+  ).toBeTruthy(), SLOW);
   fireEvent.press(screen.getByRole('button', { name: 'Full written report' }));
   const found = await screen.findAllByText(/CURRENT WORK|NOTE FROM THE OFFICE/, {}, SLOW);
   // The whole written report is the longest text that holds a heading of it.
@@ -218,7 +222,8 @@ const shownReport = async () => {
 /** He sends it again from this device (the screen says he may): what goes out. */
 const sendAgain = async () => {
   onCopyReport.mockClear();
-  await approve();
+  // Open item 7.61: on the device that sent it, it shows as sent (Share Report there); elsewhere he approves it again.
+  if (!screen.queryByRole('button', { name: 'Share Report' })) await approve();
   await share('Copy Report');
   return lastCopied();
 };

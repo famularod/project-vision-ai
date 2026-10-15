@@ -196,9 +196,12 @@ describe('B232 item 4 part A: the written report has no line from the model the 
  */
 const THE_SECTION = [
   'WORK AREAS / PHOTO NOTES',
-  '• Building 2100 — 2100 Level 3: Conduit at Level 3 corridor. See Images 1 and 3.',
+  // Open item 7.62: Image 3 is not the conduit note's photo, and its own note is not printed: a line of its own,
+  // after the area's three.
+  '• Building 2100 — 2100 Level 3: Conduit at Level 3 corridor. See Image 1.',
   '• Building 2100 — 2100 Level 3: Rough in electrical, due 10/20/2026, status Waiting, owner Dana.',
   '• Building 2100 — 2100 Level 3: Electrical rough in is 30 percent complete on Level 3. Pour moved to 10/20/2026.',
+  '• Building 2100 — 2100 Level 3: See Image 3.',
   '• Building 2100 — 2100 Unit 2026: Damaged door slab. See Image 2.',
   '• Building 2100 — 2100 Unit 2026: Doors for Unit 2026 arrived damaged. Luis to confirm the reorder.',
   '• Building 2100 — 2100 Unit 2026: Luis – Please confirm the current status of Hang doors.',

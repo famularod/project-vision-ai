@@ -539,6 +539,20 @@ export function ReportsScreen({
   const acknowledgedReviewIds = reviewAcknowledgement.fingerprint === reportSourceFingerprint
     ? reviewAcknowledgement.ids
     : EMPTY_REVIEW_IDS;
+  // Open item 7.61 (Build 232's device checks, check 8): the report on screen is the one THIS device sent last for this
+  // period: the period's last report went out from here (this device's own sends, known again after a relaunch), it is
+  // this report (its fingerprint), and the words on screen are the words that went out. It shows as sent (approved,
+  // Share Report there, nothing to review again). The approval it went out under was kept for the app session only, so
+  // a relaunch, or a review item that came and went straight after the send (the app's cloud check), offered the same
+  // report again with Approve Report. A change since, or his edit, is another report, offered as before.
+  const sentFromHereAt = snapshotScopeLoaded && !snapshotLoadFailed &&
+    typeof previousReportSnapshot?.deliveredAt === 'string' &&
+    ownReportSendTimes().has(previousReportSnapshot.deliveredAt) &&
+    sameReportSource(previousReportSnapshot.sourceFingerprint, reportSourceFingerprint) &&
+    effectiveReportDraft.title === pieReportDraft.title && effectiveReportDraft.body === pieReportDraft.body
+    ? previousReportSnapshot.deliveredAt
+    : null;
+  const reportSentFromHere = sentFromHereAt !== null;
   const acknowledgeReviewItems = useCallback((ids: readonly string[]) => {
     const next = {
       fingerprint: reportSourceFingerprint,
@@ -556,13 +570,23 @@ export function ReportsScreen({
     rememberReportApproval(reportStateIdentityKey, null);
   }, [reportSourceFingerprint, reportStateIdentityKey, reviewAcknowledgement]);
   const reportApprovalPolicy = useMemo(
-    () => evaluateReportApprovalPolicy({
-      report: effectiveReportDraft,
-      reportGenerationAllowed,
-      authorityState: liveAuthority.state,
-      acknowledgedItemIds: acknowledgedReviewIds,
-    }),
-    [effectiveReportDraft, reportGenerationAllowed, liveAuthority.state, acknowledgedReviewIds],
+    () => {
+      const policy = evaluateReportApprovalPolicy({
+        report: effectiveReportDraft,
+        reportGenerationAllowed,
+        authorityState: liveAuthority.state,
+        acknowledgedItemIds: acknowledgedReviewIds,
+      });
+      if (!reportSentFromHere || policy.pendingAdvisoryIds.length === 0) return policy;
+      // 7.61: what he reviewed before this very report went out from here is not asked again.
+      return evaluateReportApprovalPolicy({
+        report: effectiveReportDraft,
+        reportGenerationAllowed,
+        authorityState: liveAuthority.state,
+        acknowledgedItemIds: [...acknowledgedReviewIds, ...policy.pendingAdvisoryIds],
+      });
+    },
+    [effectiveReportDraft, reportGenerationAllowed, liveAuthority.state, acknowledgedReviewIds, reportSentFromHere],
   );
   const reportFactsAreCurrent = !reportEdits ||
     reportEdits.sourceFingerprint === reportSourceFingerprint;
@@ -794,6 +818,12 @@ export function ReportsScreen({
       approvalTextKey,
     ) === loadedPeriodSentAt);
   }, [approvalTextKey, reportStateIdentityKey, reportApprovalAllowed, loadedPeriodSentAt]);
+  // Open item 7.61: the report this device sent last for this period shows as sent (see `sentFromHereAt`), with or
+  // without the approval it went out under; never while approval is not allowed. Runs after the effect above whenever
+  // that one runs, so it has the last word.
+  useEffect(() => {
+    if (reportSentFromHere && reportApprovalAllowed) setReportApproved(true);
+  }, [approvalTextKey, reportStateIdentityKey, reportApprovalAllowed, loadedPeriodSentAt, reportSentFromHere]);
 
   // Open item (A6 passes 3 and 4): something to review that he has not marked
   // reviewed ends an approval that would otherwise come back when it leaves
@@ -1141,7 +1171,7 @@ export function ReportsScreen({
     : '';
   const shownPeriodNotice = alreadySentNotice && !periodNotice.startsWith(ALREADY_SENT_NOTICE_START)
     ? alreadySentNotice
-    : periodNotice;
+    : periodNotice || (sentFromHereAt && reportApproved ? sentFromHereNotice(sentFromHereAt) : '');
 
   /** A completed send (email, text, copy, Outlook) makes the approved snapshot the owner's report. */
   const markReportDelivered = (
@@ -1652,6 +1682,11 @@ function laterTime(current: string | null, next: string | null): string | null {
  * this report counted from (whole-app audit A6 pass 7). The same content
  * already sent is said as such: the report reads as it did when sent.
  */
+/** Open item 7.61: said above the report this device sent, while it shows as sent. */
+function sentFromHereNotice(sentAt: string): string {
+  return `This device sent this report ${describeReportSendTime(sentAt)}. Share it again only if you want to send it a second time.`;
+}
+
 function laterSharedReportNotice(
   later: DAVEReportSnapshot,
   currentFingerprint: string,
@@ -2040,10 +2075,14 @@ function PIEReporterPreview({
 
       {reportApproved && reportApprovalAllowed && shareOpen ? (
         <View style={styles.reportShareMenu}>
-          <ReportShareButton icon="copy-outline" label="Copy Report" onPress={onCopyReport} disabled={communicationPending} />
-          <ReportShareButton icon="mail-outline" label="Email Report" onPress={onEmailReport} disabled={communicationPending} />
-          <ReportShareButton icon="chatbubble-outline" label="Text Report" onPress={onTextReport} disabled={communicationPending} />
-          <ReportShareButton icon="briefcase-outline" label="Email from Outlook (work)" onPress={onOutlookReport} disabled={communicationPending} />
+          {/* Open item 7.60: the four buttons have a row of their own and "Send To" its own below it. Inside the
+              buttons' row the panel took the row's width and the buttons shrank to empty bars on the iPhone. */}
+          <View style={styles.reportShareButtons}>
+            <ReportShareButton icon="copy-outline" label="Copy Report" onPress={onCopyReport} disabled={communicationPending} />
+            <ReportShareButton icon="mail-outline" label="Email Report" onPress={onEmailReport} disabled={communicationPending} />
+            <ReportShareButton icon="chatbubble-outline" label="Text Report" onPress={onTextReport} disabled={communicationPending} />
+            <ReportShareButton icon="briefcase-outline" label="Email from Outlook (work)" onPress={onOutlookReport} disabled={communicationPending} />
+          </View>
           {recipientsPanel}
         </View>
       ) : null}
@@ -3581,6 +3620,12 @@ function ReportCard({
   );
 }
 
+/**
+ * Open item 7.60: the narrowest a share button (Copy, Email, Text, Outlook) is drawn: its icon and its words fit, two
+ * to a row on the iPhone (about 400 points across) and four to a row on the iPad.
+ */
+export const REPORT_SHARE_BUTTON_MIN_WIDTH = 132;
+
 const styles = StyleSheet.create({
   experienceCard: {
     gap: spacing.sm,
@@ -5098,15 +5143,27 @@ const styles = StyleSheet.create({
   },
 
   reportShareMenu: {
-    flexDirection: 'row',
     gap: spacing.xs,
     borderRadius: 10,
     backgroundColor: colors.surfaceMuted,
     padding: spacing.xs,
   },
 
+  // Open item 7.60: the four share buttons, in a row of their own that wraps: four across on the iPad and the
+  // computer, two by two on the iPhone. No button is ever narrower than REPORT_SHARE_BUTTON_MIN_WIDTH, whatever
+  // stands beside it, so each keeps its icon and its words.
+  reportShareButtons: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+  },
+
   reportShareButton: {
-    flex: 1,
+    flexGrow: 1,
+    flexShrink: 0,
+    flexBasis: REPORT_SHARE_BUTTON_MIN_WIDTH,
+    minWidth: REPORT_SHARE_BUTTON_MIN_WIDTH,
+    paddingHorizontal: spacing.xs,
     minHeight: 44,
     borderRadius: 8,
     borderWidth: 1,

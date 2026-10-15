@@ -201,6 +201,15 @@ afterEach(() => {
 const settle = () => act(async () => {
   await new Promise(resolve => setTimeout(resolve, 0));
 });
+/**
+ * Open item 7.61: the report this device sent last for the period, the same report, shows as sent here (Share Report
+ * there, no Approve Report), after a relaunch too. Waits for it.
+ */
+const shownAsSentHere = async () => {
+  await screen.findByText(/^This device sent this report /, {}, SLOW);
+  expect(screen.getByRole('button', { name: 'Share Report' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Approve Report' })).toBeNull();
+};
 const approvable = () =>
   screen.findByText('Copy, Email, and Text unlock after approval. No report is sent automatically.', {}, SLOW);
 const approveButtonDisabled = () =>
@@ -372,7 +381,8 @@ describe('L4: the move to the Keychain makes a fresh id, so a device restored fr
     await reportSenderId();
     expect(keychainId('phone')).not.toBe(OLD_ID);
     open('phone', tower(0));
-    await approvable();
+    // Open item 7.61: the same report, its own send: it shows as sent here.
+    await shownAsSentHere();
     expect(screen.queryByText(/^Your other device/)).toBeNull();
     expect(own.sentBy).toBe(OLD_ID);
   });

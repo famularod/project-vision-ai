@@ -96,6 +96,7 @@ import type { PIEEvidenceValuePrioritization } from './PIEEvidenceValuePrioritiz
 import { fieldUpdatesNewestFirst, scheduleTasksInReportOrder, whatChangedForWrittenReport } from './PIEEvidenceFusion';
 import { confirmedComparisonQuoted, isEmptyRuntimeSummary, noteIsAcceptedPhotoSuggestion } from './ReportWrittenFacts';
 import { resolvePIEReportProjectNames } from './PIEReportScope';
+import { SCHEDULE_CHECK_REVIEW_FLAG } from './ReportApprovalPolicy';
 import type { PIEScheduleReconciliationResult } from './PIEScheduleReconciliation';
 import {
   isConstructionRelevantObservation,
@@ -180,7 +181,22 @@ export type PIEWorkAreaUnderstanding = {
   readerTakeaway: string;
   imageReferences: PIEReportImageReference[];
   sourceEvidenceIds: string[];
+  /**
+   * Open item 7.62: the records the area's lines are made from, each with the field update and the photo it is of,
+   * so "See Image N" is printed on the line of the photo's own update. Missing in an area made by hand: its lines
+   * cite its photos as before.
+   */
+  lineSources?: readonly PIEWorkAreaLineSource[];
 };
+
+/** Open item 7.62: one record an area's lines are made from. */
+export type PIEWorkAreaLineSource = Readonly<{
+  evidenceId: string;
+  /** Its words as a line prints them, compared without case or closing stop. */
+  words: string;
+  updateId: string | null;
+  photoId: string | null;
+}>;
 
 export type PIEConstructionUnderstanding = {
   locationGroups: Array<{
@@ -718,7 +734,7 @@ function recentConfirmedPhotoNote(
   const { confirmed, source } = quoted;
   const context = reportContextForUpdate(source, reportScheduleItems(input), selectedProjectsFromInput(input).length > 1);
   return {
-    id: `runtime-photo-progress-${confirmed.currentPhotoId}`,
+    id: `${CONFIRMED_PHOTO_NOTE_ID}${confirmed.currentPhotoId}`,
     source: 'photo',
     projectName: context.projectName,
     areaName: confirmed.areaName?.trim() || context.areaName,
@@ -842,7 +858,8 @@ export function buildConstructionUnderstanding(
   const numberedWorkAreas = renumberWorkAreaImageReferences(
     withEveryPhotoAttached(input, workAreas, Array.from(byArea.values()), imageReferences, rawEvidence),
   );
-  const locationGroups = groupUnderstandingByLocation(numberedWorkAreas);
+  // Open item 7.64: a combined report's work areas by project name, as HIGH item 1e put its other parts.
+  const locationGroups = groupUnderstandingByLocation(numberedWorkAreas, selectedProjectsFromInput(input).length > 1);
   const reviewFlags = buildReportReviewFlags({
     evidence,
     workAreas: numberedWorkAreas,
@@ -943,7 +960,7 @@ function withEveryPhotoAttached(
   // photos need area classification"); a photo with no area at all is not that, and goes with its update.
   const untaken = imageReferences.filter(reference => !taken.has(reference.photoId) &&
     (reference.classificationStatus !== 'needs_classification' || reference.classificationReason === PHOTO_WITH_NO_AREA));
-  if (untaken.length === 0) return workAreas;
+  if (untaken.length === 0) return withLineSources(workAreas, itemsOfArea);
 
   const selectedProjects = selectedProjectsFromInput(input);
   const updates = selectedUpdates(input, selectedProjects);
@@ -1035,7 +1052,15 @@ function withEveryPhotoAttached(
     items.splice(at, 0, [photoLine]);
   });
 
-  return areas;
+  return withLineSources(areas, items);
+}
+
+/** Open item 7.62: each area with the records its lines are made from (`items`, area by area). */
+function withLineSources(
+  areas: PIEWorkAreaUnderstanding[],
+  items: readonly PIEReportSourceEvidence[][],
+): PIEWorkAreaUnderstanding[] {
+  return areas.map((area, index) => ({ ...area, lineSources: (items[index] ?? []).map(lineSourceOf) }));
 }
 
 function renumberWorkAreaImageReferences(
@@ -1757,12 +1782,23 @@ function onlyFromTheSavedModel(sourceEvidenceIds: readonly string[]) {
  * (whatChanged is in the updates' own date order, items 2 and 3), after those
  * lines. "See Image N" stays where Build 231 put it; a plain note carries it
  * only as the area's ONLY line.
+ *
+ * Open item 7.62 (Build 232's device checks, check 18): "See Image N" goes
+ * only on a line of the photo's own: made from the photo, or from a note or
+ * photo of the field update it was taken with. Build 231 put every photo of
+ * an area on its first progress line, whoever's it was; when the three-line
+ * rule left out the photo's own note, its number ended a note that had no
+ * photo ("Concrete washout pit was installed near the gate. See Image 1.").
+ * Now a photo whose own line is printed is cited there; one whose own line
+ * is not printed keeps its number on a line of its own ("See Image 1."),
+ * after the lines Build 231 chose, as an area without a progress line cites
+ * its photos. A line that was a photo's own still cites it, to the word.
  */
 function buildReportBulletsFromUnderstanding(
   area: PIEWorkAreaUnderstanding,
   actionItems: PIEReportActionItem[],
 ): PIEReportBullet[] {
-  const chosen = linesAsBuild231ChoseThem(area, actionItems);
+  const { lines: chosen, uncited, madeFrom } = linesAsBuild231ChoseThem(area, actionItems);
   const progressKeys = new Set(area.progress.map(item => normalizeName(item.summary)));
   const printedKeys = new Set(chosen.map(bullet => normalizeName(bullet.text)));
   const filling = area.whatChanged
@@ -1783,18 +1819,110 @@ function buildReportBulletsFromUnderstanding(
       needsReview: area.status === 'Needs Review',
     }));
 
-  if (chosen.length === 1 && chosen[0].kind === 'image_reference' && filling.length === 1) {
+  // 7.62: the only plain note carries the area's photo numbers only if they are its own photos.
+  if (
+    chosen.length === 1 && chosen[0].kind === 'image_reference' && filling.length === 1 &&
+    area.imageReferences.every(reference => lineIsOfPhoto(area, lineMadeFrom(madeFrom, filling[0]), reference))
+  ) {
     return [{ ...filling[0], text: `${stripTerminalPunctuation(filling[0].text)}. ${chosen[0].text}` }];
   }
 
-  return [...chosen, ...filling];
+  return photosCitedOnTheirOwnLines(area, chosen, filling, uncited, madeFrom);
+}
+
+/** Open item 7.62: what one printed line is made from: its records, and its words (a plain note is known by them). */
+type ReportLineMadeFrom = Readonly<{ evidenceIds: ReadonlySet<string>; words: string }>;
+
+const CONFIRMED_PHOTO_NOTE_ID = 'runtime-photo-progress-';
+
+function lineWords(text: string) {
+  return normalizeName(text).replace(/[\s.!?]+$/, '');
+}
+
+function lineSourceOf(item: PIEReportSourceEvidence): PIEWorkAreaLineSource {
+  return {
+    evidenceId: item.id,
+    words: lineWords(cleanReportBulletText(item.summary)),
+    updateId: item.sourceUpdateId?.trim() || null,
+    photoId: item.photoId?.trim() ||
+      (item.id.startsWith(CONFIRMED_PHOTO_NOTE_ID) ? item.id.slice(CONFIRMED_PHOTO_NOTE_ID.length) : null),
+  };
+}
+
+function lineMadeFrom(madeFrom: ReadonlyMap<string, ReportLineMadeFrom>, line: PIEReportBullet): ReportLineMadeFrom {
+  return madeFrom.get(line.id) ?? { evidenceIds: new Set(), words: lineWords(line.text) };
+}
+
+/**
+ * Open item 7.62: whether a line is the photo's own: made from the photo itself, or from a note or photo of the field
+ * update it was taken with (by the records it is made from, or, a note of his, by its words). An area that does not
+ * say what its lines are made from (one made by hand) takes every line for the photo's, as before.
+ */
+function lineIsOfPhoto(
+  area: PIEWorkAreaUnderstanding,
+  line: ReportLineMadeFrom | undefined,
+  reference: PIEReportImageReference,
+) {
+  if (!area.lineSources) return true;
+  if (!line) return false;
+  const updateId = reference.sourceUpdateId?.trim() || '';
+  return area.lineSources.some(source =>
+    (line.evidenceIds.has(source.evidenceId) || (Boolean(line.words) && source.words === line.words)) &&
+    (source.photoId === reference.photoId || (Boolean(updateId) && source.updateId === updateId)));
+}
+
+function withCitation(line: PIEReportBullet, references: PIEReportImageReference[]): PIEReportBullet {
+  return { ...line, text: `${stripTerminalPunctuation(line.text)}. ${imageReferenceText(references)}` };
+}
+
+/**
+ * Open item 7.62: the photos no chosen line was the photo's own: each on the first printed line of its own, else, all
+ * together, on a line of their own after the lines Build 231 chose (before his plain notes), as Build 231 cited the
+ * photos of an area without a progress line. Each photo keeps its number.
+ */
+function photosCitedOnTheirOwnLines(
+  area: PIEWorkAreaUnderstanding,
+  chosen: PIEReportBullet[],
+  filling: PIEReportBullet[],
+  uncited: PIEReportImageReference[],
+  madeFrom: ReadonlyMap<string, ReportLineMadeFrom>,
+): PIEReportBullet[] {
+  if (uncited.length === 0) return [...chosen, ...filling];
+  const lines = [...chosen, ...filling];
+  const onLine = new Map<number, PIEReportImageReference[]>();
+  const alone: PIEReportImageReference[] = [];
+  uncited.forEach(reference => {
+    const at = lines.findIndex(line =>
+      line.kind !== 'image_reference' && lineIsOfPhoto(area, lineMadeFrom(madeFrom, line), reference));
+    if (at >= 0) onLine.set(at, [...(onLine.get(at) ?? []), reference]);
+    else alone.push(reference);
+  });
+  const cited = lines.map((line, index) => {
+    const references = onLine.get(index);
+    return references ? withCitation(line, references) : line;
+  });
+  if (alone.length === 0) return cited;
+  const ownLine: PIEReportBullet = {
+    id: slug(`bullet-image-${area.id}-own`),
+    text: imageReferenceText(alone),
+    kind: 'image_reference',
+    sourceEvidenceIds: alone.map(reference => reference.photoId),
+    needsReview: false,
+  };
+  return [...cited.slice(0, chosen.length), ownLine, ...cited.slice(chosen.length)];
 }
 
 function linesAsBuild231ChoseThem(
   area: PIEWorkAreaUnderstanding,
   actionItems: PIEReportActionItem[],
-): PIEReportBullet[] {
+): Readonly<{
+  lines: PIEReportBullet[];
+  /** Open item 7.62: the photos no chosen line is the photo's own, to cite once the plain notes are in. */
+  uncited: PIEReportImageReference[];
+  madeFrom: ReadonlyMap<string, ReportLineMadeFrom>;
+}> {
   const bullets: PIEReportBullet[] = [];
+  const madeFrom = new Map<string, ReportLineMadeFrom>();
   // What the lines are chosen from: the area's progress lines, problems and
   // next steps WITHOUT the ones made from the saved model alone (item 4b), in
   // each of its forms. A line of his own with the same words stays: it has
@@ -1808,50 +1936,62 @@ function linesAsBuild231ChoseThem(
 
   progressLines.slice(0, 3).forEach((summary, index) => {
     if (!summary || shouldSuppressReportBullet(summary)) return;
+    const id = slug(`bullet-${area.id}-progress-${index}`);
     bullets.push({
-      id: slug(`bullet-${area.id}-progress-${index}`),
+      id,
       text: ensureSentence(summary),
       kind: 'progress',
       sourceEvidenceIds: area.sourceEvidenceIds,
       needsReview: area.status === 'Needs Review',
     });
+    madeFrom.set(id, {
+      evidenceIds: new Set(area.progress
+        .filter(item => normalizeName(item.summary) === normalizeName(summary))
+        .flatMap(item => item.sourceEvidenceIds)),
+      words: lineWords(summary),
+    });
   });
 
   issues.slice(0, 2).forEach((issue, index) => {
+    const id = slug(`bullet-${area.id}-issue-${index}`);
     bullets.push({
-      id: slug(`bullet-${area.id}-issue-${index}`),
+      id,
       text: ensureSentence(issue.summary),
       kind: issue.summary.toLowerCase().includes('safety') ? 'safety' : 'issue',
       sourceEvidenceIds: issue.sourceEvidenceIds,
       needsReview: false,
     });
+    madeFrom.set(id, { evidenceIds: new Set(issue.sourceEvidenceIds), words: lineWords(issue.summary) });
   });
 
   nextSteps.forEach(item => {
+    const id = slug(`bullet-action-${item.id}`);
     bullets.push({
-      id: slug(`bullet-action-${item.id}`),
+      id,
       text: formatActionItem(item),
       kind: 'next_step',
       sourceEvidenceIds: item.sourceEvidenceIds,
       needsReview: item.needsOwner,
     });
+    madeFrom.set(id, { evidenceIds: new Set(item.sourceEvidenceIds), words: lineWords(item.action) });
   });
 
+  let uncited: PIEReportImageReference[] = [];
   if (area.imageReferences.length > 0) {
     const lastProgressIndex = bullets.findIndex(
       bullet => bullet.kind === 'progress' || bullet.kind === 'schedule',
     );
-    const imageText = imageReferenceText(area.imageReferences);
 
     if (lastProgressIndex >= 0) {
-      bullets[lastProgressIndex] = {
-        ...bullets[lastProgressIndex],
-        text: `${stripTerminalPunctuation(bullets[lastProgressIndex].text)}. ${imageText}`,
-      };
+      // 7.62: Build 231 cited every photo of the area here; now only the photos whose own line it is.
+      const line = bullets[lastProgressIndex];
+      const own = area.imageReferences.filter(reference => lineIsOfPhoto(area, madeFrom.get(line.id), reference));
+      uncited = area.imageReferences.filter(reference => !own.includes(reference));
+      if (own.length > 0) bullets[lastProgressIndex] = withCitation(line, own);
     } else {
       bullets.push({
         id: slug(`bullet-image-${area.id}`),
-        text: imageText,
+        text: imageReferenceText(area.imageReferences),
         kind: 'image_reference',
         sourceEvidenceIds: area.imageReferences.map(ref => ref.photoId),
         needsReview: false,
@@ -1859,7 +1999,8 @@ function linesAsBuild231ChoseThem(
     }
   }
 
-  return selectConciseAreaBullets(uniqueBullets(bullets));
+  const concise = selectConciseAreaBullets(uniqueBullets(bullets), area, madeFrom);
+  return { lines: concise.lines, uncited: [...uncited, ...concise.uncited], madeFrom };
 }
 
 function actionItemsFromEvidence(
@@ -2354,7 +2495,8 @@ function scheduleReconciliationReviewFlags(
       warning.type === 'field_progress_not_reflected'
     )
     .slice(0, 2)
-    .map(warning => `Schedule check: ${shortenReportBullet(warning.summary, 180)}`);
+    // Its kind, which the approval policy reads (open item 7.63), not the warning's words.
+    .map(warning => `${SCHEDULE_CHECK_REVIEW_FLAG}${shortenReportBullet(warning.summary, 180)}`);
 }
 
 function scheduleReconciliationExecutiveBullet(
@@ -2568,6 +2710,8 @@ function confidenceForReport(confidence: 'low' | 'medium' | 'high'): PIEReportCo
 
 function groupUnderstandingByLocation(
   workAreas: PIEWorkAreaUnderstanding[],
+  /** A report of several projects (open item 7.64). */
+  severalProjects = false,
 ) {
   const byLocation = new Map<string, PIEWorkAreaUnderstanding[]>();
 
@@ -2578,24 +2722,37 @@ function groupUnderstandingByLocation(
     ]);
   });
 
-  return Array.from(byLocation.entries()).map(([title, areas]) => ({
+  const groups = Array.from(byLocation.entries()).map(([title, areas]) => ({
     id: slug(`location-${title}`),
     title,
     workAreas: areas,
   }));
+  // Open item 7.64 (Build 232's device checks, check 21): a combined report printed its projects' work areas in the
+  // order their newest notes came, so the project with the newest note came first in WORK AREAS / PHOTO NOTES and the
+  // Work Areas & Photos cards while every other part listed the projects by name (HIGH item 1e). Now by name too, the
+  // same however he ticked them; each project's areas keep their own order, and each photo its number. A report of
+  // one project reads as before, to the word.
+  return severalProjects
+    ? [...groups].sort((left, right) => reportProjectNameOrder(left.title, right.title))
+    : groups;
+}
+
+/** HIGH item 1e: the order a report of several projects lists them in: by name, not in the order they were ticked. */
+function reportProjectNameOrder(left: string, right: string) {
+  const byName = (name: string) => normalizeName(name).replace(/[^a-z0-9]+/g, ' ').trim();
+  return byName(left).localeCompare(byName(right));
 }
 
 function selectedProjectsFromInput(input: PIEReportDraftInput) {
   // HIGH item 1e: by name, not in the order they were ticked: a combined report's line filed under its first project
   // (the open update's project, else the first selected) is the same however he ticked them, as the report's own order is.
-  const byName = (name: string) => name.replace(/[^a-z0-9]+/g, ' ').trim();
   return resolvePIEReportProjectNames({
     selectedProjectNames: input.selectedProjectNames,
     fallbackProjectNames: [
       input.currentUpdate?.projectName,
       ...(input.savedUpdates || []).map(update => update.projectName),
     ],
-  }).map(normalizeName).sort((left, right) => byName(left).localeCompare(byName(right)));
+  }).map(normalizeName).sort(reportProjectNameOrder);
 }
 
 /**
@@ -2979,7 +3136,9 @@ function uniqueBullets(bullets: PIEReportBullet[]) {
 
 function selectConciseAreaBullets(
   bullets: PIEReportBullet[],
-): PIEReportBullet[] {
+  area: PIEWorkAreaUnderstanding,
+  madeFrom: ReadonlyMap<string, ReportLineMadeFrom>,
+): Readonly<{ lines: PIEReportBullet[]; uncited: PIEReportImageReference[] }> {
   const preferred = [
     bullets.find(bullet =>
       bullet.kind === 'progress' || bullet.kind === 'schedule'
@@ -2998,12 +3157,23 @@ function selectConciseAreaBullets(
   // of their own, after its problems and requests; where those already fill
   // the area's three lines, that line was cut and the photos, numbered and
   // attached, were cited nowhere. They are cited on the area's first line.
+  // Open item 7.62: each on the first of those lines that is the photo's own;
+  // a photo none of them is the photo's own keeps a line of its own.
   const citation = bullets.find(bullet => bullet.kind === 'image_reference');
+  const uncited: PIEReportImageReference[] = [];
   if (citation && selected.length > 0 && !selected.includes(citation)) {
-    selected[0] = { ...selected[0], text: `${stripTerminalPunctuation(selected[0].text)}. ${citation.text}` };
+    const onLine = new Map<number, PIEReportImageReference[]>();
+    area.imageReferences.forEach(reference => {
+      const at = selected.findIndex(line => lineIsOfPhoto(area, madeFrom.get(line.id), reference));
+      if (at >= 0) onLine.set(at, [...(onLine.get(at) ?? []), reference]);
+      else uncited.push(reference);
+    });
+    onLine.forEach((references, at) => {
+      selected[at] = withCitation(selected[at], references);
+    });
   }
 
-  return selected;
+  return { lines: selected, uncited };
 }
 
 function shortenReportBullet(value: string, maximumLength = 160) {

@@ -294,6 +294,15 @@ const holdTheFourSecondLimit = () => {
     release: () => spy.mockRestore(),
   };
 };
+/**
+ * Open item 7.61: the report this device sent last for the period, the same report, shows as sent here (Share Report
+ * there, no Approve Report), after a relaunch too. Waits for it.
+ */
+const shownAsSentHere = async () => {
+  await screen.findByText(/^This device sent this report /, {}, SLOW);
+  expect(screen.getByRole('button', { name: 'Share Report' })).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Approve Report' })).toBeNull();
+};
 const approvable = () =>
   screen.findByText('Copy, Email, and Text unlock after approval. No report is sent automatically.', {}, SLOW);
 const shareable = () => screen.findByRole('button', { name: 'Share Report' }, SLOW);
@@ -439,12 +448,13 @@ describe('an approval stands only on the period it was given on (A6 pass 8 M1)',
     await approveAndSend();
     expect(onCopyReport).toHaveBeenCalledTimes(2);
     phone.rerender(reportsScreen(tower(1)));
-    await approvable();
-    expect(screen.queryByRole('button', { name: 'Share Report' })).toBeNull();
+    // The earlier approval does not come back: what shows is (open item 7.61) the report of these facts this device
+    // has just sent, as sent here (the daily and the combined report of one project share the period and the facts).
+    await shownAsSentHere();
     expect(screen.queryByText(/^Your other device/)).toBeNull();
     // After a tab switch this device's own send is still known as its own.
     await switchTabAndBack(phone, tower(1));
-    expect(screen.queryByRole('button', { name: 'Share Report' })).toBeNull();
+    await shownAsSentHere();
     expect(screen.queryByText(/^Your other device/)).toBeNull();
   });
 
