@@ -832,6 +832,12 @@ export type ScheduleLookaheadOverlay = {
    * restate the task, when it finds the task still on these dates and this
    * lookahead's file deleted, so that deleting that next lookahead goes back
    * to them. Missing otherwise.
+   * approvedAt: when this lookahead was approved, noted beside importedAt
+   * where the two differ (review pass 5 of Way 2, W5-1, 14 Oct 2026: its file
+   * is read in when chosen and approved later, at its review card). Two
+   * lookaheads approved apart on two devices are ordered by it, as one device
+   * orders them. Missing where it was approved when read in, and on an entry
+   * noted before: importedAt stands for both.
    */
   lookaheads: {
     batchId: string;
@@ -844,6 +850,7 @@ export type ScheduleLookaheadOverlay = {
     importedAt?: string;
     datesLeftAt?: string;
     datesKeptAt?: string;
+    approvedAt?: string;
   }[];
 };
 

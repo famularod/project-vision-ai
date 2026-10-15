@@ -343,6 +343,8 @@ export function scheduleTaskRestatedByLookahead(
       {
         batchId, startDate: row.startDate, finishDate: row.finishDate, percentComplete: givenPercent,
         ...(typeof row.importedAt === 'string' && row.importedAt.trim() ? { importedAt: row.importedAt } : {}),
+        // And when it was approved, where that is not when its file was read in (W5-1): lookaheads approved apart go by it.
+        ...(timeOf(row.importedAt) > 0 && timeOf(approvedAt) > 0 && timeOf(approvedAt) !== timeOf(row.importedAt) ? { approvedAt } : {}),
         // Its row stated a percent it did not give (at or below David's own): still a newer word (A5 pass 21 R3).
         ...(givenPercent === null && scheduleRowStatesPercent(row) ? { percentStated: true as const } : {}),
       },
@@ -1074,6 +1076,15 @@ export function scheduleLookaheadDeleteMadeOnApproval(
  * S-2 (older, Low, the same lines): the other copy's lookahead imported between two of the kept copy's own goes between
  * them, so deleting the newest goes back to its dates, as one device in order; by every entry's importedAt, only where
  * each is older than the kept copy's newest (else before the kept copy's own, as before).
+ *
+ * W5-1 (review pass 5 of Way 2, Medium, narrow, caused by W4-1's cure) and W5-2 (Low, caused by W4-2's): the app reads
+ * a lookahead file in when it is chosen (importedAt) and approves it later, at its review card. The iPad, no signal,
+ * read A in (70%) and left the card open; the phone (or the computer) read in and approved B (30%); the iPad approved
+ * A: the task took A's dates (the merge keeps the copy approved last) at B's 30% everywhere; one device in order shows
+ * A's 70%. And his percent typed between A's reading-in and its approval counted as typed after A. The three rules
+ * above now compare when each lookahead was APPROVED (approvedTimeOf: its entry's approvedAt, noted where it differs
+ * from importedAt), as one device and the merge do; an entry with none (approved when read in, or noted before this)
+ * keeps importedAt, as before.
  */
 export function scheduleLookaheadApprovalsOfBoth(
   merged: ScheduleItem,
@@ -1099,18 +1110,18 @@ export function scheduleLookaheadApprovalsOfBoth(
   const dropped = other.removed.filter(batchId => inNote.includes(batchId));
   if (gained.length === 0 && dropped.length === 0) return null;
   const first = inNote.findIndex(batchId => kept.added.includes(batchId));
-  // W4-2: where the note's percent is his own, typed after the other copy's lookahead was imported (or the app cannot tell
-  // which came first), that lookahead gives no percent back at a delete, as one device clears it at the next file.
+  // W4-2: where the note's percent is his own, typed after the other copy's lookahead was approved (W5-2; or the app
+  // cannot tell which came first), that lookahead gives no percent back at a delete, as one device clears it at the next file.
   const hisAt = notedPercentIsManagers(note) ? timeOf(note.masterProgressConfirmedAt) : null;
   const theirs = (overlayOf(other.item)?.lookaheads ?? []).filter(entry => gained.includes(key(entry.batchId)))
-    .map(entry => (hisAt !== null && typeof entry.percentComplete === 'number' && !(hisAt > 0 && timeOf(entry.importedAt) > hisAt)
+    .map(entry => (hisAt !== null && typeof entry.percentComplete === 'number' && !(hisAt > 0 && approvedTimeOf(entry) > hisAt)
       ? { ...entry, percentComplete: null } : entry));
-  // S-2: each goes just before the first of the kept copy's own imported after it (by every entry's importedAt, all older
-  // than the kept copy's newest); else before the kept copy's own, as before.
+  // S-2: each goes just before the first of the kept copy's own approved after it (by every entry's approval time, W5-1,
+  // all older than the kept copy's newest); else before the kept copy's own, as before.
   const own = note.lookaheads.slice(first);
-  const slotOf = (entry: LookaheadEntry) => own.find(mine => timeOf(mine.importedAt) > timeOf(entry.importedAt));
-  const byImport = [...own, ...theirs].every(entry => timeOf(entry.importedAt) > 0) && theirs.every(entry => slotOf(entry));
-  const placed = byImport ? own.flatMap(mine => [...theirs.filter(entry => slotOf(entry) === mine), mine]) : [...theirs, ...own];
+  const slotOf = (entry: LookaheadEntry) => own.find(mine => approvedTimeOf(mine) > approvedTimeOf(entry));
+  const byApproval = [...own, ...theirs].every(entry => approvedTimeOf(entry) > 0) && theirs.every(entry => slotOf(entry));
+  const placed = byApproval ? own.flatMap(mine => [...theirs.filter(entry => slotOf(entry) === mine), mine]) : [...theirs, ...own];
   const lookaheads = [...note.lookaheads.slice(0, first), ...placed]
     .filter(entry => !dropped.includes(key(entry.batchId)));
   const next = { ...merged } as unknown as Record<string, unknown>;
@@ -1123,12 +1134,12 @@ export function scheduleLookaheadApprovalsOfBoth(
   const newestGave = typeof (overlayOf(kept.item)?.lookaheads ?? []).slice(-1)[0]?.percentComplete === 'number';
   const fieldsChanged = sides.map(side => SCHEDULE_PROGRESS_FIELDS.some(field => asRead(side.item, field) !== asRead(before, field)));
   const progressChanged = sides.map((side, index) => (side === kept && newestGave) || fieldsChanged[index]);
-  // W4-1: when each copy last stated its progress: its newest new lookahead that gave a percent (when imported); null
-  // where one that gave a percent says no time. The later stands, where each copy that changed its progress says when,
-  // and no percent of his own is in play (his keep their own rules: a file's percent never below his); else as before.
+  // W4-1: when each copy last stated its progress: its newest new lookahead that gave a percent (when approved, W5-1);
+  // null where one that gave a percent says no time. The later stands, where each copy that changed its progress says
+  // when, and no percent of his own is in play (his keep their own rules: a file's percent never below his); else as before.
   const statedAt = sides.map(side => {
     const gave = (overlayOf(side.item)?.lookaheads ?? [])
-      .filter(entry => side.added.includes(key(entry.batchId)) && typeof entry.percentComplete === 'number').map(entry => timeOf(entry.importedAt));
+      .filter(entry => side.added.includes(key(entry.batchId)) && typeof entry.percentComplete === 'number').map(entry => approvedTimeOf(entry));
     return gave.some(time => time === 0) ? null : Math.max(0, ...gave);
   });
   const hisInPlay = [local, remote, before].some(item => scheduleProgressIsManagers(item) || notedPercentIsManagers(overlayOf(item) ?? ({} as ScheduleLookaheadOverlay)));
@@ -1164,6 +1175,14 @@ export function scheduleLookaheadApprovalsHeardIn(
 function timeOf(value: string | null | undefined): number {
   const parsed = value ? Date.parse(value) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/**
+ * When a lookahead in a task's note was approved (W5-1): its approvedAt, noted where that differs from when its file was
+ * read in; else its importedAt (approved when read in, or noted before). 0 where it says neither.
+ */
+function approvedTimeOf(entry: LookaheadEntry): number {
+  return timeOf(entry.approvedAt) || timeOf(entry.importedAt);
 }
 
 /** When a task's progress was last stated, as Set Active's carry dates it (ScheduleImportMerge). */

@@ -485,13 +485,15 @@ const scheduleDoc = (id: string, importedAt: string, role?: 'lookahead'): Refere
   projectId: null, projectName: 'Alpha', projectNames: ['Alpha'], importBatchId: `batch-${id}`, ...(role ? { scheduleRole: role } : {}),
 }) as ReferenceDocument;
 
-async function approve(device: Device, source: ReferenceDocument, lines: string[], lookahead = false) {
+// (approvedAt, W5-1: the app reads a file in when it is chosen, its rows keeping that time, and approves it later at its
+// review card; a test passes when it was approved. By default the time it was read in, as every test before.)
+async function approve(device: Device, source: ReferenceDocument, lines: string[], lookahead = false, approvedAt = source.importedAt as string) {
   on(device);
   const before = device.ref.current;
   const merged = mergeApprovedScheduleImportItems({
     existing: before, imported: rowsOf(source, lines), completionMatch: () => null, mergeCompletion: (item: ScheduleItem) => item,
     isCurrent: scheduleItemsVisibleBeforeImport(before, [...device.documents, source], source.importBatchId || ''),
-    approvedAt: source.importedAt as string, ...(lookahead ? { overlay: true } : {}),
+    approvedAt, ...(lookahead ? { overlay: true } : {}),
   } as never) as { additions: ScheduleItem[]; next: ScheduleItem[] };
   const synchronized = reconcileDAVEScheduleRecords([...merged.additions, ...merged.next]);
   const previous = new Map(before.map(item => [item.id, item]));
@@ -8052,6 +8054,278 @@ describe('W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a pe
         const apart = await typed(holder, when, pa, pb, false);
         // (It was, his 30% typed after A, A 70%: after B's delete, A's dates at A's 70% in all three places, no card.)
         expect({ afterApprovals: apart.afterApprovals, end: apart.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+      });
+    });
+  });
+});
+
+/* ------------------------------------------------------------------------------------------------------------- */
+/**
+ * W5-1 and W5-2 (review pass 5 of Way 2; both caused by b1428d03, the cure of W4-1 and W4-2; 14 Oct 2026).
+ *
+ * The app reads a lookahead file in when it is chosen (its rows keep that time, importedAt) and approves it later, at
+ * its review card. b1428d03 ordered the lookaheads of the two copies by when each file was READ IN; one device doing
+ * the steps in order, and the rest of the sync (which copy's dates and note the merge keeps), go by when each was
+ * APPROVED. A review card can stay open while another device reads in and approves another lookahead.
+ *
+ * W5-1 (Medium, narrow): the iPad (no signal) reads lookahead A in (70%) and leaves its review card open; the phone, or
+ * the office on the computer, reads in and approves B (30%); the iPad then approves A. After the sync: A's dates at B's
+ * 30% everywhere; one device in order shows A's 70% (A was approved last).
+ * W5-2 (Low): the phone reads A in (70%) and leaves its card open; the iPad takes Framing to 30% by hand; the phone
+ * approves A; the iPad approves B (80%). Deleting B later gave A's dates at his 30%; one device in order gives A's 70%
+ * (his 30% was typed before A was approved).
+ * And S-2's placing the same way: the other device's lookahead read in before the kept copy's own but approved between
+ * them goes between them in the note, so deleting the newest goes back to its dates.
+ *
+ * Each runs ONE device in order first and asserts its values outright, then the two devices (each file read in at one
+ * time and approved at another), which must end exactly as one device after the approvals and after the delete, in all
+ * three places, no card, nothing waiting.
+ */
+describe('W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each was approved, not when its file was read in', () => {
+  const lookaheadsOf = (item: ScheduleItem) => ((item as unknown as { lookaheadOverlay?: { lookaheads?: Array<{ batchId?: string }> } }).lookaheadOverlay?.lookaheads ?? []).map(entry => entry.batchId);
+  const seen = (items: readonly ScheduleItem[]) => framingOf(items).map(item => ({
+    dates: `${item.startDate} - ${item.finishDate}`, percent: item.percentComplete, lookaheads: lookaheadsOf(item),
+  }));
+  const ending = async (phone: Device, ipad: Device) => ({
+    places: [seen(deviceShown(phone)), seen(deviceShown(ipad)), seen(webShown())],
+    cards: [(await conflictsOf(phone)).length, (await conflictsOf(ipad)).length], waiting: [(await queueOf(phone)).length, (await queueOf(ipad)).length],
+  });
+  const heardEverywhere = async (device: Device, other: Device) => { shareDocuments(device); await backgroundUpload(device); await settle(device, other); };
+  const sent = async (device: Device) => { if (isOnline(device)) { shareDocuments(device); await backgroundUpload(device); } };
+  const T = (hhmm: string) => `2026-09-09T${hhmm}:00.000Z`;
+  const datesOn = (day: string) => `10/${day}/2026 - 10/${Number(day) + 10}/2026`;
+  const rowOn = (day: string, percent: string) => `Framing,Alpha,Lot,10/${day}/2026,10/${Number(day) + 10}/2026,${percent}`;
+  /** One device in order: the percent of the newest (by approval) that states one, else the start. */
+  const newestStated = (list: ReadonlyArray<{ percent: string }>, start: number) => Number([...list].reverse().find(step => step.percent !== '')?.percent ?? start);
+
+  describe('W5-1: two lookaheads, each file read in on one device and approved in the other order', () => {
+    type Order = 'the phone\'s A read in first, approved last' | 'the iPad\'s A read in first, approved last' | 'A read in and approved first (as before)';
+    type Step = { name: 'A' | 'B'; on: 'phone' | 'ipad'; readIn: string; approved: string; percent: string; day: string };
+    // A (10/18 - 10/28) read in at 12:00; B (10/20 - 10/30) read in at 12:10 and approved at 12:15 on the other device. A
+    // approved at 12:30, its review card open meanwhile; or at 12:05 (each approved in the order read in).
+    const stepsOf = (order: Order, pa: string, pb: string): Step[] => {
+      const aOn = order.startsWith('the iPad') ? 'ipad' : 'phone';
+      return ([
+        { name: 'A', on: aOn, readIn: T('12:00'), approved: order.startsWith('A read in') ? T('12:05') : T('12:30'), percent: pa, day: '18' },
+        { name: 'B', on: aOn === 'phone' ? 'ipad' : 'phone', readIn: T('12:10'), approved: T('12:15'), percent: pb, day: '20' },
+      ] as Step[]).sort((one, other) => Date.parse(one.approved) - Date.parse(other.approved));
+    };
+    const docOf = (step: Step) => scheduleDoc(`LOOKAHEAD W51 ${step.name}`, step.readIn, 'lookahead');
+
+    /**
+     * The master gives Framing `start` (10/15 - 10/25). Each lookahead is approved (in `steps`' order) on its device; the
+     * iPad has no signal until 16:00, the phone sends each approval. Everything syncs; then the phone deletes the last or
+     * the first approved with its items, and everything syncs. One device in order: the phone does every step.
+     */
+    async function apart(start: number, steps: readonly Step[], deleted: 'the last approved' | 'the first approved', oneDevice: boolean) {
+      at('2026-09-07T12:00:00.000Z');
+      const { phone, ipad } = await startBoth(F, [`Framing,Alpha,Lot,10/15/2026,10/25/2026,${start || ''}`, SURVEY]);
+      if (!oneDevice) setOnline(ipad, false);
+      for (const step of steps) {
+        const device = oneDevice || step.on === 'phone' ? phone : ipad;
+        at(step.approved); await approve(device, docOf(step), [rowOn(step.day, step.percent)], true, step.approved);
+        await sent(device);
+      }
+      at('2026-09-09T16:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad); await backgroundUpload(ipad);
+      await settle(phone, ipad);
+      const afterApprovals = await ending(phone, ipad);
+      at('2026-09-10T12:00:00.000Z'); await deleteWithItems(phone, docOf(deleted === 'the last approved' ? steps[steps.length - 1] : steps[0])); await heardEverywhere(phone, ipad);
+      await refresh(phone); await refresh(ipad);
+      return { afterApprovals, end: await ending(phone, ipad) };
+    }
+
+    const said = (percent: string) => (percent === '' ? 'none' : `${percent}%`);
+    const cases = ([
+      [0, '70', '30', 'the last approved'], [0, '30', '70', 'the last approved'], [0, '70', '', 'the last approved'], [0, '', '70', 'the last approved'],
+      [0, '70', '0', 'the last approved'], [0, '0', '70', 'the last approved'], [40, '70', '20', 'the last approved'], [0, '70', '30', 'the first approved'],
+    ] as Array<[number, string, string, 'the last approved' | 'the first approved']>)
+      .map(([start, pa, pb, deleted]) => [`from ${start}%, A states ${said(pa)}, B states ${said(pb)}, then ${deleted} deleted`, start, pa, pb, deleted] as [string, number, string, string, 'the last approved' | 'the first approved']);
+
+    describe.each(['the phone\'s A read in first, approved last', 'the iPad\'s A read in first, approved last', 'A read in and approved first (as before)'] as Order[])('%s', order => {
+      it.each(cases)('%s: as one device doing the steps in order', async (_label, start, pa, pb, deleted) => {
+        const steps = stepsOf(order, pa, pb);
+        const batch = (step: Step) => `batch-LOOKAHEAD W51 ${step.name}`;
+        const remaining = deleted === 'the last approved' ? steps.slice(0, -1) : steps.slice(1);
+        // One device in order: the dates of the one approved last and the percent of the newest approved that states one
+        // (else the start), the note naming both in the order approved; after the delete, the same of the one left.
+        const inOrder = await apart(start, steps, deleted, true);
+        expect(inOrder.afterApprovals).toEqual({ places: Array(3).fill([{ dates: datesOn(steps[1].day), percent: newestStated(steps, start), lookaheads: steps.map(batch) }]), cards: [0, 0], waiting: [0, 0] });
+        expect(inOrder.end).toEqual({ places: Array(3).fill([{ dates: datesOn(remaining[0].day), percent: newestStated(remaining, start), lookaheads: remaining.map(batch) }]), cards: [0, 0], waiting: [0, 0] });
+        const twoDevices = await apart(start, steps, deleted, false);
+        // (It was, A read in first and approved last, both stating a percent: A's dates at B's percent in all three places,
+        // after the approvals and after the delete, no card.)
+        expect({ afterApprovals: twoDevices.afterApprovals, end: twoDevices.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+      });
+    });
+  });
+
+  describe('W5-1 with the computer: the iPad\'s review card open while the office saves another lookahead on the web', () => {
+    /** A lookahead uploaded on the web desktop (its role chosen at the review), its rows written as the web's plan writes them. */
+    function webLookahead(id: string, lines: string[]): ReferenceDocument {
+      const web = require('../../services/DAVEWebOperations');
+      const when = new Date().toISOString();
+      const prepared = web.withDAVEWebScheduleUploadRole(web.prepareDAVEWebDocumentUpload({
+        fileName: `${id}.csv`, mimeType: 'text/csv', sizeBytes: 300, category: 'Schedules', projectName: 'Alpha', projects: ['Alpha'],
+        contents: ['Task,Project,Area,Start,Finish,Percent Complete', ...lines].join('\n'), fingerprint: 'e'.repeat(64), now: when,
+      } as never), 'lookahead');
+      const document = { ...(prepared.document as ReferenceDocument), id, importBatchId: `batch-${id}` } as ReferenceDocument;
+      const rows = (prepared.scheduleItems as ScheduleItem[]).map((row, index) => ({ ...row, id: `${id}-${index + 1}`, importBatchId: document.importBatchId, sourceDocumentId: id }));
+      const withCloud = (item: ScheduleItem) => ({ ...item, cloudUpdatedAt: item.updatedAt ?? null });
+      const plan = web.planDAVEWebScheduleImport({
+        snapshot: { scheduleItems: webShown().map(withCloud), knownScheduleItems: cloudItems().map(withCloud), referenceDocuments: cloudDocuments } as never,
+        importedScheduleItems: rows, document,
+      });
+      const plain = (item: ScheduleItem) => { const { cloudUpdatedAt: _cloud, ...rest } = item as ScheduleItem & { cloudUpdatedAt?: unknown }; return rest as ScheduleItem; };
+      plan.additions.forEach((item: ScheduleItem) => webWrite(plain(item)));
+      plan.revisions.forEach((revision: { item: ScheduleItem }) => webWrite(plain(revision.item)));
+      cloudDocuments = [...cloudDocuments, document];
+      mockCloud.documents = cloudDocuments;
+      return document;
+    }
+    const LA = scheduleDoc('LOOKAHEAD W51 WEB A', T('12:00'), 'lookahead');
+
+    /**
+     * Framing at 0% (10/15 - 10/25). The iPad (no signal) reads lookahead A (10/18 - 10/28, `pa`) in at 12:00; at 12:10
+     * the office uploads lookahead B (10/20 - 10/30, `pb`) on the computer; at 12:30 the iPad approves A. The iPad gets
+     * signal at 16:00 and everything syncs; then the phone deletes B with its items (or nothing). One device in order: the
+     * phone reads A in at 12:00, reads in and approves B at 12:10, and approves A at 12:30.
+     */
+    async function steps(pa: string, pb: string, deleteB: boolean, oneDevice: boolean) {
+      at('2026-09-07T12:00:00.000Z');
+      const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+      if (!oneDevice) setOnline(ipad, false);
+      let LB: ReferenceDocument;
+      at(T('12:10'));
+      if (oneDevice) { LB = scheduleDoc('LOOKAHEAD W51 WEB B', T('12:10'), 'lookahead'); await approve(phone, LB, [rowOn('20', pb)], true); await sent(phone); }
+      else { LB = webLookahead('LOOKAHEAD W51 WEB B', [rowOn('20', pb)]); await refresh(phone); }
+      const ofA = oneDevice ? phone : ipad;
+      at(T('12:30')); await approve(ofA, LA, [rowOn('18', pa)], true, T('12:30')); await sent(ofA);
+      at('2026-09-09T16:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad); await backgroundUpload(ipad);
+      await settle(phone, ipad);
+      const afterApprovals = await ending(phone, ipad);
+      if (!deleteB) return { afterApprovals, end: afterApprovals, LB };
+      at('2026-09-10T12:00:00.000Z'); await deleteWithItems(phone, LB); await heardEverywhere(phone, ipad);
+      await refresh(phone); await refresh(ipad);
+      return { afterApprovals, end: await ending(phone, ipad), LB };
+    }
+
+    it.each([
+      ['A 70%, B 30%; then B deleted', '70', '30', true], ['A 30%, B 70%; then B deleted', '30', '70', true],
+      ['A 70%, B 0%', '70', '0', false], ['A 70%, B none', '70', '', false],
+    ] as Array<[string, string, string, boolean]>)('%s: as one device doing the steps in order', async (_label, pa, pb, deleteB) => {
+      const inOrder = await steps(pa, pb, deleteB, true);
+      const batchB = 'batch-LOOKAHEAD W51 WEB B';
+      // One device in order: A's dates (approved last) at A's percent (else B's, else 0%), the note naming B then A; after
+      // B's delete, A's dates at A's percent (else 0%), the note naming A.
+      expect(inOrder.afterApprovals).toEqual({ places: Array(3).fill([{ dates: datesOn('18'), percent: Number(pa || pb || 0), lookaheads: [batchB, LA.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
+      if (deleteB) expect(inOrder.end).toEqual({ places: Array(3).fill([{ dates: datesOn('18'), percent: Number(pa || 0), lookaheads: [LA.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
+      const twoDevices = await steps(pa, pb, deleteB, false);
+      // (It was, B stating a percent: A's dates at B's percent in all three places, and after B's delete, no card.)
+      expect({ afterApprovals: twoDevices.afterApprovals, end: twoDevices.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+    });
+  });
+
+  describe('W5-2: his own percent typed while the other device\'s lookahead waited at its review card', () => {
+    type Holder = 'A on the phone (sent); his percent and B on the iPad (no signal)' | 'A on the iPad (no signal); his percent and B on the phone (sent)';
+    // A read in at 12:00 and approved at 12:20; B read in and approved at 13:00.
+    const LA = scheduleDoc('LOOKAHEAD W52 A', T('12:00'), 'lookahead');
+    const LB = scheduleDoc('LOOKAHEAD W52 B', T('13:00'), 'lookahead');
+
+    /**
+     * Framing at 0% (10/15 - 10/25). Lookahead A (10/18 - 10/28, `pa`), read in at 12:00, approved at 12:20 on one device;
+     * on the other, Framing to 30% by hand at `his`, and lookahead B (10/21 - 10/31, `pb`) at 13:00. The iPad has no
+     * signal until 16:00; everything syncs; then the phone deletes B with its items, and everything syncs. One device in
+     * order: the phone does every step at the same times.
+     */
+    async function typed(holder: Holder, his: string, pa: string, pb: string, oneDevice: boolean) {
+      at('2026-09-07T12:00:00.000Z');
+      const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+      const [ofA, ofHis] = oneDevice ? [phone, phone] : holder.startsWith('A on the phone') ? [phone, ipad] : [ipad, phone];
+      if (!oneDevice) setOnline(ipad, false);
+      const events: Array<[string, () => Promise<void>]> = [
+        [T(his), async () => { await edit(ofHis, theRow(ofHis).id, { percentComplete: 30 }); if (isOnline(ofHis)) await backgroundUpload(ofHis); }],
+        [T('12:20'), async () => { await approve(ofA, LA, [rowOn('18', pa)], true, T('12:20')); await sent(ofA); }],
+        [T('13:00'), async () => { await approve(ofHis, LB, [rowOn('21', pb)], true); await sent(ofHis); }],
+      ];
+      for (const [when, run] of events.sort((one, other) => Date.parse(one[0]) - Date.parse(other[0]))) { at(when); await run(); }
+      at('2026-09-09T16:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad); await backgroundUpload(ipad);
+      await settle(phone, ipad);
+      const afterApprovals = await ending(phone, ipad);
+      at('2026-09-10T12:00:00.000Z'); await deleteWithItems(phone, LB); await heardEverywhere(phone, ipad);
+      await refresh(phone); await refresh(ipad);
+      return { afterApprovals, end: await ending(phone, ipad) };
+    }
+
+    // [label, his time, A states, B states, percent after the approvals, percent after B's delete], one device in order.
+    const cases: Array<[string, string, string, string, number, number]> = [
+      ['his 30% before A was read in; A 70%, B 80%', '11:50', '70', '80', 80, 70],
+      ['his 30% after A was read in, before it was approved; A 70%, B 80%', '12:10', '70', '80', 80, 70],
+      ['his 30% after A was approved; A 70%, B 80%', '12:30', '70', '80', 80, 30],
+      ['his 30% after A was approved; A 70%, B none', '12:30', '70', '', 30, 30],
+    ];
+    describe.each(['A on the phone (sent); his percent and B on the iPad (no signal)', 'A on the iPad (no signal); his percent and B on the phone (sent)'] as Holder[])('%s', holder => {
+      it.each(cases)('%s: as one device doing the steps in order, after the approvals and after B is deleted', async (_label, his, pa, pb, afterPercent, endPercent) => {
+        const inOrder = await typed(holder, his, pa, pb, true);
+        expect(inOrder.afterApprovals).toEqual({ places: Array(3).fill([{ dates: datesOn('21'), percent: afterPercent, lookaheads: [LA.importBatchId, LB.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
+        expect(inOrder.end).toEqual({ places: Array(3).fill([{ dates: datesOn('18'), percent: endPercent, lookaheads: [LA.importBatchId] }]), cards: [0, 0], waiting: [0, 0] });
+        const twoDevices = await typed(holder, his, pa, pb, false);
+        // (It was, his 30% typed after A was read in and before it was approved: after B's delete, A's dates at his 30%.)
+        expect({ afterApprovals: twoDevices.afterApprovals, end: twoDevices.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+      });
+    });
+  });
+
+  describe('W5-1 in S-2\'s placing: the other device\'s lookahead read in before the pair, approved between them', () => {
+    type Pair = 'the iPad (no signal) holds the pair' | 'the phone holds the pair';
+    type Step = { name: 'S' | 'P1' | 'P2'; readIn: string; approved: string; percent: string; day: string };
+
+    /**
+     * Framing at 0% (10/15 - 10/25). Lookahead S (10/18 - 10/28, `ps`), read in at 12:30 and approved at 13:30, on one
+     * device; P1 (10/20 - 10/30, `p1`) at 13:00 and P2 (10/21 - 10/31, `p2`) at 14:00 on the other. The iPad has no signal
+     * until 16:00; everything syncs; then the phone deletes P2 (the newest) with its items, and everything syncs. One
+     * device in order: the phone does every step at the same times.
+     */
+    async function three(pair: Pair, steps: readonly Step[], oneDevice: boolean) {
+      const docs = Object.fromEntries(steps.map(step => [step.name, scheduleDoc(`LOOKAHEAD W51 ${step.name}`, step.readIn, 'lookahead')]));
+      at('2026-09-07T12:00:00.000Z');
+      const { phone, ipad } = await startBoth(F, [F_ROW, SURVEY]);
+      const pairDevice = oneDevice || pair.startsWith('the phone') ? phone : ipad;
+      const singleDevice = oneDevice || !pair.startsWith('the phone') ? phone : ipad;
+      if (!oneDevice) setOnline(ipad, false);
+      for (const step of steps) {
+        const device = step.name === 'S' ? singleDevice : pairDevice;
+        at(step.approved); await approve(device, docs[step.name], [rowOn(step.day, step.percent)], true, step.approved);
+        await sent(device);
+      }
+      at('2026-09-09T16:00:00.000Z'); setOnline(ipad, true); shareDocuments(ipad); await backgroundUpload(ipad);
+      await settle(phone, ipad);
+      const afterApprovals = await ending(phone, ipad);
+      at('2026-09-10T12:00:00.000Z'); await deleteWithItems(phone, docs.P2); await heardEverywhere(phone, ipad);
+      await refresh(phone); await refresh(ipad);
+      return { afterApprovals, end: await ending(phone, ipad) };
+    }
+
+    const said = (percent: string) => (percent === '' ? 'none' : `${percent}%`);
+    const cases = ([['70', '0', ''], ['', '', ''], ['70', '', ''], ['70', '30', '']] as Array<[string, string, string]>)
+      .map(([ps, p1, p2]) => [`S states ${said(ps)}, P1 ${said(p1)}, P2 ${said(p2)}`, ps, p1, p2] as [string, string, string, string]);
+    describe.each(['the iPad (no signal) holds the pair', 'the phone holds the pair'] as Pair[])('%s', pair => {
+      it.each(cases)('%s: as one device doing the steps in order, after the approvals and after the newest is deleted', async (_label, ps, p1, p2) => {
+        const steps: Step[] = [
+          { name: 'P1', readIn: T('13:00'), approved: T('13:00'), percent: p1, day: '20' },
+          { name: 'S', readIn: T('12:30'), approved: T('13:30'), percent: ps, day: '18' },
+          { name: 'P2', readIn: T('14:00'), approved: T('14:00'), percent: p2, day: '21' },
+        ];
+        const batch = (step: Step) => `batch-LOOKAHEAD W51 ${step.name}`;
+        const remaining = steps.slice(0, -1);
+        // One device in order: P2's dates and the percent of the newest approved that states one (else 0%), the note naming
+        // P1, S, P2 in the order approved; with P2 deleted, S's dates and the same of the two left, the note naming P1, S.
+        const inOrder = await three(pair, steps, true);
+        expect(inOrder.afterApprovals).toEqual({ places: Array(3).fill([{ dates: datesOn('21'), percent: newestStated(steps, 0), lookaheads: steps.map(batch) }]), cards: [0, 0], waiting: [0, 0] });
+        expect(inOrder.end).toEqual({ places: Array(3).fill([{ dates: datesOn('18'), percent: newestStated(remaining, 0), lookaheads: remaining.map(batch) }]), cards: [0, 0], waiting: [0, 0] });
+        const twoDevices = await three(pair, steps, false);
+        // (It was: the note named S before P1 (by reading-in), so deleting P2 went to P1's 10/20 - 10/30; and where S and P1
+        // both state a percent, P1's stood.)
+        expect({ afterApprovals: twoDevices.afterApprovals, end: twoDevices.end }).toEqual({ afterApprovals: inOrder.afterApprovals, end: inOrder.end });
       });
     });
   });
