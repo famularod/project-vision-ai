@@ -46,7 +46,13 @@ const DOCUMENTS = [
   shared('contract', { name: 'Site contract', category: 'Contract', isCurrent: true }),
 ];
 const NOTHING = new Set<string>();
-/** As the phone's Reports screen scopes them: by the project's name (it gives the recipe names, not cloud ids). */
+/**
+ * The same documents bound by the project's name alone (no projectId): rows the phone's Reports screen counts (it
+ * knows the report's projects by name). N761f: a phone keeps a downloaded row's projectId as it is, so its copy of a
+ * row bound to the project's cloud id (DOCUMENTS) still carries that id, and its Reports screen counts none of them;
+ * the computer the same since N761e (tests/services/n761f-a-documents-binding-counts-the-same-on-phone-and-computer).
+ * So the web's cases below read these rows too: the rows both devices count.
+ */
 const PHONE_DOCUMENTS = DOCUMENTS.map(document => ({ ...document, projectId: null }));
 
 /** The phone's Reports screen recipe (screens/ReportsScreen.tsx), fed the list the screen hands it. */
@@ -54,9 +60,9 @@ const phoneTruths = (documents: readonly ReferenceDocument[]) => buildDAVEReport
   projects: [{ name: 'Alpha', projectId: 'report:alpha' }], projectRecords: [{ name: 'Alpha' }] as never, updates: UPDATES, scheduleItems: tasks,
   knownScheduleItems: tasks, knownScheduleDocuments: PHONE_DOCUMENTS, projectAreas: [], referenceDocuments: documents, now: NOW,
 });
-const webSnapshot = (archivedDocumentIds?: readonly string[]): DAVEWebReadOnlySnapshot => ({
+const webSnapshot = (archivedDocumentIds?: readonly string[], documents: readonly ReferenceDocument[] = PHONE_DOCUMENTS): DAVEWebReadOnlySnapshot => ({
   projects: [{ id: ALPHA_ID, name: 'Alpha' }], scheduleItems: tasks, knownScheduleItems: tasks,
-  projectUpdates: UPDATES.map(entry => ({ id: entry.id, updateData: entry })), referenceDocuments: DOCUMENTS, refreshedAt: NOW,
+  projectUpdates: UPDATES.map(entry => ({ id: entry.id, updateData: entry })), referenceDocuments: documents, refreshedAt: NOW,
   ...(archivedDocumentIds ? { archivedDocumentIds } : {}),
 }) as unknown as DAVEWebReadOnlySnapshot;
 const documentIdsIn = (truths: ReturnType<typeof phoneTruths>) => JSON.stringify(truths).match(/"(drawing-a101|permit|contract)"/g) ?? [];
@@ -127,7 +133,7 @@ describe('L10: reports and an archived document', () => {
     // What the web's recipe gave before this change: every document of the snapshot.
     const before = buildDAVEReportSourceFingerprint(buildDAVEReportProjectTruths({
       projects: [{ name: 'Alpha', projectId: ALPHA_ID }], projectRecords: [{ id: ALPHA_ID, name: 'Alpha' }] as never, updates: UPDATES,
-      scheduleItems: tasks, knownScheduleItems: tasks, knownScheduleDocuments: DOCUMENTS, referenceDocuments: DOCUMENTS, now: NOW,
+      scheduleItems: tasks, knownScheduleItems: tasks, knownScheduleDocuments: PHONE_DOCUMENTS, referenceDocuments: PHONE_DOCUMENTS, now: NOW,
     }));
     expect(buildDAVEReportSourceFingerprint(buildDAVEWebReportTruths(webSnapshot(), null))).toBe(before);
     expect(buildDAVEReportSourceFingerprint(buildDAVEWebReportTruths(webSnapshot([]), null))).toBe(before);
@@ -139,5 +145,11 @@ describe('L10: reports and an archived document', () => {
     const truths = buildDAVEWebReportTruths(webSnapshot(['contract']), null);
     expect(documentIdsIn(truths)).not.toContain('"contract"');
     expect(documentIdsIn(truths)).toContain('"drawing-a101"');
+  });
+
+  it('documents bound to the project\'s cloud id (with its name too) are counted on neither device, archived or not (N761f)', () => {
+    expect(documentIdsIn(phoneTruths(DOCUMENTS))).toEqual([]);
+    expect(documentIdsIn(buildDAVEWebReportTruths(webSnapshot(undefined, DOCUMENTS), null))).toEqual([]);
+    expect(documentIdsIn(buildDAVEWebReportTruths(webSnapshot(['contract'], DOCUMENTS), null))).toEqual([]);
   });
 });
