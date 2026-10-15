@@ -125,7 +125,7 @@ describe('PIE schedule remote extraction', () => {
       code: 'PROVIDER_FAILURE',
       error: rawProviderError,
     }, 502)).toBe(
-      'The schedule could not be analyzed. The PDF remains saved so you can retry.',
+      'The schedule could not be analyzed. Try again later.',
     );
     expect(scheduleExtractionFailureMessage({
       ok: false,

@@ -38,6 +38,11 @@ export type PIEScheduleImportBatch = {
    * not know the file's names: screenshots), and the cards read as before.
    */
   fileProjectNames?: Readonly<Record<string, string>>;
+  /**
+   * Open item 5.26: no task could be read from the PDF (no signal, or the service could not read it), so the review
+   * holds one blank row. From a project's Documents the PDF is then kept as a card first, as any document added there.
+   */
+  nothingRead?: boolean;
 };
 
 /**

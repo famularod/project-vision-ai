@@ -115,12 +115,18 @@ export async function extractSchedulePdfWithServer({
     throw new PIEScheduleRemoteExtractionError(
       error instanceof Error && error.name === 'AbortError'
         ? 'Schedule extraction took too long. Try again on a stable connection.'
-        : 'The schedule extraction service could not be reached. The PDF remains saved.',
+        : SCHEDULE_EXTRACTION_UNREACHABLE_MESSAGE,
     );
   } finally {
     clearTimeout(timeout);
   }
 }
+
+/**
+ * Open item 5.26: the service could not be reached (no signal). It said "The PDF remains saved", but nothing kept the
+ * PDF: closing the review deleted it. Only a card in Documents keeps it, and the review says so when there is one.
+ */
+export const SCHEDULE_EXTRACTION_UNREACHABLE_MESSAGE = 'The schedule extraction service could not be reached.';
 
 export function scheduleExtractionFailureMessage(
   body: RemoteScheduleResponse | null,
@@ -135,7 +141,7 @@ export function scheduleExtractionFailureMessage(
   if (status === 429) return 'Schedule analysis is temporarily limited. Try again shortly.';
   if (status === 413) return 'The schedule is larger than the protected analysis limit.';
   if (status === 415) return 'Only readable PDF schedule files can be analyzed.';
-  return 'The schedule could not be analyzed. The PDF remains saved so you can retry.';
+  return 'The schedule could not be analyzed. Try again later.';
 }
 
 /**

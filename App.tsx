@@ -7458,30 +7458,50 @@ useEffect(() => {
       const drawingMetadata = category === 'Drawing'
         ? mobileDrawingMetadataForUpload(drawingControls, replacementDocument)
         : undefined;
+      // Open item 5.26: a schedule PDF nothing could be read from (no signal) is kept as a card first, as any document
+      // added here (it uploads as any added without signal), then reviewed; closing the review leaves the card.
+      let unreadSchedule: PIEScheduleImportBatch | null = null;
       if (category === 'Schedule' && !attachToDraft) {
         const batch = await prepareScheduleImportFromAsset(asset, selectedProjectNames);
-        if (batch) {
-          setIncomingScheduleImportBatch(batch);
-          setScheduleProjectFilter(null);
-          setScreen('Schedule');
+        if (!batch?.nothingRead) {
+          if (batch) {
+            setIncomingScheduleImportBatch(batch);
+            setScheduleProjectFilter(null);
+            setScreen('Schedule');
+          }
+          return;
         }
-        return;
+        unreadSchedule = batch;
       }
 
-      for (const projectName of selected) {
-        const document = await createProjectDocumentFromAsset(asset, {
-          projectName,
-          areaId: attachToDraft ? areaId : null,
-          updateId: attachToDraft ? updateId : null,
-          category,
-          drawingMetadata,
-        });
-        const duplicate = duplicateProjectDocumentForAsset(
-          projectDocuments, document.projectId, {
-            name: document.name, mimeType: document.mimeType, size: document.sizeBytes,
-          },
-        );
-        await confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
+      const keptCards: ProjectDocument[] = [];
+      try {
+        for (const projectName of selected) {
+          const document = await createProjectDocumentFromAsset(asset, {
+            projectName,
+            areaId: attachToDraft ? areaId : null,
+            updateId: attachToDraft ? updateId : null,
+            category,
+            drawingMetadata,
+          });
+          const duplicate = duplicateProjectDocumentForAsset(
+            projectDocuments, document.projectId, {
+              name: document.name, mimeType: document.mimeType, size: document.sizeBytes,
+            },
+          );
+          if (!duplicate) keptCards.push(document); // a duplicate is kept only if he says Upload Anyway
+          await confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
+        }
+      } catch (error) {
+        if (unreadSchedule) cancelScheduleImport(unreadSchedule); // no review says "saved"; its copy goes
+        throw error;
+      }
+      if (unreadSchedule) {
+        // One project: its tasks saved from the review make this card current, as Import This Schedule does.
+        if (selectedProjectNames.length === 1 && keptCards.length === 1) projectScheduleImportCardRef.current = { batchId: unreadSchedule.id, documentId: keptCards[0].id };
+        setIncomingScheduleImportBatch({ ...unreadSchedule, message: `The PDF is saved in Documents. ${unreadSchedule.message}` });
+        setScheduleProjectFilter(null);
+        setScreen('Schedule');
       }
     } catch (error) {
       Alert.alert(
@@ -12225,10 +12245,12 @@ Note: This update was opened through Outlook because PLZ email security may reje
       kind: 'schedule_file',
       sourceCount: 1,
       sourceLabel: originalFileName,
-      message: `The PDF was saved, but no dated activities were extracted. ${extractionIssue || 'Enter the actual task name and complete every highlighted field below.'}`,
+      // Open item 5.26: no "saved" here; closing the review deletes its copy. Only a card keeps the PDF (Documents says so).
+      message: `The PDF's tasks could not be read: no dated activities were extracted. ${extractionIssue || 'Enter the actual task name and complete every highlighted field below.'}`,
       items: validatedReview.items as unknown as import('./types').ScheduleItem[],
       documents: [scheduleDocument],
       warnings: validatedReview.warnings,
+      nothingRead: true,
     };
   }
 

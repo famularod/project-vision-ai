@@ -34,7 +34,10 @@ export function createExpoSdk54OwnedLocalFileStoreDependencies(): OwnedLocalFile
         throw new Error('Expo source file does not exist.');
       }
 
-      source.copy(new File(destinationUri));
+      // Open item 5.26 (older): since Expo SDK 56 copy() returns a promise and copies off the JS thread (copySync()
+      // is the old call). Not waited for, the check that follows looked before the copy was there and refused every
+      // document added on the phone and iPad: "The manifest-owned file is missing from local storage."
+      await source.copy(new File(destinationUri));
     },
 
     async readBytes(fileUri: string) {
