@@ -55,6 +55,7 @@ import type {
 } from '../services/PIEDecisionLedgerStorage';
 import type { PIEDecisionSyncMetadata } from '../services/PIEDecisionLedgerSync';
 import { buildDAVEReportProjectTruths } from '../services/DAVEReportProjectTruths';
+import { holdDAVEReportCheckInput } from '../services/DAVEReportCheckDetails';
 import {
   buildDAVEReportBriefing,
   buildDAVEReportSourceOnPeriod,
@@ -401,6 +402,16 @@ export function ReportsScreen({
     () => buildDAVEReportSourceOnPeriod(reportTruths, snapshotScopeLoaded ? previousReportSnapshot : null, reportFormat).fingerprint,
     [previousReportSnapshot, reportFormat, reportTruths, snapshotScopeLoaded],
   );
+  // N761d (a diagnostic): what that fingerprint is worked out from, held for Settings > Report check details.
+  useEffect(() => {
+    holdDAVEReportCheckInput({
+      truths: reportTruths,
+      period: snapshotScopeLoaded ? previousReportSnapshot : null,
+      format: reportFormat,
+      periodState: snapshotScopeLoaded ? 'read' : 'loading',
+      shared: sharedPeriodCheck,
+    });
+  }, [previousReportSnapshot, reportFormat, reportTruths, sharedPeriodCheck, snapshotScopeLoaded]);
   const reportSnapshotScopeKey = useMemo(
     () => daveReportSnapshotScopeKey(selectedProjectNames),
     [selectedProjectNames],

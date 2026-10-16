@@ -159,6 +159,7 @@ import { mergeECOSDrawingIntakeSuggestion, reviewedECOSDrawingUpload, suggestECO
 import { validateECOSMobileDrawingControls } from '../../services/ECOSMobileDrawingOnboarding';
 import { DesktopDocumentProofPreview } from './desktop-document-proof-preview';
 import { desktopSurfaces } from './desktop-surface-palette';
+import { DesktopReportCheckDetails } from './desktop-report-check-details';
 import { ProjectControlsEditor } from '../project-controls-editor';
 import { FieldNotesWorkspace } from '../field-notes-workspace';
 import { desktopFieldNoteDataSource } from '../../services/FieldNoteDesktopDataSource';
@@ -7028,6 +7029,14 @@ function ReportWorkspace({
                 <Text style={notice.tone === 'good' ? styles.successText : styles.errorText}>{noticeText}</Text>
               </View>
             ) : null}
+            {/* N761d (a diagnostic): what reportFingerprint is worked out from, the same inputs. */}
+            <DesktopReportCheckDetails
+              truths={reportTruths}
+              period={currentPeriodSnapshot}
+              format={reportAudience}
+              periodState={currentPeriodRead.status === 'loaded' ? 'read' : 'loading'}
+              shared={currentPeriodRead.status === 'loaded' ? currentPeriodRead.shared : undefined}
+            />
           </View>
         </Section>
       ) : null}

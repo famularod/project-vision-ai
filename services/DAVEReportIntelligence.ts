@@ -247,6 +247,78 @@ export function buildDAVEReportSourceOnPeriod(
 }
 
 /**
+ * N761d (open item 7.61, a diagnostic): the parts buildDAVEReportSourceOnPeriod hashes into a report's fingerprint, each
+ * as hashed, so two devices can compare them record by record (services/DAVEReportCheckDetails.ts writes them out).
+ * Worked out by the fingerprint's own code: the fingerprint and the report it counts from are buildDAVEReportSourceOnPeriod's
+ * (it registers again the 2.0 name the screen already registered for the same facts: nothing new); each project's
+ * facts are what hashOfProjects hashes, the printed report is reportAsPrinted's, and `partsMakeTheFingerprint` says
+ * they hash together to that fingerprint. `notHashed`: what the fingerprint leaves out of each project's records, only
+ * to explain a difference found in the parts. Changes nothing, sends nothing.
+ */
+export function daveReportSourceParts(
+  truths: readonly DAVEProjectTruth[],
+  period: DAVEReportSnapshot | null | undefined,
+  format: DAVEReportFormat = 'project_manager',
+) {
+  const { fingerprint, countedFrom } = buildDAVEReportSourceOnPeriod(truths, period, format);
+  const factsOf = format === 'executive' ? executiveReportFilesOf : reportSourceFactsOf3;
+  const projects = truths
+    .map(truth => {
+      const facts = canonicalizeReportSourceValue(withoutVolatileReportSourceFields(factsOf(truth), LEFT_OUT_OF_REPORT_SOURCE_3_0));
+      return { projectName: normalized(truth.projectName), name: truth.projectName, hash: stableHash(stableStringify(facts)), facts, notHashed: reportSourceLeftOutOf3(truth) };
+    })
+    .sort((left, right) => left.projectName.localeCompare(right.projectName));
+  const projectsHash = hashOfProjects(truths, factsOf, LEFT_OUT_OF_REPORT_SOURCE_3_0);
+  const printed = reportAsPrinted(truths, countedFrom, format);
+  const countedFromPart = countedFrom ? { report: countedFrom.sourceFingerprint, sentAt: countedFrom.deliveredAt ?? null } : null;
+  const together = `${DAVE_REPORT_SOURCE_VERSION}:${stableHash(stableStringify({ format, projects: projectsHash, printed, countedFrom: countedFromPart }))}`;
+  return {
+    fingerprint,
+    format,
+    period: period ?? null,
+    countedFrom,
+    countedFromPart,
+    projects,
+    projectsHash,
+    printed,
+    partsMakeTheFingerprint: together === fingerprint
+      && stableHash(stableStringify(projects.map(project => ({ projectName: project.projectName, fingerprint: project.hash })))) === projectsHash,
+  };
+}
+
+/** The hash the fingerprint gives a part (N761d: each record's short hash in the report check). */
+export function daveReportPartHash(value: unknown): string {
+  return stableHash(stableStringify(value));
+}
+
+/**
+ * N761d: what 3.0 leaves out of a project's records (reportSourceFactsOf3), with the project's id as there, and without
+ * the time each part was worked out (two devices never work it out at the same moment).
+ */
+function reportSourceLeftOutOf3(truth: DAVEProjectTruth): unknown {
+  const tasks = new Set((truth.schedule ?? []).map(task => task.taskId));
+  const records = [...(truth.evidence?.records ?? []), ...(truth.evidence?.unresolvedRecords ?? [])];
+  return withoutVolatileReportSourceFields(withoutReportProjectId(truth, {
+    tasks: (truth.schedule ?? []).map(task => ({
+      taskId: task.taskId, updatedAt: task.updatedAt ?? null, updatedBy: task.updatedBy ?? null, startDate: task.startDate, contractor: task.contractor,
+      owner: task.owner, nextAction: task.nextAction, baselineFinishDate: task.baselineFinishDate, completionState: task.completionState ?? null,
+      needsVerification: task.needsVerification ?? null, contradiction: task.contradiction ?? null,
+    })),
+    taskRecords: records.filter(record => record.kind === 'schedule' && tasks.has(record.taskId ?? '')),
+    documentRecords: records.filter(record => record.kind === 'document'),
+    evidenceCounts: truth.evidence
+      ? [truth.evidence.total, truth.evidence.connected, truth.evidence.unresolved, truth.evidence.duplicate, truth.evidence.rejected, truth.evidence.coveragePercent]
+      : null,
+    completedWorkConfirmedAt: truth.completedWorkConfirmedAt ?? null,
+    earlierRows: truth.earlierRows ?? null,
+    intelligence: truth.intelligence ?? null,
+    reasoning: truth.reasoning ?? null,
+    briefing: truth.briefing ?? null,
+    verificationQueue: truth.verificationQueue ?? null,
+  }), LEFT_OUT_OF_REPORT_SOURCE_3_0);
+}
+
+/**
  * HIGH item 1d: whether a report of `truths` counted from `sent` would say nothing in "since the last report": no task
  * completed, opened or overdue more or less, and no line (a change, an activity, "<task> was updated."). Worked out by
  * the briefing's own code, with the projects by name as everywhere in 3.0.

@@ -1,5 +1,6 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import Constants from 'expo-constants';
+import * as Clipboard from 'expo-clipboard';
 import { useContext, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type {
   StyleProp,
@@ -22,6 +23,7 @@ import { unsavedFieldNoteExists } from '../hooks/use-field-note-draft';
 import { unsavedWalkMemoryExists } from '../hooks/use-kept-walk-memory-draft';
 import { unusedScheduleVerificationNoteExists } from '../hooks/use-schedule-progress-draft';
 import { keptVoiceRecordingExists } from '../services/KeptVoiceRecording';
+import { copyDAVEReportCheckDetails } from '../services/DAVEReportCheckDetails';
 import { clearSignOutAskedHere, noteAskedSignOutAnswered, noteSignOutAskedHere } from '../services/SignOutIntent';
 import { fieldNotesNeedingReview, fieldNotesWaitingToSync } from '../services/FieldNotesWaitingToSync';
 import { queuedDocumentChangesSnapshot, subscribeToQueuedDocumentChanges } from '../services/FieldUpdateDocumentChangeNotice';
@@ -380,6 +382,22 @@ export function AdminScreen({
     }
   }
 
+  // N761d (a diagnostic): the parts of the fingerprint of the report last opened in Reports, to this device's clipboard
+  // only, to compare with the computer's (Reports > Review & Prepare Report > Details). Nothing is sent.
+  async function copyReportCheckDetails() {
+    const result = await copyDAVEReportCheckDetails(text => Clipboard.setStringAsync(text));
+    if (result.copied) {
+      Alert.alert(
+        'Report check details copied',
+        `${result.projects.join(', ')} · ${result.format === 'executive' ? 'Executive Summary' : 'Project Manager'} · ${result.lines} lines. Copied to this device only; nothing was sent.`,
+      );
+    } else if (result.reason === 'nothing_held') {
+      Alert.alert('Open Reports first', 'Open Reports, choose the project and the report format, then come back here and tap Report check details again.');
+    } else {
+      Alert.alert('Not copied', 'The details could not be copied to the clipboard. Try again.');
+    }
+  }
+
   function showHelp() {
     Alert.alert(
       'Using the app',
@@ -597,6 +615,7 @@ export function AdminScreen({
         <ScreenCard style={styles.settingsCard}>
           <SettingsActionRow icon="chatbubble-ellipses-outline" title="Send Feedback" detail="Share an idea or report a problem" onPress={() => { void shareFeedback(); }} />
           <SettingsActionRow icon="help-circle-outline" title="Help" detail="Learn where to find core workflows" onPress={showHelp} />
+          <SettingsActionRow icon="clipboard-outline" title="Report check details" detail="Copy what the report last opened in Reports is worked out from, to compare with the computer; nothing is sent" onPress={() => { void copyReportCheckDetails(); }} />
           <SettingsActionRow icon="information-circle-outline" title="About" detail={APP_VERSION_BUILD_LABEL} onPress={showAbout} last />
         </ScreenCard>
       </ScreenSection>
