@@ -1770,9 +1770,22 @@ function finiteNumber(value: unknown) {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+/**
+ * N761g (open item 7.61, the computer's half): a date is read from text the same way on every device. The report read
+ * each date with the engine's own reader (`new Date(text)`), and engines read different texts: the phone's and the
+ * iPad's (Hermes) only the ISO form every engine must read ("2027-01-22", "2026-10-15T20:52:57.448Z"), the computer's
+ * browser also "01/22/2027", the form every device holds a task's dates in. So the same records gave the computer a
+ * Project Position forecast finish (the latest task finish; also its baseline and variance) and an order of milestones
+ * and of Completed Work that the phone never had, and the computer's fingerprint was never the phone's: it never knew
+ * the phone's report (Build 235's report check details, Test project: the only difference, printed.positions[0][4],
+ * phone null, computer "01/22/2027"). Now only the ISO form is read, on every device: what the phone has always read,
+ * so its reports and fingerprints stay as they were, and the computer's are the phone's.
+ */
+const DATE_TEXT_EVERY_ENGINE_READS = /^(?:[+-]\d{6}|\d{4})(?:-\d{2}(?:-\d{2})?)?(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
+
 function dateValue(value: unknown) {
   const text = clean(value);
-  if (!text) return null;
+  if (!text || !DATE_TEXT_EVERY_ENGINE_READS.test(text)) return null;
   const timestamp = new Date(text).getTime();
   return Number.isFinite(timestamp) ? timestamp : null;
 }
