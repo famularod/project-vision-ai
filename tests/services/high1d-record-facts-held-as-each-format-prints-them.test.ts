@@ -408,9 +408,12 @@ describe('HIGH 1d: every field, one at a time, after a real period, in each form
     report(`Wren Point, ${format}`, tally);
     expect(tally.slips).toEqual([]);
     expect([...tally.offeredWithNoWord]).toEqual([]);
-    // Where they print, they move it: the contractor (an owner), the next action and the baseline in both formats;
-    // the notes and the milestone's priority line in the Project Manager report (its Work Areas section).
-    expect(NINETEEN.filter(kind => tally.printedAndMoved.has(kind))).toEqual(expect.arrayContaining(['a task: contractor', 'a task: nextAction', 'a task: baselineFinishDate']));
+    // Where they print, they move it: the contractor (an owner) and the next action in both formats; the notes and the
+    // milestone's priority line in the Project Manager report (its Work Areas section).
+    expect(NINETEEN.filter(kind => tally.printedAndMoved.has(kind))).toEqual(expect.arrayContaining(['a task: contractor', 'a task: nextAction']));
+    // N761g (open item 7.61): a baseline held as "10/15/2026" prints on neither device, as on the phone it never did
+    // (the computer's own date reader printed it, and only there); changing it offers nothing (above).
+    expect(NINETEEN.filter(kind => tally.printedAndMoved.has(kind))).not.toContain('a task: baselineFinishDate');
     if (format === 'project_manager') expect(NINETEEN.filter(kind => tally.printedAndMoved.has(kind))).toEqual(expect.arrayContaining(['a task: notes']));
   });
 
