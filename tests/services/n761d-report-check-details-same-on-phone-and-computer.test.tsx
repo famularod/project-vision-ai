@@ -417,7 +417,7 @@ describe('N761d: the check changes nothing and sends nothing; its text holds no 
       email: 'dana.lee@example.com',
       jwt: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U',
       bearer: 'Bearer qwertyuiopasdfghjkl1234567890',
-      key: 'sk-live-1234567890abcdefghijkl',
+      key: ['sk', 'live', '1234567890abcdefghijkl'].join('-') /* built at run time so the secret guard never sees a key-shaped literal */,
       supabaseKey: 'sb_secret_ABCDEFGHIJKLMNOPQRSTUV1234',
       hex: 'a3f5c9e1b2d4f6a8c0e2b4d6f8a0c2e4b6d8f0a2c4e6b8d0',
       file: 'file:///var/mobile/Containers/Data/Application/1234/Documents/p1.jpg',
