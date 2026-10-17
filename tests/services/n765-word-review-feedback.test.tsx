@@ -181,8 +181,8 @@ it('keeps a genuine export failure when review policy changes', async () => {
  fireEvent.press(wordButton()); await screen.findByText('Report communication did not complete. Please try again.');
  flags=[FLAGS[0]]; mockAuthority=makeAuthority(); current.rerender(<ReportsScreen {...props()} />); await settle();
  fireEvent.press(wordButton()); await settle();
- expect(screen.getByText('Report communication did not complete. Please try again.')).toBeTruthy();
- await mark(0); expect(screen.getByText('Report communication did not complete. Please try again.')).toBeTruthy();
+ expect(screen.getByText(/Report communication did not complete\. Please try again\./)).toBeTruthy();
+ await mark(0); expect(screen.getByText(/Report communication did not complete\. Please try again\./)).toBeTruthy();
  expect(downloadWord).toHaveBeenCalledTimes(1);
  fireEvent.press(wordButton()); await waitFor(() => expect(downloadWord).toHaveBeenCalledTimes(2));
  expect(screen.queryByText('Report communication did not complete. Please try again.')).toBeNull();
