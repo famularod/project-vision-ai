@@ -106,6 +106,7 @@ it.each(['project','account','editor'])('late transcription after %s changes can
  await settle();
  await act(async()=>{resolve({transcript:'Task: Wrong old origin'});oldCallback({transcript:'Task: Wrong old origin'});});
  expect(view.getByLabelText('Answer Task').props.value).not.toContain('Wrong old origin');
+ expect(view.getByLabelText('Task or milestone').props.value).not.toContain('Wrong old origin');
  expect(view.queryByText('Answer recorded for: Task')).toBeNull();
 });
 it('the same draft question offers retained audio explicitly, without automatically retrying the failed upload',async()=>{

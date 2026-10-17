@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import * as Crypto from 'expo-crypto';
 import { NativeWorkspaceOwnerContext } from './native-workspace-owner';
 import {
@@ -198,6 +198,7 @@ export function DAVETaskFillAssistant({
     (voiceOrigin.purpose !== 'guided' || voiceOrigin.field === currentGuidedField));
   const voiceCurrentRef = useRef<string | null>(null);
   voiceCurrentRef.current = voiceOriginIsCurrent ? voiceOrigin!.key : null;
+  useLayoutEffect(() => () => { voiceCurrentRef.current = null; }, []);
   function openVoice(purpose: 'instruction' | 'guided') {
     const key = JSON.stringify([draft.current.id, account, currentProjectId, currentProjectName, purpose, currentGuidedField]);
     // Capture before React runs a queued updater: a later draft opening

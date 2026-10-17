@@ -1,5 +1,5 @@
 import {act,fireEvent,render,waitFor} from '@testing-library/react-native';
-import {AppState} from 'react-native';
+import {AppState,Alert} from 'react-native';
 import {ScheduleTaskEditorModal} from '../../components/schedule-task-editor-modal';
 import {DAVEVoiceCaptureSheet} from '../../components/DAVEVoiceCaptureSheet';
 import {NativeWorkspaceOwnerContext} from '../../components/native-workspace-owner';
@@ -72,4 +72,67 @@ it.each(['draft','project','account'])('fresh transcript cleanup released after 
  expect(whatIsIn(kept!.uri)).toBe('take-1');
  await sweepKeptVoiceRecordings();
  expect(keptFiles()).toContain(kept!.uri);
+});
+
+it('held transcript reuse checks generation after delayed cleanup and preserves old and new recording copies',async()=>{
+ let finish!:(value:unknown)=>void;
+ transcribe.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+ view=render(editor());
+ fireEvent.press(view.getByLabelText('Record answer for Task'));
+ await view.findByText('Stop & Continue');
+ const slot=voice().keepSlot;
+ await act(async()=>{phone.recorder.set({durationMillis:5100});});
+ fireEvent.press(view.getByText('Stop & Continue'));
+ await waitFor(()=>expect(transcribe).toHaveBeenCalledTimes(1));
+ const alert=jest.spyOn(Alert,'alert').mockImplementation(()=>undefined);
+ fireEvent.press(view.getByLabelText('Cancel memory capture'));
+ const buttons=alert.mock.calls.at(-1)![2]!;
+ await act(async()=>{buttons.find(button=>button.text==='Keep Recording for Later')!.onPress!();});
+ alert.mockRestore();
+ await act(async()=>{finish({transcript:'Task: held old answer'});await pause();});
+ expect(transcribe).toHaveBeenCalledTimes(1);
+ const deletion=hold(phone.deleteAsync,phone.deleteAsync.getMockImplementation()!);
+ fireEvent.press(view.getByText('Retry Answer'));
+ await act(async()=>{await deletion.reached;});
+ await act(async()=>{view!.rerender(editor(false));});
+ await act(async()=>{view!.rerender(editor(true));});
+ fireEvent.changeText(view.getByLabelText('Task or milestone'),'Independent new task');
+ fireEvent.press(view.getByLabelText('Record answer for Task'));
+ await view.findByText('Stop & Continue');
+ const newSlot=voice().keepSlot;
+ await act(async()=>{phone.recorder.set({durationMillis:5200});});
+ fireEvent.press(view.getByText('Stop & Continue'));
+ await waitFor(()=>expect(transcribe).toHaveBeenCalledTimes(2));
+ await view.findByText('Recording ready');
+ await act(async()=>{deletion.release();await pause();});
+ expect(view.getByLabelText('Task or milestone').props.value).toBe('Independent new task');
+ for(const [origin,take] of [[slot,'take-1'],[newSlot,'take-2']]) {
+   const kept=await readKeptVoiceRecording('owner-A',origin,'Alpha');
+   expect(kept).not.toBeNull();
+   expect(whatIsIn(kept!.uri)).toBe(take);
+ }
+ expect(transcribe).toHaveBeenCalledTimes(2); // held words did not send another request
+});
+it('an origin keep still copying when transcription resolves survives ancestor close and delayed copy completion',async()=>{
+ let finish!:(value:unknown)=>void;
+ transcribe.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve;}));
+ view=render(editor());
+ fireEvent.press(view.getByLabelText('Record answer for Task'));
+ await view.findByText('Stop & Continue');
+ const slot=voice().keepSlot;
+ const copying=hold(phone.copyAsync,phone.copyAsync.getMockImplementation()!);
+ await act(async()=>{phone.recorder.set({durationMillis:5100});});
+ fireEvent.press(view.getByText('Stop & Continue'));
+ await act(async()=>{await copying.reached;});
+ await waitFor(()=>expect(transcribe).toHaveBeenCalledTimes(1));
+ await act(async()=>{finish({transcript:'Task: delayed keep old answer'});});
+ await act(async()=>{view!.rerender(editor(false));});
+ await act(async()=>{view!.rerender(editor(true));});
+ fireEvent.changeText(view.getByLabelText('Task or milestone'),'Independent new task');
+ await act(async()=>{copying.release();await pause();});
+ expect(view.getByLabelText('Task or milestone').props.value).toBe('Independent new task');
+ await waitFor(async()=>expect(await readKeptVoiceRecording('owner-A',slot,'Alpha')).not.toBeNull());
+ const kept=await readKeptVoiceRecording('owner-A',slot,'Alpha');
+ expect(whatIsIn(kept!.uri)).toBe('take-1');
+ expect(JSON.parse(slot.slice('task-fill/'.length))).toMatchObject({projectName:'Alpha',field:'taskName',question:'What should this task be called?'});
 });

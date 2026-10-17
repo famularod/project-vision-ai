@@ -1072,53 +1072,65 @@ export function DAVEVoiceCaptureSheet({
     const recording = recordingGenerationRef.current;
     const held = heldTranscriptRef.current;
     heldTranscriptRef.current = null;
-    if (held?.recording === recording) {
-      // The words for this recording arrived after he stopped waiting for them.
-      setError(null);
-      setNotice(null);
-      await removeRecording(uri);
-      forgetRecordingKeptOnDevice();
-      setRecordingUri(null);
-      handOverWords(held.result);
-      return;
-    }
     const operation = ++transcriptionOperationRef.current;
+    const madeFor = keepsUnder;
+    const isCurrent = () => operation === transcriptionOperationRef.current &&
+      recording === recordingGenerationRef.current && sheetInPlaceRef.current && sheetShownRef.current &&
+      sameAccountAndProject(madeFor, openSheetKeepsUnderRef.current) &&
+      madeFor.projectId === openSheetKeepsUnderRef.current.projectId;
     preparingOperationRef.current = operation;
     sentForWordsRef.current = true;
-    // Sent for its words: brought back after a closed app, it is tried again by itself (review N1 L2).
-    if (keepsOnDevice) void keepRecordingOnDevice(uri, duration, 'sent');
+    // Keep this origin's audio before any successful-response cleanup. A
+    // close during cleanup must leave its durable entry and copy intact.
+    const originalKeep = keepsOnDevice ? keepRecordingOnDevice(uri, duration, 'sent') : Promise.resolve(false);
+    const deliver = async (result: DAVEVoiceUnderstandingResponse) => {
+      await originalKeep;
+      if (!isCurrent()) return;
+      const copy = keptCopyRef.current;
+      // Never delete the durable copy before the final handoff check. When
+      // there is no copy, keep the cache file until handoff has committed.
+      if (copy && uri !== copy) {
+        await removeRecording(uri);
+        if (!isCurrent()) return;
+      }
+      if (!isCurrent()) return;
+      // No awaits between this check and handoff: these refs still belong
+      // to this recording, so an old completion cannot forget a newer copy.
+      forgetRecordingKeptOnDevice();
+      setRecordingUri(null);
+      handOverWords(result);
+      if (!copy) void removeRecording(uri);
+    };
     setError(null);
     setNotice(null);
     setIsTranscribing(true);
     try {
-      const result = await transcribeDAVECaptureMemoryAudio({
+      const result = held?.recording === recording ? held.result : await transcribeDAVECaptureMemoryAudio({
         uri,
         projectId,
         projectName,
         candidateLocations,
         purpose: transcriptionPurpose,
-        isRequestCurrent: () => operation === transcriptionOperationRef.current,
+        isRequestCurrent: isCurrent,
         signInPending: () => signInPendingRef.current,
       });
-      if (operation !== transcriptionOperationRef.current) {
+      if (!isCurrent()) {
         const stopped = stoppedWaitingRef.current;
-        if (stopped?.operation === operation && stopped.recording === recordingGenerationRef.current) {
+        if (sheetInPlaceRef.current && sheetShownRef.current && sameAccountAndProject(madeFor, openSheetKeepsUnderRef.current) &&
+          stopped?.operation === operation && stopped.recording === recordingGenerationRef.current) {
           heldTranscriptRef.current = { recording: stopped.recording, result };
         }
         return;
       }
-      await removeRecording(uri);
-      forgetRecordingKeptOnDevice();
-      setRecordingUri(null);
-      handOverWords(result);
+      await deliver(result);
     } catch (reason) {
-      if (operation !== transcriptionOperationRef.current) return;
+      if (!isCurrent()) return;
       // Kept on this device past a closed app when this sheet keeps it (everyday item 4), whatever
       // the failure (review N1 L2). The message says so once it is, for the upload's own failures
       // (review N1 L4); a recording that could not be kept is not called kept.
       const kept = keepsOnDevice &&
         await keepRecordingOnDevice(uri, duration, daveVoiceFailureIsWaitingForSignal(reason) ? 'no-signal' : 'sent');
-      if (operation !== transcriptionOperationRef.current) return;
+      if (!isCurrent()) return;
       // Item 9b: sent anyway, and the speech service could make nothing of it either. Not its own words,
       // which send him to a quieter place: both things, and what to do about a microphone that gives
       // nothing. Every other failure keeps its own words.
