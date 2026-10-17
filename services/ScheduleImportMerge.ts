@@ -1041,10 +1041,13 @@ export type ScheduleImportPairingQuestion = Readonly<{
  * rest moved: in order, or each to its nearest, withRestPaired) and the
  * slip readings (every row the same number of days after its saved task, in
  * order); a group is asked about when any of the others pairs a row
- * differently from the guess. Never when the rows sit on exactly the saved
- * tasks' days, when a slip reads the same every way, for one row and one
- * task, or when the file and the saved tasks carry Microsoft Project's
- * Unique ID. Given the tasks shown and the rows to approve, as the merge
+ * differently from the guess. Changed duplicate groups are also checked unless
+ * a master's distinct
+ * persistent Unique IDs settle identity. Dates alone cannot distinguish a
+ * harmless slip from omitted/new tasks or a crossing lookahead move. The
+ * existing singleton and unchanged identical-twin policies remain; a
+ * lookahead's row IDs may be unrelated to the master's namespace. Given the
+ * tasks shown and the rows to approve, as the merge
  * pairs them (a lookahead when overlay).
  */
 export function scheduleImportPairingQuestions({
@@ -1094,7 +1097,14 @@ export function scheduleImportPairingQuestions({
     // A missing task can also compete with a lookahead-only row currently shown: offer both explicitly.
     const withEarlier = earlier.length > 0 && (rows.length > saved.length || saved.every(onlyLookaheads));
     if (rows.length === 0 || saved.length === 0 || (!withEarlier && rows.length < 2 && saved.length < 2)) return [];
-    if (!withEarlier && [...rows, ...saved].every(item => key(item.sourceUniqueId))) return [];
+    // A master uses the persistent ID contract. A lookahead may number its
+    // rows independently, so equal row numbers across those roles are not proof.
+    // Repeated IDs within either side are not authoritative either.
+    const distinctIds = (items: readonly ScheduleItem[]) => {
+      const ids = items.map(item => key(item.sourceUniqueId));
+      return ids.every(Boolean) && new Set(ids).size === ids.length;
+    };
+    if (!withEarlier && !overlay && !saved.some(onlyLookaheads) && distinctIds(rows) && distinctIds(saved)) return [];
     // Two rows of one task (one answers to the other) shown at once are not twins: nothing to ask about them.
     const savedIds = new Set(saved.map(item => item.id));
     if (saved.some(item => scheduleTaskEarlierIds(item).some(id => savedIds.has(id)))) return [];
@@ -1103,7 +1113,14 @@ export function scheduleImportPairingQuestions({
     const readings = [sameDays, ...withRestPaired(sameDays, rows, saved), ...uniformSlipReadings(rows, saved)];
     // A reading that pairs a row with another saved task than the guess, or with one the guess leaves new.
     const disagrees = readings.some(reading => [...reading].some(([row, item]) => guess.get(row) !== item));
-    if (!withEarlier && !disagrees && !tiedBetweenTwins(rows, saved, guess) && !alsoAsk?.has(groupKey)) return [];
+    // Dates cannot prove identity when twins move or membership changes: a
+    // uniform slip is observationally identical to dropping one and adding
+    // another. Ask even when every date heuristic agrees. This deliberately
+    // adds checks for ordinary slips; the merge's default guess stays intact.
+    // Keep the existing singleton and unchanged identical-twin policies: those
+    // cannot establish semantic identity either, but are outside this check.
+    const unchangedTwins = rows.length === saved.length && sameDays.size === rows.length;
+    if (!withEarlier && unchangedTwins && !disagrees && !tiedBetweenTwins(rows, saved, guess) && !alsoAsk?.has(groupKey)) return [];
     const offered = withEarlier ? [...saved, ...earlier] : saved;
     const count = Math.max(offered.length, rows.length);
     return [{
