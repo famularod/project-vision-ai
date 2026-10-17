@@ -97,3 +97,16 @@ it('matches the actual saved authored quote across ordinary whitespace formattin
  const report = draft(updates, { fusedEvidence: fused, intelligentSummary: fused.intelligentSummary });
  expect(lines(report)).toContain(text); expect(report.body).toContain(`Latest update: ${text}`);
 });
+
+it.each(['  ', '\n', '\t', '\u00a0'])('preserves authored capture words with internal whitespace %j while refusing machine provenance', gap => {
+ const text = `GPS was captured${gap}for the project area survey control check.`;
+ const expected = 'GPS was captured for the project area survey control check.';
+ const updates = [note('u1', text)];
+ const fused = buildFusedEvidence({ projectName: 'Tower', projectNames: ['Tower'], updates, scheduleItems: [], knownScheduleItems: [], now: new Date('2026-10-15T12:00:00Z') });
+ const report = draft(updates, { fusedEvidence: fused, intelligentSummary: fused.intelligentSummary });
+ expect(lines(report)).toContain(expected);
+ expect(report.body).toContain(`Latest update: ${expected}`);
+ expect(lines(draft([], { intelligentSummary: { whatChanged: text } }))).not.toContain(expected);
+ const accepted = { ...note('u1', text), pieSuggestedNote: text, pieSuggestedNoteAccepted: true };
+ expect(lines(draft([accepted]))).not.toContain(expected);
+});

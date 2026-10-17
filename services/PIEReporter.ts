@@ -605,7 +605,7 @@ export function collectReportEvidence(
     const context = reportContextForUpdate(update, scheduleItems, selectedProjects.length > 1);
     // The rule the report's fingerprint reads too (ReportWrittenFacts, HIGH item 1: F6).
     const noteWasGeneratedFromPhotoAnalysis = noteIsAcceptedPhotoSuggestion(update);
-    const authoredNote = !noteWasGeneratedFromPhotoAnalysis && /captured for/i.test(update.notes)
+    const authoredNote = !noteWasGeneratedFromPhotoAnalysis && /captured\s+for/i.test(update.notes)
       ? update.notes.replace(/\s+/g, ' ').trim() : undefined;
 
     if (
@@ -681,7 +681,7 @@ export function collectReportEvidence(
   // Only the exact fused quote of this selected authored note is protected. An arbitrary runtime summary,
   // an accepted provider suggestion, and the photo/schedule suffixes cannot acquire authorship this way.
   const authoredLatest = fused?.photoEvidence && fused.scheduleEvidence && latestWrittenUpdate &&
-    /captured for/i.test(latestWrittenUpdate.notes ?? '') &&
+    /captured\s+for/i.test(latestWrittenUpdate.notes ?? '') &&
     updates.some(saved => saved.id === latestWrittenUpdate.id && saved.notes.replace(/\s+/g, ' ').trim() === (latestWrittenUpdate.notes ?? '').replace(/\s+/g, ' ').trim() && !noteIsAcceptedPhotoSuggestion(saved))
       ? whatChangedForWrittenReport({ userUpdateEvidence: [latestWrittenUpdate], photoEvidence: [], scheduleEvidence: [] }).replace(/\s+/g, ' ').trim()
       : undefined;
@@ -3065,7 +3065,7 @@ function shouldSuppressReportBullet(value: string, authoredCapturedForText?: str
 /** Legacy sends kept no app-text digest. These source words can now print differently under the same facts. */
 export function reportWordingRequiresAppTextKey(report: Pick<PIEReportDraft, 'sourceEvidence'>): boolean {
   return report.sourceEvidence.some(item =>
-    (item.preservesCapturedFor && /captured for/i.test(item.summary)) ||
+    (item.preservesCapturedFor && /captured\s+for/i.test(item.summary)) ||
     /^please\s+[a-z]+\b/i.test((item.actionRequired || item.summary).replace(/^next step:\s*/i, '')),
   );
 }
