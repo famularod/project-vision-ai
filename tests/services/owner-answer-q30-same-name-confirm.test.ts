@@ -11,7 +11,7 @@
  * David's answer decides the pairing: his percent, notes and field-report
  * links follow it, also when he switches masters back and forth. Rows that
  * carry Microsoft Project's Unique ID pair by it and are never asked about;
- * nor are unchanged twins, a small slip every reading agrees on, or one row
+ * nor are unchanged twins or one row
  * and one task. Real CSV and Microsoft Project normalizers, the phone's merge
  * and activation carry, the shown-schedule pick and the report links.
  * Synthetic data.
@@ -158,15 +158,15 @@ describe('Q30: his answer holds when the masters switch, though their counts dif
   });
 });
 
-describe('Q30: unambiguous pairings never ask', () => {
+describe('Q30: unchanged/singleton/authoritative-ID policy and changed-twin confirmation', () => {
   it('unchanged twins, in any order', () => {
     expect(review(withDavid, G, rows(G, [SECOND, FIRST, FRAMING]))).toEqual([]);
   });
 
-  it('a slip every reading agrees on (two days)', () => {
+  it('a slip every reading agrees on still asks: dates cannot prove twin identity', () => {
     expect(review(withDavid, G, rows(G, [
       'Pour slab,Alpha,Lot,10/07/2026,10/11/2026,', 'Pour slab,Alpha,Lot,10/14/2026,10/18/2026,', FRAMING,
-    ]))).toEqual([]);
+    ]))).toHaveLength(1);
   });
 
   it('one row and one task, and same names in different areas', () => {
