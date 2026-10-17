@@ -89,3 +89,11 @@ it('keeps authored captured-for words when ordinary action formatting removes Pl
  const report = draft([note('u1', 'Please confirm GPS was captured for the survey control check.')]);
  expect(lines(report)).toContain('Confirm GPS was captured for the survey control check.');
 });
+
+it('matches the actual saved authored quote across ordinary whitespace formatting', () => {
+ const text = 'GPS was captured for the survey control check.';
+ const updates = [note('u1', `  ${text}  `)];
+ const fused = buildFusedEvidence({ projectName: 'Tower', projectNames: ['Tower'], updates, scheduleItems: [], knownScheduleItems: [], now: new Date('2026-10-15T12:00:00Z') });
+ const report = draft(updates, { fusedEvidence: fused, intelligentSummary: fused.intelligentSummary });
+ expect(lines(report)).toContain(text); expect(report.body).toContain(`Latest update: ${text}`);
+});

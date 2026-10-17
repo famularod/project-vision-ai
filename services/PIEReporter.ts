@@ -682,7 +682,7 @@ export function collectReportEvidence(
   // an accepted provider suggestion, and the photo/schedule suffixes cannot acquire authorship this way.
   const authoredLatest = fused?.photoEvidence && fused.scheduleEvidence && latestWrittenUpdate &&
     /captured for/i.test(latestWrittenUpdate.notes ?? '') &&
-    updates.some(saved => saved.id === latestWrittenUpdate.id && saved.notes === latestWrittenUpdate.notes && !noteIsAcceptedPhotoSuggestion(saved))
+    updates.some(saved => saved.id === latestWrittenUpdate.id && saved.notes.replace(/\s+/g, ' ').trim() === (latestWrittenUpdate.notes ?? '').replace(/\s+/g, ' ').trim() && !noteIsAcceptedPhotoSuggestion(saved))
       ? whatChangedForWrittenReport({ userUpdateEvidence: [latestWrittenUpdate], photoEvidence: [], scheduleEvidence: [] }).replace(/\s+/g, ' ').trim()
       : undefined;
   const rawRuntimeChanged = writtenReportWhatChanged(runtime)?.replace(/\s+/g, ' ').trim();
