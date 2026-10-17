@@ -91,5 +91,5 @@ describe('B232 item 4 part B: no field note falls through', () => {
 /** The lines of a problem and of a next step, as the writer printed them before this change. */
 const AS_BEFORE = [
   { area: 'Harbor Lofts — Level 1', lines: ['West bay rebar failed inspection. Pour is on hold.'] },
-  { area: 'Harbor Lofts — Level 2', lines: ['confirm the delivery date for the storefront.'] },
+  { area: 'Harbor Lofts — Level 2', lines: ['Confirm the delivery date for the storefront.'] },
 ];
