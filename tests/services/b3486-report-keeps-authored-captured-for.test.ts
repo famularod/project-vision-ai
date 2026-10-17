@@ -34,3 +34,66 @@ it('keeps the three-line allowance and cites the restored note own photo', () =>
  expect(lines(report).filter(text => /See Image 1/.test(text))).toHaveLength(1);
  expect(lines(report).find(text => /captured for/.test(text))).toContain('See Image 1');
 });
+
+const COLLISIONS = [
+ 'Signatures were captured for the project area access permit.',
+ 'GPS was captured for the survey control check.',
+ 'Location was captured for the survey control check.',
+ 'Evidence was fused and runtime indicates signatures were captured for the permit.',
+ 'Photo captured for the project area access permit.',
+ 'Signatures were captured for the $& lender permit.',
+ 'GPS was captured for the \uE000 survey control check.',
+];
+it.each(COLLISIONS)('preserves authored captured-for words through all cleaning: %s', text => {
+ const updates = [note('u1', text)];
+ expect(lines(draft(updates))).toContain(text);
+ const fused = buildFusedEvidence({ projectName: 'Tower', projectNames: ['Tower'], updates, scheduleItems: [], knownScheduleItems: [], now: new Date('2026-10-15T12:00:00Z') });
+ const report = draft(updates, { fusedEvidence: fused, intelligentSummary: fused.intelligentSummary });
+ expect(lines(report)).toContain(text);
+ expect(report.body).toContain(`Latest update: ${text}`);
+});
+it.each(COLLISIONS)('does not exempt unauthored runtime merely for its words: %s', text => {
+ expect(lines(draft([], { intelligentSummary: { whatChanged: text } }))).not.toContain(text);
+});
+it.each(COLLISIONS)('accepted provider text is not authored, while an owner edit is: %s', text => {
+ const accepted = { ...note('u1', text), pieSuggestedNote: text, pieSuggestedNoteAccepted: true };
+ expect(lines(draft([accepted]))).not.toContain(text);
+ const edited = { ...accepted, notes: `${text} Field record complete.` };
+ expect(lines(draft([edited]))).toContain(edited.notes);
+});
+
+it('protects only the authored Latest update span, leaving machine photo suffixes suppressed', () => {
+ const text = 'GPS was captured for the survey control check.';
+ const updates = [note('u1', text)];
+ const fused = buildFusedEvidence({ projectName: 'Tower', projectNames: ['Tower'], updates, scheduleItems: [], knownScheduleItems: [], now: new Date('2026-10-15T12:00:00Z') });
+ const report = draft(updates, { fusedEvidence: { ...fused, photoEvidence: [{ updateId: 'u1', caption: 'Roof photo captured for runtime analysis.' }] }, intelligentSummary: fused.intelligentSummary });
+ expect(report.body).toContain(`Latest update: ${text}`);
+ expect(report.body).not.toContain('runtime analysis');
+});
+it('does not grant authorship to an arbitrary runtime summary without the complete fused recipe', () => {
+ const updates = [note('u1', 'Signatures were captured for the lender.')];
+ const report = draft(updates, { fusedEvidence: { userUpdateEvidence: updates }, intelligentSummary: { whatChanged: 'GPS was captured for runtime analysis.' } });
+ expect(report.body).not.toContain('runtime analysis');
+});
+
+it('deduplicates an intact captured-for note and keeps its own photo citation', () => {
+ const text = 'GPS was captured for the survey control check.';
+ const ownPhoto = { id: 'p1', uri: 'file:///p1.jpg', caption: '', category: 'Progress', selectedAreaName: 'Roof', actionRequired: '', actionOwner: '', actionDueDate: '', actionStatus: 'Open' };
+ const report = draft([note('u2', text, [ownPhoto]), note('u1', text)]);
+ const matching = lines(report).filter(line => line.includes(text));
+ expect(matching).toHaveLength(1); expect(matching[0]).toContain('See Image 1');
+ expect(lines(report).filter(line => /See Image 1/.test(line))).toHaveLength(1);
+});
+
+it('keeps authored captured-for words when ordinary action formatting removes Please', () => {
+ const report = draft([note('u1', 'Please confirm GPS was captured for the survey control check.')]);
+ expect(lines(report)).toContain('Confirm GPS was captured for the survey control check.');
+});
+
+it('matches the actual saved authored quote across ordinary whitespace formatting', () => {
+ const text = 'GPS was captured for the survey control check.';
+ const updates = [note('u1', `  ${text}  `)];
+ const fused = buildFusedEvidence({ projectName: 'Tower', projectNames: ['Tower'], updates, scheduleItems: [], knownScheduleItems: [], now: new Date('2026-10-15T12:00:00Z') });
+ const report = draft(updates, { fusedEvidence: fused, intelligentSummary: fused.intelligentSummary });
+ expect(lines(report)).toContain(text); expect(report.body).toContain(`Latest update: ${text}`);
+});
