@@ -4,6 +4,7 @@
  * that failed before its fix. Real CSV normalizer, the phone's merge, the
  * shown-schedule pick, the delete helpers and the web's plans. Synthetic data.
  */
+import { scheduleImportPairingGuess, scheduleImportPairingChosen, scheduleImportPairingRefusal, withScheduleImportPairingChoices } from '../../components/schedule-import-pairing-check';
 import fs from 'fs';
 import path from 'path';
 import ts from 'typescript';
@@ -36,6 +37,7 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
   multiGet: jest.fn(async () => []),
 }));
 jest.mock('expo-file-system/legacy', () => ({ documentDirectory: null }));
+jest.mock('@expo/vector-icons/Ionicons', () => 'Ionicons');
 
 type State = { items: ScheduleItem[]; documents: ReferenceDocument[] };
 const EMPTY: State = { items: [], documents: [] };
@@ -488,12 +490,39 @@ describe('Review N1 L5 (older, owner answer Q30): a lookahead row as near to one
     expect(Object.values(asked[0].guess)).toEqual([null, null]);
   });
 
-  it('nearer to one of them: not asked, as before', () => {
-    expect(questions(['Pour slab,Alpha,Lot,10/11/2026,10/15/2026,'])).toEqual([]);
+  it('nearer to one of them: asks under issue 2.17 policy, keeping the closest guess and both choices', () => {
+    // Nearest dates remain the guess; they cannot prove which twin moved.
+    const lines = ['Pour slab,Alpha,Lot,10/11/2026,10/15/2026,'];
+    const asked = questions(lines);
+    expect(asked).toHaveLength(1);
+    const question = asked[0];
+    const rowId = rows(LA, lines)[0].id;
+    expect(question.saved.map(item => item.id)).toEqual([first.id, second.id]);
+    expect(question.rows.map(item => item.id)).toEqual([rowId]);
+    expect(question.guess).toEqual({ [rowId]: first.id });
+    const guess = scheduleImportPairingGuess(question);
+    expect(scheduleImportPairingRefusal(asked, () => guess)).toContain('Confirm which Pour slab');
+    const started = patch(twins, second.id, { percentComplete: 40, notes: 'Second-only', owner: 'Second owner' }, '2026-09-10T12:00:00.000Z');
+    const answer = scheduleImportPairingChosen(guess, second.id, rowId);
+    expect(answer.rowOfSaved[first.id]).toBeNull();
+    expect(scheduleImportPairingRefusal(asked, () => answer)).toBeNull();
+    const choices = withScheduleImportPairingChoices({ pairingChoices: { unrelated: 'earlier-answer' } }, asked, () => answer).pairingChoices;
+    expect(choices).toEqual({ unrelated: 'earlier-answer', [rowId]: second.id });
+    const chosen = approve(started, LA, lines, choices);
+    expect(named(chosen, 'Pour slab').find(item => item.id === second.id)).toMatchObject({ startDate: '10/11/2026', percentComplete: 40, notes: 'Second-only', owner: 'Second owner' });
+    expect(named(chosen, 'Pour slab').find(item => item.id === first.id)?.startDate).toBe('10/05/2026');
+    const newAnswer = scheduleImportPairingChosen(scheduleImportPairingChosen(guess, first.id, null), second.id, null);
+    const newChoices = withScheduleImportPairingChoices({ pairingChoices: null as Record<string, string | null> | null }, asked, () => newAnswer).pairingChoices!;
+    expect(newChoices).toEqual({ [rowId]: null });
+    const newWork = approve(started, LA, lines, newChoices);
+    expect(named(newWork, 'Pour slab').find(item => item.id === rowId)).toMatchObject({ percentComplete: 0, notes: '', owner: '' });
+    expect(named(newWork, 'Pour slab').find(item => item.id === second.id)).toMatchObject({ startDate: '10/19/2026', percentComplete: 40, notes: 'Second-only' });
+    // Unchanged twins retain the explicit no-question policy.
+
     expect(questions(['Pour slab,Alpha,Lot,10/05/2026,10/09/2026,', 'Pour slab,Alpha,Lot,10/19/2026,10/23/2026,'])).toEqual([]);
   });
 
-  it('a master listing as many as are saved pairs them in order, unasked, as before; its one row tied between two is asked about', () => {
+  it('a master repeating unchanged twins remains unasked; its one row tied between two is asked about', () => {
     const G = schedule('MASTER G', '2026-09-14T12:00:00.000Z');
     const masterQuestions = (lines: string[]) => scheduleImportPairingQuestions({
       existing: twins.items, imported: rows(G, lines),
