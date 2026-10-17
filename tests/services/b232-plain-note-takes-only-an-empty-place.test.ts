@@ -60,8 +60,8 @@ describe('B232 item 4c: a plain note takes only a place Build 231 left empty', (
       area: 'Quartz Hall — Level 2',
       lines: [
         'Stair pressurization test failed. Stair finishes are on hold.',
-        'send the tile layout to the architect.',
-        'schedule the sprinkler inspection.',
+        'Send the tile layout to the architect.',
+        'Schedule the sprinkler inspection.',
       ],
     }]);
   });
@@ -76,7 +76,7 @@ describe('B232 item 4c: a plain note takes only a place Build 231 left empty', (
       area: 'Quartz Hall — Level 1',
       lines: [
         'Slab crack found at grid 5. Tile cannot start there.',
-        'confirm the handrail height with the inspector.',
+        'Confirm the handrail height with the inspector.',
         'Elevator inspection failed. Lobby finishes are on hold.',
       ],
     }]);

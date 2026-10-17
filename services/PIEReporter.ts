@@ -675,7 +675,7 @@ export function collectReportEvidence(
     evidence.push({
       id: 'runtime-what-changed',
       source: 'runtime',
-      preservesCapturedFor: Boolean(latestWrittenUpdate && /captured for/i.test(latestWrittenUpdate.notes) &&
+      preservesCapturedFor: Boolean(latestWrittenUpdate && /captured for/i.test(latestWrittenUpdate.notes ?? '') &&
         updates.some(saved => saved.id === latestWrittenUpdate.id && saved.notes === latestWrittenUpdate.notes && !noteIsAcceptedPhotoSuggestion(saved))),
       projectName: input.currentUpdate?.projectName || selectedProjects[0] || '',
       areaName: input.currentUpdate?.selectedAreaName || '',
