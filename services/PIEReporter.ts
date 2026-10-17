@@ -2062,14 +2062,17 @@ function isActionEvidence(item: PIEReportSourceEvidence) {
 }
 
 function actionFromEvidence(item: PIEReportSourceEvidence) {
-  // Clean while the authored span is still intact, before ordinary action formatting removes "Please" / owner.
-  const action = cleanReportBulletText(item.actionRequired || item.summary, item.preservedCapturedForText);
-  return action
+  const action = item.actionRequired || item.summary;
+  const formatted = action
     .replace(/^next step:\s*/i, '')
     .replace(/^please\s+([a-z]+)(?=\b)/i, (_prefix, word: string) => /^[a-z]+$/.test(word) ? word.charAt(0).toUpperCase() + word.slice(1) : word)
     .replace(/^please\s+/i, '')
     .replace(/\bowner\s*:?\s*[A-Z][A-Za-z]+(?:\s*\/\s*[A-Z][A-Za-z]+)?/i, '')
     .trim();
+  // Ordinary action formatting can remove Please / owner from an authored note. Protect its resulting words,
+  // while keeping the existing cleanup order for every unauthored action.
+  return cleanReportBulletText(formatted,
+    item.preservedCapturedForText && action.includes(item.preservedCapturedForText) ? formatted : undefined);
 }
 
 function formatActionItem(item: PIEReportActionItem) {
