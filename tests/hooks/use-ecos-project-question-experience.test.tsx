@@ -1,7 +1,7 @@
 import { act, renderHook } from '@testing-library/react-native';
 import { Alert } from 'react-native';
 import { useECOSProjectQuestionExperience } from '../../hooks/use-ecos-project-question-experience';
-import { askECOSProjectQuestion } from '../../services/ECOSProjectQuestion';
+import { askECOSProjectQuestion, ECOSProjectQuestionError } from '../../services/ECOSProjectQuestion';
 jest.mock('expo-crypto', () => ({ randomUUID: () => '55555555-5555-4555-8555-555555555555' }));
 
 jest.mock('../../components/DAVETypedCaptureSheet', () => ({ DAVETypedCaptureSheet: () => null }));
@@ -234,4 +234,18 @@ it('checks each question against the projects the user can pick (owner answer Q2
   expect(askMock.mock.calls[0][0].knownProjectNames).toEqual(['2321 Compliance Project', '2375 Compliance Project']);
   // The phone answer sheet has no project picker, so it asks for phone wording (audit A9 pass 3 L3).
   expect(askMock.mock.calls[0][0].refusalWording).toBe('phone');
+});
+
+it.each(['request_failed', 'answer_provider_unavailable', 'answer_research_unavailable'])('issue3.19 mobile retry keeps verified conversation after %s', async code => {
+ const turnId='11111111-1111-4111-8111-111111111111';
+ askMock.mockImplementation(async input=>({answer:'Synthetic answer',conversation:{conversationId:input.conversationId,turnId,priorTurnId:input.priorTurnId||null}}) as never);
+ const {result}=renderHook(()=>useECOSProjectQuestionExperience({contextualProjectName:'Project One',projectRecords:[{id:'one',name:'Project One'}] as never,candidateProjects:['Project One'],onOpenEvidence:jest.fn()}));
+ await start(result);
+ await act(async()=>{sheet(result,2).onAskAnother();});
+ askMock.mockRejectedValueOnce(new ECOSProjectQuestionError(code,'Synthetic temporary failure'));
+ await act(async()=>{sheet(result,0).onMemoryReady({transcript:'And canopy C?'});});
+ expect(sheet(result,2).loading).toBe(false);
+ await act(async()=>{sheet(result,2).onRetry();});
+ expect(askMock).toHaveBeenCalledTimes(3);
+ expect(askMock.mock.calls[2][0]).toMatchObject({projectId:'one',question:'And canopy C?',conversationId:askMock.mock.calls[0][0].conversationId,priorTurnId:turnId});
 });

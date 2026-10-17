@@ -161,6 +161,15 @@ describe('DesktopSchedulePage', () => {
     ));
   });
 
+  test.each(['one','all'])('issue4.68 Apply %s retains 2.5 working days and spans the third workday', async mode => {
+    const fractional = {...task,durationDays:2.5};
+    const screen=render(<DesktopSchedulePage tasks={[phase,predecessor,fractional]} projects={['2321 Compliance Project']} selectedProject="2321 Compliance Project"/>);
+    fireEvent.press(screen.getByText('Gantt'));
+    fireEvent.press(screen.getByText(/Impact preview/));
+    fireEvent.press(screen.getByLabelText(mode==='one'?'Apply calculated dates for Place asphalt':'Apply all calculated dependency date changes'));
+    await waitFor(()=>expect(mockUpdateTask).toHaveBeenCalledWith(expect.objectContaining({id:task.id,startDate:'2026-07-22',finishDate:'2026-07-24',durationDays:2.5})));
+  });
+
   test('does not present an invalid dependency network as a valid critical path', () => {
     const cycleA = scheduleItem('cycle-a', {
       taskName: 'Cycle A',
