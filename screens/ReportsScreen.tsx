@@ -322,6 +322,8 @@ export function ReportsScreen({
   const [reportEdits, setReportEdits] = useState<ReportSessionEdits | null>(null);
   const [communicationPending, setCommunicationPending] = useState(false);
   const [communicationError, setCommunicationError] = useState('');
+  // A policy refusal follows the current policy; a delivery/export error is a separate event.
+  const [communicationPolicyRefusal, setCommunicationPolicyRefusal] = useState<Readonly<{ requireApproval: boolean }> | null>(null);
   // Its own line: a send clears the communication message, and this one must
   // stay until the next approval (whole-app audit A6 pass 5).
   const [snapshotSaveError, setSnapshotSaveError] = useState('');
@@ -673,6 +675,9 @@ export function ReportsScreen({
           : !reportEditsPeriodIsCurrent
             ? editedReportPeriodChangedMessage(reportEdits?.baselineSentAt ?? null, reportBaselineSentAt)
             : reportApprovalPolicy.message;
+  const communicationPolicyMessage = communicationPolicyRefusal &&
+    (!reportApprovalAllowed || (communicationPolicyRefusal.requireApproval && !reportApproved))
+      ? reportApprovalMessage : '';
   const reportIdentityRef = useRef(reportCommunicationIdentityKey);
   const previousReportSnapshotRef = useRef(previousReportSnapshot);
   previousReportSnapshotRef.current = previousReportSnapshot;
@@ -935,6 +940,7 @@ export function ReportsScreen({
     setReviewAcknowledgement(remembered?.acknowledgement ?? { fingerprint: '', ids: [] });
     setCommunicationPending(false);
     setCommunicationError('');
+    setCommunicationPolicyRefusal(null);
     setSnapshotSaveError('');
     setPeriodNotice('');
     setMarkSentMessage('');
@@ -971,7 +977,7 @@ export function ReportsScreen({
     // status sentence in red).
     const requireApproval = options.requireApproval ?? true;
     if ((requireApproval && !reportApproved) || !reportApprovalAllowed) {
-      setCommunicationError(reportApprovalMessage);
+      setCommunicationPolicyRefusal({ requireApproval });
       return;
     }
 
@@ -1005,6 +1011,7 @@ export function ReportsScreen({
     pendingCommunicationTokenRef.current = communicationToken;
     setCommunicationPending(true);
     setCommunicationError('');
+    setCommunicationPolicyRefusal(null);
 
     void (async () => {
       try {
@@ -1080,7 +1087,7 @@ export function ReportsScreen({
 
   const markReportApproved = () => {
     if (!reportApprovalAllowed) {
-      setCommunicationError(reportApprovalMessage);
+      setCommunicationPolicyRefusal({ requireApproval: false });
       return;
     }
     if (approvalCheckRef.current) return;
@@ -1097,7 +1104,7 @@ export function ReportsScreen({
   };
   const approveAfterPeriodCheck = () => {
     if (!reportApprovalAllowed) {
-      setCommunicationError(reportApprovalMessage);
+      setCommunicationPolicyRefusal({ requireApproval: false });
       return;
     }
     if (approvalCheckRef.current) return;
@@ -1128,7 +1135,7 @@ export function ReportsScreen({
   /** The approval, with the report on screen once the check is back. */
   const approveCheckedReport = (checkedTextKey: string) => {
     if (!reportApprovalAllowed) {
-      setCommunicationError(reportApprovalMessage);
+      setCommunicationPolicyRefusal({ requireApproval: false });
       return;
     }
     if (checkedTextKey !== approvalTextKey) {
@@ -1453,7 +1460,7 @@ export function ReportsScreen({
             periodNote={sharedPeriodNote}
             communicationPending={communicationPending}
             onStopWaiting={stopWaitingForShare}
-            communicationError={[snapshotSaveError, communicationError].filter(Boolean).join(' ')}
+            communicationError={[snapshotSaveError, communicationError, communicationPolicyMessage].filter(Boolean).join(' ')}
             reportEditing={reportEditing}
             drawingReferences={drawingReferences}
             updates={updates}
@@ -1923,6 +1930,9 @@ function PIEReporterPreview({
 }) {
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const wordDownloadHint = reportApprovalAllowed
+    ? 'Review copy with available photos and drawing excerpts'
+    : `Before downloading Word: ${approvalMessage}`;
 
   return (
     <View style={styles.reportPreview}>
@@ -2155,13 +2165,13 @@ function PIEReporterPreview({
         accessibilityRole="button"
         accessibilityState={{ disabled: communicationPending }}
         accessibilityLabel="Download Word Report"
-        accessibilityHint="Downloads a Word review copy with available report photos and drawing excerpts"
+        accessibilityHint={wordDownloadHint}
       >
         <Ionicons name="document-attach-outline" size={19} color={colors.primary} />
         <View style={styles.reportWordDownloadCopy}>
           <Text style={styles.reportActionText}>Download Word Report</Text>
           <Text style={styles.reportWordDownloadHint}>
-            Review copy with available photos and drawing excerpts
+            {wordDownloadHint}
           </Text>
         </View>
         <Ionicons name="download-outline" size={19} color={colors.primary} />
