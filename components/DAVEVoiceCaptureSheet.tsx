@@ -122,9 +122,10 @@ type KeepsUnder = Readonly<{
 /** A recording held aside by its sheet, and what it was made for (review P5 N1). */
 type RecordingHeldAside = Readonly<{ uri: string; durationMs: number; madeFor: KeepsUnder }>;
 
-/** Whether a sheet is open for the account and the project a recording in it was made for (review P4 L4). */
+/** Account, project and origin slot must match before a retained recording can rejoin this sheet. */
 function sameAccountAndProject(left: KeepsUnder, right: KeepsUnder): boolean {
   return left.account === right.account &&
+    left.slot === right.slot &&
     left.projectName.trim().toLowerCase() === right.projectName.trim().toLowerCase();
 }
 
@@ -169,6 +170,7 @@ export function DAVEVoiceCaptureSheet({
   autoSubmitOnStop = false,
   showWalkContext = true,
   keepSlot,
+  retryKeptRecordingAutomatically = true,
   onMemoryReady,
   onProjectChange,
   onTaskChange,
@@ -205,6 +207,8 @@ export function DAVEVoiceCaptureSheet({
    * Without one it is kept in the sheet only, while Vitruvius stays open.
    */
   keepSlot?: string;
+  /** Guided answers require an explicit tap even when a retained upload failed earlier. */
+  retryKeptRecordingAutomatically?: boolean;
   /** `kept` only for a recording brought back from the device after the app was closed (review N1 L3). */
   onMemoryReady: (result: DAVEVoiceUnderstandingResponse, kept?: DAVEVoiceKeptCapture) => void;
   onProjectChange?: (projectName: string) => void;
@@ -716,7 +720,7 @@ export function DAVEVoiceCaptureSheet({
       recordingDurationRef.current = kept.durationMs;
       setRecordingUri(kept.uri);
       setRecordingDuration(kept.durationMs);
-      if (kept.state === 'ready') {
+      if (kept.state === 'ready' || !retryKeptRecordingAutomatically) {
         // Closed and kept before he had sent it for its words: offered, and left for him to use (review N1 L1).
         setNotice(`Kept from ${keptTimeLabel(kept.recordedAt)}. Replay it, then tap ${continueLabel} to use it, or record again.`);
         return;

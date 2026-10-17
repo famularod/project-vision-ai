@@ -1,5 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
+import * as Crypto from 'expo-crypto';
+import { NativeWorkspaceOwnerContext } from './native-workspace-owner';
 import {
   StyleSheet,
   Text,
@@ -149,6 +151,17 @@ export function DAVETaskFillAssistant({
   /** May return the patch as applied (a changed project brings its location). */
   onApply: (patch: DAVETaskFillPatch) => DAVETaskFillPatch | void;
 }) {
+  // A new unsaved Add Task opening is a different draft, even with the
+  // same name/project. Capture origin survives mutable form values.
+  const account = useContext(NativeWorkspaceOwnerContext);
+  const draft = useRef<{ active: boolean; id: string }>({ active: false, id: '' });
+  if (active && !draft.current.active) draft.current.id = Crypto.randomUUID();
+  draft.current.active = active;
+  const [voiceOrigin, setVoiceOrigin] = useState<{
+    key: string; slot: string; draftId: string; account: string | null | undefined;
+    projectId: string | null; projectName: string;
+    purpose: 'instruction' | 'guided'; field: DAVETaskFillFieldName;
+  } | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voicePurpose, setVoicePurpose] = useState<'instruction' | 'guided'>('instruction');
@@ -178,6 +191,40 @@ export function DAVETaskFillAssistant({
     contractorNames,
     milestoneNames,
   });
+
+  const voiceOriginIsCurrent = Boolean(voiceOrigin && active && voiceOrigin.draftId === draft.current.id &&
+    voiceOrigin.account === account && voiceOrigin.projectId === currentProjectId &&
+    voiceOrigin.projectName === currentProjectName &&
+    (voiceOrigin.purpose !== 'guided' || voiceOrigin.field === currentGuidedField));
+  const voiceCurrentRef = useRef<string | null>(null);
+  voiceCurrentRef.current = voiceOriginIsCurrent ? voiceOrigin!.key : null;
+  function openVoice(purpose: 'instruction' | 'guided') {
+    const key = JSON.stringify([draft.current.id, account, currentProjectId, currentProjectName, purpose, currentGuidedField]);
+    // Capture before React runs a queued updater: a later draft opening
+    // must not change the origin of the tap that opened this voice sheet.
+    const origin = {
+      key,
+      slot: `task-fill/${JSON.stringify({
+        draftId: draft.current.id,
+        projectId: currentProjectId,
+        projectName: currentProjectName,
+        purpose,
+        field: currentGuidedField,
+        question: purpose === 'guided' ? GUIDED_QUESTIONS[currentGuidedField].question : 'Describe the task fields to fill',
+        task: currentValues.taskName || 'Unsaved task',
+      })}`,
+      draftId: draft.current.id,
+      account,
+      projectId: currentProjectId,
+      projectName: currentProjectName,
+      purpose,
+      field: currentGuidedField,
+    };
+    setVoiceOrigin(previous => previous?.key === key ? previous : origin);
+    setVoicePurpose(purpose);
+    setVoiceOpen(true);
+  }
+  useEffect(() => { if (!voiceOriginIsCurrent) setVoiceOpen(false); }, [voiceOriginIsCurrent]);
 
   function startGuidedQuestions() {
     setExpanded(true);
@@ -451,8 +498,7 @@ export function DAVETaskFillAssistant({
               <TouchableOpacity
                 style={styles.recordAnswerButton}
                 onPress={() => {
-                  setVoicePurpose('guided');
-                  setVoiceOpen(true);
+                  openVoice('guided');
                 }}
                 accessibilityRole="button"
                 accessibilityLabel={`Record answer for ${FIELD_LABELS[currentGuidedField]}`}
@@ -525,8 +571,7 @@ export function DAVETaskFillAssistant({
             <TouchableOpacity
               style={styles.secondaryButton}
               onPress={() => {
-                setVoicePurpose('instruction');
-                setVoiceOpen(true);
+                openVoice('instruction');
               }}
               accessibilityRole="button"
               accessibilityLabel="Record task instruction"
@@ -671,9 +716,11 @@ export function DAVETaskFillAssistant({
       ) : null}
 
       <DAVEVoiceCaptureSheet
-        visible={voiceOpen}
-        projectId={currentProjectId}
-        projectName={currentProjectName}
+        visible={voiceOpen && voiceOriginIsCurrent}
+        projectId={voiceOrigin?.projectId ?? currentProjectId}
+        projectName={voiceOrigin?.projectName ?? currentProjectName}
+        keepSlot={voiceOrigin?.slot}
+        retryKeptRecordingAutomatically={false}
         candidateProjects={candidateProjects}
         candidateLocations={candidateLocations}
         title={voicePurpose === 'guided' ? `Answer: ${FIELD_LABELS[currentGuidedField]}` : 'Record Task Instruction'}
@@ -687,6 +734,7 @@ export function DAVETaskFillAssistant({
         autoSubmitOnStop={voicePurpose === 'guided'}
         showWalkContext={false}
         onMemoryReady={result => {
+          if (!voiceOrigin || voiceCurrentRef.current !== voiceOrigin.key) return;
           if (voicePurpose === 'guided') {
             applyGuidedAnswer(result.transcript, true);
           } else {
