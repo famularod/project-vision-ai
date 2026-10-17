@@ -1,3 +1,4 @@
+import { daveProjectTruthHasProjectKey } from '../../services/DAVEProjectTruth';
 import { Link, useLocalSearchParams, usePathname, useRouter } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -6041,7 +6042,11 @@ function ReportWorkspace({
   // R4 (the coordinator's decision): the report on this page is the one another device already sent, unchanged since. The
   // "since" lines read as that report was sent (the same fingerprint on every device now), and the page says so in
   // the phone's words until he approves it to send a second time.
-  const alreadySentElsewhereAt = currentPeriodRead.status === 'loaded' && reportStatus !== 'approved'
+  // An empty truth project key omits its facts. Fingerprint equality then cannot prove that
+  // the report on this page is the report the other device sent (7.67). Approval still stays explicit.
+  const alreadySentElsewhereAt = reportTruths.length > 0 &&
+    reportTruths.every(truth => daveProjectTruthHasProjectKey(truth.projectName)) &&
+    currentPeriodRead.status === 'loaded' && reportStatus !== 'approved'
     ? daveWebReportAlreadySentElsewhereAt(periodSnapshot, reportFingerprint, daveWebOwnReportSends())
     : null;
   // Review N2 (5 Oct 2026): another TAB's later send. With Reports open in two tabs, this tab approved a report
