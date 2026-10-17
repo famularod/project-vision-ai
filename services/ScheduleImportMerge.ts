@@ -1062,13 +1062,18 @@ export function scheduleImportPairingQuestions({
   alsoAsk?: ReadonlySet<string>;
 }): ScheduleImportPairingQuestion[] {
   const rule: TwinRule = { lookahead: overlay, inFile: true, addedByLookahead: statedOnlyByLookaheads(existing) };
+  const onlyLookaheads = statedOnlyByLookaheads(existing);
   return revisionGroups(existing, imported, isCurrent, overlay, true).flatMap((group): ScheduleImportPairingQuestion[] => {
     const { rows, saved } = group;
     // S2 item 1 (b): a task of this name that is no longer shown, and a row of the file it may be. Asked, never
     // guessed: what its Unique ID settles (the same: that task; another: not that task) is not asked about.
     const settled = pairGroup(group, rule);
+    // A lookahead can add a fresh row after a master omitted this task. That
+    // visible row does not settle whether the next master's row is the earlier
+    // task: keep the earlier task among the review's explicit choices.
+    const unsettledReturn = (row: ScheduleItem) => !settled.has(row) || onlyLookaheads(settled.get(row)!);
     const earlier = (group.returning ?? []).filter(item => ![...settled.values()].includes(item) &&
-      rows.some(row => !settled.has(row) && !differentUniqueIds(row, item) && !saidNotRevision(row, item)));
+      rows.some(row => unsettledReturn(row) && !differentUniqueIds(row, item) && !saidNotRevision(row, item)));
     const first = rows[0];
     const groupKey = [first.taskName, projectKey(first), first.locationName].map(key).join('|');
     const areaName = ([...saved, ...earlier].find(item => key(item.locationName))?.locationName || first.locationName || '').trim();
@@ -1086,9 +1091,9 @@ export function scheduleImportPairingQuestions({
         guess: Object.fromEntries(open.map(row => [row.id, onItsDays(row).length === 1 ? onItsDays(row)[0].id : null])),
       }];
     }
-    // More rows than tasks of the name shown, and one no longer shown: the same-named question, with it among the choices.
-    const withEarlier = earlier.length > 0 && rows.length > saved.length;
-    if (rows.length === 0 || saved.length === 0 || (rows.length < 2 && saved.length < 2)) return [];
+    // A missing task can also compete with a lookahead-only row currently shown: offer both explicitly.
+    const withEarlier = earlier.length > 0 && (rows.length > saved.length || saved.every(onlyLookaheads));
+    if (rows.length === 0 || saved.length === 0 || (!withEarlier && rows.length < 2 && saved.length < 2)) return [];
     if (!withEarlier && [...rows, ...saved].every(item => key(item.sourceUniqueId))) return [];
     // Two rows of one task (one answers to the other) shown at once are not twins: nothing to ask about them.
     const savedIds = new Set(saved.map(item => item.id));

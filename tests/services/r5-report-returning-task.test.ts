@@ -358,8 +358,8 @@ describe('R5 item 1: the recorded case, a lookahead lists the dropped task as it
     const onLookahead = report(state, first.sent, '2026-09-10T15:00:00.000Z');
     expect(onLookahead.paint).toEqual([ADDED, REMOVED]);
     state = approve(state, schedule('MASTER 3', '2026-09-11T12:00:00.000Z'), [...OTHERS, 'Paint,Alpha,Lot,10/05/2026,10/09/2026,']);
-    // Nothing is asked: the list has a Paint (the lookahead's row), and the master's row is that one, moved.
-    expect(asked).toEqual([]);
+    // Issue 2.8: the earlier task is offered; confirming the visible lookahead guess preserves this report behavior.
+    expect(asked).toEqual(['2 tasks named Paint in Lot — confirm which is which']);
     expect(one(state, 'Paint').map(item => [item.id, item.revisedFromTaskIds, item.percentComplete])).toEqual([['MASTER 3-4', ['LOOKAHEAD 1-1'], 0]]);
     const next = report(state, first.sent, '2026-09-12T15:00:00.000Z');
     // (It read: "Paint moved from 60% to 0% complete.", "Paint changed from In Progress to Not Started.",
@@ -377,7 +377,7 @@ describe('R5 item 1: the recorded case, a lookahead lists the dropped task as it
     const { state: out, first } = paintLeftOut();
     let state = approve(out, schedule('LOOKAHEAD 1', '2026-09-10T12:00:00.000Z', 'lookahead'), ['Paint,Alpha,Lot,10/02/2026,10/06/2026,']);
     state = approve(state, schedule('MASTER 3', '2026-09-11T12:00:00.000Z'), [...OTHERS, 'Paint,Alpha,Lot,10/02/2026,10/06/2026,']);
-    expect(asked).toEqual([]);
+    expect(asked).toEqual(['2 tasks named Paint in Lot — confirm which is which']);
     // The same row, a master's task now (no longer a lookahead's detail).
     expect(one(state, 'Paint').map(item => [item.id, item.revisedFromTaskIds ?? [], item.percentComplete])).toEqual([['LOOKAHEAD 1-1', [], 0]]);
     const truths = phoneTruths(state, '2026-09-12T15:00:00.000Z');
@@ -391,6 +391,18 @@ describe('R5 item 1: the recorded case, a lookahead lists the dropped task as it
     sameOnTheWeb(state, first.sent, '2026-09-12T15:00:00.000Z', next);
   });
 
+
+  it('issue 2.8: selecting the earlier task restores its facts to both report paths', () => {
+    const { state: out, first } = paintLeftOut();
+    let state = approve(out, schedule('LOOKAHEAD 1', '2026-09-10T12:00:00.000Z', 'lookahead'), ['Paint,Alpha,Lot,10/02/2026,10/06/2026,']);
+    state = approve(state, schedule('MASTER 3', '2026-09-11T12:00:00.000Z'), [...OTHERS, 'Paint,Alpha,Lot,10/05/2026,10/09/2026,'], PLAIN,
+      question => Object.fromEntries(question.saved.map(item => [item.id, question.earlierIds?.includes(item.id) ? question.rows[0].id : null])));
+    expect(asked).toEqual(['2 tasks named Paint in Lot — confirm which is which']);
+    expect(one(state, 'Paint').map(item => [item.percentComplete, item.notes, item.owner])).toEqual([[60, '', 'Sam']]);
+    const next = report(state, first.sent, '2026-09-12T15:00:00.000Z');
+    expect(next.paint).toEqual(['Paint finish changed from 10/05/2026 to 10/09/2026.']);
+    sameOnTheWeb(state, first.sent, '2026-09-12T15:00:00.000Z', next);
+  });
   it('guard: where nothing he had set is lost (he had set nothing on the dropped Paint), the two read as one task, as before', () => {
     let state = approve({ items: [], documents: [] }, schedule('MASTER 1', '2026-09-07T12:00:00.000Z'), [...OTHERS, PAINT]);
     const first = report(state, null, '2026-09-08T15:00:00.000Z');
