@@ -3046,7 +3046,7 @@ function cleanReportBulletText(value: string, authoredCapturedForText?: string) 
 
   text = text.replace(/([.!?])\1+$/g, '$1');
 
-  if (/structural work is complete/i.test(text) && /electrical work remains/i.test(text)) {
+  if (!protectedText && /structural work is complete/i.test(text) && /electrical work remains/i.test(text)) {
     return 'Structural work is complete. Electrical work remains before the area can advance to the next phase.';
   }
 
