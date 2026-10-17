@@ -84,3 +84,8 @@ it('deduplicates an intact captured-for note and keeps its own photo citation', 
  expect(matching).toHaveLength(1); expect(matching[0]).toContain('See Image 1');
  expect(lines(report).filter(line => /See Image 1/.test(line))).toHaveLength(1);
 });
+
+it('keeps authored captured-for words when ordinary action formatting removes Please', () => {
+ const report = draft([note('u1', 'Please confirm GPS was captured for the survey control check.')]);
+ expect(lines(report)).toContain('Confirm GPS was captured for the survey control check.');
+});
