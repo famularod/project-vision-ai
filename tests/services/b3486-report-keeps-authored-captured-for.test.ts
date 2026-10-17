@@ -78,7 +78,7 @@ it('does not grant authorship to an arbitrary runtime summary without the comple
 
 it('deduplicates an intact captured-for note and keeps its own photo citation', () => {
  const text = 'GPS was captured for the survey control check.';
- const ownPhoto = { id: 'p1', uri: 'file:///p1.jpg', caption: 'Roof inspection', category: 'Progress', selectedAreaName: 'Roof', actionRequired: '', actionOwner: '', actionDueDate: '', actionStatus: 'Open' };
+ const ownPhoto = { id: 'p1', uri: 'file:///p1.jpg', caption: '', category: 'Progress', selectedAreaName: 'Roof', actionRequired: '', actionOwner: '', actionDueDate: '', actionStatus: 'Open' };
  const report = draft([note('u2', text, [ownPhoto]), note('u1', text)]);
  const matching = lines(report).filter(line => line.includes(text));
  expect(matching).toHaveLength(1); expect(matching[0]).toContain('See Image 1');
