@@ -505,7 +505,7 @@ import {
   reconcileDAVEScheduleRecords,
   recoverDAVEScheduleRecords,
 } from './services/DAVEScheduleRecovery';
-import { recordScheduleCloudPull, registerScheduleCloudPullRequest } from './services/ScheduleCloudPull';
+import { deviceCloudPullPending, noteDeviceCloudPullFailed, noteDeviceCloudPullNeeded, recordDeviceCloudPull, recordScheduleCloudPull, registerScheduleCloudPullRequest } from './services/ScheduleCloudPull';
 import {
   DAVE_SYNC_TOMBSTONES_STORAGE_KEY,
   deletedDAVERecordIds,
@@ -6164,8 +6164,11 @@ useEffect(() => {
         !requestedCollectionSet || requestedCollectionSet.has(name);
       const refreshCommit = operationalRefreshCommitGuard.begin();
       const refreshStartedAt = new Date().toISOString(); // what the downloads below can hold (A6 pass 10 M1)
+      refreshAttemptStartedAt = refreshStartedAt;
+      refreshMissing = [];
       const tombstones = await loadDAVEOperationalTombstones();
-      if (!active || !refreshCommit.isCurrent()) return;
+      if (!active) return;
+      if (!refreshCommit.isCurrent()) throw new Error('operational_refresh_superseded');
       const latestOperationalTombstones = tombstones.tombstones;
       const currentOperationalTombstones = operationalSyncTombstonesRef.current;
       refreshCommit.commit(() => {
@@ -6422,22 +6425,43 @@ useEffect(() => {
       }});
 
       const failures = await runDAVEOperationalCollectionRefreshes(collectionRefreshes);
+      if (!active) return;
+      if (!refreshCommit.isCurrent()) throw new Error('operational_refresh_superseded');
+      if (!requestedCollectionSet) {
+        const requested: DAVEOperationalCollectionName[] = ['projects', 'project_updates', 'project_areas', 'schedule_items', 'reference_documents'];
+        failures.push(...requested.filter(name => !collectionRefreshes.some(collection => collection.name === name)));
+      }
+      refreshMissing = [...failures, ...(tombstones.cloudAuthoritative ? [] : ['sync_tombstones'])]; // named on Reports and Settings (N276b)
       if (failures.length > 0) throw new Error(`operational_collection_refresh_incomplete:${failures.join(',')}`);
+      // 2.76: without the deletion history the other devices' new records were left out; tried again soon.
+      if (!tombstones.cloudAuthoritative) throw new Error('operational_deletion_history_incomplete');
+      if (!requestedCollectionSet) {
+        recordDeviceCloudPull(tombstones.readStartedAt ?? refreshStartedAt);
+        // A shared deletion-history read may predate the foreground request.
+        // It is safe to apply, but a newer full read is still needed.
+        if (deviceCloudPullPending()) {
+          refreshMissing = ['sync_tombstones'];
+          throw new Error('operational_refresh_predates_request');
+        }
+      }
     }
-    let realtimeHealthy = false, lastSuccessfulRefreshAt: string | null = null;
+    let realtimeHealthy = false, lastSuccessfulRefreshAt: string | null = null, refreshMissing: string[] = [], refreshAttemptStartedAt: string | undefined;
     const refreshController = createDAVEOperationalRefreshController({
       refresh: refreshOperationalCollections,
       canRefresh: () => active && AppState.currentState !== 'background',
       onStateChange: state => {
         if (!active) return;
-        if (state.status === 'retrying') setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE);
-        else if (state.status === 'ready') {
+        if (state.status === 'retrying') {
+          setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE);
+          noteDeviceCloudPullFailed(refreshMissing, refreshAttemptStartedAt); // only this attempt's failure; a newer Sync Now may already have succeeded
+        } else if (state.status === 'ready') {
           lastSuccessfulRefreshAt = state.lastSuccessfulRefreshAt;
-          setSyncCleanupNotice(current =>
+          if (!refreshController.fullRefreshOwed()) setSyncCleanupNotice(current =>
             current === DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE ? null : current);
         }
       },
     });
+    noteDeviceCloudPullNeeded(); // opened: Reports and Settings wait for the first download of every record (2.76)
     refreshController.start();
     const stopReportPullRequests = registerScheduleCloudPullRequest(() => void refreshController.request('foreground', ['schedule_items'])); // Reports waiting for the other device's changes (A6 pass 10 L2)
 
@@ -6488,8 +6512,9 @@ useEffect(() => {
       if (shouldRefreshDAVEOperationalDataOnForeground({
         realtimeHealthy, lastSuccessfulRefreshAt,
       })) {
+        noteDeviceCloudPullNeeded(); // back after time away: the same (2.76)
         void refreshController.request('foreground');
-      }
+      } else if (refreshController.fullRefreshOwed()) void refreshController.request('foreground'); // its retry fell due away (N276b)
     });
     return () => {
       active = false;

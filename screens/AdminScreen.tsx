@@ -95,6 +95,7 @@ import {
   startProjectDocumentUploadRun,
   type ProjectDocumentUploadRetryResult,
 } from '../services/ProjectDocumentUploadRetry';
+import { deviceCloudPullState, noteSyncNowDownloadFailed, onDeviceCloudPullChange, recordDeviceCloudPull } from '../services/ScheduleCloudPull';
 import type {
   ProjectArea,
   ProjectUpdate,
@@ -241,6 +242,13 @@ export function AdminScreen({
   const [syncAttemptMessage, setSyncAttemptMessage] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [lastFullSyncIssueCount, setLastFullSyncIssueCount] = useState(0);
+  // Open item 2.76: this device has not downloaded every record since it was opened (or came back); N276b: or a
+  // download has failed since the last one of every record.
+  const [cloudDownload, setCloudDownload] = useState(() => deviceCloudPullState());
+  useEffect(() => {
+    setCloudDownload(deviceCloudPullState());
+    return onDeviceCloudPullChange(() => setCloudDownload(deviceCloudPullState()));
+  }, []);
   // Read when a sync ends, while the document uploads it started may still run.
   const failedDocumentCountRef = useRef(failedDocumentCount);
   failedDocumentCountRef.current = failedDocumentCount;
@@ -364,12 +372,18 @@ export function AdminScreen({
       ? `${syncStatus.conflicts} conflict${syncStatus.conflicts === 1 ? '' : 's'} on this device ${syncStatus.conflicts === 1 ? 'needs' : 'need'} review`
       : lastFullSyncIssueCount > 0
         ? `${lastFullSyncIssueCount} ${lastFullSyncIssueCount === 1 ? 'item needs' : 'items need'} retry`
+      // Open item 2.76: "All caught up" only once this device has downloaded every record since it was opened. N276b
+      // F4: not before the connection check answers, and never "Downloading" offline or while the downloads fail.
+      : cloudDownload.pending || cloudDownload.failing
+        ? cloudDownload.failing || signInPending || (!connected && !isCheckingConnection)
+          ? "Could not download your other devices' changes yet; Sync Now to retry"
+          : "Downloading your other devices' changes"
       : 'All caught up';
   const syncNeedsAttention =
     pendingSyncCount > 0 ||
     Boolean(syncStatus?.conflicts) ||
     Boolean(syncStatus?.recoveryAvailable) ||
-    lastFullSyncIssueCount > 0;
+    lastFullSyncIssueCount > 0 || cloudDownload.failing || (cloudDownload.pending && !connected && !isCheckingConnection);
 
   async function shareFeedback() {
     try {
@@ -888,6 +902,13 @@ export function AdminScreen({
       ]);
       setSyncStatus(nextStatus);
       onApplyCloudRecovery({ ...result.recovered, syncStartedAt });
+      // Every record came down, deletions verified: "All caught up" and Reports stop waiting (2.76).
+      const downloadErrors = result.recovered?.collectionErrors;
+      const downloadKinds = ['projects', 'updates', 'projectAreas', 'scheduleItems', 'referenceDocuments'] as const;
+      const missingDownloads = downloadKinds.filter(kind => downloadErrors?.[kind] !== null);
+      if (missingDownloads.length === 0) recordDeviceCloudPull(syncStartedAt);
+      // N276b F2: one that could not bring every record down ends Reports' wait, saying what is missing.
+      else noteSyncNowDownloadFailed(missingDownloads, syncStartedAt);
       setSyncConflicts(nextConflicts);
       const documentsRemaining = documentRun.remaining(failedDocumentCountRef.current);
       setLastFullSyncIssueCount(Math.max(
@@ -927,6 +948,7 @@ export function AdminScreen({
       setAdminActionSummary(message);
       if (result.missingPhotos.length > 0) showMissingPhotoSyncAlert(result.missingPhotos);
     } catch {
+      noteSyncNowDownloadFailed([], syncStartedAt); // N276b F2: Reports stops waiting
       let actualIssueCount = updateSyncAttentionCount + failedDocumentCount;
 
       try {

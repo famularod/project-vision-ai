@@ -15,6 +15,21 @@ export const DAVE_OPERATIONAL_REALTIME_RETRY_DELAYS_MS = Object.freeze([
   10_000,
   30_000,
 ]) as readonly number[];
+/**
+ * Open item 2.76 (15 Oct 2026): a refresh that failed (or came back without
+ * the deletion history, so the other devices' new records were left out) was
+ * tried again only by the 30-minute poll, a return to the app or a live
+ * change: the phone showed an out-of-date task set for minutes after opening.
+ * It is now tried again after these waits, then every five minutes.
+ */
+export const DAVE_OPERATIONAL_REFRESH_RETRY_DELAYS_MS = Object.freeze([
+  5_000,
+  15_000,
+  30_000,
+  60_000,
+  120_000,
+  300_000,
+]) as readonly number[];
 export const DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE =
   'Automatic device refresh is reconnecting. Your saved changes are protected, and Vitruvius will keep retrying while the app is open.';
 
@@ -99,6 +114,7 @@ type OperationalRefreshControllerOptions = {
   canRefresh?: () => boolean;
   onStateChange?: (state: DAVEOperationalRefreshState) => void;
   pollIntervalMs?: number;
+  retryDelaysMs?: readonly number[];
 };
 
 export function daveOperationalCollectionForRealtimeEntity(
@@ -191,13 +207,25 @@ export function createDAVEOperationalRefreshController({
   canRefresh = () => true,
   onStateChange = () => undefined,
   pollIntervalMs = DAVE_OPERATIONAL_POLL_INTERVAL_MS,
+  retryDelaysMs = DAVE_OPERATIONAL_REFRESH_RETRY_DELAYS_MS,
 }: OperationalRefreshControllerOptions) {
   let running = false;
   let inFlight = false;
   let trailingRefreshRequested = false;
   let trailingCollections: Set<DAVEOperationalCollectionName> | null = null;
   let interval: ReturnType<typeof setInterval> | null = null;
+  // 2.76: only a refresh of every collection; one collection's refresh does not make the rest current.
   let lastSuccessfulRefreshAt: string | null = null;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let failedInARow = 0;
+  // N276b F1: a refresh failed (or came without the deletion list); only a refresh of every collection that succeeds
+  // pays it. A one-collection refresh (a live change, Reports' task download) neither pays it nor stops its retry.
+  let fullRefreshOwed = false;
+
+  function clearRetry() {
+    if (retryTimer) clearTimeout(retryTimer);
+    retryTimer = null;
+  }
 
   function queueTrailingCollections(
     collections?: readonly DAVEOperationalCollectionName[],
@@ -235,15 +263,23 @@ export function createDAVEOperationalRefreshController({
           lastSuccessfulRefreshAt,
         });
         try {
+          if (!nextCollections) clearRetry(); // this refresh of every collection is the retry (set again if it fails)
           if (nextCollections) await refresh(nextTrigger, nextCollections);
           else await refresh(nextTrigger);
-          lastSuccessfulRefreshAt = new Date().toISOString();
+          if (!running) return; // an unmounted owner's late answer is not a completed refresh
+          if (!nextCollections) {
+            lastSuccessfulRefreshAt = new Date().toISOString();
+            fullRefreshOwed = false;
+            failedInARow = 0;
+          }
           onStateChange({
             status: 'ready',
             trigger: nextTrigger,
             lastSuccessfulRefreshAt,
           });
         } catch {
+          if (!running) return;
+          fullRefreshOwed = true;
           onStateChange({
             status: 'retrying',
             trigger: nextTrigger,
@@ -257,6 +293,18 @@ export function createDAVEOperationalRefreshController({
       } while (running && canRefresh() && trailingRefreshRequested);
     } finally {
       inFlight = false;
+    }
+    // A newer full request can arrive while this read runs, then the app goes
+    // into the background before we can start it. Keep that request owed on return.
+    if (trailingRefreshRequested && trailingCollections === null) fullRefreshOwed = true;
+    // 2.76: a failed refresh is tried again soon, every collection, while the app stays open, until one lands (N276b).
+    if (fullRefreshOwed && running && !retryTimer) {
+      const delay = retryDelaysMs[Math.min(failedInARow, retryDelaysMs.length - 1)];
+      failedInARow += 1;
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        void request('interval');
+      }, delay);
     }
   }
 
@@ -273,11 +321,17 @@ export function createDAVEOperationalRefreshController({
     running = false;
     trailingRefreshRequested = false;
     trailingCollections = null;
+    clearRetry();
     if (interval) clearInterval(interval);
     interval = null;
   }
 
-  return Object.freeze({ start, stop, request });
+  /** A refresh failed and no refresh of every collection has succeeded since (N276b F1). */
+  function owed(): boolean {
+    return fullRefreshOwed;
+  }
+
+  return Object.freeze({ start, stop, request, fullRefreshOwed: owed });
 }
 
 export async function withDAVEOperationalRefreshTimeout<T>(

@@ -108,7 +108,9 @@ import {
   reportSnapshotToSave,
 } from '../services/DAVEReportSnapshot';
 import {
+  deviceCloudPullState,
   lastScheduleCloudPull,
+  onDeviceCloudPullChange,
   onScheduleCloudPull,
   reportSendFirstSeenAt,
   requestScheduleCloudPull,
@@ -335,6 +337,11 @@ export function ReportsScreen({
   const [approvalChecking, setApprovalChecking] = useState(false);
   // When this device last downloaded every task (whole-app audit A6 pass 10 M1, M2).
   const [schedulePulledAt, setSchedulePulledAt] = useState<string | null>(null);
+  // Open item 2.76: opened, or back after time away, and every record not downloaded since (N276b: and whether
+  // approval has stopped waiting for it, and what is missing).
+  const [deviceDownload, setDeviceDownload] = useState(() => deviceCloudPullState());
+  // N276b F3: while approval waits for that download, the period is read again every few seconds.
+  const [periodRecheck, setPeriodRecheck] = useState(0);
   // Everyday item 1 (2 Oct 2026): the approval this device saved, to record as sent another way.
   const [approvalSavedHereKey, setApprovalSavedHereKey] = useState<string | null>(null);
   // The approval waiting to be sent for which that has been read from this device's storage, saved here or not.
@@ -474,6 +481,17 @@ export function ReportsScreen({
       })
     : null;
   const reportDeviceBehind = Boolean(reportDeviceBehindSend);
+  // Open item 2.76 (15 Oct 2026): opened after four hours away, the phone showed the report on its old records
+  // ("Test fence was removed from the current project plan") with Approve, until a download it had not done yet.
+  // While the cloud answers (the period was read) and this device has not downloaded every record since it was
+  // opened or came back, approval waits, saying why.
+  // N276 review pass 1 F2 (sending must never be blocked for good): the wait ends, with a note naming what could not
+  // be downloaded, once a Sync Now could not download every record, after two minutes, or offline (the period could
+  // not be read: at opening, or while waiting, F3). A later download of every record removes the note.
+  const reportWaitsForDownload = deviceDownload.pending && !deviceDownload.gaveUp && snapshotScopeLoaded &&
+    sharedPeriodCheck === 'checked';
+  const reportDownloadNote = deviceDownload.pending && snapshotScopeLoaded && !snapshotLoadFailed &&
+    (deviceDownload.gaveUp || sharedPeriodCheck === 'unchecked') ? reportDownloadMissingNote(deviceDownload.missing) : '';
   const reportBriefing = useMemo(() => buildDAVEReportBriefing({
     truths: reportTruths,
     selectedProjectNames,
@@ -632,6 +650,7 @@ export function ReportsScreen({
     reportFactsAreCurrent &&
     reportEditsPeriodIsCurrent &&
     !reportDeviceBehind &&
+    !reportWaitsForDownload &&
     snapshotScopeLoaded;
   // HIGH item 1c: the report's fingerprint is worked out against the report it counts from, so a period that moved
   // moves it too; where the period moved, that is the reason said (as before 1c), not "project facts changed".
@@ -641,6 +660,8 @@ export function ReportsScreen({
         ? 'The reporting period is still loading.'
         : reportDeviceBehindSend
           ? reportDeviceBehindMessage(reportDeviceBehindSend)
+          : reportWaitsForDownload
+            ? REPORT_WAITS_FOR_DOWNLOAD
           : !reportEditsPeriodIsCurrent
             ? editedReportPeriodChangedMessage(reportEdits?.baselineSentAt ?? null, reportBaselineSentAt)
             : reportApprovalPolicy.message;
@@ -692,6 +713,26 @@ export function ReportsScreen({
   useEffect(() => onScheduleCloudPull(pulledAt => {
     if (mountedRef.current) setSchedulePulledAt(current => laterTime(current, pulledAt));
   }), []);
+  useEffect(() => {
+    setDeviceDownload(deviceCloudPullState());
+    return onDeviceCloudPullChange(() => {
+      if (mountedRef.current) setDeviceDownload(deviceCloudPullState());
+    });
+  }, []);
+  // N276b F2: two minutes on, the wait ends by itself.
+  useEffect(() => {
+    if (deviceDownload.giveUpAt === null || deviceDownload.gaveUp) return;
+    const timer = setTimeout(() => {
+      if (mountedRef.current) setDeviceDownload(deviceCloudPullState());
+    }, Math.max(0, deviceDownload.giveUpAt - Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [deviceDownload]);
+  // N276b F3: offline while it waits, the next read of the period fails and the wait ends, as offline at opening.
+  useEffect(() => {
+    if (!reportWaitsForDownload) return;
+    const timer = setInterval(() => setPeriodRecheck(count => count + 1), REPORT_DOWNLOAD_WAIT_RECHECK_MS);
+    return () => clearInterval(timer);
+  }, [reportWaitsForDownload]);
 
   // While waiting, the app is asked to download the tasks now (its refresh;
   // Settings › Sync Now does the same), again on each return to the app.
@@ -769,7 +810,7 @@ export function ReportsScreen({
     return () => {
       cancelled = true;
     };
-  }, [reportFormat, reportSnapshotScopeKey, snapshotReload]);
+  }, [reportFormat, reportSnapshotScopeKey, snapshotReload, periodRecheck]);
 
   /**
    * Whole-app audit A6 pass 7 (30 Sep 2026): the other device's last report,
@@ -1399,6 +1440,7 @@ export function ReportsScreen({
             approvalMessage={reportApprovalMessage}
             approvalChecking={approvalChecking || approvalSavedHereUnknown}
             periodNotice={shownPeriodNotice}
+            downloadNote={reportDownloadNote}
             periodNote={sharedPeriodNote}
             communicationPending={communicationPending}
             onStopWaiting={stopWaitingForShare}
@@ -1674,6 +1716,19 @@ const STOPPED_WAITING_FOR_SHARE = 'Stopped waiting. If that share finishes later
 /** Said when he stops a share that had not opened yet: it never will (review pass 2 of the report fixes, H2R-1). */
 const STOPPED_BEFORE_THE_SHARE_OPENED = 'Stopped. That share had not opened yet, so nothing was sent. Share again when you are ready.';
 
+/** N276b F3: how often the period is read again while approval waits for the download (offline ends the wait). */
+const REPORT_DOWNLOAD_WAIT_RECHECK_MS = 5_000;
+
+/** N276b F2: said once approval no longer waits for a download that could not be done. */
+function reportDownloadMissingNote(missing: string): string {
+  return `This device could not download ${missing} from the cloud; ` +
+    "the report may not include your other devices' latest changes.";
+}
+
+/** Open item 2.76: why approval waits while this device downloads the cloud's records after opening. */
+const REPORT_WAITS_FOR_DOWNLOAD = "This device is still downloading your other devices' latest changes. " +
+  'Approval waits until they are here; Settings › Sync Now gets them now.';
+
 /**
  * Approval waits for this device to catch up with the other device's changes
  * (whole-app audit A6 pass 9 M2), and says why (pass 10 L2): the other
@@ -1781,6 +1836,7 @@ function PIEReporterPreview({
   approvalMessage,
   approvalChecking,
   periodNotice,
+  downloadNote,
   periodNote,
   communicationPending,
   onStopWaiting,
@@ -1821,6 +1877,8 @@ function PIEReporterPreview({
   approvalChecking: boolean;
   /** The other device sent a later report: what happened, and what to do (A6 pass 7). */
   periodNotice: string;
+  /** What this device could not download from the cloud, approval no longer waiting for it (N276b F2). */
+  downloadNote: string;
   /** The other device's last report could not be checked (A6 pass 7). */
   periodNote: string;
   communicationPending: boolean;
@@ -2127,6 +2185,8 @@ function PIEReporterPreview({
       {periodNotice ? (
         <Text style={styles.reportPeriodNoticeText}>{periodNotice}</Text>
       ) : null}
+
+      {downloadNote ? <Text style={styles.reportPeriodNoticeText}>{downloadNote}</Text> : null}
 
       {!reportApproved || !reportApprovalAllowed ? (
         <Text style={styles.approvalBoundaryText}>
