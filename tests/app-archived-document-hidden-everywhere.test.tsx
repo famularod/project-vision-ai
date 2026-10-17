@@ -410,6 +410,8 @@ describe('an archived compliance document once the cloud keeps the mark (owner a
     await waitFor(() => expect(tree.queryAllByText('Archived (1)').length).toBe(1), COLD);
     await reachTheCloud(); // tried, with no signal
     expect(cloud.row('doc-permit')?.archived_at).toBeNull();
+    expect(tree.queryByText('No documents yet — upload your first document.')).toBeNull();
+    expect(tree.getByText('All documents are archived.')).toBeTruthy();
     await press(tree, tree.getByText('Archived (1)'));
     expect(tree.getByText('Hidden from Documents on this device. Waiting to reach the cloud: your other devices follow once it has.')).toBeTruthy();
 
@@ -699,6 +701,8 @@ describe('review of D1, L1 and L13: every list and count uses the one rule', () 
     // (the project page, an update's count) leaves it out too.
     await waitFor(() => expect(tree.queryByText('Grading permit.pdf')).toBeNull(), COLD);
     await waitFor(async () => expect((await card())?.isArchived).toBe(true), COLD);
+    expect(tree.queryByText('No documents yet — upload your first document.')).toBeNull();
+    expect(tree.getByText('All documents are archived.')).toBeTruthy();
     await press(tree, tree.getByText('Archived (1)'));
     expect(tree.getByText('Hidden from Documents on all your devices. Kept in the cloud.')).toBeTruthy();
 

@@ -4289,7 +4289,7 @@ function DocumentManagementWorkspace({
         setPreparedBytes(null);
         setPreparedFile(null);
       }
-      setNotice({ tone: 'danger', text: documentMutationMessage(error) });
+      setNotice({ tone: 'danger', text: documentMutationMessage(error, 'uploaded') });
     } finally {
       setUploading(false);
       setUploadProgress(null);
@@ -7675,9 +7675,9 @@ function WebFilePicker({
   );
 }
 
-function documentMutationMessage(error: unknown): string {
+function documentMutationMessage(error: unknown, action: 'uploaded' | 'deleted' = 'deleted'): string {
   if (error instanceof DAVEWebDocumentMutationError) return error.message;
-  return 'The document could not be deleted. Refresh the workspace and try again.';
+  return `The document could not be ${action}. Refresh the workspace and try again.`;
 }
 
 function documentReindexMessage(error: unknown): string {

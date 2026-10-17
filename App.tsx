@@ -17960,6 +17960,7 @@ function ProjectDocumentsScreen({
     );
   };
 
+  const archivedDocuments = buildMobileArchivedDocuments({ documents, referenceDocuments, projectNames, projectIdentities, archive });
   const listHeader = (<>
     <ProjectDocumentsHeader
       projectName={projectName}
@@ -17971,9 +17972,14 @@ function ProjectDocumentsScreen({
       onTakePhoto={onTakePhoto}
       showActions={sizeClass !== 'wide'}
     />
-    <ArchivedDocumentsSection documents={buildMobileArchivedDocuments({ documents, referenceDocuments, projectNames, projectIdentities, archive })} onRestore={archive.restore} />
+    <ArchivedDocumentsSection documents={archivedDocuments} onRestore={archive.restore} />
   </>);
-  const emptyState = workspaceDocuments.length === 0 ? (
+  const emptyState = workspaceDocuments.length === 0 && archivedDocuments.length > 0 ? (
+    <EmptyState
+      title="All documents are archived."
+      text="Open Archived to restore a document, or upload another document."
+    />
+  ) : workspaceDocuments.length === 0 ? (
     <EmptyState
       title="No documents yet — upload your first document."
       text="Documents can be linked to the project, an area, or a saved update without blocking photo capture, review, or saving."

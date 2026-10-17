@@ -236,4 +236,17 @@ describe('the web upload review asks about a task that was on an earlier schedul
     const row = prepared.scheduleItems.find(item => item.taskName === 'Paint')!;
     expect(prepared.pairingChoices).toEqual({ [row.id]: null });
   });
+  it('an unrecognized upload failure describes uploading and leaves the review available', async () => {
+    mockAuth.uploadDocument.mockRejectedValueOnce(new Error('unrecognized synthetic failure'));
+    const screen = render(<DesktopReadOnlyShell page="documents" />);
+    await chooseFile(screen, H());
+    fireEvent.press(screen.getByLabelText(SAME));
+    await pressUpload(screen);
+
+    expect(mockAuth.uploadDocument).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('The document could not be uploaded. Refresh the workspace and try again.')).toBeTruthy();
+    expect(screen.queryByText('The document could not be deleted. Refresh the workspace and try again.')).toBeNull();
+    expect(screen.getByText('Upload Reviewed Document')).toBeTruthy();
+  });
+
 });
