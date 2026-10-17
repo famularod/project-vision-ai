@@ -1,3 +1,4 @@
+import { reportWordingRequiresAppTextKey } from '../services/PIEReporter';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type {
@@ -580,13 +581,14 @@ export function ReportsScreen({
   // R232 review pass 1, R1: and the app writes the same report as when it went out (`appTextKey`). The fingerprint
   // alone said "sent" over a reworded field note in a project named with no Latin letter or digit ("Башня Север"), or
   // only "the", "building", "project": such a name's notes are not in it. A send recorded before Build 233 kept no
-  // key. Such a legacy send cannot prove equality when the project has no truth matching key.
+  // key. Such a legacy send cannot prove equality when the project has no truth matching key, or this writer restores
+  // captured-for notes / capitalizes Please actions (4.86 / 4.84) under unchanged report facts.
   const builtReportTextKey = useMemo(() => reportTextKey(builtReportDraft), [builtReportDraft]);
   const reportSourceCanRepresentSelectedProjects = selectedProjectNames.length > 0 &&
     selectedProjectNames.every(daveProjectTruthHasProjectKey);
   const sentReportWordsMatch = typeof previousReportSnapshot?.appTextKey === 'string'
     ? previousReportSnapshot.appTextKey === builtReportTextKey
-    : reportSourceCanRepresentSelectedProjects;
+    : reportSourceCanRepresentSelectedProjects && !reportWordingRequiresAppTextKey(builtReportDraft);
   const sentFromHereAt = snapshotScopeLoaded && !snapshotLoadFailed &&
     typeof previousReportSnapshot?.deliveredAt === 'string' &&
     ownReportSendTimes().has(previousReportSnapshot.deliveredAt) &&
@@ -1234,7 +1236,7 @@ export function ReportsScreen({
   // it again. Said until the owner approves it again, over an earlier notice
   // about a report that differed from it (this device's sync caught up).
   const alreadySentNotice = snapshotScopeLoaded && !reportApproved &&
-    (reportSourceCanRepresentSelectedProjects || sentReportWordsMatch) &&
+    ((reportSourceCanRepresentSelectedProjects && !reportWordingRequiresAppTextKey(builtReportDraft)) || sentReportWordsMatch) &&
     typeof previousReportSnapshot?.deliveredAt === 'string' &&
     sameReportSource(previousReportSnapshot.sourceFingerprint, reportSourceFingerprint) &&
     !ownReportSendTimes().has(previousReportSnapshot.deliveredAt)

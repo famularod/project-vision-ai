@@ -191,6 +191,7 @@ export type PIEWorkAreaUnderstanding = {
 
 /** Open item 7.62: one record an area's lines are made from. */
 export type PIEWorkAreaLineSource = Readonly<{
+  preservesCapturedFor?: boolean;
   evidenceId: string;
   /** Its words as a line prints them, compared without case or closing stop. */
   words: string;
@@ -210,6 +211,8 @@ export type PIEConstructionUnderstanding = {
 };
 
 export type PIEReportSourceEvidence = {
+  /** Authored field words, including the fused Latest update sentence; never machine boilerplate. */
+  preservesCapturedFor?: boolean;
   id: string;
   source:
     | 'runtime'
@@ -606,6 +609,7 @@ export function collectReportEvidence(
       evidence.push({
         id: `note-${update.id}`,
         source: 'note',
+        preservesCapturedFor: !noteWasGeneratedFromPhotoAnalysis,
         projectName: context.projectName,
         areaName: context.areaName,
         summary: cleanReportBulletText(update.notes),
@@ -666,10 +670,13 @@ export function collectReportEvidence(
     });
   }
   const runtimeChanged = writtenReportWhatChanged(runtime);
+  const latestWrittenUpdate = fieldUpdatesNewestFirst(runtime?.fusedEvidence?.userUpdateEvidence ?? [])[0];
   if (runtimeChanged && !isEmptyRuntimeSummary(runtimeChanged)) {
     evidence.push({
       id: 'runtime-what-changed',
       source: 'runtime',
+      preservesCapturedFor: Boolean(latestWrittenUpdate && /captured for/i.test(latestWrittenUpdate.notes) &&
+        updates.some(saved => saved.id === latestWrittenUpdate.id && saved.notes === latestWrittenUpdate.notes && !noteIsAcceptedPhotoSuggestion(saved))),
       projectName: input.currentUpdate?.projectName || selectedProjects[0] || '',
       areaName: input.currentUpdate?.selectedAreaName || '',
       summary: cleanReportBulletText(runtimeChanged),
@@ -822,7 +829,8 @@ export function buildConstructionUnderstanding(
     // same order, his field notes of none of the three kinds (item 4 part B).
     // Only verified construction evidence still COUNTS as progress above.
     const changed = items
-      .filter(item => isVerifiedConstructionProgressEvidence(item) || isPlainFieldNote(item))
+      .filter(item => isVerifiedConstructionProgressEvidence(item) || isPlainFieldNote(item) ||
+        (item.id === 'runtime-what-changed' && item.preservesCapturedFor && /^Latest update:/i.test(item.summary)))
       .map(item => cleanReportBulletText(item.summary))
       .filter(Boolean);
 
@@ -1802,7 +1810,7 @@ function buildReportBulletsFromUnderstanding(
   const progressKeys = new Set(area.progress.map(item => normalizeName(item.summary)));
   const printedKeys = new Set(chosen.map(bullet => normalizeName(bullet.text)));
   const filling = area.whatChanged
-    .filter(summary => summary && !progressKeys.has(normalizeName(summary)) && !shouldSuppressReportBullet(summary))
+    .filter(summary => summary && !progressKeys.has(normalizeName(summary)) && !shouldSuppressReportBullet(summary, preservesCapturedFor(area, summary)))
     .map(ensureSentence)
     .filter(text => {
       const key = normalizeName(text);
@@ -1842,6 +1850,7 @@ function lineWords(text: string) {
 function lineSourceOf(item: PIEReportSourceEvidence): PIEWorkAreaLineSource {
   return {
     evidenceId: item.id,
+    preservesCapturedFor: item.preservesCapturedFor,
     words: lineWords(cleanReportBulletText(item.summary)),
     updateId: item.sourceUpdateId?.trim() || null,
     photoId: item.photoId?.trim() ||
@@ -1935,7 +1944,7 @@ function linesAsBuild231ChoseThem(
   const nextSteps = actionItems.filter(item => !onlyFromTheSavedModel(item.sourceEvidenceIds));
 
   progressLines.slice(0, 3).forEach((summary, index) => {
-    if (!summary || shouldSuppressReportBullet(summary)) return;
+    if (!summary || shouldSuppressReportBullet(summary, preservesCapturedFor(area, summary))) return;
     const id = slug(`bullet-${area.id}-progress-${index}`);
     bullets.push({
       id,
@@ -2039,6 +2048,7 @@ function actionFromEvidence(item: PIEReportSourceEvidence) {
   return cleanReportBulletText(
     action
       .replace(/^next step:\s*/i, '')
+      .replace(/^please\s+([a-z]+)(?=\b)/i, (_prefix, word: string) => /^[a-z]+$/.test(word) ? word.charAt(0).toUpperCase() + word.slice(1) : word)
       .replace(/^please\s+/i, '')
       .replace(/\bowner\s*:?\s*[A-Z][A-Za-z]+(?:\s*\/\s*[A-Z][A-Za-z]+)?/i, '')
       .trim(),
@@ -3019,8 +3029,21 @@ function cleanReportBulletText(value: string) {
   return text;
 }
 
-function shouldSuppressReportBullet(value: string) {
-  return /location was captured|gps was captured|captured for|project area|evidence was fused|runtime indicates|no image references included/i.test(value);
+function preservesCapturedFor(area: PIEWorkAreaUnderstanding, summary: string) {
+  return area.lineSources?.some(source => source.preservesCapturedFor && source.words === lineWords(summary)) ?? false;
+}
+
+function shouldSuppressReportBullet(value: string, authoredCapturedFor = false) {
+  return /location was captured|gps was captured|project area|evidence was fused|runtime indicates|no image references included/i.test(value) ||
+    (!authoredCapturedFor && /captured for/i.test(value));
+}
+
+/** Legacy sends kept no app-text digest. These source words can now print differently under the same facts. */
+export function reportWordingRequiresAppTextKey(report: Pick<PIEReportDraft, 'sourceEvidence'>): boolean {
+  return report.sourceEvidence.some(item =>
+    (item.preservesCapturedFor && /captured for/i.test(item.summary)) ||
+    /^please\s+[a-z]+\b/i.test((item.actionRequired || item.summary).replace(/^next step:\s*/i, '')),
+  );
 }
 
 function isRiskText(value: string) {
