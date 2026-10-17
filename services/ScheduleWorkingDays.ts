@@ -48,8 +48,9 @@ export function scheduleWorkingDaysFromThrough(start: Date, finish: Date): numbe
  * (the critical path and float; the dates rescheduling gives).
  *
  * - A milestone has no length.
- * - A length typed in (or imported) is used as it is, to the nearest whole
- *   day and never less than one. It is never replaced by what the dates say.
+ * - A length typed in (or imported) is used exactly, including fractional
+ *   working days. Date-only rescheduling spans every occupied working day.
+ *   It is never replaced by what the dates say.
  * - With nothing typed, the dates give it: the working days from the start
  *   through the finish, never less than one (a task wholly on a weekend is
  *   still a day's work).
@@ -69,7 +70,7 @@ export function scheduleTaskLengthInWorkingDays(
     Number.isFinite(task.durationDays) &&
     task.durationDays > 0
   ) {
-    return Math.max(1, Math.round(task.durationDays));
+    return task.durationDays;
   }
   return start && finish && finish.getTime() >= start.getTime()
     ? Math.max(1, scheduleWorkingDaysFromThrough(start, finish))

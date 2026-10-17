@@ -167,6 +167,27 @@ describe('Ask ECOS on the phone and iPad', () => {
     expect(mockCloud.requests[0].signal.aborted).toBe(true);
   });
 
+  it.each([['request_failed',0],['answer_provider_unavailable',503],['unexpected_server_error',500]] as const)('issue3.19 real mobile request retry retains last verified turn after %s', async(code,status)=>{
+    const {result}=open();
+    await askIn(result);
+    await act(async()=>{mockCloud.requests[0].answer();});
+    await advance(0);
+    const receipt=answerSheet(result).answer.conversation;
+    await act(async()=>{answerSheet(result).onAskAnother();});
+    await act(async()=>{voice(result).onMemoryReady({transcript:'And the south side?'});});
+    await advance(0);
+    await act(async()=>{mockCloud.requests[1].refuse(code,status);});
+    await advance(0);
+    expect(answerSheet(result).loading).toBe(false);
+    await act(async()=>{answerSheet(result).onRetry();answerSheet(result).onRetry();});
+    await advance(0);
+    expect(mockCloud.requests).toHaveLength(3); // synchronous double press sends once
+    expect(mockCloud.requests[2].body).toMatchObject({conversationId:receipt.conversationId,priorTurnId:receipt.turnId,question:'And the south side?'});
+    await act(async()=>{mockCloud.requests[2].answer();});
+    await advance(0);
+    expect(answerSheet(result).answer.conversation.priorTurnId).toBe(receipt.turnId);
+  });
+
   it.each(['Stop', 'the time limit'])('does not show an answer that arrives after %s', async kind => {
     const { result } = open();
     await askIn(result);

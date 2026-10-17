@@ -45,22 +45,23 @@ export function isECOSAskStopped(error: unknown): boolean {
 }
 
 /**
- * Whether the conversation stands after a question failed, so that asking
- * again sends the same question after the same earlier turn.
- *
- * It stands when the app stopped waiting (isECOSAskStopped): nothing came
- * back. And it stands when the server ran out of time (review pass 1, L4):
- * the screen says "Your question is still here — try again", but Try Again
- * sent a follow-up as a new conversation with no earlier turn, so "And on
- * the south side?" went out as a question on its own. The request code marks
- * that failure (ECOSProjectQuestionError.serverRanOutOfTime).
- *
- * After any other failure the next question starts a new conversation, as
- * before.
+ * A failed attempt cannot advance the last verified turn. Connection and
+ * temporary server failures retain it for Try Again; context, authorization
+ * and malformed-response refusals still require a new conversation.
  */
 export function ecosAskConversationStands(error: unknown): boolean {
-  return isECOSAskStopped(error) ||
-    (error as { serverRanOutOfTime?: unknown } | null | undefined)?.serverRanOutOfTime === true;
+  if (isECOSAskStopped(error) || (error as { serverRanOutOfTime?: unknown } | null)?.serverRanOutOfTime === true) return true;
+  const { code, httpStatus } = (error || {}) as { code?: unknown; httpStatus?: unknown };
+  if (httpStatus === 401 || httpStatus === 403) return false;
+  if (typeof code === 'string' && (
+    code.startsWith('conversation_') || code === 'prior_turn_id_invalid' ||
+    ['signed_out', 'unauthorized', 'forbidden', 'project_access_denied', 'project_reference_mismatch',
+      'proof_authority_permission_denied', 'proof_authority_identity_mismatch'].includes(code)
+  )) return false;
+  return (typeof code === 'string' && ['request_failed', 'answer_provider_unavailable', 'answer_provider_failed',
+    'answer_research_unavailable', 'answer_timed_out', 'ai_operation_control_unavailable', 'question_rate_limited'].includes(code)) ||
+    (typeof httpStatus === 'number' && (httpStatus === 0 || httpStatus >= 500)) ||
+    (error instanceof TypeError && code === undefined);
 }
 
 /** Whether the server refused because it is still working on this same question from an earlier ask. */
@@ -161,6 +162,8 @@ export function createECOSAskWait(deadlineMs: number = ECOS_ASK_DEADLINE_MS) {
         if (current === attempt) current = null;
       }
     },
+    /** Synchronous guard for repeated UI submits before loading state renders. */
+    isRunning() { return current !== null; },
     /** Stops waiting now. The question can be asked again as the same request. */
     cancel() {
       current?.stop('question_cancelled', true);

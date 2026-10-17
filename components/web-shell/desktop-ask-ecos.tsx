@@ -73,7 +73,7 @@ export function DesktopAskECOSWorkspace({
 
   const submit = async (nextQuestion = question) => {
     const cleanQuestion = nextQuestion.replace(/\s+/g, ' ').trim();
-    if (!projectId || !projectName || cleanQuestion.length < 3 || loading) return;
+    if (!projectId || !projectName || cleanQuestion.length < 3 || loading || askWait.isRunning()) return;
     setQuestion(cleanQuestion);
     setAnswer(null);
     setError(null);
@@ -96,8 +96,7 @@ export function DesktopAskECOSWorkspace({
       setAnswer(nextAnswer);
     } catch (reason) {
       if (!turn.isCurrent()) return;
-      // Stopped or timed out, by the app or by the server: the conversation
-      // stands, and asking again sends this question after the same earlier turn.
+      // Temporary failures keep the last verified conversation, and asking again sends this question after the same earlier turn.
       if (!ecosAskConversationStands(reason)) turn.accept(null);
       setError(reason instanceof Error ? reason.message : 'Ask ECOS could not complete the question.');
     } finally {

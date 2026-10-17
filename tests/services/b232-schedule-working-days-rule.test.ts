@@ -114,9 +114,9 @@ describe('a task\'s length', () => {
     expect(scheduleTaskLengthInWorkingDays({ isMilestone: true, durationDays: 5 }, friday, monday)).toBe(0);
   });
 
-  it('a length typed in is used as typed, to the nearest whole day and never less than one', () => {
+  it('a length typed in is used exactly, including fractional working days', () => {
     expect([3, 1, 2.5, 0.4, 2_600].map(durationDays => scheduleTaskLengthInWorkingDays({ durationDays }, friday, monday)))
-      .toEqual([3, 1, 3, 1, 2_600]);
+      .toEqual([3, 1, 2.5, 0.4, 2_600]);
   });
 
   it('with nothing typed, its dates give it: the working days from its start through its finish, never less than one', () => {
@@ -205,4 +205,15 @@ describe('the limits come before any counting', () => {
     expect(atTheLimit.issues).toEqual([]);
     expect(atTheLimit.items.find(item => item.id === 'warranty')).toMatchObject({ startDate: '2026-10-26', durationDays: 2_600 });
   });
+});
+
+describe('issue4.68: fractional duration is retained through dependency dates and analytics',()=>{
+ it.each([[0.4,'2026-10-09'],[1.1,'2026-10-12'],[2.5,'2026-10-13'],[3.1,'2026-10-14']] as const)('%s workdays occupy the final weekday %s across a weekend',(durationDays,finishDate)=>{
+  const tasks=[task('before',{startDate:'2026-10-08',finishDate:'2026-10-08',durationDays:1}),task('fraction',{startDate:'2026-10-05',finishDate:'2026-10-05',durationDays,dependencies:[{predecessorItemId:'before',type:'FS'}]})];
+  const preview=previewVitruviusFinishToStartSchedule(tasks);
+  expect(preview.safeToApply).toBe(true);
+  expect(preview.items.find(item=>item.id==='fraction')).toMatchObject({durationDays,startDate:'2026-10-09',finishDate});
+  const analysis=analyzeVitruviusCriticalPath(tasks);
+  expect(analysis.items.find(item=>item.itemId==='fraction')?.durationDays).toBe(durationDays);
+ });
 });

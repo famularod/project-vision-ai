@@ -196,7 +196,10 @@ export function previewVitruviusFinishToStartSchedule(
       }
       const nextFinish = item.isMilestone
         ? requiredStart
-        : addWorkingDays(requiredStart, Math.max(0, durationDays - 1));
+        : addWorkingDays(requiredStart, Math.max(0, Math.ceil(durationDays) - 1));
+      // Dates have day precision: a 2.5-day task occupies three working
+      // dates, including its start. Preserve 2.5 as its length; only the
+      // displayed finish uses the last occupied day (weekends skipped).
       if (!scheduleDayIsSupported(requiredStart) || !scheduleDayIsSupported(nextFinish)) {
         issues.push(Object.freeze({
           code: 'invalid_task_date',

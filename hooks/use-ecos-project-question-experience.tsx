@@ -103,6 +103,7 @@ export function useECOSProjectQuestionExperience({
   }, [contextualProjectName, dismissResult]);
 
   const ask = useCallback(async (question: string) => {
+    if (askWait.isRunning()) return;
     const selectedProjectName = projectName.trim();
     const cleanQuestion = question.replace(/\s+/g, ' ').trim();
     if (!selectedProjectName || !projectId) {
@@ -140,8 +141,7 @@ export function useECOSProjectQuestionExperience({
         : current);
     } catch (error) {
       if (requestGeneration.current !== generation || !turn.isCurrent()) return;
-      // Stopped or timed out, by the app or by the server: the conversation
-      // stands, and Try Again sends this question after the same earlier turn.
+      // Temporary failures keep the last verified conversation, and Try Again sends this question after the same earlier turn.
       if (!ecosAskConversationStands(error)) turn.accept(null);
       setResult(current => current?.requestGeneration === generation
         ? { ...current, loading: false, error: error instanceof Error ? error.message : 'Ask ECOS could not complete the question.', canRetry: ecosAskCanRetry(error) }

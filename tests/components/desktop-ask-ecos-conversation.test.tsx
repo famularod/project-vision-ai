@@ -62,3 +62,18 @@ it.each(['request_failed','answer_provider_unavailable'])('issue3.19 desktop ret
  expect(onAsk).toHaveBeenCalledTimes(3);
  expect(onAsk.mock.calls[2][0]).toMatchObject({conversationId:onAsk.mock.calls[0][0].conversationId,priorTurnId:turnId,question:'And canopy C?',projectId:'one'});
 });
+
+it('issue3.19 synchronous desktop double submit sends once and unmount aborts the pending request',async()=>{
+ const onAsk=jest.fn((_input,control)=>new Promise<never>(()=>undefined));
+ const screen=render(<DesktopAskECOSWorkspace ownerKey="owner" projectId="one" projectName="Project One" onAsk={onAsk}/>);
+ fireEvent.changeText(screen.getByLabelText('Project question for ECOS'),'And canopy C?');
+ let button=screen.getByText('Ask ECOS');
+ while(typeof button.props.onPress!=='function' && button.parent) button=button.parent;
+ const press=button.props.onPress as ()=>void;
+ expect(typeof press).toBe('function');
+ await act(async()=>{press();press();});
+ expect(onAsk).toHaveBeenCalledTimes(1);
+ const signal=onAsk.mock.calls[0][1]!.signal;
+ screen.unmount();
+ expect(signal.aborted).toBe(true);
+});
