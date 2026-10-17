@@ -1526,6 +1526,13 @@ function projectMatches(projectKey: string, value: string | null | undefined) {
   return Boolean(valueKey && valueKey === projectKey);
 }
 
+/** Whether this truth builder can represent a project's name in its source matching key.
+ * An empty key omits that project's facts; it cannot prove legacy report content equality.
+ */
+export function daveProjectTruthHasProjectKey(projectName: string): boolean {
+  return normalizedKey(projectName).length > 0;
+}
+
 function normalizedKey(value: string) {
   return value.toLowerCase().replace(/\b(building|project|the)\b/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim();
 }
