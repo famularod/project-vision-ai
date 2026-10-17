@@ -1,3 +1,4 @@
+import { scheduleEditWithPriorityNoted } from '../../services/ScheduleDateEdit';
 /** Issue 2.8: a master omits Roof, a lookahead adds it, and the next master lists it.
  * Synthetic CSV through production import/review/activation APIs and UI choice helpers.
  * The earlier identity is offered explicitly; no hidden facts are guessed or moved unasked.
@@ -64,7 +65,25 @@ const L=schedule('L','2026-09-15T12:00:00.000Z','lookahead');
 const M2=schedule('M2','2026-09-22T12:00:00.000Z');
 const start=approve(EMPTY,M0,[FR,RO,DR]);
 const old=one(start,'Roof');
-const edited={...start,items:start.items.map(i=>i.id===old.id?{...i,percentComplete:40,notes:'Deck delivered',owner:'Lee',progressSource:'project_manager' as const,progressConfirmedAt:'2026-09-02T12:00:00.000Z',projectControls:reviseProjectControls({current:i.projectControls,patch:{priority:'High'},actor:'David',now:'2026-09-02T12:00:00.000Z'})}:i)};
+const EDITED_AT = '2026-09-02T12:00:00.000Z';
+const edited: State = {
+  ...start,
+  items: start.items.map(item => item.id === old.id ? {
+    ...item,
+    ...scheduleEditWithPriorityNoted(item, { priority: 'Low' }, EDITED_AT),
+    percentComplete: 40,
+    notes: 'Deck delivered',
+    owner: 'Lee',
+    progressSource: 'project_manager',
+    progressConfirmedAt: EDITED_AT,
+    projectControls: reviseProjectControls({
+      current: item.projectControls,
+      patch: { approvalStatus: 'Pending', estimatedScheduleImpactDays: 2 },
+      actor: 'David',
+      now: EDITED_AT,
+    }),
+  } : item),
+};
 const dropped=approve(edited,M1,[FR,DR]);
 const relisted=approve(dropped,L,['Roof,Alpha,Lot,10/16/2026,10/24/2026,']);
 const incoming=rows(M2,[FR,'Roof,Alpha,Lot,10/20/2026,10/28/2026,',DR]);
@@ -92,6 +111,9 @@ function choicesForOld() {
 }
 it('review UI choices preserve priority and lineage as well as text',()=>{
  const result=approve(relisted,M2,[FR,'Roof,Alpha,Lot,10/20/2026,10/28/2026,',DR],'Alpha',choicesForOld());
+ expect(one(result,'Roof').priority).toBe('Low');
+ expect(one(result,'Roof').prioritySetByHand).toEqual({ priority: 'Low', at: EDITED_AT });
+ expect(one(result,'Roof').projectControls).toMatchObject({ approvalStatus: 'Pending', estimatedScheduleImpactDays: 2, updatedBy: 'David', updatedAt: EDITED_AT });
  expect(one(result,'Roof').projectControls).toEqual(edited.items.find(i=>i.id===old.id)!.projectControls);
  expect(one(result,'Roof').revisedFromTaskIds).toContain(old.id);
 });
