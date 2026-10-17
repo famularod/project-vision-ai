@@ -16,6 +16,7 @@ import {
 import type { PIEScheduleImportBatch } from './PIEScheduleImportBatch';
 import { scheduleItemImportBatchIds } from './ScheduleImportProvenance';
 import { sameScheduleCalendarDay } from './ScheduleCalendarDay';
+import { canonicalScheduleItemJson } from './ScheduleItemCloudAcknowledgement';
 import { scheduleEditWithDateChangedAlone } from './ScheduleDateEdit';
 import { SCHEDULE_PROGRESS_FIELDS, scheduleItemAsLastSetOnItsOtherRow } from './ScheduleItemEditBase';
 import {
@@ -1049,6 +1050,71 @@ export function scheduleLookaheadDeleteMadeOnApproval(
 }
 
 /**
+ * Two first lookaheads approved from the same master copy: one gave a percent, the other explicitly left progress
+ * alone. A blank cannot undo that file's statement. This is deliberately narrower than the withdrawn N213e time
+ * rule: no earlier lookaheads, master restatements, deletes, carried/manager progress or other edits on either copy.
+ * The recorded dates and note still follow the existing merge. No clock decides whose percent wins here: exactly
+ * one file stated one. Unknown legacy entries (undefined) and a stated zero are never treated as blank.
+ */
+function progressFromConcurrentFileOnlyLookahead(
+  merged: ScheduleItem,
+  before: ScheduleItem,
+  kept: ScheduleItem,
+  other: ScheduleItem,
+): Pick<ScheduleItem, 'status' | 'percentComplete'> | null {
+  const same = (one: unknown, two: unknown) => canonicalScheduleItemJson(one ?? null) === canonicalScheduleItemJson(two ?? null);
+  const numeric = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) &&
+    value >= 0 && value <= 100 && Number.isInteger(value);
+  if (!key(before.id) || !key(before.projectName) || !key(before.importBatchId) || !key(before.sourceDocumentId) ||
+      timeOf(before.importedAt) <= 0 || before.lookaheadOverlay || before.masterDatesOfRow ||
+      (before.alsoImportedInBatchIds?.length ?? 0) > 0 || !numeric(before.percentComplete) ||
+      !same(reconcileScheduleProgress(before.status, before.percentComplete), { status: before.status, percentComplete: before.percentComplete })) return null;
+  // Import-owned rows without a source field are the original file's progress. Any evidence of a manager's word,
+  // a give-back/carry, or a subsequent master makes this a different problem, even if the visible number matches.
+  if (before.progressSource != null && before.progressSource !== 'schedule_import') return null;
+  if (before.progressConfirmedBy != null && before.progressConfirmedBy !== SCHEDULE_UPDATE_PROGRESS_CONFIRMER) return null;
+  if ([before.completionVerification, before.progressJudgment, before.managersPercentUnderFile,
+    before.managersPercentUnderFileJudgedAt, before.progressCarriedFrom, before.progressStandsSince,
+    before.progressUndone, before.fileProgressPeak, before.fileProgressLast].some(value => value != null)) return null;
+  const keptNote = overlayOf(kept);
+  const otherNote = overlayOf(other);
+  if (keptNote?.lookaheads.length !== 1 || otherNote?.lookaheads.length !== 1) return null;
+  const blank = keptNote.lookaheads[0];
+  const stated = otherNote.lookaheads[0];
+  if (blank.percentComplete !== null || blank.percentStated || !numeric(stated.percentComplete) ||
+      stated.percentStated || stated.percentComplete === before.percentComplete ||
+      !key(blank.batchId) || !key(stated.batchId) || key(blank.batchId) === key(stated.batchId) ||
+      [blank, stated].some(entry => key(entry.batchId) === key(before.importBatchId))) return null;
+  const noteBefore = {
+    masterStartDate: before.startDate, masterFinishDate: before.finishDate,
+    ...managersStatement(before), masterFilePercentComplete: before.percentComplete,
+  };
+  const entryFields = new Set(['batchId', 'startDate', 'finishDate', 'percentComplete', 'importedAt', 'approvedAt']);
+  const changedByApproval = new Set(['startDate', 'finishDate', 'status', 'percentComplete', 'updatedAt', 'lookaheadOverlay', 'alsoImportedInBatchIds']);
+  const sameExcept = (one: ScheduleItem, two: ScheduleItem, except: ReadonlySet<string>) => {
+    const a = one as unknown as Record<string, unknown>;
+    const b = two as unknown as Record<string, unknown>;
+    return [...new Set([...Object.keys(a), ...Object.keys(b)])].every(field => except.has(field) || same(a[field], b[field]));
+  };
+  for (const [item, note, entry] of [[kept, keptNote, blank], [other, otherNote, stated]] as const) {
+    const { lookaheads: _entries, ...notedBefore } = note;
+    if (!same(notedBefore, noteBefore)) return null;
+    if (!sameExcept(item, before, changedByApproval) || !sameDates(item, entry) ||
+        timeOf(entry.importedAt) <= 0 || (entry.approvedAt !== undefined && timeOf(entry.approvedAt) <= 0) ||
+        Object.keys(entry).some(field => !entryFields.has(field)) ||
+        !same(item.alsoImportedInBatchIds, [entry.batchId])) return null;
+  }
+  // Source/status/confirmation and every other progress companion are unchanged from the proven base. Only the
+  // numeric file's status and percent differ, so taking those two together preserves the whole progress provenance.
+  if (!same(kept.percentComplete, before.percentComplete) || !same(kept.status, before.status) ||
+      !same(other.percentComplete, stated.percentComplete) ||
+      !same(reconcileScheduleProgress(other.status, other.percentComplete), { status: other.status, percentComplete: other.percentComplete }) ||
+      !sameExcept(merged, kept, new Set(['updatedAt', 'alsoImportedInBatchIds'])) ||
+      !sameDates(merged, blank)) return null;
+  return { status: other.status, percentComplete: other.percentComplete };
+}
+
+/**
  * Open item 2.13 (Medium, older: Build 232 and every build before; 14 Oct 2026). Two lookaheads that both move a task
  * were approved apart: one on the phone, one on the iPad with no signal. Where the two approvals met (the second
  * device's whole copy going up over the cloud's row), both copies had changed the task's lookahead note, so the sync
@@ -1068,7 +1134,7 @@ export function scheduleLookaheadDeleteMadeOnApproval(
  * not type it before the other copy's lookahead was approved, that entry comes in with no percent, as one device clears
  * it at the next file, so a delete going back to it gives his percent (as 6b066e9a gave it), not the lookahead's.
  *
- * The task's percent is the merge's, as it was before this rule (N213e, 14 Oct 2026, the coordinator's decision after
+ * Except for the bounded file-only pair above, the task's percent is the merge's (N213e, 14 Oct 2026, the decision after
  * review pass 6's W6-1: c770d34e's part B, W3-1's question and W4-1 / W5-1's time rule are taken out; their shapes go
  * to the percent stage, 2.3 / 2.67). Null, and the merged copy goes as before, for any other copy (no copy it started
  * from, a note neither copy changed that way, or nothing to add or take off).
@@ -1111,7 +1177,8 @@ export function scheduleLookaheadApprovalsOfBoth(
   const placed = byApproval ? own.flatMap(mine => [...theirs.filter(entry => slotOf(entry) === mine), mine]) : [...theirs, ...own];
   const lookaheads = [...note.lookaheads.slice(0, first), ...placed]
     .filter(entry => !dropped.includes(key(entry.batchId)));
-  return withOverlay(merged, { ...note, lookaheads });
+  const progress = progressFromConcurrentFileOnlyLookahead(merged, before, kept.item, other.item);
+  return withOverlay(progress ? { ...merged, ...progress } : merged, { ...note, lookaheads });
 }
 
 /**

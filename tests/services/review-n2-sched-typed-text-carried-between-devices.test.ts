@@ -7642,6 +7642,17 @@ describe('Open item 2.13: two lookaheads approved apart on two devices: the note
     percentStageOrOneDevice({ afterApprovals: apart.afterApprovals, end: apart.end }, { afterApprovals: inOrder.afterApprovals, end: inOrder.end });
   });
 
+  describe.each(['the phone\'s first, the iPad\'s later', 'the iPad\'s first, the phone\'s later'] as Order[])('file-only percent carry: %s', order => {
+    it.each(['Full Sync and restart', 'lost upload answer and retry'])('%s retains the stated 70%% through deletion of the blank lookahead', async mode => {
+      const [pa, pb] = order.startsWith('the phone') ? ['70', ''] : ['', '70'];
+      const inOrder = await steps(order, pa, pb, true);
+      const apart = await steps(order, pa, pb, false, mode === 'Full Sync and restart', mode === 'lost upload answer and retry');
+      expect(apart.afterApprovals.places.map(place => place[0].percent)).toEqual([70, 70, 70]);
+      expect(apart.end.places.map(place => place[0].percent)).toEqual([70, 70, 70]);
+      percentStageOrOneDevice({ afterApprovals: apart.afterApprovals, end: apart.end }, { afterApprovals: inOrder.afterApprovals, end: inOrder.end });
+    });
+  });
+
   it('a lookahead the phone deleted while the iPad, with no signal and not having heard, approved another one: the deleted one is not brought back, as one device in order', async () => {
     const L1 = scheduleDoc('LOOKAHEAD N213 G1', '2026-09-09T12:00:00.000Z', 'lookahead');
     const L2 = scheduleDoc('LOOKAHEAD N213 G2', '2026-09-10T10:00:00.000Z', 'lookahead');
@@ -8346,25 +8357,12 @@ describe('W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each
  * and after the delete (6b066e9a's, compared in runs-n213e/S01, S02); in everything else (dates, the note, cards,
  * nothing waiting, in all three places) each still ends as one device. Every test not listed: exactly as one device.
  */
+// 17 Oct 2026: the proven two-first-approval/file-only pair now uses the real one-device oracle: the two N213
+// mirrors, six W3 cases and three W5 cases (11 of the original 34). The other 23 remain known wrong outcomes;
+// retaining them here protects against changing unrelated behavior while the wider percent stage is still open.
 const PERCENT_STAGE: Record<string, number[]> = {
-  // one device 70/70%
-  "Open item 2.13: two lookaheads approved apart on two devices: the note names both, and deleting the newer one goes back to the older one the phone's first, the iPad's later the older states 70%, the newer none: as one device doing the steps in order, the note names both, then the task goes back to the older lookahead's dates and percent": [0, 0],
-  // one device 70/70%
-  "Open item 2.13: two lookaheads approved apart on two devices: the note names both, and deleting the newer one goes back to the older one the iPad's first, the phone's later the older states 70%, the newer none: as one device doing the steps in order, the note names both, then the task goes back to the older lookahead's dates and percent": [0, 0],
   // one device 0%
   "Open item 2.13: two lookaheads approved apart on two devices: the note names both, and deleting the newer one goes back to the older one a lookahead the phone deleted while the iPad, with no signal and not having heard, approved another one: the deleted one is not brought back, as one device in order": [70],
-  // one device 70/70%
-  "W3-1 (2.13, part B): two lookaheads approved apart: the newer one's percent stands, even the one the task already had the phone's A older, the iPad's B newer from 0%, A states 70% (above the start), B states none: as one device doing the steps in order, after the approvals and after the newer is deleted": [0, 0],
-  // one device 70/70%
-  "W3-1 (2.13, part B): two lookaheads approved apart: the newer one's percent stands, even the one the task already had the phone's A older, the iPad's B newer from 40%, A states 70% (above the start), B states none: as one device doing the steps in order, after the approvals and after the newer is deleted": [40, 40],
-  // one device 20/20%
-  "W3-1 (2.13, part B): two lookaheads approved apart: the newer one's percent stands, even the one the task already had the phone's A older, the iPad's B newer from 40%, A states 20% (below the start), B states none: as one device doing the steps in order, after the approvals and after the newer is deleted": [40, 40],
-  // one device 80/80%
-  "W3-1 (2.13, part B): two lookaheads approved apart: the newer one's percent stands, even the one the task already had the iPad's B older, the phone's A newer from 0%, A states none, B states 80% (above the start): as one device doing the steps in order, after the approvals and after the newer is deleted": [0, 0],
-  // one device 80/80%
-  "W3-1 (2.13, part B): two lookaheads approved apart: the newer one's percent stands, even the one the task already had the iPad's B older, the phone's A newer from 40%, A states none, B states 80% (above the start): as one device doing the steps in order, after the approvals and after the newer is deleted": [40, 40],
-  // one device 10/10%
-  "W3-1 (2.13, part B): two lookaheads approved apart: the newer one's percent stands, even the one the task already had the iPad's B older, the phone's A newer from 40%, A states none, B states 10% (below the start): as one device doing the steps in order, after the approvals and after the newer is deleted": [40, 40],
   // one device 70/70%
   "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the iPad (no signal) holds the pair from 0%, S older than both states 70%, P1 none, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [0, 0],
   // one device 70/70%
@@ -8397,12 +8395,6 @@ const PERCENT_STAGE: Record<string, number[]> = {
   "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the phone holds the pair from 40%, S between them states 70%, P1 20%, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [20, 20],
   // one device 70/70%
   "W4-1 / W4-2 (2.13, parts B and A): the newest lookahead that gave a percent stands; his own percent typed after an older lookahead stands at its delete W4-1: three lookaheads approved apart, two of them on one device the phone holds the pair from 40%, S between them states 70%, P1 none, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [40, 40],
-  // one device 70/70%
-  "W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each was approved, not when its file was read in W5-1: two lookaheads, each file read in on one device and approved in the other order the phone's A read in first, approved last from 0%, A states none, B states 70%, then the last approved deleted: as one device doing the steps in order": [0, 0],
-  // one device 70/70%
-  "W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each was approved, not when its file was read in W5-1: two lookaheads, each file read in on one device and approved in the other order the iPad's A read in first, approved last from 0%, A states none, B states 70%, then the last approved deleted: as one device doing the steps in order": [0, 0],
-  // one device 70/70%
-  "W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each was approved, not when its file was read in W5-1: two lookaheads, each file read in on one device and approved in the other order A read in and approved first (as before) from 0%, A states 70%, B states none, then the last approved deleted: as one device doing the steps in order": [0, 0],
   // one device 70/70%
   "W5-1 / W5-2 (2.13): lookaheads approved apart are ordered by when each was approved, not when its file was read in W5-1 in S-2's placing: the other device's lookahead read in before the pair, approved between them the iPad (no signal) holds the pair S states 70%, P1 0%, P2 none: as one device doing the steps in order, after the approvals and after the newest is deleted": [0, 0],
   // one device 70/70%
