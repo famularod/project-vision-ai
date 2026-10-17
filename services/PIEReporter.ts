@@ -192,6 +192,8 @@ export type PIEWorkAreaUnderstanding = {
 /** Open item 7.62: one record an area's lines are made from. */
 export type PIEWorkAreaLineSource = Readonly<{
   preservesCapturedFor?: boolean;
+  /** Exact authored span protected from machine wording cleanup, never an unverified runtime sentence. */
+  preservedCapturedForText?: string;
   evidenceId: string;
   /** Its words as a line prints them, compared without case or closing stop. */
   words: string;
@@ -213,6 +215,8 @@ export type PIEConstructionUnderstanding = {
 export type PIEReportSourceEvidence = {
   /** Authored field words, including the fused Latest update sentence; never machine boilerplate. */
   preservesCapturedFor?: boolean;
+  /** Exact authored span protected from machine wording cleanup, never an unverified runtime sentence. */
+  preservedCapturedForText?: string;
   id: string;
   source:
     | 'runtime'
@@ -601,6 +605,8 @@ export function collectReportEvidence(
     const context = reportContextForUpdate(update, scheduleItems, selectedProjects.length > 1);
     // The rule the report's fingerprint reads too (ReportWrittenFacts, HIGH item 1: F6).
     const noteWasGeneratedFromPhotoAnalysis = noteIsAcceptedPhotoSuggestion(update);
+    const authoredNote = !noteWasGeneratedFromPhotoAnalysis && /captured for/i.test(update.notes)
+      ? update.notes.replace(/\s+/g, ' ').trim() : undefined;
 
     if (
       update.notes.trim() &&
@@ -610,9 +616,10 @@ export function collectReportEvidence(
         id: `note-${update.id}`,
         source: 'note',
         preservesCapturedFor: !noteWasGeneratedFromPhotoAnalysis,
+        preservedCapturedForText: authoredNote,
         projectName: context.projectName,
         areaName: context.areaName,
-        summary: cleanReportBulletText(update.notes),
+        summary: cleanReportBulletText(update.notes.replace(/\s+/g, ' ').trim(), authoredNote),
         confidence: isUnclearText(update.notes) ? 'low' : 'medium',
         sourceUpdateId: update.id,
       });
@@ -669,18 +676,29 @@ export function collectReportEvidence(
       status: situation.situationReadiness.readiness,
     });
   }
-  const runtimeChanged = writtenReportWhatChanged(runtime);
-  const latestWrittenUpdate = fieldUpdatesNewestFirst(runtime?.fusedEvidence?.userUpdateEvidence ?? [])[0];
-  if (runtimeChanged && !isEmptyRuntimeSummary(runtimeChanged)) {
+  const fused = runtime?.fusedEvidence;
+  const latestWrittenUpdate = fieldUpdatesNewestFirst(fused?.userUpdateEvidence ?? [])[0];
+  // Only the exact fused quote of this selected authored note is protected. An arbitrary runtime summary,
+  // an accepted provider suggestion, and the photo/schedule suffixes cannot acquire authorship this way.
+  const authoredLatest = fused?.photoEvidence && fused.scheduleEvidence && latestWrittenUpdate &&
+    /captured for/i.test(latestWrittenUpdate.notes ?? '') &&
+    updates.some(saved => saved.id === latestWrittenUpdate.id && saved.notes === latestWrittenUpdate.notes && !noteIsAcceptedPhotoSuggestion(saved))
+      ? whatChangedForWrittenReport({ userUpdateEvidence: [latestWrittenUpdate], photoEvidence: [], scheduleEvidence: [] }).replace(/\s+/g, ' ').trim()
+      : undefined;
+  const rawRuntimeChanged = writtenReportWhatChanged(runtime)?.replace(/\s+/g, ' ').trim();
+  const runtimeChanged = authoredLatest && rawRuntimeChanged && shouldSuppressReportBullet(rawRuntimeChanged, authoredLatest)
+    ? authoredLatest : rawRuntimeChanged;
+  if (runtimeChanged && (authoredLatest || !isEmptyRuntimeSummary(runtimeChanged))) {
+    const areaWords = writtenReportWhatChanged(runtime, { taskDate: false })?.replace(/\s+/g, ' ').trim() || runtimeChanged;
     evidence.push({
       id: 'runtime-what-changed',
       source: 'runtime',
-      preservesCapturedFor: Boolean(latestWrittenUpdate && /captured for/i.test(latestWrittenUpdate.notes ?? '') &&
-        updates.some(saved => saved.id === latestWrittenUpdate.id && saved.notes === latestWrittenUpdate.notes && !noteIsAcceptedPhotoSuggestion(saved))),
+      preservesCapturedFor: Boolean(authoredLatest),
+      preservedCapturedForText: authoredLatest,
       projectName: input.currentUpdate?.projectName || selectedProjects[0] || '',
       areaName: input.currentUpdate?.selectedAreaName || '',
-      summary: cleanReportBulletText(runtimeChanged),
-      workAreaNameFrom: cleanReportBulletText(writtenReportWhatChanged(runtime, { taskDate: false }) || runtimeChanged),
+      summary: cleanReportBulletText(runtimeChanged, authoredLatest),
+      workAreaNameFrom: cleanReportBulletText(authoredLatest && shouldSuppressReportBullet(areaWords, authoredLatest) ? authoredLatest : areaWords, authoredLatest),
       confidence: 'medium',
     });
   }
@@ -696,7 +714,7 @@ export function collectReportEvidence(
       .filter(item => item.source !== 'gps')
       .filter(item => item.summary.trim())
       .filter(item => !isIncidentalReportEvidence(item))
-      .filter(item => !containsGenericAiWording(item.summary)),
+      .filter(item => !containsGenericAiWording(item.preservedCapturedForText ? item.summary.replace(item.preservedCapturedForText, '') : item.summary)),
   );
 }
 
@@ -755,7 +773,7 @@ function isIncidentalReportEvidence(item: PIEReportSourceEvidence) {
   // photo's analysis sees in passing (a dog, a desk, a chair). A note he
   // typed with such a word and no construction word ("Conference table and
   // chairs were delivered to the trailer.") was dropped here, unseen.
-  if (!['photo', 'runtime'].includes(item.source)) return false;
+  if (!['photo', 'runtime'].includes(item.source) || item.preservedCapturedForText) return false;
   return isIncidentalVisualObservation(item.summary);
 }
 
@@ -796,14 +814,14 @@ export function buildConstructionUnderstanding(
     const progress = items
       .filter(isVerifiedConstructionProgressEvidence)
       .map(item => ({
-        summary: cleanReportBulletText(item.summary),
+        summary: cleanReportBulletText(item.summary, item.preservedCapturedForText),
         sourceEvidenceIds: [item.id],
       }))
       .filter(item => item.summary);
     const issues = items
       .filter(item => item.source === 'issue' || item.source === 'safety' || isRiskText(item.summary))
       .map(item => ({
-        summary: cleanReportBulletText(item.summary),
+        summary: cleanReportBulletText(item.summary, item.preservedCapturedForText),
         severity: item.source === 'safety' || classifyDAVEBlocker(item.summary) === 'blocked'
           ? 'high' as const
           : 'medium' as const,
@@ -831,7 +849,7 @@ export function buildConstructionUnderstanding(
     const changed = items
       .filter(item => isVerifiedConstructionProgressEvidence(item) || isPlainFieldNote(item) ||
         (item.id === 'runtime-what-changed' && item.preservesCapturedFor && /^Latest update:/i.test(item.summary)))
-      .map(item => cleanReportBulletText(item.summary))
+      .map(item => cleanReportBulletText(item.summary, item.preservedCapturedForText))
       .filter(Boolean);
 
     const printedName = printedNameOfFiledWorkArea(areaName, items);
@@ -1585,7 +1603,7 @@ export function buildReportRisks(
       id: slug(`risk-${item.id}`),
       projectName: item.projectName,
       areaName: cleanReportWorkAreaName(item.projectName, item.areaName, item.workAreaNameFrom ?? item.summary),
-      summary: cleanReportBulletText(item.summary),
+      summary: cleanReportBulletText(item.summary, item.preservedCapturedForText),
       severity:
         item.source === 'safety' ||
         classifyDAVEBlocker(item.summary) === 'blocked'
@@ -1851,7 +1869,8 @@ function lineSourceOf(item: PIEReportSourceEvidence): PIEWorkAreaLineSource {
   return {
     evidenceId: item.id,
     preservesCapturedFor: item.preservesCapturedFor,
-    words: lineWords(cleanReportBulletText(item.summary)),
+    preservedCapturedForText: item.preservedCapturedForText,
+    words: lineWords(cleanReportBulletText(item.summary, item.preservedCapturedForText)),
     updateId: item.sourceUpdateId?.trim() || null,
     photoId: item.photoId?.trim() ||
       (item.id.startsWith(CONFIRMED_PHOTO_NOTE_ID) ? item.id.slice(CONFIRMED_PHOTO_NOTE_ID.length) : null),
@@ -2052,6 +2071,7 @@ function actionFromEvidence(item: PIEReportSourceEvidence) {
       .replace(/^please\s+/i, '')
       .replace(/\bowner\s*:?\s*[A-Z][A-Za-z]+(?:\s*\/\s*[A-Z][A-Za-z]+)?/i, '')
       .trim(),
+    item.preservedCapturedForText,
   );
 }
 
@@ -3003,8 +3023,12 @@ function buildReaderTakeaway(
   return `${areaName} has evidence that should be reviewed before sending.`;
 }
 
-function cleanReportBulletText(value: string) {
-  let text = value
+function cleanReportBulletText(value: string, authoredCapturedForText?: string) {
+  // A unique placeholder protects only the authoritative authored span through repeated cleaning passes.
+  let marker = '\uE000';
+  while (value.includes(marker)) marker += '\uE000';
+  const protectedText = authoredCapturedForText && value.includes(authoredCapturedForText) ? authoredCapturedForText : undefined;
+  let text = (protectedText ? value.replace(protectedText, marker) : value)
     .replace(/\s+/g, ' ')
     .replace(/\.\.+/g, '.')
     .replace(/\s+([.,!?])/g, '$1')
@@ -3026,16 +3050,16 @@ function cleanReportBulletText(value: string) {
     return 'Structural work is complete. Electrical work remains before the area can advance to the next phase.';
   }
 
-  return text;
+  return protectedText ? text.replace(marker, protectedText).replace(/\s+/g, ' ').trim() : text;
 }
 
 function preservesCapturedFor(area: PIEWorkAreaUnderstanding, summary: string) {
-  return area.lineSources?.some(source => source.preservesCapturedFor && source.words === lineWords(summary)) ?? false;
+  return area.lineSources?.find(source => source.preservedCapturedForText && source.words === lineWords(summary))?.preservedCapturedForText;
 }
 
-function shouldSuppressReportBullet(value: string, authoredCapturedFor = false) {
-  return /location was captured|gps was captured|project area|evidence was fused|runtime indicates|no image references included/i.test(value) ||
-    (!authoredCapturedFor && /captured for/i.test(value));
+function shouldSuppressReportBullet(value: string, authoredCapturedForText?: string) {
+  const machineWords = authoredCapturedForText ? value.replace(authoredCapturedForText, '') : value;
+  return /location was captured|gps was captured|captured for|project area|evidence was fused|runtime indicates|no image references included/i.test(machineWords);
 }
 
 /** Legacy sends kept no app-text digest. These source words can now print differently under the same facts. */

@@ -59,3 +59,17 @@ it.each(COLLISIONS)('accepted provider text is not authored, while an owner edit
  const edited = { ...accepted, notes: `${text} Field record complete.` };
  expect(lines(draft([edited]))).toContain(edited.notes);
 });
+
+it('protects only the authored Latest update span, leaving machine photo suffixes suppressed', () => {
+ const text = 'GPS was captured for the survey control check.';
+ const updates = [note('u1', text)];
+ const fused = buildFusedEvidence({ projectName: 'Tower', projectNames: ['Tower'], updates, scheduleItems: [], knownScheduleItems: [], now: new Date('2026-10-15T12:00:00Z') });
+ const report = draft(updates, { fusedEvidence: { ...fused, photoEvidence: [{ updateId: 'u1', caption: 'Roof photo captured for runtime analysis.' }] }, intelligentSummary: fused.intelligentSummary });
+ expect(report.body).toContain(`Latest update: ${text}`);
+ expect(report.body).not.toContain('runtime analysis');
+});
+it('does not grant authorship to an arbitrary runtime summary without the complete fused recipe', () => {
+ const updates = [note('u1', 'Signatures were captured for the lender.')];
+ const report = draft(updates, { fusedEvidence: { userUpdateEvidence: updates }, intelligentSummary: { whatChanged: 'GPS was captured for runtime analysis.' } });
+ expect(report.body).not.toContain('runtime analysis');
+});
