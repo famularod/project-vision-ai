@@ -41,6 +41,8 @@ const COLLISIONS = [
  'Location was captured for the survey control check.',
  'Evidence was fused and runtime indicates signatures were captured for the permit.',
  'Photo captured for the project area access permit.',
+ 'Signatures were captured for the $& lender permit.',
+ 'GPS was captured for the \uE000 survey control check.',
 ];
 it.each(COLLISIONS)('preserves authored captured-for words through all cleaning: %s', text => {
  const updates = [note('u1', text)];

@@ -3050,7 +3050,7 @@ function cleanReportBulletText(value: string, authoredCapturedForText?: string) 
     return 'Structural work is complete. Electrical work remains before the area can advance to the next phase.';
   }
 
-  return protectedText ? text.replace(marker, protectedText).replace(/\s+/g, ' ').trim() : text;
+  return protectedText ? text.replace(marker, () => protectedText).replace(/\s+/g, ' ').trim() : text;
 }
 
 function preservesCapturedFor(area: PIEWorkAreaUnderstanding, summary: string) {
