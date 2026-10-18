@@ -156,7 +156,7 @@ export function keepVoiceRecording(
     recordedAt?: string;
     walkArea?: KeptVoiceWalkArea | null;
     state?: KeptVoiceRecordingState;
-  sentDespiteNoSound?: boolean;
+    sentDespiteNoSound?: boolean;
   }>,
 ): Promise<string> {
   return oneAtATime(async () => {

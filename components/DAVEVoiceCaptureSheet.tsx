@@ -1567,7 +1567,7 @@ export function DAVEVoiceCaptureSheet({
           {notice && !error ? <Text style={styles.notice} accessibilityLiveRegion="polite">{notice}</Text> : null}
           {error ? <Text style={styles.error} accessibilityLiveRegion={Platform.OS === 'android' ? 'polite' : undefined}>{error}</Text> : null}
 
-          <View onLayout={event => setRetryY(event.nativeEvent.layout.y)}>
+          <View testID="voice-recording-actions" onLayout={event => setRetryY(event.nativeEvent.layout.y)}>
           {recorderState.isRecording ? (
             <TouchableOpacity style={styles.stopButton} onPress={() => { void stopRecording(); }} accessibilityRole="button">
               <Ionicons name="stop" size={21} color="#FFF" />

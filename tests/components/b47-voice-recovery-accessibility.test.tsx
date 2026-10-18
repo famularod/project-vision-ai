@@ -214,8 +214,8 @@ it('4.80 persists the silent send-anyway judgment across an offline queue and a 
 });
 it('4.90 announces changed no-sound guidance once, including the first deliberate override tap',async()=>{
  const announce=jest.spyOn(AccessibilityInfo,'announceForAccessibility').mockImplementation(()=>undefined);
- try{await putUp(SHEETS[5]);await recordsNothingAndStops();expect(announce).toHaveBeenCalledWith(NO_SOUND);
- await taps('Retry Answer');expect(announce).toHaveBeenCalledWith(howToSendAnyway('Retry Answer'));expect(serviceCalls()).toBe(0);
+ try{await putUp(SHEETS[5]);await recordsNothingAndStops();await waitFor(()=>expect(announce).toHaveBeenCalledWith(NO_SOUND));
+ await taps('Retry Answer');await waitFor(()=>expect(announce).toHaveBeenCalledWith(howToSendAnyway('Retry Answer')));expect(serviceCalls()).toBe(0);
  const count=announce.mock.calls.length;await settle(300);expect(announce).toHaveBeenCalledTimes(count);
  }finally{announce.mockRestore();}
 });
@@ -223,7 +223,7 @@ it('4.90 announces changed no-sound guidance once, including the first deliberat
 it('4.90 reveals Retry at its measured content position after long guidance without invoking it',async()=>{
  const scroll=jest.spyOn(ScrollView.prototype,'scrollTo').mockImplementation(()=>undefined);
  try{await putUp(SHEETS[5]);await recordsNothingAndStops();
- const retry=screen.getByText('Retry Answer');const button=retry.parent!;const actions=button.parent!;
+ const actions=screen.getByTestId('voice-recording-actions');
  expect(typeof actions.props.onLayout).toBe('function');fireEvent(actions,'layout',{nativeEvent:{layout:{x:0,y:1100,width:320,height:112}}});
  await waitFor(()=>expect(scroll).toHaveBeenCalledWith({y:1100,animated:false}));expect(serviceCalls()).toBe(0);
  await taps('Retry Answer');expect(screen.getByText(howToSendAnyway('Retry Answer'))).toBeTruthy();expect(serviceCalls()).toBe(0);
