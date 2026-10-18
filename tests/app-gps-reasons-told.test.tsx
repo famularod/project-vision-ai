@@ -472,8 +472,9 @@ describe('3. an unfinished update resumed after the app was closed says why it h
     await waitFor(() => expect(tree.getByText(kind === 'denied' ? DENIED_WHEN_STARTED : PRECISE_OFF_WHEN_STARTED)).toBeTruthy(), COLD);
     mockLocation.granted = true;
     mockLocation.precise = true;
-    await press(tree, tree.getByText('Continue Without Photos'));
+    tree.rerender(<NativeRoot />);
     expect(tree.getByText(kind === 'denied' ? DENIED_WHEN_STARTED : PRECISE_OFF_WHEN_STARTED)).toBeTruthy();
+    await press(tree, tree.getByText('Continue Without Photos'));
     await waitFor(async () => {
       const kept = JSON.parse((await AsyncStorage.getItem('projectPhotoUpdate.activeDraft.v2'))!);
       expect(kept.draft.gpsLatitude ?? null).toBeNull();
