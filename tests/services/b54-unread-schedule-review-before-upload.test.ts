@@ -25,7 +25,7 @@ function device(options: { pendingDisk?: boolean; pendingUpload?: boolean; offli
   let records: Card[] = [], writes = 0, created = 0;
   const current = { current: [] as Card[] };
   const deps: Record<string, unknown> = {
-    documentUploadRequest: null, projectDocumentsCurrentRef: current,
+    documentUploadRequest: null, setDocumentUploadRequest: () => undefined, projectDocumentsCurrentRef: current,
     projectDocuments: [], referenceDocumentsCurrentRef: { current: [] },
     projectScheduleImportCardRef: { current: null },
     validateECOSMobileDrawingControls: () => ({ valid: true }),
@@ -62,8 +62,7 @@ function device(options: { pendingDisk?: boolean; pendingUpload?: boolean; offli
   const code = ts.transpileModule(names.map(name => functions.get(name)).join('\n') + '\nreturn { confirmDocumentProjectSelection };', {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
   }).outputText;
-  // Selection is deliberately read through a live getter, as the captured React
-  // value would be passed to these closures for this one confirmed operation.
+  // Each confirmation receives the captured selection for that one operation.
   return {
     disk, upload, events, notices, reviews, current, saved: () => records,
     async add(category = 'Schedule', projects = ['First Project']) {
