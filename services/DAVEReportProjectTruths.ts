@@ -11,6 +11,7 @@ import { buildAutomaticReportDrawingReferences } from './ReportDrawingReferences
 import { buildWrittenReportFacts } from './ReportWrittenFacts';
 import { reportTaskConfirmedAt } from './DAVEReportIntelligence';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { fieldUpdatesNewestFirst } from './PIEEvidenceFusion';
 
 export type DAVEReportProjectTruthsInput = {
   /** The report's projects in the order shown, each with the id its Project Truth carries. */
@@ -120,7 +121,12 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
     const scope = known ? buildDailyReportAuthorityScope({ ...scopeInput, knownScheduleItems: known }) : scopeAsBefore;
     const sameUpdates = scope.updates.length === scopeAsBefore.updates.length &&
       scope.updates.every((update, index) => update === scopeAsBefore.updates[index]);
-    const truth = truthOf(scope);
+    // Classify equal-caption evidence in the same saved-update order the report
+    // writer uses. Cloud row arrival order must not choose a different duplicate
+    // winner (and therefore a different report identity) on another device.
+    const orderedUpdates = fieldUpdatesNewestFirst(scope.updates);
+    const sameOrder = orderedUpdates.every((update, index) => update === scope.updates[index]);
+    const truth = truthOf({ ...scope, updates: orderedUpdates });
     // R8 item 2 (the coordinator's decision on review pass 2, P2-2): the drawings the report cites for this
     // project's work areas, worked out as the Reports screen and the Word report work them out, so that the
     // fingerprint holds exactly what the report prints and saves of a drawing.
@@ -135,7 +141,7 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
     const before = input.asBuiltBefore;
     const builtBefore = before
       ? truthOf(buildDailyReportAuthorityScope({ ...scopeInput, scheduleItems: before.scheduleItems }), before.knownScheduleItems ?? known)
-      : sameUpdates ? truth : truthOf(scopeAsBefore);
+      : sameUpdates && sameOrder ? truth : truthOf(scopeAsBefore);
     // HIGH item 1 (F2 to F6b): what the phone's written report prints of this project's own updates and tasks that
     // the truth does not hold, read by the writer's own rules at the truth's own moment, so that the fingerprint
     // holds it on the phone and on the desktop alike.
