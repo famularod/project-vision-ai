@@ -250,7 +250,7 @@ export type DAVEWebSignInRefreshGuard = Readonly<{
    * held back by a "too many requests" wait, and for 'here' nothing the
    * server does or fails to do keeps `work` waiting for more than a few
    * seconds. Resolves or rejects as `work` does. `onServerWait` reports only this
-   * operation being held by a server-requested refresh wait; it never changes auth state.
+   * operation receiving an actual server 429; it never changes auth state.
    */
   signingOut: <T>(where: 'here' | 'everywhere', work: () => Promise<T>, onServerWait?: () => void) => Promise<T>;
   /**
@@ -692,6 +692,7 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
             message: 'The sign-in server did not answer the sign-out in time.',
           }), { status: 503, headers: { 'content-type': 'application/json' } })
         : await options.fetch(input, init);
+      if (response.status === 429) leaving?.onServerWait?.();
       // auth-js takes the sign-in out of this tab on these answers (the others it reports as a failure).
       if (response.ok || response.status === 401 || response.status === 403 || response.status === 404) {
         // The server took the sign-out, or says that sign-in is not there (second review, web F5).
@@ -739,7 +740,7 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
     /** What a refresh that cannot be done just now is answered with: final for Sign Out of This Computer. */
     const notNow = () => {
       if (signOut?.here) return signOutWithoutRefresh();
-      // Report this operation's server-requested wait without changing the retryable response auth-js needs.
+      // A suppressed retry is not a new server 429; the gateway retains exact cached-error identity.
       return askedToWait();
     };
     // Inside the wait the server asked for, only a sign-out's own refresh goes out, and only once.

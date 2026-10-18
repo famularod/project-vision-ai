@@ -34,7 +34,7 @@ type ServerState = {
   /** What the sign-in server does with a refresh. */
   refresh: 'ok' | 'too-many-requests' | 503 | 'dropped' | 'never-answers';
   /** …and with a sign-out. */
-  logout: 'ok' | 503 | 'dropped' | 'never-answers';
+  logout: 'ok' | 429 | 503 | 'dropped' | 'never-answers';
   refreshesAsked: number;
   logoutsAsked: number;
 };
@@ -63,6 +63,7 @@ function withServer(cloud: TabCloud): TabCloud {
     }
     if (url.pathname === '/auth/v1/logout') {
       server.logoutsAsked += 1;
+      if (server.logout === 429) return json(429, { code: 'over_request_rate_limit', message: 'Request rate limit reached' });
       if (server.logout === 503) return json(503, { message: 'Service Unavailable' });
       if (server.logout === 'dropped') throw new TypeError('Failed to fetch');
       if (server.logout === 'never-answers') return never();
@@ -162,5 +163,14 @@ it('local signout remains bounded while a global logout never answers', async ()
  void tab.gateway!.signOut('local').then(() => { finished = true; });
  for (let i=0; i<10 && !finished; i++) { await jest.advanceTimersByTimeAsync(1000); await withoutTimePassing(() => finished); }
  expect(finished).toBe(true);
+ expectSignedOutOfThisComputer(tab);
+});
+
+it('global logout actual 429 preserves session and reports wait, then recovers', async () => {
+ const tab = await signedInTab(); server.logout = 429;
+ const result = await whileTimePasses(tab.gateway!.signOut('global').catch(e => e));
+ expect(result.value.name).toBe('DAVEWebSignOutWaitError');
+ expect(tabHoldsSignIn(tab.storage)).toBe(true);
+ server.logout = 'ok'; await whileTimePasses(tab.gateway!.signOut('global'));
  expectSignedOutOfThisComputer(tab);
 });

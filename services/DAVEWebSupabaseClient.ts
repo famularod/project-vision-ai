@@ -756,51 +756,51 @@ export function createDAVEWebSupabaseGateway(
         return globalSignOut.work;
       }
       const perform = async () => {
-      signedOutUnconfirmed = false;
-      if (!client) return;
-      const ending = browserTabStoredSignIn();
-      const askAuth = () => client.auth.signOut({ scope });
-      /** All Devices is refused below when the cloud did not do it; with nothing to sign out there is nothing to confirm. */
-      let confirmedByCloud = true;
-      if (scope === 'global') {
-        // The sign-out's own refresh is not held back by a "too many requests" wait.
-        let serverAskedToWait = false;
-        const { error } = await (signInGuard?.signingOut
-          ? signInGuard.signingOut('everywhere', askAuth, () => { serverAskedToWait = true; })
-          : askAuth());
-        if (error && serverAskedToWait) globalWaitErrors.add(error);
-        if (error && globalWaitErrors.has(error)) throw new DAVEWebSignOutWaitError();
-        if (error && isAuthRetryableFetchError(error)) throw new DAVEWebSignOutNeedsConnectionError();
-        if (error) throw new Error('The desktop session could not be closed.');
-      } else {
-        try {
-          const { error } = await (signInGuard?.signingOut ? signInGuard.signingOut('here', askAuth) : askAuth());
-          // What the server itself answered, as the guard heard it; without a guard, auth-js's word that it went through.
-          confirmedByCloud = !ending ||
-            (signInGuard?.signingOut && signInGuard.signOutConfirmed ? signInGuard.signOutConfirmed() : !error);
-        } catch {
-          // Whatever auth-js left in this tab is looked at below.
-          confirmedByCloud = !ending;
+        signedOutUnconfirmed = false;
+        if (!client) return;
+        const ending = browserTabStoredSignIn();
+        const askAuth = () => client.auth.signOut({ scope });
+        /** All Devices is refused below when the cloud did not do it; with nothing to sign out there is nothing to confirm. */
+        let confirmedByCloud = true;
+        if (scope === 'global') {
+          // The sign-out's own refresh is not held back by a "too many requests" wait.
+          let serverAskedToWait = false;
+          const { error } = await (signInGuard?.signingOut
+            ? signInGuard.signingOut('everywhere', askAuth, () => { serverAskedToWait = true; })
+            : askAuth());
+          if (error && serverAskedToWait) globalWaitErrors.add(error);
+          if (error && globalWaitErrors.has(error)) throw new DAVEWebSignOutWaitError();
+          if (error && isAuthRetryableFetchError(error)) throw new DAVEWebSignOutNeedsConnectionError();
+          if (error) throw new Error('The desktop session could not be closed.');
+        } else {
+          try {
+            const { error } = await (signInGuard?.signingOut ? signInGuard.signingOut('here', askAuth) : askAuth());
+            // What the server itself answered, as the guard heard it; without a guard, auth-js's word that it went through.
+            confirmedByCloud = !ending ||
+              (signInGuard?.signingOut && signInGuard.signOutConfirmed ? signInGuard.signOutConfirmed() : !error);
+          } catch {
+            // Whatever auth-js left in this tab is looked at below.
+            confirmedByCloud = !ending;
+          }
+          // What auth-js could not take out is taken out here. A sign-in made here meanwhile (another session,
+          // or any at all when the tab held none as this sign-out began) is not this sign-out's to remove, as
+          // when another tab's sign-out is heard.
+          const stored = browserTabStoredSignIn();
+          const anotherSignIn = stored !== null && ending !== null &&
+            stored.sessionId !== null && ending.sessionId !== null &&
+            (stored.userId !== ending.userId || stored.sessionId !== ending.sessionId);
+          if (stored && ending && !anotherSignIn) {
+            forgetBrowserTabSignIn();
+            // auth-js tells its listeners of the sign-out it could not finish (no request: nothing is stored now).
+            await client.auth.signOut({ scope: 'local' }).catch(() => undefined);
+          }
         }
-        // What auth-js could not take out is taken out here. A sign-in made here meanwhile (another session,
-        // or any at all when the tab held none as this sign-out began) is not this sign-out's to remove, as
-        // when another tab's sign-out is heard.
-        const stored = browserTabStoredSignIn();
-        const anotherSignIn = stored !== null && ending !== null &&
-          stored.sessionId !== null && ending.sessionId !== null &&
-          (stored.userId !== ending.userId || stored.sessionId !== ending.sessionId);
-        if (stored && ending && !anotherSignIn) {
-          forgetBrowserTabSignIn();
-          // auth-js tells its listeners of the sign-out it could not finish (no request: nothing is stored now).
-          await client.auth.signOut({ scope: 'local' }).catch(() => undefined);
-        }
-      }
-      forgetSignedInReads();
-      // The account's report periods leave this browser with its sign-in (review N1).
-      if (ending) forgetDAVEWebReportPeriods(ending.userId);
-      // And so does the note the Duplicate Tab guard keeps for it (review pass 1, web L2).
-      if (ending) await signInGuard?.signInOver?.(ending.sessionId);
-      signedOutUnconfirmed = !confirmedByCloud;
+        forgetSignedInReads();
+        // The account's report periods leave this browser with its sign-in (review N1).
+        if (ending) forgetDAVEWebReportPeriods(ending.userId);
+        // And so does the note the Duplicate Tab guard keeps for it (review pass 1, web L2).
+        if (ending) await signInGuard?.signInOver?.(ending.sessionId);
+        signedOutUnconfirmed = !confirmedByCloud;
       };
       if (scope !== 'global') return perform();
       const work = perform();
