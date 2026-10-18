@@ -257,8 +257,9 @@ describe('F04: a very large drawing scan on the phone and iPad', () => {
     const result = await phoneDrawing(drawing(TOP_RIGHT));
     expect(result.media).toEqual([]);
     expect(result.unavailableMedia.map(item => item.reason)).toEqual([
-      'This drawing picture is too large to crop on this device (19,200 x 14,400 pixels). ' +
-      'Save it at a lower resolution and its excerpt will be included.',
+      `The image file reports 19,200 x 14,400 pixels, beyond this report's image limit. It was left out. ` +
+      'If the file opens correctly, export a lower-resolution copy. ' +
+      'If it appears damaged or will not open, replace or re-export it from its original source.',
     ]);
     expect(reportDrawingScanTooLargeMessage(19_200, 14_400)).toBe(result.unavailableMedia[0].reason);
     expect(fakeMedia.deviceCrops).toEqual([]);

@@ -60,3 +60,51 @@ it.each(fixtures.cases.filter(sample => sample.kind === 'huge'))('whole4.35 huge
   expect(result.unavailableMedia[0].reason).toMatch(/if.*(?:damaged|does not open|will not open)/i);
   expect(result.unavailableMedia[0].reason).not.toMatch(/will be included|is damaged/i);
 });
+
+it.each(fixtures.cases.filter(sample => sample.kind !== 'huge'))('retained native conversion uses the decoder upright shape: $name', async sample => {
+  store(sample);
+  fakeMedia.fileSizes.set(uri, 1_500_001);
+  const result = await photo();
+  expect(result.unavailableMedia).toEqual([]);
+  expect(result.media.map(({ width, height }) => ({ width, height }))).toEqual([sample.expected]);
+  expect(fakeMedia.deviceOpened).toEqual([uri]);
+});
+
+it.each(fixtures.cases.filter(sample => sample.kind !== 'huge'))('retained native drawing crop uses the decoder upright coordinates: $name', async sample => {
+  store(sample);
+  const result = await drawing();
+  expect(result.unavailableMedia).toEqual([]);
+  expect(result.media.map(({ width, height }) => ({ width, height }))).toEqual([sample.expected]);
+  expect(fakeMedia.deviceCrops).toEqual([expect.objectContaining({ originX: 0, originY: 0, width: sample.expected.width, height: sample.expected.height })]);
+});
+
+const bytesOf = (name: string) => Uint8Array.from(Buffer.from(fixtures.cases.find(sample => sample.name === name)!.base64, 'base64'));
+const app1 = (name: string) => {
+  const bytes = bytesOf(name);
+  const length = (bytes[4] << 8) | bytes[5];
+  return bytes.slice(2, length + 4);
+};
+const withSegment = (bytes: Uint8Array, segment: Uint8Array) => Uint8Array.from([...bytes.slice(0, 2), ...segment, ...bytes.slice(2)]);
+
+it.each(['long-6-le', 'long-6-be', 'xmp-attribute', 'xmp-element', 'xmp-after-frame'])('uncertain %s metadata keeps the huge-frame guard ahead of all decoding', async name => {
+  // after-frame supplies the same XMP segment as attribute; its original
+  // after-frame placement is already covered by the regular caller cases.
+  const segment = app1(name === 'xmp-after-frame' ? 'xmp-attribute' : name);
+  const bytes = withSegment(bytesOf('huge-corrupt-jpeg'), segment);
+  fakeMedia.files.set(uri, bytes);
+  const result = await drawing();
+  expect(result.media).toEqual([]);
+  expect(result.unavailableMedia).toHaveLength(1);
+  expect(fakeMedia.deviceOpened).toEqual([]);
+  expect(fakeMedia.deviceSizeAsked).toEqual([]);
+});
+
+it.each([{ width: 7, height: 5 }, { width: 5, height: 7 }])('conflicting EXIF and XMP leave platform orientation authority intact: %j', async expected => {
+  const sample = { ...fixtures.cases.find(sample => sample.name === 'short-1-le')!, expected };
+  const original = store(sample);
+  fakeMedia.files.set(uri, withSegment(original, app1('xmp-attribute')));
+  const result = await photo();
+  expect(fakeMedia.deviceSizeAsked).toEqual([uri]);
+  expect(result.media.map(({ width, height }) => ({ width, height }))).toEqual([expected]);
+  expect(fakeMedia.deviceOpened).toEqual([]);
+});

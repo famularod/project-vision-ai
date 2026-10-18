@@ -335,8 +335,9 @@ describe('L7: a scan that is too large is refused from its header, before the im
     storeSheet(format, 14_400, 19_200, { stored: 'stored on its side' });
     const result = await phoneDrawing(drawing(TOP_RIGHT));
     expect(result.unavailableMedia.map(item => item.reason)).toEqual([
-      'This drawing picture is too large to crop on this device (14,400 x 19,200 pixels). ' +
-      'Save it at a lower resolution and its excerpt will be included.',
+      `The image file reports 14,400 x 19,200 pixels, beyond this report's image limit. It was left out. ` +
+      'If the file opens correctly, export a lower-resolution copy. ' +
+      'If it appears damaged or will not open, replace or re-export it from its original source.',
     ]);
     expect(fakeMedia.deviceOpened).toEqual([]);
     expect(fakeMedia.devicePixelsAtOnce).toBe(0);
