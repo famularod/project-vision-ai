@@ -189,7 +189,7 @@ export function phoneOutputs({ briefing, draft, format, drawingReferences, updat
     '== Reports screen', ...reportScreenWords(briefing, format),
     '== Drawing References panel', ...drawingPanelWords(drawingReferences),
     ...(format === 'project_manager' ? ['== Work Areas & Photos panel', ...workAreasPanelWords(draft)] : []),
-    '== Word file', ...wordFileWords({ title: String(report.title), body, photos: cited, drawings: drawingReferences, taskLines: briefing.wordTaskLines }, orderedUpdates),
+    '== Word file', ...wordFileWords({ title: String(report.title), body, photos: cited, drawings: drawingReferences, taskLines: briefing.wordTaskLines }, updates),
     '== e-mail and text photos', ...cited.map(photo => `${photo.number} ${photo.photoId}`),
   ].join('\n');
 }
