@@ -222,7 +222,7 @@ async function observe(rows:Rows,format:Format){
  const goldenKey=JSON.stringify([format,rows.scheduleItems[0].item_data,rows.projectUpdates]);
  expect(rawLegacy).toEqual(legacyGoldens[goldenKey]);
  console.log('B63_RAW_LEGACY '+JSON.stringify({goldenKey,rawLegacy}));
- const result={rawLegacy,desktopRawVsNativeWordDiff:differences(nativeWord,dw),desktopRawVsNativeBodyDiff:differences(nativeBody,webBody),phoneWord:pw,desktopWord:dw,format,phoneFingerprint:p.fingerprint,desktopFingerprint:d.fingerprint,recognizesPhoneSend:p.fingerprint===d.fingerprint,held:held.tasks[0],loaded:snapshot.scheduleItems[0],recipeDiff:differences(daveReportSourceParts(phone,sent,format),daveReportSourceParts(desktop,sent,format)),briefingDiff:differences(pb,db),actualWordDiff:differences(pw,dw),phoneRuntimeBody:written.body,desktopBody:webBody};
+ const result={phoneFocus:phone[0]?.writtenReportFacts?.scheduleFocus,desktopFocus:desktop[0]?.writtenReportFacts?.scheduleFocus,rawLegacy,desktopRawVsNativeWordDiff:differences(nativeWord,dw),desktopRawVsNativeBodyDiff:differences(nativeBody,webBody),phoneWord:pw,desktopWord:dw,format,phoneFingerprint:p.fingerprint,desktopFingerprint:d.fingerprint,recognizesPhoneSend:p.fingerprint===d.fingerprint,held:held.tasks[0],loaded:snapshot.scheduleItems[0],recipeDiff:differences(daveReportSourceParts(phone,sent,format),daveReportSourceParts(desktop,sent,format)),briefingDiff:differences(pb,db),actualWordDiff:differences(pw,dw),phoneRuntimeBody:written.body,desktopBody:webBody};
  console.log('B63_DIAGNOSTIC '+JSON.stringify(result));
  return result;
 }
@@ -236,6 +236,10 @@ describe('B63 original 7.81 same raw authorized row',()=>{
   it(format+' blank project with real schedule parent must recognize the same sent report',async()=>{
    const r=await observe(rowsFor({projectName:'',scheduleProjectName:P1.name}),format);
    expect(r.held.projectName).toBe('');
+   expect(r.phoneFocus).toBe('Schedule focus: Install canopy (due 10/20/2026).');
+   expect(r.desktopFocus).toBe(r.phoneFocus);
+   expect(r.phoneRuntimeBody.includes(r.phoneFocus!)).toBe(format==='project_manager');
+   expect(r.phoneWord.some(line=>line.includes(r.phoneFocus!))).toBe(format==='project_manager');
    expect(r.recognizesPhoneSend).toBe(true);
   });
   it(format+' complete valid verification keeps parity and genuine task content invalidates',async()=>{
@@ -253,4 +257,6 @@ it.each(['project_manager','executive'] as const)('B63 %s genuine current photo 
  const before=await observe(make('Bolts inspected'),format),after=await observe(make('Bolts require adjustment'),format);
  expect(after.phoneFingerprint).not.toBe(before.phoneFingerprint);
  expect(after.desktopFingerprint).not.toBe(before.desktopFingerprint);
+ expect(after.phoneWord).not.toEqual(before.phoneWord);
+ expect(after.desktopWord).not.toEqual(before.desktopWord);
 });
