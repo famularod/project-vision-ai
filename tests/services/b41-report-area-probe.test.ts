@@ -16,3 +16,13 @@ it('B41 diagnostic shared raw bucket when schedule area is absent',()=>{
   expect(report.body).toContain(text);
  }
 });
+it('B41 diagnostic existing reported task shares the raw no-area bucket',()=>{
+ const project='Birch Lane',text='Lane closure moved to 10/20/2026.';
+ for(const taskName of ['Inspect 2026','Unit 2026 punch list']){
+  const task:any={id:'reported-area-task',projectName:project,scheduleProjectName:project,locationName:'',taskName,startDate:'10/01/2026',finishDate:'10/19/2026',owner:'Pat',contractor:'Crew',percentComplete:0,status:'Waiting',priority:'Medium',notes:'',createdAt:NOW};
+  const update:any={id:'unassigned',projectName:project,scheduleProjectName:project,date:'2026-10-16T12:00:00Z',notes:text,selectedAreaName:'',photos:[],recipients:{contactIds:[]},status:'sent'};
+  const report=buildDailyProjectUpdate({selectedProjectNames:[project],savedUpdates:[update],scheduleItems:[task],generatedAt:new Date(NOW)});
+  console.log('B41_REPORTED_NO_AREA_BUCKET',JSON.stringify({taskName,areas:report.locationGroups.flatMap(g=>g.workAreas.map(a=>({title:a.title,lines:a.bullets.map(b=>b.text)})))}));
+  expect(report.body).toContain(text);expect(report.body).toContain(taskName);
+ }
+});
