@@ -88,3 +88,19 @@ it('7.33 preserves the original raw as-built fingerprint and latest-note date/ID
  const ordered=fieldUpdatesNewestFirst(rows);expect(ordered.map(u=>u.id)).toEqual(['update-2','update-1']);
  expect(fieldUpdatesNewestFirst([...rows].reverse()).map(u=>u.id)).toEqual(ordered.map(u=>u.id));
 });
+
+it.each(['','not-a-date'])('7.33 equal unknown saved dates %p use IDs without URIs or locale order',date=>{
+ const rows=twins('Same caption').map(u=>({...u,date}));const original=JSON.stringify(rows);
+ const fingerprint=(updates:ProjectUpdate[])=>buildDAVEReportSourceOnPeriod(nativeTruths(updates),null).fingerprint;
+ expect(fingerprint([...rows].reverse())).toBe(fingerprint(rows));
+ const relocated=rows.map(u=>({...u,photos:u.photos.map(p=>({...p,uri:'file:///another-device/'+p.id+'.png'}))}));
+ expect(fingerprint(relocated)).toBe(fingerprint(rows));expect(JSON.stringify(rows)).toBe(original);
+});
+
+import {buildDailyProjectUpdate} from '../../services/PIEReporter';
+import {buildFusedEvidence} from '../../services/PIEEvidenceFusion';
+it('7.33 retains the actual written reporter latest-note tie choice',()=>{
+ const rows=twins('').map((u,i)=>({...u,photos:[],selectedAreaName:'East',scheduleItemId:undefined,notes:i?'Neighbor asked about weekend hours.':'Conference table arrived.'}));
+ const report=(updates:ProjectUpdate[])=>{const fusion=buildFusedEvidence({projectName:'Tower',projectNames:['Tower'],updates,scheduleItems:[],knownScheduleItems:[],now:new Date(NOW)});return buildDailyProjectUpdate({selectedProjectNames:['Tower'],savedUpdates:updates,scheduleItems:[],runtime:{fusedEvidence:fusion,intelligentSummary:fusion.intelligentSummary}} as never);};
+ const first=report(rows),second=report([...rows].reverse());expect(second.body).toBe(first.body);expect(first.body).toContain('Latest update: Neighbor asked about weekend hours.');
+});
