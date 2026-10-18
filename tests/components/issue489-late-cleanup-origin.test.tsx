@@ -32,7 +32,8 @@ async function readyFailedAnswer(){
  await act(async()=>{phone.recorder.set({durationMillis:5000});});
  fireEvent.press(view.getByText('Stop & Continue'));
  await waitFor(()=>expect(transcribe).toHaveBeenCalledTimes(1));
- await view.findByText('Recording ready');
+ await view.findByText('Review this recording');
+ await view.findByText('Synthetic no connection');
  await settle();
 }
 
@@ -103,7 +104,8 @@ it('held transcript reuse checks generation after delayed cleanup and preserves 
  await act(async()=>{phone.recorder.set({durationMillis:5200});});
  fireEvent.press(view.getByText('Stop & Continue'));
  await waitFor(()=>expect(transcribe).toHaveBeenCalledTimes(2));
- await view.findByText('Recording ready');
+ await view.findByText('Review this recording');
+ await view.findByText('Synthetic no connection');
  await act(async()=>{deletion.release();await pause();});
  expect(view.getByLabelText('Task or milestone').props.value).toBe('Independent new task');
  for(const [origin,take] of [[slot,'take-1'],[newSlot,'take-2']]) {
