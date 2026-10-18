@@ -8,12 +8,13 @@ import fs from 'fs';
 import path from 'path';
 import ts from 'typescript';
 import { buildFusedEvidence, fieldUpdatesNewestFirst } from '../../services/PIEEvidenceFusion';
-import { buildDailyProjectUpdate, buildCombinedProjectUpdate, reportWordingRequiresAppTextKey } from '../../services/PIEReporter';
+import { buildDailyProjectUpdate, buildCombinedProjectUpdate } from '../../services/PIEReporter';
 import { buildRuntime } from '../../services/PIERuntime';
 import { loadDAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import { daveWebSupabaseGateway } from '../../services/DAVEWebSupabaseClient';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
 import { buildDAVELegacyReportSourceFingerprint, buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
+import { buildDAVEWebReportTruths } from '../../services/DAVEWebOperations';
 import { reportTextKey } from '../../services/DAVEReportSnapshot';
 jest.mock('../../services/DAVEWebSupabaseClient', () => ({ daveWebSupabaseGateway: { loadAuthorizedRows: jest.fn() } }));
 import type { ProjectUpdate } from '../../types';
@@ -126,13 +127,15 @@ it('the actual desktop receiver treats a loaded queued-verbatim cloud row as the
   const before = JSON.stringify(rows);
   const snapshot = await loadDAVEWebReadOnlySnapshot();
   const received = snapshot.projectUpdates.map(row => row.updateData);
-  expect(fusion(received).intelligentSummary.whatChanged).toContain(`Latest update: ${a.notes}`);
-  expect(fieldUpdatesNewestFirst(received).map(u => u.id)).toEqual([a.id, b.id]);
-  expect(report(received).body).toBe(report([b, a]).body);
+  // These are actual downloaded cloud rows; local queued records elsewhere remain ineligible.
+  expect(received.every(u => u.status === 'queued')).toBe(true);
+  const native = buildDAVEReportProjectTruths({ projects: [{ name: 'Tower', projectId: 'tower' }], projectRecords: [{ name: 'Tower' }], updates: [a, b],
+    scheduleItems: [], knownScheduleItems: [], knownScheduleDocuments: [], projectAreas: [], referenceDocuments: [], now: snapshot.refreshedAt } as never);
+  expect(buildDAVEReportSourceFingerprint(buildDAVEWebReportTruths(snapshot, null))).toBe(buildDAVEReportSourceFingerprint(native));
   expect(JSON.stringify(rows)).toBe(before);
 });
 
-it('changed authored-send ordering uses the existing app-text guard without rewriting raw report facts', () => {
+it('changed authored-send ordering changes app text while preserving the actual raw fingerprint contract', () => {
   const a = { ...morning(), notes: 'Roof membrane was installed.' }, b = { ...midday(), notes: 'Roof flashing was installed.' };
   const original = [a, b], switched = [{ ...a, workflowTimestamps: { sendTappedAt: '2026-10-17T17:00:00Z' } }, b];
   const truths = (updates: ProjectUpdate[]) => buildDAVEReportProjectTruths({ projects: [{ name: 'Tower', projectId: 'report:tower' }], projectRecords: [{ name: 'Tower' }],
@@ -145,7 +148,6 @@ it('changed authored-send ordering uses the existing app-text guard without rewr
   // Literal raw 1.0 golden values captured before the receiver/approval repair.
   expect(buildDAVELegacyReportSourceFingerprint(truths(original))).toBe('dave-report-source/1.0:bc0fcab8');
   expect(buildDAVELegacyReportSourceFingerprint(truths(switched))).toBe('dave-report-source/1.0:6d0c9e01');
-  expect(reportWordingRequiresAppTextKey(before)).toBe(true);
 });
 
 it('App relative send labels use local midnight for Z and offset timestamps and preserve legacy day-only fallback', () => {

@@ -62,3 +62,15 @@ it('native report references and media retain the same canonical photo mapping a
 it('7.58 authoritative current task paragraphs cite the same exact photo numbers after snapshot reordering',async()=>{
  const left=await desktop([B(),A()],false,undefined,true),right=await desktop([A(),B()],false,undefined,true);expect(right.paragraphs).toEqual(left.paragraphs);expect(right.paragraphs.some(p=>p.includes('Frame walls')&&p.endsWith('Photo 3 shows this work.'))).toBe(true);expect(right.paragraphs.some(p=>p.includes('Pour slab')&&p.endsWith('Photos 1 and 2 show this work.'))).toBe(true);
 });
+
+it('7.38 actual downloaded queued-verbatim rows use acknowledged send order for Word numbers and exact task/photo guide',async()=>{
+ const a={...A(),date:'2026-10-16',status:'queued' as const,workflowTimestamps:{sendTappedAt:'2026-10-17T10:00:00Z'}},
+  b={...B(),date:'2026-10-16',status:'queued' as const,workflowTimestamps:{sendTappedAt:'2026-10-17T09:00:00Z'}};
+ const original=JSON.stringify([a,b]);
+ const left=await desktop([b,a],false,undefined,true),right=await desktop([a,b],true,undefined,true);
+ expect(right.resolved.media.map((m:any)=>[m.displayNumber,m.id])).toEqual([[1,'photo-A'],[2,'photo-Z'],[3,'photo-B']]);
+ expect(left.paragraphs).toEqual(right.paragraphs);
+ expect(right.paragraphs.some(p=>p.includes('Frame walls')&&p.endsWith('Photo 1 shows this work.'))).toBe(true);
+ expect(right.paragraphs.some(p=>p.includes('Pour slab')&&p.endsWith('Photos 2 and 3 show this work.'))).toBe(true);
+ expect(JSON.stringify([a,b])).toBe(original);
+});
