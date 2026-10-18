@@ -5686,9 +5686,7 @@ function DocumentECOSDetailsEditor({
   pending: boolean;
   onSave: (next: Partial<ReferenceDocument>) => void;
 }) {
-  const initialProjects = [document.projectName || '', ...(document.projectNames || [])]
-    .map(value => value.trim())
-    .filter(Boolean);
+  const initialProjects = uniqueOptions([document.projectName, ...(document.projectNames || [])]);
   const [editing, setEditing] = useState(false);
   const [category, setCategory] = useState(document.category);
   const [selectedProjects, setSelectedProjects] = useState<string[]>(initialProjects);
@@ -5703,9 +5701,7 @@ function DocumentECOSDetailsEditor({
   useEffect(() => {
     setEditing(false);
     setCategory(document.category);
-    setSelectedProjects([document.projectName || '', ...(document.projectNames || [])]
-      .map(value => value.trim())
-      .filter(Boolean));
+    setSelectedProjects(uniqueOptions([document.projectName, ...(document.projectNames || [])]));
     setNumber(document.drawingNumber || '');
     setRevision(document.drawingRevision || '');
     setDiscipline(document.drawingDiscipline || '');
@@ -5730,7 +5726,8 @@ function DocumentECOSDetailsEditor({
   // Open item 2.34 and review pass H4, H4S-1: a schedule file with tasks keeps its Category and Projects (changed, its
   // tasks came back on every device, or Make Current on it hid another project's tasks), so nothing here is offered.
   const stays = daveWebScheduleCategoryStays(document);
-  const canSave = selectedProjects.length > 0 && (!drawing || (
+  const selectedProjectNames = uniqueOptions(selectedProjects);
+  const canSave = selectedProjectNames.length > 0 && (!drawing || (
     Boolean(number.trim()) && Boolean(revision.trim()) && Boolean(issueStatus)
   ));
   return (
@@ -5804,8 +5801,8 @@ function DocumentECOSDetailsEditor({
             style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed, (!canSave || pending) && styles.buttonDisabled]}
             onPress={() => onSave({
               category,
-              projectName: selectedProjects[0] || null,
-              projectNames: selectedProjects,
+              projectName: selectedProjectNames[0] || null,
+              projectNames: selectedProjectNames,
               drawingNumber: drawing ? number.trim() || null : null,
               drawingRevision: drawing ? revision.trim() || null : null,
               drawingDiscipline: drawing ? discipline.trim() || null : null,

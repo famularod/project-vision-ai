@@ -6,11 +6,7 @@ import type {
   DAVEWebReferenceDocument,
 } from '../../services/DAVEWebReadOnlyRepository';
 
-// Open item 2.34 (review pass 6, O-8; 13 Oct 2026), on the page itself: Documents, an older schedule file, Edit
-// Project Document Details. Its Category was offered for change, and filed as a Report its tasks were listed again
-// on every device (each one a newer schedule moved, twice). The form now shows the Category as it is, says why it
-// stays, and saves the rest as before; a document that is not a schedule with tasks keeps every category choice.
-// Made-up projects; the shell harness of desktop-lookahead-document.test.tsx.
+// Issue4.91: actual document editor save/reset and authorized gateway serialization, synthetic local data.
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -137,4 +133,15 @@ it('cloud refresh reset and repeated save stay unique',async()=>{
  const screen=render(<DesktopReadOnlyShell page="documents"/>);await open(screen);
  workspace({...memo,cloudUpdatedAt:'2026-10-02T12:00:00.000Z',projectNames:['Alpha','Alpha','Beta']});screen.rerender(<DesktopReadOnlyShell page="documents"/>);fireEvent.press(await screen.findByLabelText('Edit project document details for Site memo'));const saved=await save(screen);expect(saved.projectNames).toEqual(['Alpha','Beta']);
  workspace({...saved,cloudUpdatedAt:'2026-10-03T12:00:00.000Z'});screen.rerender(<DesktopReadOnlyShell page="documents"/>);fireEvent.press(await screen.findByLabelText('Edit project document details for Site memo'));expect((await save(screen)).projectNames).toEqual(['Alpha','Beta']);screen.unmount();
+});
+
+it('normalizes existing overlaps while preserving first spelling and distinct project order',async()=>{
+ workspace({...memo,projectName:' Alpha ',projectNames:['alpha','  ','Beta','Beta','ALPHA']});const screen=render(<DesktopReadOnlyShell page="documents"/>);await open(screen);expect((await save(screen)).projectNames).toEqual(['Alpha','Beta']);screen.unmount();
+});
+it('toggle removal clears duplicates, readding appends once, and Cancel saves nothing',async()=>{
+ workspace({...memo,projectNames:['Alpha','Alpha','Beta']});const screen=render(<DesktopReadOnlyShell page="documents"/>);await open(screen);fireEvent.press(screen.getByRole('checkbox',{name:/Alpha$/}));expect((await save(screen)).projectNames).toEqual(['Beta']);
+ fireEvent.press(screen.getByRole('checkbox',{name:'Alpha'}));expect((await save(screen)).projectNames).toEqual(['Beta','Alpha']);jest.clearAllMocks();fireEvent.press(screen.getByText('Cancel'));expect(mockAuth.updateDocument).not.toHaveBeenCalled();screen.unmount();
+});
+it('no selected project keeps Save disabled',async()=>{
+ const screen=render(<DesktopReadOnlyShell page="documents"/>);await open(screen);fireEvent.press(screen.getByRole('checkbox',{name:/Alpha$/}));expect(screen.getByText('Choose at least one project.')).toBeTruthy();fireEvent.press(screen.getByText('Save Document Details'));expect(mockAuth.updateDocument).not.toHaveBeenCalled();screen.unmount();
 });
