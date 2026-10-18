@@ -32,3 +32,53 @@ it.each(['plain', 'progress'] as const)('newly recovered $s words cannot reuse a
 it.each(['plain', 'progress'] as const)('unchanged raw executive wording retains legacy approval despite recovered $s area model', kind => {
   expect(reportWordingRequiresAppTextKey(build('executive', crowded(kind, 4)))).toBe(false);
 });
+
+const priority = [
+  note('new-progress', 'Roof membrane was installed.', 20),
+  note('new-issue', 'Water leak found at the roof drain.', 21),
+  note('new-action', 'Dana to confirm the delivery date.', 22),
+];
+it.each((['plain', 'progress'] as const).flatMap(kind => [2, 3, 4, 6].flatMap(hidden => [0, 1, 2, 3].flatMap(occupied => [false, true].map(reverse => ({ kind, hidden, occupied, reverse }))))))(
+  'printable $kind selection: $hidden suppressed, $occupied occupied, reverse=$reverse', ({ kind, hidden, occupied, reverse }) => {
+    const updates = [...crowded(kind, hidden), ...priority.slice(0, occupied)];
+    const report = build('daily', reverse ? updates.reverse() : updates);
+    const actual = lines(report);
+    const expected = kind === 'plain' ? PLAIN : PROGRESS;
+    expect(actual.length).toBeLessThanOrEqual(3);
+    expect(actual.join(' ')).not.toMatch(/project area/);
+    if (occupied < 3) expect(actual).toContain(expected);
+    else expect(actual).not.toContain(expected);
+    const retained = lines(build('daily', priority.slice(0, occupied)));
+    retained.forEach(text => expect(actual).toContain(text));
+    expect(actual).toEqual(lines(build('daily', [...updates].reverse())));
+    if (occupied === 3) expect(report.candidateSelectionRequiresAppTextKey).not.toBe(true);
+  },
+);
+const ownPhoto = { id: 'own-p1', uri: 'file:///own-p1.jpg', caption: '', category: 'Progress', selectedAreaName: 'Roof', actionRequired: '', actionOwner: '', actionDueDate: '', actionStatus: 'Open' };
+it('recovered authored captured-for words keep their exemption and own photo reference', () => {
+  const text = 'Signatures were captured for the project area access permit.';
+  const updates = crowded('plain', 4).map(u => u.id === 'real' ? { ...u, notes: text, photos: [ownPhoto] } : u) as ProjectUpdate[];
+  const report = build('daily', updates);
+  expect(lines(report).filter(line => line.includes(text))).toEqual([`${text} See Image 1.`]);
+  expect(report.imageReferences).toEqual(expect.arrayContaining([expect.objectContaining({ photoId: 'own-p1', sourceUpdateId: 'real' })]));
+});
+it('a suppressed newer note photo stays on its own image line rather than the recovered older note', () => {
+  const updates = crowded('plain', 4).map(u => u.id === 'hidden-3' ? { ...u, photos: [ownPhoto] } : u) as ProjectUpdate[];
+  const report = build('daily', updates);
+  expect(lines(report)).toContain(PLAIN);
+  expect(lines(report).find(line => line.includes(PLAIN))).not.toContain('See Image');
+  const bullets = report.locationGroups.flatMap(g => g.workAreas.flatMap(a => a.bullets));
+  expect(bullets.filter(b => b.kind === 'image_reference').map(b => b.text)).toContain('See Image 1.');
+  expect(report.imageReferences).toEqual(expect.arrayContaining([expect.objectContaining({ photoId: 'own-p1', sourceUpdateId: 'hidden-3' })]));
+});
+it('accepted provider captured-for text stays suppressed while a saved owner edit is preserved', () => {
+  const text = 'Signatures were captured for the project area access permit.';
+  const updates = crowded('plain', 4).map(u => u.id === 'real' ? { ...u, notes: text, pieSuggestedNote: text, pieSuggestedNoteAccepted: true } : u) as ProjectUpdate[];
+  expect(lines(build('daily', updates))).not.toContain(text);
+  const edited = updates.map(u => u.id === 'real' ? { ...u, notes: `${text} Field record complete.` } : u);
+  expect(lines(build('daily', edited))).toContain(`${text} Field record complete.`);
+});
+it('suppressed candidates in another area cannot crowd the printable area', () => {
+  const updates = crowded('plain', 6).map(u => u.id === 'real' ? u : { ...u, selectedAreaName: 'Lobby' });
+  expect(lines(build('daily', updates))).toEqual([PLAIN]);
+});
