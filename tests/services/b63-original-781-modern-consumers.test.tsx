@@ -201,8 +201,9 @@ import { buildPIECoreIntelligence } from '../../services/PIECoreIntelligence';
 import { formatDAVEWebReport } from '../../services/DAVEWebOperations';
 import { buildReportWordBase64 } from '../../services/ReportWordDocument';
 import JSZip from 'jszip';
-const rawTask = task({ id:'legacy-task',taskName:'Install canopy',locationName:'Canopy',startDate:'10/01/2026',finishDate:'11/05/2026',notes:'Confirm canopy bolts',createdAt:isoAt(-14),updatedAt:isoAt(-2),status:'In Progress',percentComplete:40 });
-const validVerification={status:'pm_verified',reportedAt:isoAt(-4),reportedBy:'Dana',priorScheduleStatus:'In Progress',priorPercentComplete:40,verifiedAt:isoAt(-3),verifiedBy:'Dana',verificationNote:'Canopy accepted',evidence:[{id:'inspection',kind:'pm_confirmation',sourceName:'Dana',sourceRecordId:'legacy-task',summary:'Canopy accepted',recordedAt:isoAt(-3)}]};
+const rawTask = task({ id:'legacy-task',taskName:'Install canopy',locationName:'Canopy',startDate:'10/01/2026',finishDate:'10/20/2026',notes:'Confirm canopy bolts',createdAt:isoAt(-14),updatedAt:isoAt(-2),status:'In Progress',percentComplete:40 });
+const validVerificationInput={status:'pm_verified',reportedAt:isoAt(-4),reportedBy:'Dana',priorScheduleStatus:'In Progress',priorPercentComplete:40,verifiedAt:isoAt(-3),verifiedBy:'Dana',verificationNote:'Canopy accepted',evidence:[{id:'inspection',kind:'pm_confirmation',sourceName:'Dana',sourceRecordId:'legacy-task',summary:'Canopy accepted',recordedAt:isoAt(-3)}]};
+const validVerification=normalizeScheduleItem({...rawTask,completionVerification:validVerificationInput} as never).completionVerification;
 const rowsFor=(over:Record<string,unknown>={})=>rowsOf(onThePhone({tasks:[rawTask]}),isoAt(-1),row=>{if(row.item_data)Object.assign(row.item_data,over);});
 function differences(a:any,b:any,path='$'):any[]{
  if(JSON.stringify(a)===JSON.stringify(b))return [];
@@ -242,9 +243,16 @@ describe('B63 original 7.81 same raw authorized row',()=>{
   it(format+' complete valid verification keeps parity and genuine task content invalidates',async()=>{
    const r=await observe(rowsFor({completionVerification:validVerification}),format);
    expect(r.held.completionVerification).not.toBeNull();
-   expect(r.recognizesPhoneSend).toBe(true);
    const changed=await observe(rowsFor({completionVerification:validVerification,taskName:'Inspect changed canopy'}),format);
    expect(changed.phoneFingerprint).not.toBe(r.phoneFingerprint);
+   expect(r.recognizesPhoneSend).toBe(true);
   });
  }
+});
+
+it.each(['project_manager','executive'] as const)('B63 %s genuine current photo description invalidates',async format=>{
+ const base=rowsFor();const make=(caption:string)=>({...base,projectUpdates:rowsOf(onThePhone({updates:[update({id:'photo-update',date:isoAt(-1),notes:'Canopy inspected',scheduleItemId:'legacy-task',scheduleTaskName:'Install canopy',selectedAreaName:'Canopy',photos:[{id:'synthetic-photo',uri:'file:///synthetic/canopy.png',caption,category:'Progress',fileName:'canopy.png',mimeType:'image/png'}]})]})).projectUpdates});
+ const before=await observe(make('Bolts inspected'),format),after=await observe(make('Bolts require adjustment'),format);
+ expect(after.phoneFingerprint).not.toBe(before.phoneFingerprint);
+ expect(after.desktopFingerprint).not.toBe(before.desktopFingerprint);
 });

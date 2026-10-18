@@ -28,6 +28,7 @@ type MockCloudRow = { snapshot: unknown; deliveredAt: string | null };
 const mockCloud = new Map<string, MockCloudRow>();
 const mockOk = <T,>(data: T) => ({ ok: true, configured: true, data });
 jest.mock('../../services/SupabaseService', () => ({
+  getSupabaseClient: () => null,
   loadReportSnapshotCloud: jest.fn(async (scopeKey: string, format: string) => (
     mockOk({ ownerId: 'owner-1', snapshot: mockCloud.get(`${scopeKey}|${format}`)?.snapshot ?? null })
   )),
@@ -338,7 +339,7 @@ describe('B63 original 7.81 actual desktop sent receipt',()=>{
   for(const shape of ['incomplete-verification','blank-project'] as const){
    it(format+' '+shape+' recognizes the phone send without dropping real evidence',async()=>{
     phoneFormat=format;
-    const raw=OCT15.map(t=>t.id==='noarea'?{...t,...(shape==='blank-project'?{projectName:'',scheduleProjectName:NAME}:{completionVerification:{status:'pm_verified',reportedAt:'2026-10-14T12:00:00.000Z',verifiedBy:'Dana'}})}:t) as ScheduleItem[];
+    const raw=OCT15.map(t=>t.id==='noarea'?{...t,...(shape==='blank-project'?{projectName:'',scheduleProjectName:NAME,finishDate:'10/20/2026'}:{completionVerification:{status:'pm_verified',reportedAt:'2026-10-14T12:00:00.000Z',verifiedBy:'Dana'}})}:t) as ScheduleItem[];
     const normalized=raw.map(t=>nativeSchedule(t));
     await thePhoneSendsAtNineSeventeen(normalized);
     const web=await computer(UPDATES,raw,'2026-10-15T16:19:00.000Z');
