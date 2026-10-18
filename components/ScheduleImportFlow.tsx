@@ -26,6 +26,7 @@ import {
   scheduleImportAddsToMaster,
   scheduleImportAsksRole,
   scheduleImportRoleRefusal,
+  scheduleImportWithReviewedProjectScope,
   suggestScheduleImportRole,
   withScheduleImportRole,
   type ScheduleImportRole,
@@ -85,7 +86,7 @@ export function ScheduleImportFlow({
   const [pendingBatch, setPendingBatch] = useState<PIEScheduleImportBatch | null>(null);
   const [expandedItemIds, setExpandedItemIds] = useState<string[]>([]);
   // How the schedule is used: suggested when the review opens, David's choice after (owner answer Q22).
-  const [roleReview, setRoleReview] = useState<ScheduleImportRoleSuggestion & { batchId: string; chosen: ScheduleImportRole | null } | null>(null);
+  const [roleReview, setRoleReview] = useState<ScheduleImportRoleSuggestion & { batchId: string; chosen: ScheduleImportRole | null; projectScopeReviewed: boolean } | null>(null);
   const importOperationRef = useRef(0);
   const pendingChoiceRef = useRef<'file' | 'screenshots' | 'manual' | null>(null);
   const counts = useMemo(
@@ -97,8 +98,20 @@ export function ScheduleImportFlow({
     [pendingBatch],
   );
   // Same-named tasks whose pairing the dates cannot settle: David confirms which is which (owner answer Q30).
-  const reviewedRole = pendingBatch && scheduleImportAsksRole(pendingBatch) && roleReview?.batchId === pendingBatch.id
-    ? roleReview.chosen || roleReview.role
+  const activeRoleReview = useMemo(() => {
+    if (!pendingBatch || roleReview?.batchId !== pendingBatch.id) return null;
+    const provisional = pendingBatch.items.some(item => !item.projectName.trim() || item.projectName.trim() === 'Needs Project');
+    // Only a project assignment reviewed here changes the automatic default.
+    // Initially resolved files keep the existing4.58/root-master inference.
+    const reviewedBatch = roleReview.projectScopeReviewed && !provisional
+      ? scheduleImportWithReviewedProjectScope(pendingBatch) : pendingBatch;
+    const suggestion: ScheduleImportRoleSuggestion = provisional
+      ? {role: 'lookahead', reason: ''}
+      : suggestScheduleImportRole({batch: reviewedBatch, documents: roleContext?.documents || [], scheduleItems: roleContext?.items || []});
+    return {...suggestion, batchId: roleReview.batchId, chosen: roleReview.chosen, provisional};
+  }, [pendingBatch, roleReview, roleContext?.documents, roleContext?.items]);
+  const reviewedRole = pendingBatch && scheduleImportAsksRole(pendingBatch) && activeRoleReview
+    ? activeRoleReview.chosen || (activeRoleReview.provisional ? null : activeRoleReview.role)
     : null;
   const pairingQuestions = useMemo(() => {
     if (!pendingBatch) return [];
@@ -118,23 +131,28 @@ export function ScheduleImportFlow({
     setSaveError(null);
     setTurnedHighLine(null);
     setRoleReview({
-      ...suggestScheduleImportRole({ batch, documents: roleContext?.documents || [], scheduleItems: roleContext?.items || [] }),
+      role: 'lookahead', reason: '',
       batchId: batch.id,
       chosen: null,
+      projectScopeReviewed: false,
     });
     setPendingBatch(batch);
   }
 
   /** The batch with its schedule file marked as reviewed. */
   function withReviewedRole(batch: PIEScheduleImportBatch): PIEScheduleImportBatch {
-    if (!scheduleImportAsksRole(batch) || roleReview?.batchId !== batch.id) return batch;
-    return withScheduleImportRole(batch, roleReview.chosen || roleReview.role);
+    if (!scheduleImportAsksRole(batch) || activeRoleReview?.batchId !== batch.id) return batch;
+    // The save gate below prevents this provisional state being applied.
+    if (activeRoleReview.provisional && !activeRoleReview.chosen) return batch;
+    return withScheduleImportRole(batch, activeRoleReview.chosen || activeRoleReview.role);
   }
 
   /** Why the reviewed role cannot be saved, or null (whole-app audit A8 pass 5 L3; the file's full copy shown, M1). */
   function reviewedRoleRefusal(batch: PIEScheduleImportBatch): string | null {
-    if (!scheduleImportAsksRole(batch) || roleReview?.batchId !== batch.id) return null;
-    return scheduleImportRoleRefusal(batch, roleReview.chosen || roleReview.role, roleContext?.documents);
+    if (!scheduleImportAsksRole(batch) || activeRoleReview?.batchId !== batch.id) return null;
+    if (activeRoleReview.provisional && !activeRoleReview.chosen)
+      return 'Choose Full schedule or Lookahead for the selected items before saving.';
+    return scheduleImportRoleRefusal(batch, activeRoleReview.chosen || activeRoleReview.role, roleContext?.documents);
   }
 
   useEffect(() => {
@@ -203,6 +221,7 @@ export function ScheduleImportFlow({
   function updatePendingItem(itemId: string, next: Partial<ScheduleItem>) {
     if (saveBusy) return;
     setSaveError(null);
+    if (next.projectName !== undefined) setRoleReview(current => current ? {...current, projectScopeReviewed: true} : current);
     setExpandedItemIds(current => current.includes(itemId) ? current : [...current, itemId]);
     setPendingBatch(current => current ? {
       ...current,
@@ -222,7 +241,7 @@ export function ScheduleImportFlow({
     const readyItems = batchToReview.items.filter(scheduleImportItemIsReady);
     const remainingItems = batchToReview.items.filter(item => !scheduleImportItemIsReady(item));
     if (!readyItems.length) return;
-    const refusal = reviewedRoleRefusal(batchToReview) || scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);
+    const refusal = reviewedRoleRefusal({...batchToReview, items: readyItems}) || scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);
     if (refusal) return setSaveError(refusal);
 
     setSaveError(null);
@@ -409,9 +428,9 @@ export function ScheduleImportFlow({
                 </View>
               </View>
             ) : null}
-            {pendingBatch && scheduleImportAsksRole(pendingBatch) && roleReview?.batchId === pendingBatch.id ? (
+            {pendingBatch && scheduleImportAsksRole(pendingBatch) && activeRoleReview?.batchId === pendingBatch.id ? (
               <ScheduleRoleReview
-                review={roleReview}
+                review={activeRoleReview}
                 disabled={saveBusy}
                 onChoose={chosen => setRoleReview(current => current ? { ...current, chosen } : current)}
               />
@@ -567,11 +586,11 @@ function ScheduleRoleReview({
   disabled,
   onChoose,
 }: {
-  review: ScheduleImportRoleSuggestion & { chosen: ScheduleImportRole | null };
+  review: ScheduleImportRoleSuggestion & { chosen: ScheduleImportRole | null; provisional: boolean };
   disabled: boolean;
   onChoose: (role: ScheduleImportRole) => void;
 }) {
-  const selected = review.chosen || review.role;
+  const selected = review.chosen || (review.provisional ? null : review.role);
   const suggested = SCHEDULE_ROLE_CHOICES.find(choice => choice.role === review.role);
   return (
     <View style={styles.bulkSaveCard} accessibilityRole="radiogroup">
@@ -598,7 +617,8 @@ function ScheduleRoleReview({
         </TouchableOpacity>
       ))}
       <Text style={styles.bulkSaveText}>
-        {`Suggested: ${suggested?.title || ''}, because ${review.reason}.${review.only ? '' : ' You can change this before saving.'}`}
+        {review.provisional ? 'Assign projects to suggest an import type'
+          : `Suggested: ${suggested?.title || ''}, because ${review.reason}.${review.only ? '' : ' You can change this before saving.'}`}
       </Text>
     </View>
   );

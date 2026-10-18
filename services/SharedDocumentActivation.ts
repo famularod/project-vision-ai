@@ -1,3 +1,4 @@
+import { parseScheduleDelimitedText } from './PIEScheduleIntelligence';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { ReferenceDocument, ScheduleItem } from '../types';
 import {
@@ -502,6 +503,8 @@ type ScheduleImportSavedForFileInput = Readonly<{
   documentId: string;
   contentSha256: string;
   projectNames: readonly string[];
+  /** Complete explicit incoming projects, when positively read from the file. */
+  resolvedProjectNames?: readonly string[];
 }>;
 
 function scheduleImportsSavedForFile({
@@ -510,12 +513,15 @@ function scheduleImportsSavedForFile({
   documentId,
   contentSha256,
   projectNames,
+  resolvedProjectNames,
 }: ScheduleImportSavedForFileInput): ReferenceDocument[] {
   const scope = canonicalProjectNames(projectNames);
+  const resolvedScope = resolvedProjectNames?.length ? canonicalProjectNames(resolvedProjectNames) : null;
   return documents.filter(document => document.id === documentId || (
     isScheduleDocument(document) &&
     document.contentSha256 === contentSha256 &&
-    canonicalProjectNames(document.projectNames || []) === scope &&
+    (canonicalProjectNames(document.projectNames || []) === scope ||
+      resolvedScope !== null && canonicalProjectNames(document.projectNames || []) === resolvedScope) &&
     (Boolean(cloudKey(document.importBatchId)) || scheduleItems.some(item => scheduleContainsItem(document, item)))
   ));
 }
@@ -587,6 +593,7 @@ export function scheduleImportOfFile({
   const identity = resolveScheduleImportSourceIdentity({ bytes, projects, documentIdIsDeleted });
   const saved = scheduleImportsSavedForFile({
     documents, scheduleItems, documentId: identity.documentId, contentSha256: identity.contentSha256, projectNames,
+    resolvedProjectNames: explicitIncomingScheduleProjects(bytes, projects),
   });
   const savedAsFullSchedule = saved.length > 0 &&
     saved.every(document => isScheduleDocument(document) && !scheduleDocumentAddsToMaster(document));
@@ -615,6 +622,45 @@ export function scheduleImportOfFile({
     asLookahead: true,
     alreadyAddedMessage: SCHEDULE_ALREADY_ADDED,
   };
+}
+
+/** An early duplicate check may use only a complete explicit delimited
+ * Project column. Projectless, ambiguous, binary and larger files still reach
+ * review; reviewed rows supply their scope there. Never infer intent from a
+ * saved SHA or from a saved scope being contained in the active selection.
+ */
+function explicitIncomingScheduleProjects(bytes: ArrayBuffer | Uint8Array, projects: readonly ScheduleImportScopeProject[]): string[] | undefined {
+  const data = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (!data.length || data.length > 1_000_000) return undefined;
+  let text: string;
+  try {
+    text = typeof TextDecoder === 'function'
+      ? new TextDecoder('utf-8', {fatal: true}).decode(data)
+      : decodeURIComponent(Array.from(data, byte => '%' + byte.toString(16).padStart(2, '0')).join(''));
+  } catch { return undefined; }
+  if (text.includes('\0')) return undefined;
+  const selected = new Map<string, string[]>();
+  for (const project of projects) {
+    const key = canonicalProjectNames([project.name]);
+    selected.set(key, [...(selected.get(key) || []), project.name]);
+  }
+  for (const delimiter of [',', '\t'] as const) {
+    const parsed = parseScheduleDelimitedText(text, delimiter);
+    if (parsed.issues.length || parsed.rows.length < 2) continue;
+    const header = parsed.rows[0].map(value => value.trim().toLowerCase().replace(/[_\s]+/g, ' '));
+    const columns = header.flatMap((value, index) => value === 'project' || value === 'project name' ? [index] : []);
+    if (columns.length !== 1 || !header.some(value => ['task', 'task name', 'activity', 'activity name'].includes(value))) continue;
+    const rows = parsed.rows.slice(1).filter(row => row.some(value => value.trim()));
+    if (!rows.length || rows.some(row => row.length !== header.length)) continue;
+    const names: string[] = [];
+    for (const row of rows) {
+      const matches = selected.get(canonicalProjectNames([row[columns[0]]])) || [];
+      if (matches.length !== 1) return undefined;
+      names.push(matches[0]);
+    }
+    return [...new Set(names)];
+  }
+  return undefined;
 }
 
 const SCHEDULE_ALREADY_ADDED = 'This exact schedule is already saved for the selected projects. Open the existing schedule source instead of importing a duplicate.';
