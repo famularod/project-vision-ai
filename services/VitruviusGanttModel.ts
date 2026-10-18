@@ -334,6 +334,18 @@ function normalizedColumnWindow(window: VitruviusGanttColumnWindow, timelineWidt
   return Object.freeze({ left, width, overscan });
 }
 
+/** Reuse a model's immutable task geometry while a viewport scrolls. */
+export function vitruviusGanttColumnsInWindow(
+  model: Pick<VitruviusGanttModel, 'rangeStart' | 'rangeFinish' | 'zoom' | 'dayWidth' | 'timelineWidth'>,
+  window: VitruviusGanttColumnWindow,
+): readonly VitruviusGanttColumn[] {
+  const start = parseVitruviusScheduleDate(model.rangeStart);
+  const finish = parseVitruviusScheduleDate(model.rangeFinish);
+  return Object.freeze(start && finish
+    ? buildColumns(start, finish, model.zoom, model.dayWidth, normalizedColumnWindow(window, model.timelineWidth))
+    : []);
+}
+
 function buildColumns(
   rangeStart: Date,
   rangeFinish: Date,
