@@ -2942,7 +2942,7 @@ function ReportWorkArea({
           <View key={`${bullet.id}-${index}`} style={styles.reportDocumentBulletRow}>
             <Text style={styles.reportDocumentBulletMarker}>•</Text>
             <Text style={styles.reportDocumentBulletText}>
-              <Text style={styles.reportDocumentBulletLabel}>{reportPreviewBulletLabel(bullet.kind)}:{' '}</Text>
+              <Text style={styles.reportDocumentBulletLabel}>{reportPreviewBulletLabel(bullet)}:{' '}</Text>
               {bullet.text}
             </Text>
           </View>
@@ -3199,12 +3199,15 @@ function ReportShareButton({
   );
 }
 
-function reportPreviewBulletLabel(kind: string) {
+function reportPreviewBulletLabel(bullet: PIEReportDraft['locationGroups'][number]['workAreas'][number]['bullets'][number]) {
+  const { kind } = bullet;
   if (kind === 'safety') return 'Safety';
   if (kind === 'issue') return 'Issue';
   if (kind === 'next_step') return 'Action';
   if (kind === 'schedule') return 'Schedule';
   if (kind === 'image_reference') return 'Photo';
+  if (bullet.previewKind === 'photo') return 'Photo';
+  if (bullet.previewKind === 'field_note') return 'Field note';
 
   return 'Progress';
 }

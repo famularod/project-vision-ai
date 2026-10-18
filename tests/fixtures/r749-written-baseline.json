@@ -1,0 +1,29 @@
+{
+  "plain": {
+    "mode": "plain",
+    "bullet": {
+      "id": "bullet-understanding-tower-level-2-plain-0",
+      "text": "Radio batteries were swapped.",
+      "kind": "progress",
+      "sourceEvidenceIds": [
+        "note-label-plain",
+        "runtime-what-changed"
+      ],
+      "needsReview": false
+    },
+    "body": "Please review the updates below and look for action items assigned to your name.\n\nProject Summary\n\u2022 No construction progress was reported or visually observed in the selected updates.\n\nTower\n\n1. Level 2\n\u2022 Progress: Radio batteries were swapped.\n\u2022 Progress: Latest update: Radio batteries were swapped.\n\nPlease let me know if you have any questions."
+  },
+  "photo": {
+    "mode": "photo",
+    "bullet": {
+      "id": "bullet-understanding-tower-level-2-progress-0",
+      "text": "Concrete slab was placed at the east bay. See Image 1.",
+      "kind": "progress",
+      "sourceEvidenceIds": [
+        "photo-label-photo"
+      ],
+      "needsReview": false
+    },
+    "body": "Please review the updates below and look for action items assigned to your name.\n\nProject Summary\n\u2022 Construction progress was reported or visually observed in 2 areas; verification status is identified in the detailed evidence.\n\u2022 Key update: Tower / Level 2 \u2014 Concrete slab was placed at the east bay.\n\nTower\n\n1. Level 2\n\u2022 Progress: Concrete slab was placed at the east bay. See Image 1.\n\n2. Tower\n\u2022 Progress: Latest photo: Concrete slab was placed at the east bay.\n\nPlease let me know if you have any questions."
+  }
+}

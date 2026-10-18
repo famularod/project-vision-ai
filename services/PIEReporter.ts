@@ -191,6 +191,8 @@ export type PIEWorkAreaUnderstanding = {
 
 /** Open item 7.62: one record an area's lines are made from. */
 export type PIEWorkAreaLineSource = Readonly<{
+  /** Own-screen label only; never changes the written line's kind or words. */
+  previewKind?: PIEReportPreviewKind;
   preservesCapturedFor?: boolean;
   /** Exact authored span protected from machine wording cleanup, never an unverified runtime sentence. */
   preservedCapturedForText?: string;
@@ -213,6 +215,8 @@ export type PIEConstructionUnderstanding = {
 };
 
 export type PIEReportSourceEvidence = {
+  /** Proven photo-only fused quote, for the owner's preview label only. */
+  previewKind?: PIEReportPreviewKind;
   /** Schedule action words composed without its generated structured owner field (7.51). */
   scheduleActionSummary?: string;
   /** A Latest quote matched to the newest selected saved plain field note (4.81). */
@@ -290,7 +294,11 @@ export type PIEReportDecisionNeeded = {
   sourceEvidenceIds: string[];
 };
 
+export type PIEReportPreviewKind = 'field_note' | 'photo';
+
 export type PIEReportBullet = {
+  /** Presentation provenance, separate from the established written-report classification. */
+  previewKind?: PIEReportPreviewKind;
   id: string;
   text: string;
   kind:
@@ -706,9 +714,16 @@ export function collectReportEvidence(
     ? authoredLatest : rawRuntimeChanged;
   if (runtimeChanged && (authoredLatest || !isEmptyRuntimeSummary(runtimeChanged))) {
     const areaWords = writtenReportWhatChanged(runtime, { taskDate: false })?.replace(/\s+/g, ' ').trim() || runtimeChanged;
+    // Only a complete photo-only recipe backed by selected saved photos gets a Photo label.
+    // Arbitrary runtime prose, authored notes and confirmed comparisons keep their own classification.
+    const photoOnlyChange = fused?.userUpdateEvidence && fused.photoEvidence?.length && fused.scheduleEvidence &&
+      fused.photoEvidence.every(photo => updates.some(update => update.id === photo.updateId &&
+        update.photos.some(saved => (saved.caption || '') === (photo.caption || '')))) &&
+      runtimeChanged === whatChangedForWrittenReport({ userUpdateEvidence: [], photoEvidence: fused.photoEvidence, scheduleEvidence: [] }).replace(/\s+/g, ' ').trim();
     evidence.push({
       id: 'runtime-what-changed',
       source: 'runtime',
+      ...(photoOnlyChange ? { previewKind: 'photo' as const } : {}),
       authoredPlainLatest,
       preservesCapturedFor: Boolean(authoredLatest),
       preservedCapturedForText: authoredLatest,
@@ -1856,6 +1871,7 @@ function buildReportBulletsFromUnderstanding(
     .slice(0, Math.max(0, 3 - chosen.length))
     .map((text, index): PIEReportBullet => ({
       id: slug(`bullet-${area.id}-plain-${index}`),
+      previewKind: previewKindForLine(area, text) ?? 'field_note',
       text,
       kind: 'progress',
       sourceEvidenceIds: area.sourceEvidenceIds,
@@ -1883,7 +1899,10 @@ function lineWords(text: string) {
 }
 
 function lineSourceOf(item: PIEReportSourceEvidence): PIEWorkAreaLineSource {
+  const previewKind = item.source === 'photo' && !item.id.startsWith(CONFIRMED_PHOTO_NOTE_ID) ? 'photo' : item.previewKind ??
+    (item.authoredPlainLatest || isPlainFieldNote(item) ? 'field_note' : undefined);
   return {
+    ...(previewKind ? { previewKind } : {}),
     evidenceId: item.id,
     preservesCapturedFor: item.preservesCapturedFor,
     preservedCapturedForText: item.preservedCapturedForText,
@@ -1892,6 +1911,15 @@ function lineSourceOf(item: PIEReportSourceEvidence): PIEWorkAreaLineSource {
     photoId: item.photoId?.trim() ||
       (item.id.startsWith(CONFIRMED_PHOTO_NOTE_ID) ? item.id.slice(CONFIRMED_PHOTO_NOTE_ID.length) : null),
   };
+}
+
+/** 7.49: match the line's exact sources, never an area's unrelated photos or notes. */
+function previewKindForLine(area: PIEWorkAreaUnderstanding, summary: string, evidenceIds?: readonly string[]): PIEReportPreviewKind | undefined {
+  const sources = area.lineSources?.filter(source => evidenceIds
+    ? evidenceIds.includes(source.evidenceId) : source.words === lineWords(summary)) ?? [];
+  if (sources.length && sources.every(source => source.previewKind === 'photo')) return 'photo';
+  if (sources.length && sources.every(source => source.previewKind === 'field_note')) return 'field_note';
+  return undefined;
 }
 
 function lineMadeFrom(madeFrom: ReadonlyMap<string, ReportLineMadeFrom>, line: PIEReportBullet): ReportLineMadeFrom {
@@ -1982,8 +2010,12 @@ function linesAsBuild231ChoseThem(
   progressLines.slice(0, 3).forEach((summary, index) => {
     if (!summary || shouldSuppressReportBullet(summary, preservesCapturedFor(area, summary))) return;
     const id = slug(`bullet-${area.id}-progress-${index}`);
+    const sourceIds = area.progress.filter(item => normalizeName(item.summary) === normalizeName(summary))
+      .flatMap(item => item.sourceEvidenceIds);
+    const previewKind = previewKindForLine(area, summary, sourceIds);
     bullets.push({
       id,
+      ...(previewKind ? { previewKind } : {}),
       text: ensureSentence(summary),
       kind: 'progress',
       sourceEvidenceIds: area.sourceEvidenceIds,
