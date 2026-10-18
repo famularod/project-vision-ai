@@ -214,12 +214,18 @@ async function prepare(picked:Picked, saved:Saved, selected:string[]){
 }
 async function previouslyImported(picked:Picked, role:ScheduleImportRole='lookahead'):Promise<Saved>{
  const batch=await prepare(picked,{documents:[],items:[]},[A]);
- expect(batch.items.every(item=>item.projectName===A)).toBe(true);
- const save=approval([A,B]);await save.approveScheduleImport(withScheduleImportRole(batch,role));
- expect(save.cloudSync).toHaveBeenCalledTimes(1);
+ // RED2 setup correction: projectless rows need actual review assignment even with one selected project.
+ const before=JSON.stringify(batch);
+ const {view,save,onApprove}=await openReview(batch,{documents:[],items:[]},picked);
+ assign(view,batch.items.map(()=>A));await accept(view,role);
+ expect(onApprove).toHaveBeenCalledTimes(1);expect(save.cloudSync).toHaveBeenCalledTimes(1);
+ expect(save.gatewayRows).toHaveLength(1);
  const saved={documents:save.referenceDocumentsCurrentRef.current,items:save.scheduleItemsCurrentRef.current};
  expect(saved.documents.some(document=>document.importBatchId===batch.id)).toBe(true);
- expect(saved.items.length).toBeGreaterThan(0);return saved;
+ expect(saved.items.map(item=>[item.id,item.projectName])).toEqual(batch.items.map(item=>[item.id,A]));
+ expect(saved.documents[0]).toMatchObject({id:batch.documents[0].id,contentSha256:batch.documents[0].contentSha256,importBatchId:batch.id,projectNames:[A],scheduleRole:role});
+ expect(save.gatewayRows[0]).toMatchObject({id:batch.documents[0].id,document_data:{id:batch.documents[0].id,contentSha256:batch.documents[0].contentSha256,importBatchId:batch.id,projectNames:[A],scheduleRole:role}});
+ expect(JSON.stringify(batch)).toBe(before);view.unmount();return saved;
 }
 async function openReview(batch:PIEScheduleImportBatch,saved:Saved,picked:Picked){
  const save=approval([A,B],saved,picked);
