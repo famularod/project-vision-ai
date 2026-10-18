@@ -43,7 +43,9 @@ it.each(['Inspect 2026','2026 inspection','Unit 2026 punch list'])('3.30 actual 
 it('3.30 actual Core advice alone cannot rename the same saved note; all printed lines retain exact words/order',()=>{
  const w=world();const advised=buildDailyProjectUpdate({...w.input,runtime:{situationIntelligence:w.core.situationIntelligence}} as any);
  expect(advised.sourceEvidence.some(e=>e.id==='runtime-current-situation'&&e.summary.includes('Inspect 2026'))).toBe(true);
- expect(bullets(advised)).toEqual(bullets(w.direct));
+ expect(bullets(advised).map(({sources,...line})=>line)).toEqual(bullets(w.direct).map(({sources,...line})=>line));
+ // Existing advice provenance remains attached; this repair only changes printed names.
+ expect(bullets(advised)[0].sources).toContain('runtime-current-situation');
  expect(noteAreas(advised,w.updates[0].notes).map(a=>a.title)).toEqual(noteAreas(w.direct,w.updates[0].notes).map(a=>a.title));
 });
 it('3.30 literal generic project remains its actual Project heading, never fallback note prose/year',()=>{
