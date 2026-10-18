@@ -1,0 +1,36 @@
+jest.mock('@react-native-async-storage/async-storage',()=>({__esModule:true,default:{getItem:jest.fn(async()=>null),setItem:jest.fn(async()=>undefined),removeItem:jest.fn(async()=>undefined)}}));
+import React,{useState,useRef} from 'react';import {act,fireEvent,render,screen,waitFor} from '@testing-library/react-native';import fs from 'fs';import path from 'path';import ts from 'typescript';
+import {DocumentUploadDetailsSheet} from '../../components/document-upload-details-sheet';
+import {bindProjectDocumentUploadToAccount} from '../../services/ProjectDocumentUploadRetry';
+import {noteSignedInOwner} from '../../services/CloudOwnerBinding';
+const app=fs.readFileSync(path.resolve(__dirname,'../../App.tsx'),'utf8'),ast=ts.createSourceFile('App.tsx',app,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX),functions=new Map<string,string>();
+(function visit(n:ts.Node){if(ts.isFunctionDeclaration(n)&&n.name)functions.set(n.name.text,n.getText(ast));ts.forEachChild(n,visit);})(ast);
+const names=['confirmDocumentProjectSelection','confirmAndAttachProjectDocument','saveProjectDocument','addProjectDocumentDurably','persistProjectDocumentsImmediately','duplicateProjectDocumentForAsset','promptDocumentProjectSelection','cancelDocumentProjectSelection','cancelScheduleImport'];
+const js=ts.transpileModule(names.map(n=>functions.get(n)).join('\n')+'\nreturn {'+names.join(',')+'};',{compilerOptions:{target:ts.ScriptTarget.ES2020,module:ts.ModuleKind.CommonJS}}).outputText;
+const flush=async()=>{for(let i=0;i<8;i++)await new Promise<void>(r=>setImmediate(r));};
+it.each(['request','review'])('same mounted workspace: slow acknowledged duplicate must not overwrite newer %s',async facet=>{
+ noteSignedInOwner('same-owner');let release!:()=>void;const pending=new Promise<void>(r=>release=r);let currentRequest:any;let currentApi:any;let operation:Promise<void>|undefined;let diskStarted=false;let writes=0;const reviews:any[]=[],screens:string[]=[],questions:any[]=[],durable:any[]=[];
+ const original={id:'original',projectId:'P1-id',name:'old.pdf',category:'Schedule',mimeType:'application/pdf',sizeBytes:4,status:'uploaded',ownedFileId:'original-owned',localUri:'file:///old-owned.pdf'};
+ const made={...original,id:'new-duplicate',ownedFileId:'new-owned',localUri:'file:///new-owned.pdf',status:'local'};const current={current:[original] as any[]};const initialRequest={asset:{uri:'file:///picker/old.pdf',name:'old.pdf'},selected:new Set(['P1']),category:'Schedule',attachToDraft:false,areaId:null,updateId:null,drawingControls:{}};
+ function MountedSameAppState(){const [request,setRequest]=useState<any>(initialRequest);currentRequest=request;
+  const documentUploadRequestEpochRef=useRef(0);
+  const deps:any={documentUploadRequestEpochRef,documentUploadRequest:request,setDocumentUploadRequest:setRequest,projectDocumentsCurrentRef:current,projectDocuments:[original],referenceDocumentsCurrentRef:{current:[]},projectScheduleImportCardRef:{current:null},bindProjectDocumentUploadToAccount,
+   prepareScheduleImportFromAsset:async()=>({id:'old-batch',nothingRead:true,message:'Unread.',documents:[{uri:'file:///old-review-copy.pdf'}]}),createProjectDocumentFromAsset:async()=>made,validateECOSMobileDrawingControls:()=>({valid:true}),
+   PROJECT_DOCUMENTS_STORAGE_KEY:'synthetic',persistStorageItem:async(_k:string,text:string)=>{diskStarted=true;await pending;writes++;durable.push(...JSON.parse(text));},deleteOwnedProjectDocument:async()=>{},reportStoragePersistenceFailure:()=>{},setProjectDocuments:()=>{},retryProjectDocumentUpload:async()=>false,
+   setIncomingScheduleImportBatch:(b:any)=>reviews.push(b),setScheduleProjectFilter:()=>{},setScreen:(s:string)=>screens.push(s),deleteStoredReferenceDocument:async()=>{},
+   Alert:{alert:(...args:any[])=>questions.push(args)},authorityProjectId:()=> 'P1-id',suggestProjectDocumentCategory:()=> 'Other',createECOSMobileDrawingControls:()=>({}),attachProjectDocumentToDraft:async()=>{},
+  };
+  currentApi=new Function(...Object.keys(deps),js)(...Object.values(deps));
+  return <DocumentUploadDetailsSheet visible={!!request} projects={['P1']} selectedProjects={request?.selected??new Set()} categories={['Schedule','Other']} selectedCategory={request?.category??'Other'} onCategoryChange={()=>{}} onToggleProject={()=>{}} onClose={currentApi.cancelDocumentProjectSelection} onConfirm={()=>{operation=currentApi.confirmDocumentProjectSelection();return operation;}}/>;
+ }
+ const view=render(<MountedSameAppState/>);
+ try{
+  fireEvent.press(screen.getByRole('button',{name:'Add Schedule to 1 Project'}));await act(async()=>{await flush()});const q=questions.find(x=>x[0]==='Possible duplicate document');expect(q).toBeDefined();
+  await act(async()=>{q[2].find((x:any)=>x.text==='Upload Anyway').onPress();await flush()});expect(diskStarted).toBe(true);
+  if(currentRequest){const close=screen.getByRole('button',{name:'Close Document Details'});expect(close.props.disabled).not.toBe(true);fireEvent.press(close);}
+  expect(currentRequest).toBeNull();await act(async()=>{currentApi.promptDocumentProjectSelection({uri:'file:///picker/second.pdf',name:'second.pdf'},'P1');});expect(currentRequest.asset.name).toBe('second.pdf');const reviewsBefore=reviews.length,screensBefore=screens.length;
+  await act(async()=>{release();await operation;await flush()});expect(writes).toBe(1);expect(durable.find(x=>x.id==='new-duplicate')).toBeDefined();
+  const trace={facet,latestRequest:currentRequest?.asset?.name??null,additionalReviews:reviews.length-reviewsBefore,additionalScreenChanges:screens.slice(screensBefore),durableIds:durable.map(x=>x.id)};fs.writeFileSync('../stale-request-'+facet+'.json',JSON.stringify(trace,null,2)+'\n');
+  if(facet==='request')expect(currentRequest?.asset?.name).toBe('second.pdf');else {expect(reviews.length-reviewsBefore).toBe(0);expect(screens.slice(screensBefore)).toEqual([]);}
+ }finally{release();await act(async()=>{await operation;await flush()});view.unmount();}
+});
