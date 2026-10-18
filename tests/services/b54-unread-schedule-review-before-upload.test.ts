@@ -18,17 +18,19 @@ function deferred() {
   return { promise, resolve };
 }
 type Card = { id: string; projectId: string; name: string; category: string; ownedFileId: string; localUri: string; status: string; mimeType: string; sizeBytes: number };
-type Notice = { title: string; message: string };
-function device(options: { pendingDisk?: boolean; pendingUpload?: boolean; offline?: boolean; failDiskAt?: number } = {}) {
+type Notice = { title: string; message: string; buttons?: Array<{ text: string; onPress?: () => void }> };
+function device(options: { pendingDisk?: boolean; pendingUpload?: boolean; offline?: boolean; failDiskAt?: number; duplicate?: boolean } = {}) {
   const disk = deferred(), upload = deferred();
   const events: string[] = [], notices: Notice[] = [], reviews: unknown[] = [];
-  let records: Card[] = [], writes = 0, created = 0;
+  const existing: Card[] = options.duplicate ? [{ id: 'existing-document', projectId: 'project:First Project', name: 'test.pdf', category: 'Schedule', ownedFileId: 'existing-owned', localUri: 'file:///owned/existing.pdf', status: 'uploaded', mimeType: 'application/pdf', sizeBytes: 100 }] : [];
+  let records: Card[] = [...existing], writes = 0, created = 0;
   let owner = 'first-owner';
-  const current = { current: [] as Card[] };
+  const current = { current: [...existing] };
+  const reviewCard = { current: null as { batchId: string; documentId: string } | null };
   const deps: Record<string, unknown> = {
     documentUploadRequest: null, setDocumentUploadRequest: () => undefined, projectDocumentsCurrentRef: current,
-    projectDocuments: [], referenceDocumentsCurrentRef: { current: [] },
-    projectScheduleImportCardRef: { current: null },
+    projectDocuments: [...existing], referenceDocumentsCurrentRef: { current: [] },
+    projectScheduleImportCardRef: reviewCard,
     bindProjectDocumentUploadToAccount: () => { const startedAs = owner; return () => owner === startedAs; },
     validateECOSMobileDrawingControls: () => ({ valid: true }),
     authorityProjectId: (name: string) => `project:${name}`,
@@ -57,7 +59,7 @@ function device(options: { pendingDisk?: boolean; pendingUpload?: boolean; offli
     setIncomingScheduleImportBatch: (batch: unknown) => { events.push('review'); reviews.push(batch); },
     setScheduleProjectFilter: () => undefined, setScreen: () => undefined,
     cancelScheduleImport: jest.fn(),
-    Alert: { alert: (title: string, message: string) => { notices.push({ title, message }); events.push(`notice:${title}`); } },
+    Alert: { alert: (title: string, message: string, buttons?: Notice['buttons']) => { notices.push({ title, message, buttons }); events.push(`notice:${title}`); } },
   };
   const names = ['confirmDocumentProjectSelection', 'confirmAndAttachProjectDocument', 'saveProjectDocument', 'addProjectDocumentDurably', 'duplicateProjectDocumentForAsset'];
   for (const name of names) if (!functions.has(name)) throw Error(`Missing actual App closure ${name}`);
@@ -66,7 +68,13 @@ function device(options: { pendingDisk?: boolean; pendingUpload?: boolean; offli
   }).outputText;
   // Each confirmation receives the captured selection for that one operation.
   return {
-    disk, upload, events, notices, reviews, current, saved: () => records, switchAccount: () => { owner = 'second-owner'; },
+    disk, upload, events, notices, reviews, current, reviewCard, saved: () => records, switchAccount: () => { owner = 'second-owner'; },
+    choose: (text: string) => {
+      const question = notices.find(notice => notice.title === 'Possible duplicate document');
+      const button = question?.buttons?.find(choice => choice.text === text);
+      if (!button?.onPress) throw Error(`No duplicate choice ${text}`);
+      button.onPress();
+    },
     async add(category = 'Schedule', projects = ['First Project']) {
       const values = { ...deps, documentUploadRequest: { asset: { uri: 'file:///picker/test.pdf', name: 'test.pdf' }, selected: new Set(projects), category, attachToDraft: false, areaId: null, updateId: null, drawingControls: {} } };
       const run = new Function(...Object.keys(values), code)(...Object.values(values)) as { confirmDocumentProjectSelection: () => Promise<void> };
@@ -145,4 +153,23 @@ it('an account change during the first deferred upload prevents the second uploa
   const operation = phone.add('Schedule', ['First Project', 'Second Project']);
   await flush(); phone.switchAccount(); phone.upload.resolve(); await operation; await flush();
   expect(phone.events.filter(event => event.startsWith('upload:'))).toEqual(['upload:document-1']);
+});
+it('5.31 does not claim a saved duplicate or open the schedule review before the owner answers the question', async () => {
+  const phone = device({ duplicate: true });
+  const operation = phone.add();
+  try {
+    await flush();
+    expect(phone.notices.map(notice => notice.title)).toContain('Possible duplicate document');
+    expect(phone.saved().map(card => card.id)).toEqual(['existing-document']);
+    expect(phone.reviews).toEqual([]);
+    expect(phone.reviewCard.current).toBeNull();
+  } finally { phone.choose('Cancel'); await operation; await flush(); }
+});
+it('5.31 Upload Anyway ties the review to the newly kept duplicate card, after that card is durable', async () => {
+  const phone = device({ duplicate: true });
+  const operation = phone.add(); await flush(); phone.choose('Upload Anyway'); await operation; await flush();
+  expect(phone.saved()).toHaveLength(2);
+  expect(phone.reviews).toHaveLength(1);
+  expect(phone.reviewCard.current).toEqual({ batchId: 'review-1', documentId: 'document-1' });
+  expect(phone.saved()[0].id).toBe('document-1');
 });
