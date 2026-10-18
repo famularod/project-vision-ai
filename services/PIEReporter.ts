@@ -1197,7 +1197,9 @@ export function buildProjectNarrative(
   legacyCandidateCaps = false,
 ): PIEProjectNarrative {
   // Select and merge exactly as before. Printed ownership never awards a new cap.
-  const ownership = new Map<string, ReportLineOwnership>();
+  // Legacy rendered IDs can collide across projects; ownership belongs to
+  // the actual selected bullet, whose object survives the legacy merge.
+  const ownership = new WeakMap<PIEReportBullet, ReportLineOwnership>();
   const sourceNames = new Map(understanding.workAreas.flatMap(area =>
     (area.lineSources ?? []).map(source => [source.evidenceId, source.printedAreaName] as const)));
   const legacyLocationGroups = understanding.locationGroups.map(group => ({
@@ -1292,13 +1294,13 @@ function selectedLineOwnership(
  */
 function printedRunsOfSelectedArea(
   area: PIEReportWorkArea,
-  ownership: ReadonlyMap<string, ReportLineOwnership>,
+  ownership: WeakMap<PIEReportBullet, ReportLineOwnership>,
   sourceNames: ReadonlyMap<string, string | undefined>,
 ): PIEReportWorkArea[] {
-  if (!area.bullets.length || area.bullets.every(line => (ownership.get(line.id)?.name || area.title) === area.title)) return [area];
+  if (!area.bullets.length || area.bullets.every(line => (ownership.get(line)?.name || area.title) === area.title)) return [area];
   const runs: PIEReportWorkArea[] = [];
   area.bullets.forEach(line => {
-    const title = ownership.get(line.id)?.name || area.title;
+    const title = ownership.get(line)?.name || area.title;
     const previous = runs.at(-1);
     if (previous?.title === title) { previous.bullets.push(line); return; }
     runs.push({
@@ -1309,7 +1311,7 @@ function printedRunsOfSelectedArea(
     });
   });
   const runOf = (ids: readonly string[]) => {
-    const byLine = runs.find(run => run.bullets.some(line => ownership.get(line.id)?.evidenceIds.some(id => ids.includes(id))));
+    const byLine = runs.find(run => run.bullets.some(line => ownership.get(line)?.evidenceIds.some(id => ids.includes(id))));
     if (byLine) return byLine;
     const names = uniqueText(ids.map(id => sourceNames.get(id) || '').filter(Boolean));
     return (names.length === 1 ? runs.find(run => run.title === names[0]) : undefined) || runs[0];
@@ -2014,7 +2016,7 @@ function buildReportBulletsFromUnderstanding(
   area: PIEWorkAreaUnderstanding,
   actionItems: PIEReportActionItem[],
   legacyCandidateCaps = false,
-  ownership?: Map<string, ReportLineOwnership>,
+  ownership?: WeakMap<PIEReportBullet, ReportLineOwnership>,
 ): PIEReportBullet[] {
   const { lines: chosen, uncited, madeFrom } = linesAsBuild231ChoseThem(area, actionItems, legacyCandidateCaps);
   const progressKeys = new Set(area.progress.map(item => normalizeName(item.summary)));
@@ -2044,7 +2046,7 @@ function buildReportBulletsFromUnderstanding(
     area.imageReferences.every(reference => lineIsOfPhoto(area, lineMadeFrom(madeFrom, filling[0]), reference))
   ) {
     const selected = [{ ...filling[0], text: `${stripTerminalPunctuation(filling[0].text)}. ${chosen[0].text}` }];
-    if (ownership) selected.forEach(line => ownership.set(line.id, selectedLineOwnership(area, line, lineMadeFrom(madeFrom, filling[0]))));
+    if (ownership) selected.forEach(line => ownership.set(line, selectedLineOwnership(area, line, lineMadeFrom(madeFrom, filling[0]))));
     return selected;
   }
 
@@ -2052,7 +2054,7 @@ function buildReportBulletsFromUnderstanding(
   if (ownership) selected.forEach(line => {
     // Plain notes retain their pre-citation words for exact source matching.
     const original = filling.find(note => note.id === line.id) || line;
-    ownership.set(line.id, selectedLineOwnership(area, line, lineMadeFrom(madeFrom, original)));
+    ownership.set(line, selectedLineOwnership(area, line, lineMadeFrom(madeFrom, original)));
   });
   return selected;
 }
