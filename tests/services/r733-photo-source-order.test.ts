@@ -74,3 +74,17 @@ it('7.33 preserves distinct attachments, authored photo order, task/area/words c
  changed(copy=>{copy[0].notes='An actual changed field observation.';});
  expect(JSON.stringify(rows)).toBe(before);
 });
+
+import {buildDAVEProjectTruth,daveProjectTruthAsBuilt} from '../../services/DAVEProjectTruth';
+import {buildDAVELegacyReportSourceFingerprint} from '../../services/DAVEReportIntelligence';
+it('7.33 preserves the original raw as-built fingerprint and latest-note date/ID tie order',()=>{
+ const rows=twins('Same caption');
+ for(const updates of [rows,[...rows].reverse()]) {
+  const raw=buildDAVEProjectTruth({projectId:PROJECT,projectName:'Tower',updates,scheduleItems:tasks as never,knownScheduleItems:tasks as never,knownScheduleDocuments:[],reportLookaheadReplacement:true,projectAreas:[],referenceDocuments:[],now:NOW});
+  const adapted=nativeTruths(updates);
+  expect(daveProjectTruthAsBuilt(adapted[0]).evidence.records).toEqual(raw.evidence.records);
+  expect(buildDAVELegacyReportSourceFingerprint(adapted)).toBe(buildDAVELegacyReportSourceFingerprint([raw]));
+ }
+ const ordered=fieldUpdatesNewestFirst(rows);expect(ordered.map(u=>u.id)).toEqual(['update-2','update-1']);
+ expect(fieldUpdatesNewestFirst([...rows].reverse()).map(u=>u.id)).toEqual(ordered.map(u=>u.id));
+});
