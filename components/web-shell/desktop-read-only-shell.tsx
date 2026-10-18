@@ -3910,7 +3910,7 @@ function DocumentManagementWorkspace({
   const archiveContextRef = useRef(archiveContext);
   archiveContextRef.current = archiveContext;
   useEffect(() => { archiveMountedRef.current = true; return () => { archiveMountedRef.current = false; }; }, []);
-  useEffect(() => { setArchiveQuestion(null); setArchivePending(null); archiveOperationRef.current = null; }, [archiveContext]);
+  useEffect(() => { setArchiveQuestion(null); setArchivePending(null); setNotice(null); archiveOperationRef.current = null; }, [archiveContext]);
   const router = useRouter();
   const { width, height } = useWindowDimensions();
   const compactWorkspace = width < 1120;
