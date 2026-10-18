@@ -150,6 +150,14 @@ export class DAVEWebSignOutNeedsConnectionError extends Error {
   }
 }
 
+/** The server asked this sign-out's refresh to wait; the session remains signed in. */
+export class DAVEWebSignOutWaitError extends Error {
+  constructor() {
+    super('The sign-in server asked Vitruvius to wait because of too many requests. Nothing was signed out. Wait a few minutes and try again.');
+    this.name = 'DAVEWebSignOutWaitError';
+  }
+}
+
 export type DAVEWebTaskMutationErrorCode =
   | 'conflict'
   | 'deleted'
@@ -746,7 +754,11 @@ export function createDAVEWebSupabaseGateway(
       let confirmedByCloud = true;
       if (scope === 'global') {
         // The sign-out's own refresh is not held back by a "too many requests" wait.
-        const { error } = await (signInGuard?.signingOut ? signInGuard.signingOut('everywhere', askAuth) : askAuth());
+        let serverAskedToWait = false;
+        const { error } = await (signInGuard?.signingOut
+          ? signInGuard.signingOut('everywhere', askAuth, () => { serverAskedToWait = true; })
+          : askAuth());
+        if (error && serverAskedToWait) throw new DAVEWebSignOutWaitError();
         if (error && isAuthRetryableFetchError(error)) throw new DAVEWebSignOutNeedsConnectionError();
         if (error) throw new Error('The desktop session could not be closed.');
       } else {

@@ -249,9 +249,10 @@ export type DAVEWebSignInRefreshGuard = Readonly<{
    * Computer; 'everywhere': Sign Out of All Devices). Its own refresh is not
    * held back by a "too many requests" wait, and for 'here' nothing the
    * server does or fails to do keeps `work` waiting for more than a few
-   * seconds. Resolves or rejects as `work` does.
+   * seconds. Resolves or rejects as `work` does. `onServerWait` reports only this
+   * operation being held by a server-requested refresh wait; it never changes auth state.
    */
-  signingOut: <T>(where: 'here' | 'everywhere', work: () => Promise<T>) => Promise<T>;
+  signingOut: <T>(where: 'here' | 'everywhere', work: () => Promise<T>, onServerWait?: () => void) => Promise<T>;
   /**
    * After a sign-out run inside `signingOut`: whether the sign-in server's own answers mean that sign-in is
    * over there too. It took the sign-out, or said that sign-in is not there, or refused its token. False
@@ -346,7 +347,7 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
   /** Ends the watch `vouchedFor` started, without telling the page anything. */
   let stopWatching: (() => void) | null = null;
   /** The sign-out under way in this tab: whether it is of this computer only, until when the server is waited for, and whether its one refresh has gone out. */
-  let leaving: { here: boolean; until: number; refreshSent: boolean } | null = null;
+  let leaving: { here: boolean; until: number; refreshSent: boolean; onServerWait?: () => void } | null = null;
   /** Whether the server's own answers during the last sign-out in this tab mean that sign-in is over there too. */
   let signOutConfirmed = false;
   /** Until when the sign-in server asked this tab not to refresh. */
@@ -378,8 +379,8 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
     });
   }
 
-  async function signingOut<T>(where: 'here' | 'everywhere', work: () => Promise<T>): Promise<T> {
-    const mine = { here: where === 'here', until: Date.now() + DAVE_WEB_SIGN_OUT_HERE_LIMIT_MS, refreshSent: false };
+  async function signingOut<T>(where: 'here' | 'everywhere', work: () => Promise<T>, onServerWait?: () => void): Promise<T> {
+    const mine = { here: where === 'here', until: Date.now() + DAVE_WEB_SIGN_OUT_HERE_LIMIT_MS, refreshSent: false, onServerWait };
     leaving = mine;
     signOutConfirmed = false;
     try {
@@ -736,7 +737,12 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
     /** The sign-out this refresh is part of, if one is under way in this tab (review pass 1, web L3). */
     const signOut = grant === 'refresh_token' ? leaving : null;
     /** What a refresh that cannot be done just now is answered with: final for Sign Out of This Computer. */
-    const notNow = () => (signOut?.here ? signOutWithoutRefresh() : askedToWait());
+    const notNow = () => {
+      if (signOut?.here) return signOutWithoutRefresh();
+      // Report this operation's server-requested wait without changing the retryable response auth-js needs.
+      signOut?.onServerWait?.();
+      return askedToWait();
+    };
     // Inside the wait the server asked for, only a sign-out's own refresh goes out, and only once.
     if (grant === 'refresh_token' && Date.now() < refreshWaitsUntil && (!signOut || signOut.refreshSent)) return notNow();
     if (signOut) signOut.refreshSent = true;
