@@ -21,6 +21,8 @@
  * the schedule service's network call and the phone's storage are made up. Made-up project and files.
  */
 const mockDisk = new Map<string, Uint8Array>();
+let mockCopyFailureAt: number | undefined;
+let mockCopies = 0;
 
 jest.mock('@react-native-async-storage/async-storage', () => ({
   __esModule: true,
@@ -36,7 +38,7 @@ jest.mock('expo-file-system', () => {
     copy(destination: { uri: string }) {
       const bytes = mockDisk.get(this.uri);
       return new Promise<void>((resolve, reject) => setTimeout(() => {
-        if (!bytes) return reject(new Error('The native copy failed.'));
+        if (!bytes || ++mockCopies === mockCopyFailureAt) return reject(new Error('The native copy failed.'));
         mockDisk.set(destination.uri, bytes.slice());
         resolve();
       }, 0));
@@ -161,11 +163,12 @@ type Picked = Readonly<{ name: string; bytes: Uint8Array }>;
 type Category = 'Schedule' | 'Other' | 'Drawing';
 
 /** One phone: its storage, its document list, what it shows and says. */
-function phone(options: Readonly<{ storageFails?: boolean; storageFailsAt?: number }> = {}) {
+function phone(options: Readonly<{ storageFails?: boolean; storageFailsAt?: number; copyFailsAt?: number; uploadThrowsAt?: number; uploadStatus?: ProjectDocument['status'] }> = {}) {
+  mockCopyFailureAt = options.copyFailsAt;
   const storage = new Map<string, string>();
   const projectDocumentsCurrentRef = { current: [] as ProjectDocument[] };
   const projectScheduleImportCardRef = { current: null as null | { batchId: string; documentId: string } };
-  const alerts: Array<{ title: string; message: string; buttons?: Array<{ text: string }> }> = [];
+  const alerts: Array<{ title: string; message: string; buttons?: Array<{ text: string; onPress?: () => void }> }> = [];
   const uploadAttempts: string[] = [];
   const deletedReferenceCopies: string[] = [];
   const opened: PIEScheduleImportBatch[] = [];
@@ -174,7 +177,7 @@ function phone(options: Readonly<{ storageFails?: boolean; storageFailsAt?: numb
   let picks = 0;
   let ids = 0;
 
-  const Alert = { alert: (title: string, message: string, buttons?: Array<{ text: string }>) => { alerts.push({ title, message, buttons }); } };
+  const Alert = { alert: (title: string, message: string, buttons?: Array<{ text: string; onPress?: () => void }>) => { alerts.push({ title, message, buttons }); } };
   const shared: Record<string, unknown> = {
     Alert, screen: 'ProjectDocuments',
     // The projects
@@ -225,7 +228,18 @@ function phone(options: Readonly<{ storageFails?: boolean; storageFailsAt?: numb
     cleanupProjectDocumentOwnedFileForRecordRemoval,
     reportStoragePersistenceFailure: () => undefined,
     /** The upload tried at once, as for any add; with no signal it fails and the document waits (App.tsx retryProjectDocumentUpload). */
-    retryProjectDocumentUpload: async (documentId: string) => { uploadAttempts.push(documentId); return false; },
+    retryProjectDocumentUpload: async (documentId: string) => {
+      uploadAttempts.push(documentId);
+      if (uploadAttempts.length === options.uploadThrowsAt) throw new Error('Synthetic unexpected upload failure.');
+      // Only the uploader I/O boundary is synthetic. Persist its new status to
+      // the same storage and ref the actual selection closure must read.
+      if (options.uploadStatus) {
+        const next = projectDocumentsCurrentRef.current.map(card => card.id === documentId ? { ...card, status: options.uploadStatus! } : card);
+        await (shared.persistStorageItem as (key:string,value:string)=>Promise<void>)(STORAGE_KEY,JSON.stringify(next));
+        projectDocumentsCurrentRef.current = next;
+      }
+      return options.uploadStatus === 'uploaded';
+    },
     attachProjectDocumentToDraft: async () => undefined,
     setDocumentUploadRequest: () => undefined,
     validateECOSMobileDrawingControls: () => ({ valid: true }),
@@ -269,11 +283,12 @@ function phone(options: Readonly<{ storageFails?: boolean; storageFailsAt?: numb
     return fns.importScheduleFile();
   }
 
+  const cancelSelection = compile<{cancelDocumentProjectSelection:()=>void}>(['cancelDocumentProjectSelection'],shared).cancelDocumentProjectSelection;
   const cancelScheduleImport = compile<{ cancelScheduleImport: (batch: PIEScheduleImportBatch) => void }>(['cancelScheduleImport'], shared).cancelScheduleImport;
   /** The cards Documents lists after a restart: what the phone saved. */
   const savedCards = () => JSON.parse(storage.get(STORAGE_KEY) || '[]') as ProjectDocument[];
 
-  return { addInDocuments, addInTasks, cancelScheduleImport, savedCards, projectDocumentsCurrentRef, projectScheduleImportCardRef, alerts, uploadAttempts, deletedReferenceCopies, opened, screens };
+  return { cancelSelection, addInDocuments, addInTasks, cancelScheduleImport, savedCards, projectDocumentsCurrentRef, projectScheduleImportCardRef, alerts, uploadAttempts, deletedReferenceCopies, opened, screens };
 }
 
 /** The review as the Schedule screen shows it, opened on the batch Documents handed over. */
@@ -294,6 +309,7 @@ function review(batch: PIEScheduleImportBatch, onCancel: (batch: PIEScheduleImpo
 
 beforeEach(() => {
   mockDisk.clear();
+  mockCopies = 0;mockCopyFailureAt = undefined;
   schedule = NO_SIGNAL;
 });
 
@@ -305,4 +321,29 @@ it.each(['Schedule','Other'] as const)('5.29 %s: second project storage failure 
  expect(projectDocumentsAwaitingUpload(device.savedCards()).map(x=>x.id)).toEqual([card.id]);
  const alert=device.alerts.at(-1)!;expect(alert.title).toBe('Some document copies were saved');expect(alert.message).toContain(PROJECT);expect(alert.message).toContain('Second Project');expect(alert.message).toContain('Third Project');expect(alert.message).toContain('waiting to upload');expect(alert.message).not.toContain('The selected file was not uploaded.');expect(device.opened).toEqual([]);
  expect([...mockDisk.keys()].filter(uri=>uri.startsWith(OWNED_ROOT)&&uri.endsWith('.pdf'))).toEqual([card.localUri]);
+});
+
+it.each(['Schedule','Other'] as const)('5.29 %s zero-success storage failure retains the existing single-copy guidance',async category=>{
+ const device=phone({storageFailsAt:1});await device.addInDocuments(F1,category,[PROJECT,'Second Project']);expect(device.savedCards()).toEqual([]);expect(device.uploadAttempts).toEqual([]);expect(device.alerts.at(-1)?.message).toBe('Vitruvius could not save this document record. The selected file was not uploaded.');expect(device.alerts.at(-1)?.title).not.toBe('Some document copies were saved');expect([...mockDisk.keys()].filter(uri=>uri.startsWith(OWNED_ROOT)&&uri.endsWith('.pdf'))).toEqual([]);
+});
+it('5.29 two confirmed copies are named, the failing presave card is excluded, and no remainder is invented',async()=>{
+ const device=phone({storageFailsAt:3});await device.addInDocuments(F1,'Other',[PROJECT,'Second Project','Third Project']);expect(device.savedCards()).toHaveLength(2);const alert=device.alerts.at(-1)!;expect(alert.title).toBe('Some document copies were saved');expect(alert.message).toContain(`“F1.pdf” — ${PROJECT} (waiting to upload).`);expect(alert.message).toContain('“F1.pdf” — Second Project (waiting to upload).');expect(alert.message).toContain('The copy for Third Project was not saved.');expect(alert.message).not.toContain('“F1.pdf” — Third Project');expect(alert.message).not.toContain('Not attempted:');
+});
+it('5.29 copy failure after one durable card leaves that card retryable and reports the remaining projects',async()=>{
+ const device=phone({copyFailsAt:2});await device.addInDocuments(F1,'Other',[PROJECT,'Second Project','Third Project']);expect(device.savedCards()).toHaveLength(1);expect(device.alerts.at(-1)?.title).toBe('Some document copies were saved');expect(device.alerts.at(-1)?.message).toContain('Not attempted: Third Project.');expect(projectDocumentsAwaitingUpload(device.savedCards())).toHaveLength(1);
+});
+it('5.29 a first copy failure and selection cancel never claim a saved copy or upload',async()=>{
+ const device=phone({copyFailsAt:1});device.cancelSelection();expect(device.alerts).toEqual([]);expect(device.savedCards()).toEqual([]);await device.addInDocuments(F1,'Other',[PROJECT]);expect(device.savedCards()).toEqual([]);expect(device.uploadAttempts).toEqual([]);expect(device.alerts.at(-1)?.title).toBe('Document unavailable');
+});
+it('5.29 a pre-existing duplicate and canceled Upload Anyway are not this attempt’s durable success',async()=>{
+ const device=phone({storageFailsAt:2});await device.addInDocuments(F1,'Other');const before=device.savedCards()[0];await device.addInDocuments(F1,'Other',[PROJECT,'Second Project','Third Project']);const duplicate=device.alerts.find(a=>a.title==='Possible duplicate document')!;expect(duplicate).toBeTruthy();expect(device.alerts.at(-1)?.title).toBe('Document unavailable');expect(device.alerts.at(-1)?.message).not.toContain('Some document copies were saved');duplicate.buttons!.find(b=>b.text==='Cancel')!.onPress!();await new Promise(r=>setTimeout(r,20));expect(device.savedCards()).toEqual([before]);expect(mockDisk.get(before.localUri!)).toEqual(F1.bytes);expect(device.uploadAttempts).toEqual([before.id]);
+});
+it('5.29 a failure after persistence still acknowledges the card and never calls it unsaved',async()=>{
+ const device=phone({uploadThrowsAt:1});await device.addInDocuments(F1,'Other',[PROJECT,'Second Project']);expect(device.savedCards()).toHaveLength(1);expect(device.alerts.at(-1)?.message).toContain(`The add for ${PROJECT} did not finish.`);expect(device.alerts.at(-1)?.message).not.toContain(`The copy for ${PROJECT} was not saved.`);expect(device.alerts.at(-1)?.message).toContain('Not attempted: Second Project.');
+});
+it.each(['uploaded','failed'] as const)('5.29 the notice uses the actual durable %s status rather than the pre-save card',async status=>{
+ const device=phone({storageFailsAt:3,uploadStatus:status});await device.addInDocuments(F1,'Other',[PROJECT,'Second Project']);expect(device.savedCards()[0].status).toBe(status);expect(device.alerts.at(-1)?.message).toContain(status==='uploaded'?'file uploaded':'upload needs retry');expect(device.alerts.at(-1)?.message).not.toContain('waiting to upload');
+});
+it.each(['Schedule','Other'] as const)('5.29 successful %s multi-project adds retain their independent cards and behavior',async category=>{
+ const device=phone();await device.addInDocuments(F1,category,[PROJECT,'Second Project']);expect(device.savedCards()).toHaveLength(2);expect(device.uploadAttempts).toHaveLength(2);expect(device.alerts).toEqual([]);expect(device.opened).toHaveLength(category==='Schedule'?1:0);for(const card of device.savedCards())expect(mockDisk.get(card.localUri!)).toEqual(F1.bytes);
 });
