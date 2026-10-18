@@ -718,7 +718,7 @@ export function collectReportEvidence(
     // Arbitrary runtime prose, authored notes and confirmed comparisons keep their own classification.
     const photoOnlyChange = fused?.userUpdateEvidence && fused.photoEvidence?.length && fused.scheduleEvidence &&
       fused.photoEvidence.every(photo => updates.some(update => update.id === photo.updateId &&
-        update.photos.some(saved => (saved.caption || '') === (photo.caption || '')))) &&
+        update.photos.some(saved => (saved.caption || '').trim() === (photo.caption || '').trim()))) &&
       runtimeChanged === whatChangedForWrittenReport({ userUpdateEvidence: [], photoEvidence: fused.photoEvidence, scheduleEvidence: [] }).replace(/\s+/g, ' ').trim();
     evidence.push({
       id: 'runtime-what-changed',
