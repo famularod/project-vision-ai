@@ -105,7 +105,7 @@ export function scheduleImportPairingWording(question: ScheduleImportPairingQues
     : `Saved ${question.taskName} ${index + 1}: ${savedLabel(item)}`);
   if (question.returning) {
     return {
-      intro: 'This task was on an earlier schedule and is not in your list now. If this file brings the same task back, its percent, notes and what you set on it come back with it. Nothing is carried unless you say it is the same task.',
+      intro: 'This task was on an earlier schedule and is not in your list now. If this file brings the same task back, its notes and what you set on it come back with it. Your own percent is kept unless this file states a higher percent. Nothing is carried unless you say it is the same task.',
       savedTitle, rowOption: row => `The same task: ${rowLabel(row)}`, none: 'New work',
     };
   }

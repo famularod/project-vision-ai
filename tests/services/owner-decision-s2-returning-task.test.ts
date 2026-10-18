@@ -1,3 +1,5 @@
+import { createElement } from 'react';
+import { render } from '@testing-library/react-native';
 /*
  * Build 231, schedule batch S2, item 1 (the coordinator's decisions of 6 Oct 2026 on "a task one master leaves out
  * and a later master lists again"; older Medium, the same on Build 229).
@@ -12,7 +14,7 @@
  *  (c) A task that was 100% is asked like any other.
  *  "New work" sticks: that earlier task is not offered again.
  */
-import { scheduleImportPairingGuess, scheduleImportPairingChosen, scheduleImportPairingRefusal, scheduleImportPairingWording, withScheduleImportPairingChoices } from '../../components/schedule-import-pairing-check';
+import { ScheduleImportPairingCheck, scheduleImportPairingGuess, scheduleImportPairingChosen, scheduleImportPairingRefusal, scheduleImportPairingWording, withScheduleImportPairingChoices } from '../../components/schedule-import-pairing-check';
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import { selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReconciliation';
 import { mergeApprovedScheduleImportItems, scheduleImportReviewPairingQuestions, scheduleItemsVisibleBeforeImport, type ScheduleImportPairingQuestion } from '../../services/ScheduleImportMerge';
@@ -122,6 +124,27 @@ describe('S2 item 1 (a): the same Unique ID as a task no longer shown is the sam
 });
 
 describe('S2 item 1 (b): without Unique IDs the import review asks, and nothing is carried unless he says the same task', () => {
+  it.each([
+    ['80', 80, '80%'], ['20', 60, '20%'], ['', 60, 'no %'],
+  ])('returning task review previews file percent %s and preserves the approved percent and note', (filePercent, expectedPercent, label) => {
+    const onG = paintLeftOut();
+    const returning = PAINT_BACK.replace(/,$/, `,${filePercent}`);
+    const lines = [FRAMING, returning];
+    const [question] = questionsFor(onG, H, PLAIN, lines);
+    const view = render(createElement(ScheduleImportPairingCheck, {
+      question, answer: scheduleImportPairingGuess(question), disabled: false, onChange: jest.fn(),
+    }));
+    expect(view.getByText('This task was on an earlier schedule and is not in your list now. If this file brings the same task back, its notes and what you set on it come back with it. Your own percent is kept unless this file states a higher percent. Nothing is carried unless you say it is the same task.')).toBeTruthy();
+    expect(view.getByText('Earlier Paint: 11/2–11/6 · 60% · “Primer on”')).toBeTruthy();
+    expect(view.getByText(`The same task: 11/9–11/13 · ${label}`)).toBeTruthy();
+    expect(scheduleImportPairingRefusal([question], scheduleImportPairingGuess)).toBe('Confirm whether Paint in Lot is the same task or new work before saving.');
+    const accepted = approve(onG, H, lines, PLAIN, SAME_TASK);
+    const revived = shown(accepted).find(item => item.taskName === 'Paint')!;
+    expect(revived.percentComplete).toBe(expectedPercent);
+    expect(revived.notes).toBe('Primer on');
+    expect(revived.owner).toBe('Mike');
+  });
+
   it('the question names the task, the percent and note it had, and offers the same task or new work; new work is what is selected', () => {
     const onG = paintLeftOut();
     const [question, ...others] = questionsFor(onG, H, PLAIN, [FRAMING, PAINT_BACK]);
@@ -130,7 +153,7 @@ describe('S2 item 1 (b): without Unique IDs the import review asks, and nothing 
     expect(question.saved.map(item => [item.id, item.percentComplete, item.notes])).toEqual([['MASTER F-2', 60, 'Primer on']]);
     expect(question.rows.map(row => row.id)).toEqual(['MASTER H-2']);
     const wording = scheduleImportPairingWording(question);
-    expect(wording.intro).toBe('This task was on an earlier schedule and is not in your list now. If this file brings the same task back, its percent, notes and what you set on it come back with it. Nothing is carried unless you say it is the same task.');
+    expect(wording.intro).toBe('This task was on an earlier schedule and is not in your list now. If this file brings the same task back, its notes and what you set on it come back with it. Your own percent is kept unless this file states a higher percent. Nothing is carried unless you say it is the same task.');
     expect([wording.savedTitle(question.saved[0], 0), wording.rowOption(question.rows[0]), wording.none]).toEqual(['Earlier Paint: 11/2–11/6 · 60% · “Primer on”', 'The same task: 11/9–11/13 · no %', 'New work']);
     expect(scheduleImportPairingGuess(question)).toEqual({ confirmed: false, rowOfSaved: { 'MASTER F-2': null } });
     // Accept waits until he has answered.

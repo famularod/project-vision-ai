@@ -145,7 +145,7 @@ describe('second review, web F7 (the sentence): a new link refused because it wo
     await ticksGradingOnPunchWalkAndSaves(screen);
 
     expect(notSaved(screen)).toEqual([
-      'Not saved. “Grading” already comes after “Punch walk” (through “Excavation”). Making “Punch walk” start after “Grading” as well would put them in a circle, and the schedule could not place either one. Untick “Grading” and save again, or remove the other link first.',
+      'Not saved. “Grading” already comes after “Punch walk” (through “Excavation”). Making “Punch walk” start after “Grading” as well would put them in a circle, and the schedule could not place either one. Untick “Grading” and save again, or remove one of the existing links in that chain first.',
     ]);
     expect(screen.queryByText(/another device|another browser tab/)).toBeNull();
     // Refused as before: nothing is written, and what he ticked is kept.
@@ -162,7 +162,7 @@ describe('second review, web F7 (the sentence): a new link refused because it wo
     await ticksGradingOnPunchWalkAndSaves(screen);
 
     expect(notSaved(screen)).toEqual([
-      'Not saved. “Grading” already comes after “Punch walk” (through “Excavation”), on another device or in another browser tab. Making “Punch walk” start after “Grading” as well would put them in a circle, and the schedule could not place either one. Untick “Grading” and save again, or remove the other link first.',
+      'Not saved. “Grading” already comes after “Punch walk” (through “Excavation”), on another device or in another browser tab. Making “Punch walk” start after “Grading” as well would put them in a circle, and the schedule could not place either one. Untick “Grading” and save again, or remove one of the existing links in that chain first.',
     ]);
     expect(mockAuth.updateTask).not.toHaveBeenCalled();
   });
@@ -194,7 +194,7 @@ describe('second review, web F7 (the sentence): a new link refused because it wo
     await act(async () => { fireEvent.press(screen.getByText('Apply My Changes')); });
 
     expect(notSaved(screen)).toEqual([
-      'Not saved. “Grading” already comes after “Punch walk” (through “Excavation”). Making “Punch walk” start after “Grading” as well would put them in a circle, and the schedule could not place either one. Untick “Grading” and save again, or remove the other link first.',
+      'Not saved. “Grading” already comes after “Punch walk” (through “Excavation”). Making “Punch walk” start after “Grading” as well would put them in a circle, and the schedule could not place either one. Untick “Grading” and save again, or remove one of the existing links in that chain first.',
     ]);
     expect(mockAuth.updateTask).not.toHaveBeenCalled();
   });
