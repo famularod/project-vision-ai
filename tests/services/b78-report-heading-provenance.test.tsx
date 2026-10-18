@@ -71,11 +71,18 @@ function rawSelected(input:Parameters<typeof collectReportEvidence>[0]){
 it.each(['Inspect 2026','2026 inspection','Unit 2026 punch list'])('3.30 recorded Waiting task %s cannot name an unassigned dated note on real fallback/Runtime/Core paths',taskName=>{
  const w=world(NOTE,'',taskName),before=JSON.stringify({tasks:w.tasks,updates:w.updates});
  console.log('B78_ACTUAL_WAITING_MATERIAL',JSON.stringify({taskName,paths:{direct:actualMaterial(w.direct),runtime:actualMaterial(w.runtime.response.reportDraft),core:actualMaterial(w.core.reportDraft)}}));
- for(const report of [w.direct,w.runtime.response.reportDraft,w.core.reportDraft]){
-  expect(noteAreas(report,NOTE).map(a=>a.title)).toEqual([PROJECT]);
+ for(const [path,report]of [['direct',w.direct],['runtime',w.runtime.response.reportDraft],['core',w.core.reportDraft]]as const){
+  // Root's paired B75/candidate material comparison confirms the legacy cap
+  // selects this exact wrapper on Runtime/Core, not an additional raw note.
+  const selected=path==='direct'?NOTE:`Latest update: ${NOTE} Schedule focus: ${taskName} (due 10/19/2026).`;
+  expect(noteAreas(report,selected).map(a=>a.title)).toEqual([PROJECT]);
   // Keep the task's own numeric authority; do not guess year versus unit.
   expect(areas(report).some(a=>a.title===`2026 ${PROJECT}`&&a.bullets.some((b:any)=>b.text.includes(taskName)))).toBe(true);
-  expect(bullets(report).filter(b=>b.text===NOTE)).toHaveLength(1);
+  expect(bullets(report).filter(b=>b.text===selected)).toHaveLength(1);
+  if(path!=='direct'){
+   expect(areas(report).flatMap(a=>a.bullets).find((b:any)=>b.text===selected)).toMatchObject({kind:'next_step',sourceEvidenceIds:['runtime-what-changed'],needsReview:true});
+   expect(bullets(report).filter(b=>b.text===NOTE)).toHaveLength(0);
+  }
  }
  expect(JSON.stringify({tasks:w.tasks,updates:w.updates})).toBe(before);
 });
@@ -132,7 +139,8 @@ it('3.30 photo ownership/citation numbers survive a raw-bucket collision with Un
  expect(noteAreas(report,NOTE).map(a=>a.title)).toEqual([PROJECT]);
  expect(refs.map((ref:any)=>[ref.photoId,ref.imageNumber,ref.sourceUpdateId])).toEqual([['note-photo',1,'own-note']]);
  expect(bullets(report).filter(b=>b.text.includes('See Image 1.'))).toHaveLength(1);
- expect(areas(report).filter(a=>a.imageReferences.some((r:any)=>r.photoId==='note-photo')).map(a=>a.title)).toEqual([PROJECT]);
+ // Unassigned photo classification is independent of the note's own heading.
+ expect(areas(report).filter(a=>a.imageReferences.some((r:any)=>r.photoId==='note-photo')).map(a=>a.title)).toEqual(['Needs Classification']);
  expect(bullets(report).some(b=>b.text.includes('Unit 2026 punch list'))).toBe(true);
 });
 it('3.30 mounted native card and real Word paragraphs retain the note beneath its own heading',async()=>{
@@ -144,7 +152,9 @@ it('3.30 mounted native card and real Word paragraphs retain the note beneath it
  const xml=await zip.file('word/document.xml')!.async('string');
  const paragraphs=(xml.match(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g)??[]).map(p=>[...p.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map(m=>m[1]).join(''));
  console.log('B78_ACTUAL_NATIVE_WORD_PARAGRAPHS',JSON.stringify({body:w.core.reportDraft.body,paragraphs}));
- const noteIndex=paragraphs.findIndex(p=>p.includes(NOTE)&&!p.includes('Latest update:'));expect(noteIndex).toBeGreaterThan(0);
+ const selected=`Latest update: ${NOTE} Schedule focus: Unit 2026 punch list (due 10/19/2026).`;
+ expect(bullets(w.core.reportDraft).filter(b=>b.text===selected)).toHaveLength(1);
+ const noteIndex=paragraphs.findIndex(p=>p.includes(selected));expect(noteIndex).toBeGreaterThan(0);
  const heading=paragraphs.slice(0,noteIndex).reverse().find(p=>/^\d+\. /.test(p));expect(heading).toMatch(/^\d+\. Birch Lane$/);
  expect(xml).toContain('Unit 2026 punch list');v.unmount();
 });
