@@ -11,6 +11,7 @@ import type { ReportRecipient } from '../services/ReportRecipients';
  */
 export function ReportRecipientsPanel({
   recipients,
+  loading = false,
   picking,
   message,
   disabled,
@@ -18,6 +19,7 @@ export function ReportRecipientsPanel({
   onRemove,
 }: {
   recipients: readonly ReportRecipient[];
+  loading?: boolean;
   /** The contact list is open, or the contact chosen is being read. */
   picking: boolean;
   /** What happened at the last tap that added no one (access off, no address), or ''. */
@@ -30,7 +32,7 @@ export function ReportRecipientsPanel({
   return (
     <View style={styles.panel}>
       <Text style={styles.title}>Send To</Text>
-      {recipients.length === 0 ? (
+      {loading ? <Text style={styles.detail}>Loading saved recipients…</Text> : recipients.length === 0 ? (
         <Text style={styles.detail}>
           No one added. Email Report and Text Report open with no one filled in; you can type the addresses there, or
           add people from your contacts here.

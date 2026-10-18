@@ -553,7 +553,7 @@ export function ReportsScreen({
     reportFormat,
     ...selectedProjectNames.map(name => reportProjectKey(name)).sort(),
   ].join('|');
-  const recipientSelection = useReportRecipients(reportStateIdentityKey);
+  const recipientSelection = useReportRecipients(JSON.stringify([reportType, reportFormat, selectedProjectNames.map(name => reportProjectKey(name)).sort()]));
   const reportRecipients = recipientSelection.recipients;
   const reportCommunicationIdentityKey = [
     reportStateIdentityKey,
@@ -1494,9 +1494,11 @@ export function ReportsScreen({
             onTextReport={() => {
               completeCommunication(onTextReport);
             }}
+            recipientsLoading={recipientSelection.loading || recipientSelection.picking}
             recipientsPanel={(
               <ReportRecipientsPanel
                 recipients={reportRecipients}
+                loading={recipientSelection.loading}
                 picking={recipientSelection.picking}
                 message={recipientSelection.message}
                 disabled={communicationPending || recipientSelection.loading}
@@ -1854,6 +1856,7 @@ function PIEReporterPreview({
   onOutlookReport,
   markSent,
   recipientsPanel,
+  recipientsLoading = false,
 }: {
   reportDraft: PIEReportDraft;
   hasManualEdits: boolean;
@@ -1907,6 +1910,7 @@ function PIEReporterPreview({
   }> | null;
   /** Who Email Report and Text Report open with (open item 7.21, part two). */
   recipientsPanel?: ReactNode;
+  recipientsLoading?: boolean;
 }) {
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
@@ -2163,8 +2167,8 @@ function PIEReporterPreview({
               buttons' row the panel took the row's width and the buttons shrank to empty bars on the iPhone. */}
           <View style={styles.reportShareButtons}>
             <ReportShareButton icon="copy-outline" label="Copy Report" onPress={onCopyReport} disabled={communicationPending} />
-            <ReportShareButton icon="mail-outline" label="Email Report" onPress={onEmailReport} disabled={communicationPending} />
-            <ReportShareButton icon="chatbubble-outline" label="Text Report" onPress={onTextReport} disabled={communicationPending} />
+            <ReportShareButton icon="mail-outline" label="Email Report" onPress={onEmailReport} disabled={communicationPending || recipientsLoading} />
+            <ReportShareButton icon="chatbubble-outline" label="Text Report" onPress={onTextReport} disabled={communicationPending || recipientsLoading} />
             <ReportShareButton icon="briefcase-outline" label="Email from Outlook (work)" onPress={onOutlookReport} disabled={communicationPending} />
           </View>
           {recipientsPanel}
