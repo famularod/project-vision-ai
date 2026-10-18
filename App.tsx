@@ -10373,6 +10373,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       const base64 = await buildReportWordBase64({
         title: report.title,
         body: report.body,
+        taskLines: report.daveBriefing?.wordTaskLines ?? [],
         generatedAt: report.generatedAt,
         media: resolvedMedia.media.map(item => item.kind === 'photo'
           ? {

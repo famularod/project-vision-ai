@@ -30,8 +30,10 @@ export type ReportWordMedia = Readonly<{
   width: number;
   height: number;
   projectName?: string | null;
+  projectId?: string | null;
   areaName?: string | null;
   linkedTaskName?: string | null;
+  linkedTaskId?: string | null;
   recordedAt?: string | null;
   reasonForInclusion?: string | null;
   citation?: string | null;
@@ -44,9 +46,20 @@ export type ReportWordUnavailableMedia = Readonly<{
   reason: string;
 }>;
 
+export type ReportWordTaskLine = Readonly<{
+  section: 'COMPLETED WORK' | 'CURRENT WORK';
+  line: string;
+  taskId: string;
+  taskName: string;
+  projectName: string;
+  projectId?: string | null;
+  areaName: string;
+}>;
+
 export type ReportWordDocumentInput = Readonly<{
   title: string;
   body: string;
+  taskLines?: readonly ReportWordTaskLine[];
   generatedAt?: string | Date | null;
   media?: readonly ReportWordMedia[];
   unavailableMedia?: readonly ReportWordUnavailableMedia[];
@@ -248,7 +261,7 @@ export function buildReportWordDocument(input: ReportWordDocumentInput): Documen
             ],
             spacing: { after: 260 },
           }),
-          ...reportBodyParagraphs(input.body, photos),
+          ...reportBodyParagraphs(input.body, photos, input.taskLines),
           ...photoReferenceGuide(photos),
           ...mediaSection('Project Photos', photos),
           ...mediaSection('Current Drawing References', drawings),
@@ -404,6 +417,7 @@ function buildMasthead() {
 function reportBodyParagraphs(
   body: string,
   photos: readonly ReportWordMedia[] = [],
+  taskLines?: readonly ReportWordTaskLine[],
 ) {
   const lines = addInlinePhotoReferences(
     body
@@ -411,6 +425,7 @@ function reportBodyParagraphs(
     .split('\n')
     .map(line => line.trimEnd()),
     photos,
+    taskLines,
   );
   const paragraphs: Paragraph[] = [];
 
@@ -460,7 +475,9 @@ function reportBodyParagraphs(
 function addInlinePhotoReferences(
   lines: readonly string[],
   photos: readonly ReportWordMedia[],
+  taskLines?: readonly ReportWordTaskLine[],
 ): string[] {
+  if (taskLines !== undefined) return addAuthoritativePhotoReferences(lines, photos, taskLines);
   const numbered = numberedReportPhotos(photos);
   if (!numbered.length) return [...lines];
 
@@ -517,6 +534,31 @@ function addInlinePhotoReferences(
     const photoNumbers = referencesByLine.get(index);
     if (!photoNumbers?.length) return line;
     return `${line.trimEnd()} ${photoReferenceSentence(photoNumbers)}`;
+  });
+}
+
+/** New app exports never infer identity from separators or name fragments. */
+function addAuthoritativePhotoReferences(lines: readonly string[], photos: readonly ReportWordMedia[], taskLines: readonly ReportWordTaskLine[]): string[] {
+  const exact = (value: string | null | undefined) => (value || '').trim().normalize('NFC');
+  const numbered = numberedReportPhotos(photos);
+  let section = '';
+  return lines.map(raw => {
+    const text = raw.trim();
+    const heading = text.match(/^#{1,6}\s+(.+)$/)?.[1] || (isSectionHeading(text) ? text : '');
+    if (heading) { section = heading.toUpperCase(); return raw; }
+    const line = text.replace(/^[-*•]\s+/, '');
+    const candidates = taskLines.filter(item => item.section === section && item.line === line);
+    if (candidates.length !== 1) return raw;
+    const task = candidates[0];
+    if (!task.taskId || !task.areaName || !task.projectName || !task.taskName) return raw;
+    const matches = numbered.filter(({ item }) =>
+      exact(item.linkedTaskId) === exact(task.taskId) &&
+      exact(item.linkedTaskName) === exact(task.taskName) &&
+      exact(item.projectName) === exact(task.projectName) &&
+      exact(item.projectId) === exact(task.projectId) &&
+      exact(item.areaName) === exact(task.areaName) &&
+      photos.filter(other => other.id === item.id).length === 1);
+    return matches.length ? `${raw.trimEnd()} ${photoReferenceSentence(matches.map(item => item.number))}` : raw;
   });
 }
 

@@ -3063,8 +3063,8 @@ function shouldSuppressReportBullet(value: string, authoredCapturedForText?: str
 }
 
 /** Legacy sends kept no app-text digest. These source words can now print differently under the same facts. */
-export function reportWordingRequiresAppTextKey(report: Pick<PIEReportDraft, 'sourceEvidence'>): boolean {
-  return report.sourceEvidence.some(item =>
+export function reportWordingRequiresAppTextKey(report: Pick<PIEReportDraft, 'sourceEvidence' | 'daveBriefing'>): boolean {
+  return Boolean(report.daveBriefing?.dashboard.workAreas.some(area => /[^\u0000-\u007f]/.test(area.areaName))) || report.sourceEvidence.some(item =>
     (item.preservesCapturedFor && /captured\s+for/i.test(item.summary)) ||
     /^please\s+[a-z]+\b/i.test((item.actionRequired || item.summary).replace(/^next step:\s*/i, '')),
   );

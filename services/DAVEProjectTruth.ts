@@ -388,13 +388,16 @@ export function buildDAVEProjectTruth(input: BuildDAVEProjectTruthInput): DAVEPr
   const generatedAt = validDate(input.now) || input.runtime?.generatedAt || new Date().toISOString();
   const projectKey = normalizedKey(input.projectName);
   const updates = input.updates.filter(update => projectMatches(projectKey, update.projectName));
+  // The shared identity registry drops non-Latin letters. Reports must keep each original area,
+  // rather than silently relabel another area with the same surviving digits. Do not broaden project scope.
   const canonicalScheduleItems = canonicalizeDAVEScheduleItems(input.scheduleItems, {
     projectNames: Array.from(new Set([
       input.projectName,
       ...input.scheduleItems.flatMap(item => [item.scheduleProjectName || '', item.projectName]),
     ].filter(Boolean))),
     projectAreas: input.projectAreas || [],
-  }).items;
+  }).items.map((item, index) => /[^\u0000-\u007f]/.test(input.scheduleItems[index].locationName || '')
+    ? { ...item, locationName: input.scheduleItems[index].locationName.trim() } : item);
   const scheduleItems = canonicalScheduleItems.filter(item => scheduleMatchesProject(projectKey, item));
   const projectTimeZone = input.projectTimeZone ||
     scheduleItems.find(item => item.projectTimeZone)?.projectTimeZone ||

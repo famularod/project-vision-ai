@@ -6047,7 +6047,10 @@ function ReportWorkspace({
   const alreadySentElsewhereAt = reportTruths.length > 0 &&
     reportTruths.every(truth => daveProjectTruthHasProjectKey(truth.projectName)) &&
     currentPeriodRead.status === 'loaded' && reportStatus !== 'approved'
-    ? daveWebReportAlreadySentElsewhereAt(periodSnapshot, reportFingerprint, daveWebOwnReportSends())
+    ? daveWebReportAlreadySentElsewhereAt(periodSnapshot, reportFingerprint, daveWebOwnReportSends(), {
+      requiresTextKey: briefing.dashboard.workAreas.some(area => /[^\u0000-\u007f]/.test(area.areaName)),
+      title: generatedTitle, body: generatedBody,
+    })
     : null;
   // Review N2 (5 Oct 2026): another TAB's later send. With Reports open in two tabs, this tab approved a report
   // (Pour slab 20% to 50%), the other tab then sent a later one (70%), and this tab's report still went out:
@@ -6300,6 +6303,7 @@ function ReportWorkspace({
       const blob = await buildReportWordBlob({
         title,
         body,
+        taskLines: briefing.wordTaskLines ?? [],
         generatedAt,
         media: resolvedMedia.media,
         unavailableMedia: resolvedMedia.unavailableMedia,
