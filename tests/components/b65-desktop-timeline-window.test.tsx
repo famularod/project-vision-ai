@@ -59,3 +59,14 @@ it('scrolling a normal large job reuses task geometry and unchanged row subtrees
   expect(s.getByTestId('gantt-bar:normal-0').props.style).toBe(barStyle);bounded(s);
  }finally{build.mockRestore();}
 });
+
+it('retains the exact left calendar day through zoom and resize, and clamps when the schedule shrinks',()=>{
+ const tasks=[ordinary,future];const s=open(tasks);const scroll=s.getByTestId('gantt-timeline-scroll');
+ fireEvent(scroll,'layout',{nativeEvent:{layout:{width:900}}});
+ const anchor=Date.parse('2042-01-15');
+ const model=(zoom:VitruviusGanttZoom,width:number)=>{const m=buildVitruviusGanttModel({items:tasks,zoom,columnWindow:{left:0,width:1,overscan:0}});const left=(anchor-Date.parse(m.rangeStart))/86400000*m.dayWidth;return buildVitruviusGanttModel({items:tasks,zoom,columnWindow:{left,width}});};
+ const week=model('week',900);fireEvent.scroll(scroll,{nativeEvent:{contentOffset:{x:week.columnWindow!.left}}});
+ for(const zoom of ['day','month','week'] as const){budget(()=>fireEvent.press(s.getByText(zoom[0].toUpperCase()+zoom.slice(1))));const expected=model(zoom,900);expect(headings(s).map(h=>h.props.testID)).toEqual(expected.columns.map(c=>'gantt-column-header:'+c.key));}
+ budget(()=>fireEvent(scroll,'layout',{nativeEvent:{layout:{width:1400}}}));expect(headings(s).map(h=>h.props.testID)).toEqual(model('week',1400).columns.map(c=>'gantt-column-header:'+c.key));
+ budget(()=>s.rerender(<DesktopSchedulePage tasks={[ordinary]} projects={['Lot 9']} selectedProject="Lot 9"/>));bounded(s);expect(headings(s).every(h=>String(h.props.testID).includes('2026'))).toBe(true);expect(s.queryByLabelText('Open timeline item future')).toBeNull();
+});

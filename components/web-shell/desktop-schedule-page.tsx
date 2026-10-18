@@ -1017,122 +1017,125 @@ function GanttWorkspace({
     [tasks, shownTasks],
   );
   const criticalIds = analytics.criticalPath.criticalItemIds;
-  const lateBaselineCount = analytics.baselineVariance.filter(
+  const lateBaselineCount = useMemo(() => analytics.baselineVariance.filter(
     variance => variance.status === 'late',
-  ).length;
+  ).length, [analytics.baselineVariance]);
+  const baselineCount = useMemo(() => analytics.baselineVariance.filter(
+    variance => variance.status !== 'no_baseline',
+  ).length, [analytics.baselineVariance]);
   const rowHeight = 58;
   const timelineHeight = Math.max(180, model.rows.length * rowHeight);
 
   const activityRows = useMemo(() => model.rows.map((row, index) => {
-              const previousProject = model.rows[index - 1]?.projectName;
-              return (
-                <Pressable
-                  key={row.item.id}
-                  style={[
-                    styles.ganttActivityRow,
-                    index % 2 === 1 && styles.ganttRowAlternate,
-                    row.summary && styles.ganttSummaryRow,
-                  ]}
-                  onPress={() => onOpenItem(row.item)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Open timeline item ${row.item.taskName}`}
-                >
-                  <View style={[styles.ganttActivityCopy, { paddingLeft: row.depth * 18 }]}>
-                    {row.projectName !== previousProject ? (
-                      <Text style={styles.ganttProjectLabel} numberOfLines={1}>
-                        {row.projectName}
-                      </Text>
-                    ) : null}
-                    <Text
-                      style={[styles.ganttItemName, row.summary && styles.ganttSummaryName]}
-                      numberOfLines={1}
-                    >
-                      {row.item.wbsCode ? `${row.item.wbsCode}  ` : ''}{row.item.taskName}
-                    </Text>
-                    {showCriticalPath && criticalIds.has(row.item.id) ? (
-                      <Text style={styles.ganttCriticalLabel}>CRITICAL</Text>
-                    ) : null}
-                  </View>
-                  <Text style={styles.ganttDateText} numberOfLines={row.outsideSupportedYears ? 3 : 1}>
-                    {row.outsideSupportedYears
-                      ? `Date check\n${row.item.startDate || '—'}\n${row.item.finishDate || '—'}`
-                      : row.startDate && row.finishDate
-                      ? `${shortDate(row.startDate)} – ${shortDate(row.finishDate)}`
-                      : 'Set dates'}
-                  </Text>
-                </Pressable>
-              );
-            }), [model.rows, showCriticalPath, criticalIds, onOpenItem]);
+    const previousProject = model.rows[index - 1]?.projectName;
+    return (
+      <Pressable
+        key={row.item.id}
+        style={[
+          styles.ganttActivityRow,
+          index % 2 === 1 && styles.ganttRowAlternate,
+          row.summary && styles.ganttSummaryRow,
+        ]}
+        onPress={() => onOpenItem(row.item)}
+        accessibilityRole="button"
+        accessibilityLabel={`Open timeline item ${row.item.taskName}`}
+      >
+        <View style={[styles.ganttActivityCopy, { paddingLeft: row.depth * 18 }]}>
+          {row.projectName !== previousProject ? (
+            <Text style={styles.ganttProjectLabel} numberOfLines={1}>
+              {row.projectName}
+            </Text>
+          ) : null}
+          <Text
+            style={[styles.ganttItemName, row.summary && styles.ganttSummaryName]}
+            numberOfLines={1}
+          >
+            {row.item.wbsCode ? `${row.item.wbsCode}  ` : ''}{row.item.taskName}
+          </Text>
+          {showCriticalPath && criticalIds.has(row.item.id) ? (
+            <Text style={styles.ganttCriticalLabel}>CRITICAL</Text>
+          ) : null}
+        </View>
+        <Text style={styles.ganttDateText} numberOfLines={row.outsideSupportedYears ? 3 : 1}>
+          {row.outsideSupportedYears
+            ? `Date check\n${row.item.startDate || '—'}\n${row.item.finishDate || '—'}`
+            : row.startDate && row.finishDate
+            ? `${shortDate(row.startDate)} – ${shortDate(row.finishDate)}`
+            : 'Set dates'}
+        </Text>
+      </Pressable>
+    );
+  }), [model.rows, showCriticalPath, criticalIds, onOpenItem]);
   const timelineRows = useMemo(() => model.rows.map((row, index) => (
-                  <View
-                    key={row.item.id}
-                    style={[
-                      styles.ganttTimelineRow,
-                      {
-                        top: index * rowHeight,
-                        width: model.timelineWidth,
-                        height: rowHeight,
-                      },
-                      index % 2 === 1 && styles.ganttTimelineRowAlternate,
-                    ]}
-                  >
-                    {showBaselines &&
-                    row.baselineLeft !== null &&
-                    row.baselineWidth !== null ? (
-                      <View
-                        testID={`gantt-baseline:${row.item.id}`}
-                        style={[
-                          styles.ganttBaselineBar,
-                          {
-                            left: row.baselineLeft,
-                            width: row.baselineWidth,
-                            top: 38,
-                          },
-                        ]}
-                      />
-                    ) : null}
-                    {row.left !== null && row.width !== null ? (
-                      row.milestone ? (
-                        <View
-                          testID={`gantt-milestone:${row.item.id}`}
-                          style={[
-                            styles.ganttMilestone,
-                            { left: row.left, top: 19 },
-                          ]}
-                        />
-                      ) : (
-                        <View
-                          testID={`gantt-bar:${row.item.id}`}
-                          style={[
-                            styles.ganttBar,
-                            row.summary && styles.ganttSummaryBar,
-                            row.item.status === 'Complete' && styles.ganttCompleteBar,
-                            showCriticalPath &&
-                            criticalIds.has(row.item.id) &&
-                            styles.ganttCriticalBar,
-                            { left: row.left, width: row.width, top: row.summary ? 18 : 16 },
-                          ]}
-                        >
-                          {!row.summary && row.progressWidth !== null ? (
-                            <View
-                              testID={`gantt-progress:${row.item.id}`}
-                              style={[
-                                styles.ganttProgressBar,
-                                { width: row.progressWidth },
-                              ]}
-                            />
-                          ) : null}
-                        </View>
-                      )
-                    ) : (
-                      <Text style={styles.ganttMissingDate}>
-                        {row.outsideSupportedYears
-                          ? `Date check: ${row.item.startDate || row.startDate || '—'} – ${row.item.finishDate || row.finishDate || '—'} is outside 2000 to 2100. Open this item to review its dates.`
-                          : 'Set dates to place this item'}
-                      </Text>
-                    )}
-                  </View>
-                )), [model.rows, model.timelineWidth, showBaselines, showCriticalPath, criticalIds]);
+    <View
+      key={row.item.id}
+      style={[
+        styles.ganttTimelineRow,
+        {
+          top: index * rowHeight,
+          width: model.timelineWidth,
+          height: rowHeight,
+        },
+        index % 2 === 1 && styles.ganttTimelineRowAlternate,
+      ]}
+    >
+      {showBaselines &&
+      row.baselineLeft !== null &&
+      row.baselineWidth !== null ? (
+        <View
+          testID={`gantt-baseline:${row.item.id}`}
+          style={[
+            styles.ganttBaselineBar,
+            {
+              left: row.baselineLeft,
+              width: row.baselineWidth,
+              top: 38,
+            },
+          ]}
+        />
+      ) : null}
+      {row.left !== null && row.width !== null ? (
+        row.milestone ? (
+          <View
+            testID={`gantt-milestone:${row.item.id}`}
+            style={[
+              styles.ganttMilestone,
+              { left: row.left, top: 19 },
+            ]}
+          />
+        ) : (
+          <View
+            testID={`gantt-bar:${row.item.id}`}
+            style={[
+              styles.ganttBar,
+              row.summary && styles.ganttSummaryBar,
+              row.item.status === 'Complete' && styles.ganttCompleteBar,
+              showCriticalPath &&
+              criticalIds.has(row.item.id) &&
+              styles.ganttCriticalBar,
+              { left: row.left, width: row.width, top: row.summary ? 18 : 16 },
+            ]}
+          >
+            {!row.summary && row.progressWidth !== null ? (
+              <View
+                testID={`gantt-progress:${row.item.id}`}
+                style={[
+                  styles.ganttProgressBar,
+                  { width: row.progressWidth },
+                ]}
+              />
+            ) : null}
+          </View>
+        )
+      ) : (
+        <Text style={styles.ganttMissingDate}>
+          {row.outsideSupportedYears
+            ? `Date check: ${row.item.startDate || row.startDate || '—'} – ${row.item.finishDate || row.finishDate || '—'} is outside 2000 to 2100. Open this item to review its dates.`
+            : 'Set dates to place this item'}
+        </Text>
+      )}
+    </View>
+  )), [model.rows, model.timelineWidth, showBaselines, showCriticalPath, criticalIds]);
 
   return (
     <View style={styles.ganttSurface}>
@@ -1177,9 +1180,7 @@ function GanttWorkspace({
           disabled={!analytics.criticalPath.available}
         />
         <ScheduleControl
-          label={`Baselines (${analytics.baselineVariance.filter(
-            variance => variance.status !== 'no_baseline',
-          ).length})`}
+          label={`Baselines (${baselineCount})`}
           selected={showBaselines}
           onPress={() => setShowBaselines(value => !value)}
         />
