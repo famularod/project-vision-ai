@@ -1048,7 +1048,8 @@ export function DAVEVoiceCaptureSheet({
   }
 
   async function transcribeRecording(uri: string, duration: number, hisTap = false) {
-    if (isTranscribing) return;
+    // State is not committed between two handlers from the same render.
+    if (isTranscribing || preparingOperationRef.current !== null) return;
     // Item 9: a recording whose microphone gave nothing is not sent: the speech service could only fail on it.
     // Item 9b (13 Oct 2026): unless he says he did speak. The level is not measured on a phone, and a
     // level read wrong must not cost him his dictation. Nothing is sent by itself (Stop on a sheet that
@@ -1312,14 +1313,16 @@ export function DAVEVoiceCaptureSheet({
     : recorderState.isRecording
       ? 'listening'
       : recordingUri
-        ? 'captured'
+        ? error ? 'attention' : 'captured'
         : 'ready';
   const captureStatus = captureLabel
     ? captureState === 'processing'
       ? `ECOS is processing: ${captureLabel}`
       : captureState === 'listening'
         ? `ECOS is listening for: ${captureLabel}`
-        : captureState === 'captured'
+        : captureState === 'attention'
+          ? `Answer needs attention for: ${captureLabel}`
+          : captureState === 'captured'
           ? `Answer recorded for: ${captureLabel}`
           : `ECOS is ready for: ${captureLabel}`
     : null;
@@ -1502,13 +1505,15 @@ export function DAVEVoiceCaptureSheet({
               <Ionicons
                 name={captureState === 'processing'
                   ? 'hourglass-outline'
-                  : captureState === 'captured'
+                  : captureState === 'attention'
+                    ? 'alert-circle-outline'
+                    : captureState === 'captured'
                     ? 'checkmark-circle-outline'
                     : 'mic-outline'}
                 size={21}
                 color={captureState === 'listening'
                   ? colors.danger
-                  : captureState === 'processing'
+                  : captureState === 'processing' || captureState === 'attention'
                     ? colors.warning
                     : captureState === 'captured'
                       ? colors.success
@@ -1525,7 +1530,7 @@ export function DAVEVoiceCaptureSheet({
             </View>
           ) : null}
 
-          <Text style={styles.prompt}>{recorderState.isRecording ? 'Listening…' : recordingUri ? 'Recording ready' : prompt}</Text>
+          <Text style={styles.prompt}>{recorderState.isRecording ? 'Listening…' : recordingUri ? error && captureLabel ? 'Review this recording' : 'Recording ready' : prompt}</Text>
           <Text style={styles.guidance}>{guidance}</Text>
 
           {showWalkContext && walkContext ? <View style={styles.walkCard}>

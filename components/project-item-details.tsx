@@ -1,3 +1,4 @@
+import { recentProjectItemActivity } from '../services/ProjectItemActivityPresentation';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
@@ -223,7 +224,7 @@ export function ProjectItemDetailsEditor({
       ) : null}
 
       <FieldLabel text="Activity" />
-      {(item.activity || []).slice(-3).reverse().map(entry => (
+      {recentProjectItemActivity(item.activity).map(entry => (
         <View key={entry.id} style={styles.activityCard}>
           <Text style={styles.activityText}>{entry.message}</Text>
           <Text style={styles.activityMeta}>{entry.author} • {formatActivityTime(entry.createdAt)}</Text>

@@ -950,7 +950,7 @@ describe('review N1 L2: a finished recording is kept on the device in every stat
     expect(keptFiles()).toHaveLength(1);
   });
 
-  it('used at once: nothing stays kept, even when its words arrive while its copy is still being made', async () => {
+  it('used at once: handoff waits for the durable copy, then nothing stays kept', async () => {
     const { onMemoryReady } = openSheet();
     let finishCopy: () => void = () => undefined;
     fileSystem.copyAsync.mockImplementationOnce(async ({ to }: { from: string; to: string }) => {
@@ -960,9 +960,13 @@ describe('review N1 L2: a finished recording is kept on the device in every stat
     await record();
     transcription.transcribeDAVECaptureMemoryAudio.mockResolvedValueOnce({ transcript: 'Pour moved to Friday.' });
     fireEvent.press(screen.getByText('Continue'));
+    // Current accepted handoff waits for the original durable copy. Releasing
+    // this hold only after expecting handoff deadlocked the fixture on B22.
+    await waitFor(() => expect(transcription.transcribeDAVECaptureMemoryAudio).toHaveBeenCalledTimes(1));
+    expect(onMemoryReady).not.toHaveBeenCalled();
+    await act(async () => { finishCopy(); await new Promise(resolve => setTimeout(resolve, 50)); });
     await waitFor(() => expect(onMemoryReady).toHaveBeenCalledTimes(1));
     expect(onMemoryReady.mock.calls[0]).toEqual([{ transcript: 'Pour moved to Friday.' }]);
-    await act(async () => { finishCopy(); await new Promise(resolve => setTimeout(resolve, 50)); });
     expect(keptFiles()).toHaveLength(0);
     expect(entryKeys()).toHaveLength(0);
     await expect(keptVoiceRecordingExists('owner-a')).resolves.toBe(false);
