@@ -7645,7 +7645,7 @@ useEffect(() => {
       if (unopenedReview) await Promise.all(unopenedReview.documents.map(document =>
         deleteStoredReferenceDocument(document.uri).catch(() => undefined)));
       if (requestIsCurrent()) {
-        if (cancelledDuplicate && uploadAfterReview.length) Alert.alert('Schedule review cancelled', 'Review Documents for any copies saved before cancellation. Remaining project copies were not added.');
+        if (cancelledDuplicate && uploadAfterReview.length && scheduleUploadIsCurrent?.()) Alert.alert('Schedule review cancelled', 'Review Documents for any copies saved before cancellation. Remaining project copies were not added.');
         setDocumentUploadRequest(current => current === request ? null : current);
       }
       // Keep the same sequential, silent background upload behavior as Retry.
