@@ -4,7 +4,7 @@ import type { CanonicalScheduleProgress } from '../services/ScheduleProgressInva
 import type { DAVECompletionVerification } from '../types';
 
 /**
- * A task's staged status and percent, kept by task id until Save commits them
+ * A task's staged status and percent, kept by workspace account and task id until Save commits them
  * (whole-app audit A5, 30 Sep 2026). The draft lived in the task row, so
  * picking another task, collapsing a section, closing the task sheet or
  * switching tabs unmounted the row and dropped a value the manager had set
@@ -18,11 +18,16 @@ import type { DAVECompletionVerification } from '../types';
  * pass 2). Memory only: staged values are not persisted across a relaunch.
  */
 type StagedProgress = Readonly<{
+  account: string | null;
+  itemId: string;
   base: CanonicalScheduleProgress;
   value: CanonicalScheduleProgress;
 }>;
 
 const drafts = new Map<string, StagedProgress>();
+let progressAccountHeard: string | null = null;
+const progressDraftKey = (account: string | null, itemId: string) => JSON.stringify([account, itemId]);
+const progressEpochs = new Map<string | null, number>();
 const listeners = new Set<() => void>();
 
 function subscribe(listener: () => void) {
@@ -47,30 +52,91 @@ export function useScheduleProgressDraft(
   CanonicalScheduleProgress,
   (update: (current: CanonicalScheduleProgress) => CanonicalScheduleProgress) => void,
 ] {
-  const entry = useSyncExternalStore(subscribe, () => drafts.get(itemId));
+  // 4.29: identical task IDs in two accounts must never share an unsaved edit.
+  // The workspace owns a draft even before the app hears a sign-in event.
+  const workspace = useContext(NativeWorkspaceOwnerContext);
+  const account = useSyncExternalStore(subscribe, () => workspace === undefined ? progressAccountHeard : workspace ?? 'local-device');
+  const key = progressDraftKey(account, itemId);
+  const epoch = progressEpochs.get(account) ?? 0;
+  const entry = useSyncExternalStore(subscribe, () => drafts.get(key));
+  const activeKey = useRef<string | null>(key);
+  activeKey.current = key;
   const committedRef = useRef(committed);
   committedRef.current = committed;
   const staged = entry && sameProgress(entry.base, committed) ? entry.value : undefined;
 
   useEffect(() => {
-    const current = drafts.get(itemId);
+    activeKey.current = key;
+    return () => { if (activeKey.current === key) activeKey.current = null; };
+  }, [key]);
+
+  useEffect(() => {
+    const current = drafts.get(key);
     if (!current) return;
     if (!sameProgress(current.base, committed) || sameProgress(current.value, committed)) {
-      drafts.delete(itemId);
+      drafts.delete(key);
       notify();
     }
-  }, [itemId, committed.status, committed.percentComplete]);
+  }, [key, committed.status, committed.percentComplete]);
 
   const stage = useCallback((update: (current: CanonicalScheduleProgress) => CanonicalScheduleProgress) => {
+    if (activeKey.current !== key || epoch !== (progressEpochs.get(account) ?? 0)) return;
     const saved = committedRef.current;
-    const current = drafts.get(itemId);
+    const current = drafts.get(key);
     const next = update(current && sameProgress(current.base, saved) ? current.value : saved);
-    if (sameProgress(next, saved)) drafts.delete(itemId);
-    else drafts.set(itemId, { base: saved, value: next });
+    if (sameProgress(next, saved)) drafts.delete(key);
+    else drafts.set(key, { account, itemId, base: saved, value: next });
     notify();
-  }, [itemId]);
+  }, [account, key, itemId, epoch]);
 
   return [staged ?? committed, stage];
+}
+
+/** This account's pending edits, for the Settings warning before discarding them. */
+export function unusedScheduleProgressDraftExists(account?: string | null): boolean {
+  const whose = account || progressAccountHeard;
+  return [...drafts.values()].some(draft => draft.account === null || draft.account === whose);
+}
+
+function settleProgressOfNoKnownAccount(account: string | null | undefined): boolean {
+  let changed = false;
+  [...drafts].forEach(([key, draft]) => {
+    if (draft.account !== null) return;
+    drafts.delete(key);
+    if (account) drafts.set(progressDraftKey(account, draft.itemId), { ...draft, account });
+    changed = true;
+  });
+  return changed;
+}
+
+/** An unasked sign-out keeps named accounts' edits, and cannot give an unknown edit to the next account. */
+export function setAsideScheduleProgressDrafts(account: string | null | undefined) {
+  const changed = settleProgressOfNoKnownAccount(account);
+  if (progressAccountHeard === null && !changed) return;
+  progressAccountHeard = null;
+  notify();
+}
+
+export function bringBackScheduleProgressDrafts(account: string, previous?: string | null) {
+  const changed = settleProgressOfNoKnownAccount(previous || account);
+  if (progressAccountHeard === account && !changed) return;
+  progressAccountHeard = account;
+  notify();
+}
+
+/** Settings' confirmed Sign Out drops only its account; stale callbacks cannot revive those edits. */
+export function forgetScheduleProgressDrafts(account?: string | null) {
+  const whose = account || progressAccountHeard;
+  progressEpochs.set(whose, (progressEpochs.get(whose) ?? 0) + 1);
+  if (whose !== null) progressEpochs.set(null, (progressEpochs.get(null) ?? 0) + 1);
+  let changed = progressAccountHeard !== null;
+  progressAccountHeard = null;
+  [...drafts].forEach(([key, draft]) => {
+    if (draft.account !== null && draft.account !== whose) return;
+    drafts.delete(key);
+    changed = true;
+  });
+  if (changed) notify();
 }
 
 /**
@@ -249,6 +315,8 @@ export function forgetScheduleVerificationNotes(account?: string | null) {
 /** Test seam: forget every staged value. */
 export function clearScheduleProgressDraftsForTests() {
   drafts.clear();
+  progressEpochs.clear();
+  progressAccountHeard = null;
   verificationNotes.clear();
   accountHeard = null;
   notify();

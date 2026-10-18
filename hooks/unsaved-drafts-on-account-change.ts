@@ -3,8 +3,11 @@ import { signOutAskedHere } from '../services/SignOutIntent';
 import { forgetFieldNoteDraft, setAsideFieldNoteDraft } from './use-field-note-draft';
 import { forgetKeptWalkMemoryDrafts, setAsideKeptWalkMemoryDrafts } from './use-kept-walk-memory-draft';
 import {
+  bringBackScheduleProgressDrafts,
   bringBackScheduleVerificationNotes,
+  forgetScheduleProgressDrafts,
   forgetScheduleVerificationNotes,
+  setAsideScheduleProgressDrafts,
   setAsideScheduleVerificationNotes,
 } from './use-schedule-progress-draft';
 
@@ -65,13 +68,17 @@ export function settleUnsavedDraftsOnAccountChange(
     setAsideFieldNoteDraft();
     setAsideKeptWalkMemoryDrafts();
     setAsideScheduleVerificationNotes(previousUserId);
+    setAsideScheduleProgressDrafts(previousUserId);
     return;
   }
   const back = setAside;
   setAside = null;
   // An account that signs in has its own verification notes again (review pass 1, L8); the account before
   // it, when another takes over with no sign-out heard, keeps its own (second review, F6).
-  if (userId) bringBackScheduleVerificationNotes(userId, previousUserId);
+  if (userId) {
+    bringBackScheduleVerificationNotes(userId, previousUserId);
+    bringBackScheduleProgressDrafts(userId, previousUserId);
+  }
   // The account they were set aside for (or, not known, whichever signs in: another account cannot read them).
   if (back && userId && (!back.userId || back.userId === userId)) return;
   if (event === 'SIGNED_OUT') {
@@ -84,6 +91,7 @@ export function settleUnsavedDraftsOnAccountChange(
     forgetKeptWalkMemoryDrafts(account);
     if (account) forgetKeptVoiceRecordings(account);
     forgetScheduleVerificationNotes(account);
+    forgetScheduleProgressDrafts(account);
     return;
   }
   // Another account signed in: nobody's stays on screen, and each account's stays kept on the phone for it.

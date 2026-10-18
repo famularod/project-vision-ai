@@ -1,7 +1,10 @@
 import React, { type ReactNode } from 'react';
+import fs from 'fs';
+import path from 'path';
+import ts from 'typescript';
 import { act, renderHook } from '@testing-library/react-native';
 import { NativeWorkspaceOwnerContext } from '../../components/native-workspace-owner';
-import { clearScheduleProgressDraftsForTests, useScheduleProgressDraft } from '../../hooks/use-schedule-progress-draft';
+import { clearScheduleProgressDraftsForTests, unusedScheduleProgressDraftExists, unusedScheduleVerificationNoteExists, useScheduleProgressDraft } from '../../hooks/use-schedule-progress-draft';
 import { forgetSetAsideAccount, settleUnsavedDraftsOnAccountChange } from '../../hooks/unsaved-drafts-on-account-change';
 import { clearSignOutAskedHere, noteSignOutAskedHere } from '../../services/SignOutIntent';
 import type { CanonicalScheduleProgress } from '../../services/ScheduleProgressInvariant';
@@ -22,7 +25,7 @@ function row(owner?: string | null, task = 'shared-task', committed = saved) {
 }
 function stage(owner: string | null | undefined, percent: number) {
   const hook = row(owner);
-  act(() => hook.result.current[1](() => ({ status: 'In Progress', percentComplete: percent })));
+  act(() => hook.result.current[1](() => ({ status: percent === 100 ? 'Complete' : 'In Progress', percentComplete: percent })));
   hook.unmount();
 }
 function shown(owner?: string | null) { const hook = row(owner); const result = hook.result.current[0]; hook.unmount(); return result; }
@@ -63,4 +66,74 @@ it('the explicit local-device workspace never shares draft values with a signed-
   stage(null, 60);
   expect(shown(second)).toEqual(saved);
   expect(shown(null).percentComplete).toBe(60);
+});
+
+it('a staged Complete status stays in its workspace and does not complete the other account task', () => {
+  stage(first, 100);
+  expect(shown(second)).toEqual(saved);
+  expect(shown(first)).toEqual({ status: 'Complete', percentComplete: 100 });
+});
+it('changing the saved value drops only that account draft, without touching the other account', () => {
+  stage(first, 60); stage(second, 80);
+  const hook = row(first, 'shared-task', { status: 'Complete', percentComplete: 100 });
+  expect(hook.result.current[0]).toEqual({ status: 'Complete', percentComplete: 100 });
+  hook.unmount();
+  expect(shown(first)).toEqual(saved);
+  expect(shown(second).percentComplete).toBe(80);
+});
+it('a callback from the prior workspace cannot write using the next workspace saved value', () => {
+  let owner = first;
+  const hook = renderHook(() => useScheduleProgressDraft('shared-task', saved), {
+    wrapper: ({ children }: { children: ReactNode }) => <NativeWorkspaceOwnerContext.Provider value={owner}>{children}</NativeWorkspaceOwnerContext.Provider>,
+  });
+  act(() => hook.result.current[1](() => ({ status: 'In Progress', percentComplete: 60 })));
+  const previousCallback = hook.result.current[1];
+  owner = second; hook.rerender(undefined);
+  act(() => previousCallback(() => ({ status: 'Complete', percentComplete: 100 })));
+  expect(hook.result.current[0]).toEqual(saved);
+  expect(shown(first).percentComplete).toBe(60);
+  hook.unmount();
+});
+it.each([false, true])('an old callback cannot revive a discarded draft after Settings Sign Out (unmounted=%s)', unmounted => {
+  const hook = row(first);
+  act(() => hook.result.current[1](() => ({ status: 'In Progress', percentComplete: 60 })));
+  const oldStage = hook.result.current[1];
+  if (unmounted) hook.unmount();
+  noteSignOutAskedHere(first);
+  act(() => settleUnsavedDraftsOnAccountChange('SIGNED_OUT', undefined, null));
+  act(() => oldStage(() => ({ status: 'Complete', percentComplete: 100 })));
+  expect(shown(first)).toEqual(saved);
+  if (!unmounted) hook.unmount();
+});
+it('outside a workspace an immediate known sign-in owns the draft; an account switch preserves both accounts independently', () => {
+  stage(undefined, 60);
+  act(() => settleUnsavedDraftsOnAccountChange('SIGNED_IN', null, first));
+  expect(shown().percentComplete).toBe(60);
+  act(() => settleUnsavedDraftsOnAccountChange('SIGNED_IN', first, second));
+  expect(shown()).toEqual(saved);
+  stage(undefined, 80);
+  expect(shown(first).percentComplete).toBe(60);
+  expect(shown(second).percentComplete).toBe(80);
+});
+it('the actual Settings sign-out producer names only the selected account unsaved status and percent', async () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../../screens/AdminScreen.tsx'), 'utf8');
+  const tree = ts.createSourceFile('AdminScreen.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let node: ts.FunctionDeclaration | undefined;
+  const visit = (child: ts.Node) => { if (ts.isFunctionDeclaration(child) && child.name?.text === 'handleSignOut') node = child; ts.forEachChild(child, visit); };
+  visit(tree); expect(node).toBeDefined();
+  const code = ts.transpileModule(`const extracted = ${node!.getText(tree)};`, { compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.CommonJS } }).outputText;
+  async function warning(account: string) {
+    const alert = jest.fn();
+    const deps = { fieldNoteOwnerKey: account, fieldNotesWaitingToSync: async () => 0, unsavedFieldNoteExists: async () => false, unsavedWalkMemoryExists: async () => false, fieldNotesNeedingReview: async () => 0, keptVoiceRecordingExists: async () => false, pendingSyncCount: 0, updateSyncAttentionCount: 0, failedDocumentCount: 0, unusedScheduleVerificationNoteExists, unusedScheduleProgressDraftExists, signOutNotInCloudSentences: () => '', SIGN_OUT_CHOICES: 'Device or all devices', Alert: { alert }, performSignOut: jest.fn() };
+    await new Function(...Object.keys(deps), code + ';return extracted;')(...Object.values(deps))();
+    return String(alert.mock.calls[0][1]);
+  }
+  stage(first, 60);
+  expect(unusedScheduleProgressDraftExists(first)).toBe(true);
+  expect(unusedScheduleProgressDraftExists(second)).toBe(false);
+  expect(await warning(first)).toContain('The task status and percent changes you have not saved will be discarded.');
+  expect(await warning(second)).not.toContain('task status and percent');
+  noteSignOutAskedHere(first);
+  act(() => settleUnsavedDraftsOnAccountChange('SIGNED_OUT', undefined, null));
+  expect(await warning(first)).not.toContain('task status and percent');
 });
