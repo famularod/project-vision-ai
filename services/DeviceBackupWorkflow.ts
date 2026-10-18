@@ -384,8 +384,8 @@ export async function openSelectedBackup(
   validateBackupPartSet(headers);
   const ordered = Object.freeze([...headers].sort((left, right) => left.partIndex - right.partIndex));
   onProgress?.('Decrypting the backup records. Keep Vitruvius open.');
-  return Object.freeze({ kind: 'parts', state, partCount: ordered.length,
-    integrity: ordered[0].context ? 'bound' : 'legacy_unbound',
+  const integrity: 'bound' | 'legacy_unbound' = ordered[0].context ? 'bound' : 'legacy_unbound';
+  return Object.freeze({ kind: 'parts', state, partCount: ordered.length, integrity,
     stageAssets: (stagingDirectory: string) => stageBackupPartAssets(ordered, passphrase, io, stagingDirectory, onProgress),
   });
 }

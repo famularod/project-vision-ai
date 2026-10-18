@@ -22,8 +22,9 @@ export function parseBackupPartContext(value: unknown): BackupPartContext | null
       !Number.isSafeInteger(c.partIndex) || !Number.isSafeInteger(c.partCount) ||
       (c.partIndex as number) < 0 || (c.partCount as number) < 1 || (c.partIndex as number) >= (c.partCount as number) ||
       c.role !== (c.partIndex === 0 ? 'records_and_assets' : 'assets')) return null;
+  const role: BackupPartContext['role'] = c.partIndex === 0 ? 'records_and_assets' : 'assets';
   return Object.freeze({ version: 1, setNonce: c.setNonce, backupId: c.backupId,
-    partIndex: c.partIndex as number, partCount: c.partCount as number, role: c.role });
+    partIndex: c.partIndex as number, partCount: c.partCount as number, role });
 }
 
 export function backupPartContextKey(context: BackupPartContext): string {

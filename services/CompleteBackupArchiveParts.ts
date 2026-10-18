@@ -399,8 +399,9 @@ export async function readCompleteBackupParts(
   let state: unknown = null;
 
   for (const part of ordered) {
+    const context = backupPartContext(part);
     const decrypted = await decryptCompleteBackupArchive(part.archive, passphrase, {
-      sha256Hex: dependencies.sha256Hex, ...(backupPartContext(part) ? { partContext: backupPartContext(part)! } : {}),
+      sha256Hex: dependencies.sha256Hex, ...(context ? { partContext: context } : {}),
     });
     if (part.partIndex === 0) state = decrypted.state;
     decrypted.assets.forEach((bytes, id) => {
