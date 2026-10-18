@@ -1,3 +1,4 @@
+import { buildOperationalProjectIdentityAuthority, resolveOperationalReferenceDocumentScope } from './OperationalProjectIdentity';
 import type { DAVEWebReferenceDocument } from './DAVEWebReadOnlyRepository';
 import { scheduleDocumentAddsToMaster, scheduleDocumentIsScheduleLike } from './PIEScheduleReconciliation';
 
@@ -69,4 +70,15 @@ function timestamp(value: string | null | undefined) {
 /** Same compliance categories archived rather than deleted on the native Documents screen. */
 export function daveWebDocumentCanArchive(document: Pick<DAVEWebReferenceDocument, 'category'>): boolean {
   return ['Permit Card', 'Compliance', 'Contract', 'Inspection', 'Safety'].includes(document.category);
+}
+
+/** Archive/Restore acts only on a document whose actual project identity resolves in this workspace. */
+export function daveWebArchiveScopeAllows(
+  document: DAVEWebReferenceDocument,
+  projects: readonly { id?: string | null; name: string }[],
+  selectedNames: readonly string[] = [],
+): boolean {
+  const result = resolveOperationalReferenceDocumentScope(document, buildOperationalProjectIdentityAuthority(projects));
+  return result.ok && (selectedNames.length === 0 || result.scope.projectNames.some(name =>
+    selectedNames.some(selected => selected.trim().toLowerCase() === name.trim().toLowerCase())));
 }

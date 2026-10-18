@@ -66,7 +66,7 @@ const mockAuth = {
   setCurrentDocument: jest.fn(async () => undefined),
   updateDocument: jest.fn(async () => undefined),
   deleteDocument: jest.fn(),
-  setDocumentArchived: jest.fn(async (_document: DAVEWebReferenceDocument, _archived: boolean) => undefined),
+  setDocumentArchived: jest.fn(async (_document: DAVEWebReferenceDocument, _archived: boolean): Promise<void> => undefined),
   uploadDocument: jest.fn(async (_prepared: DAVEWebPreparedUpload) => undefined),
   getArtifactUrl: jest.fn(),
   loadDocumentCoverageSummary: jest.fn(async () => { throw new Error('offline'); }),
@@ -88,7 +88,7 @@ function sharedDocument(id: string, category: string): DAVEWebReferenceDocument 
 
 function workspace(archivedDocumentIds?: readonly string[]) {
   mockAuth.snapshot = {
-    projects: [{ id: 'alpha', name: 'Alpha' } as DAVEWebReadOnlySnapshot['projects'][number]],
+    projects: [{ id: '11111111-1111-4111-8111-111111111111', name: 'Alpha' } as DAVEWebReadOnlySnapshot['projects'][number]],
     scheduleItems: [], knownScheduleItems: [], projectUpdates: [],
     referenceDocuments: [sharedDocument('Grading permit', 'Permit Card'), sharedDocument('Site contract', 'Contract')],
     ...(archivedDocumentIds ? { archivedDocumentIds } : {}),
@@ -130,4 +130,10 @@ it('4.34 account change discards old confirmation and late operation cannot clai
 });
 it('4.34 hidden archive list remains separate from active document count and sent update records',()=>{
  workspace(['Grading permit']);const before=JSON.stringify(mockAuth.snapshot);const v=render(<DesktopReadOnlyShell page="documents"/>);expect(v.getByText('Archived (1)')).toBeTruthy();expect(v.getByText('1 document')).toBeTruthy();expect(JSON.stringify(mockAuth.snapshot)).toBe(before);v.unmount();
+});
+it('4.34 same-render Restore double press calls once and rejects late unmounted feedback',async()=>{
+ workspace(['Grading permit']);const hold=pending();mockAuth.setDocumentArchived.mockReturnValueOnce(hold.promise);const v=render(<DesktopReadOnlyShell page="documents"/>);fireEvent.press(v.getByText('Archived (1)'));const press=handler(v,'Restore');await act(async()=>{press();press()});expect(mockAuth.setDocumentArchived).toHaveBeenCalledTimes(1);expect(v.getByText('Restoring…')).toBeTruthy();v.unmount();await act(async()=>hold.resolve());
+});
+it('4.34 a stale confirmation from another project cannot write and archive scope refuses ambiguous identity',async()=>{
+ workspace();mockAuth.snapshot={...mockAuth.snapshot!,projects:[{id:'11111111-1111-4111-8111-111111111111',name:'Alpha'},{id:'22222222-2222-4222-8222-222222222222',name:'Alpha'}] as any};const v=render(<DesktopReadOnlyShell page="documents"/>);fireEvent.press(v.getByLabelText('Archive Grading permit'));expect(v.queryByText('Confirm archive')).toBeNull();expect(v.getByText('This document’s project identity needs review. Refresh Documents before trying again.')).toBeTruthy();expect(mockAuth.setDocumentArchived).not.toHaveBeenCalled();v.unmount();
 });

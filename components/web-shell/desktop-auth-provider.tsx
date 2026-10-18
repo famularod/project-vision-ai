@@ -1,3 +1,4 @@
+import { daveWebArchiveScopeAllows } from '../../services/DAVEWebDocumentManagement';
 import type { Session } from '@supabase/supabase-js';
 import {
   createContext,
@@ -1146,7 +1147,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     const owner = maintenanceOwnerRef.current;
     const originalSnapshot = snapshotRef.current;
     const original = originalSnapshot?.referenceDocuments.find(item => item.id === document.id);
-    if (!owner || !original || original.cloudUpdatedAt !== document.cloudUpdatedAt ||
+    if (!owner || !original || !daveWebArchiveScopeAllows(original, originalSnapshot!.projects) || original.cloudUpdatedAt !== document.cloudUpdatedAt ||
       (original.archivedAt ?? null) !== (document.archivedAt ?? null)) {
       throw new Error('Documents changed. Refresh and review this document before trying again.');
     }
@@ -1156,6 +1157,11 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       if (!mountedRef.current || maintenanceOwnerRef.current !== owner) return;
       const current = snapshotRef.current;
       if (!current) return;
+      const latest = current.referenceDocuments.find(item => item.id === original.id);
+      if (!latest || latest.cloudUpdatedAt !== original.cloudUpdatedAt ||
+        (latest.archivedAt ?? null) !== (original.archivedAt ?? null)) {
+        throw new Error('The document changed while this archive change was being checked. Refresh Documents to see its current state.');
+      }
       const ids = new Set(current.archivedDocumentIds ?? []);
       if (archived) ids.add(original.id); else ids.delete(original.id);
       const next = Object.freeze({ ...current, archivedDocumentIds: Object.freeze([...ids]),

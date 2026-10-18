@@ -47,6 +47,7 @@ import { loadDAVEWebReadOnlySnapshot, type DAVEWebReadOnlySnapshot, type DAVEWeb
 import {
   daveWebDocumentDeletionIsProtected,
   daveWebDocumentCanArchive,
+  daveWebArchiveScopeAllows,
   daveWebDocumentInEffect,
   daveWebListedDocuments,
   groupDAVEWebDocuments,
@@ -805,7 +806,7 @@ function DesktopPageData({
         <DocumentManagementWorkspace
           documents={documents}
           archivedDocuments={snapshot.referenceDocuments.filter(document =>
-            snapshot.archivedDocumentIds?.includes(document.id) && documentMatchesProjectScope(document, selectedScopes))}
+            snapshot.archivedDocumentIds?.includes(document.id) && daveWebArchiveScopeAllows(document, snapshot.projects, selectedScopes))}
           tasks={snapshot.scheduleItems}
           knownTasks={snapshot.knownScheduleItems}
           scheduleDocuments={snapshot.referenceDocuments}
@@ -4625,6 +4626,10 @@ function DocumentManagementWorkspace({
     const current = [...documents, ...archivedDocuments].find(item => item.id === document.id);
     if (!current || current.cloudUpdatedAt !== document.cloudUpdatedAt ||
       (current.archivedAt ?? null) !== (document.archivedAt ?? null)) return;
+    if (!daveWebArchiveScopeAllows(current, projectIdentities, selectedProject ? [selectedProject] : [])) {
+      setNotice({ tone: 'danger', text: 'This document’s project identity needs review. Refresh Documents before trying again.' });
+      return;
+    }
     if (archived && (!daveWebDocumentCanArchive(current) || daveWebDocumentDeletionIsProtected(current))) return;
     const operation = {};
     archiveOperationRef.current = operation;
@@ -5207,6 +5212,10 @@ function DocumentManagementWorkspace({
   function openDeleteCandidate(document: DAVEWebReferenceDocument) {
     setNotice(null);
     if (daveWebDocumentCanArchive(document)) {
+      if (!daveWebArchiveScopeAllows(document, projectIdentities, selectedProject ? [selectedProject] : [])) {
+        setNotice({ tone: 'danger', text: 'This document’s project identity needs review. Refresh Documents before trying again.' });
+        return;
+      }
       if (!daveWebDocumentDeletionIsProtected(document)) setArchiveQuestion(document);
       return;
     }

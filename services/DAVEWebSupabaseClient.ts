@@ -1941,6 +1941,9 @@ export function createDAVEWebSupabaseGateway(
           });
         }
         return next;
+      } catch (error) {
+        if (error instanceof DAVEWebDocumentMutationError || error instanceof DAVEWebAuthorizationError) throw error;
+        throw failed();
       } finally {
         clearTimeout(timer);
       }
