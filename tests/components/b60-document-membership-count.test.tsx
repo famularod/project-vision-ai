@@ -203,7 +203,7 @@ it('actual summary counts distinct task ids only in listed project file membersh
  startDate:'10/01/2026',finishDate:'10/02/2026',createdAt:'2026-10-01T12:00:00Z',importBatchId:batch,...extra}});
  jest.mocked(daveWebSupabaseGateway.loadAuthorizedRows).mockResolvedValue({projects:[{id:'alpha',name:'Alpha'},{id:'beta',name:'Beta'}],projectUpdates:[],
  referenceDocuments:[{...master},{...older},beta,{...hidden,archivedAt:'2026-10-15T12:00:00Z'}].map(d=>({id:d.id,document_data:d,...(d.id===hidden.id?{archived_at:'2026-10-15T12:00:00Z'}:{})})),
- scheduleItems:[sourceTask('shared',String(older.importBatchId),{alsoImportedInBatchIds:[master.importBatchId]}),sourceTask('second',String(master.importBatchId)),sourceTask('other-project',String(master.importBatchId),{projectName:'Beta',scheduleProjectName:'Beta'}),
+ scheduleItems:[sourceTask('shared',String(older.importBatchId),{alsoImportedInBatchIds:[master.importBatchId]}),sourceTask('second',String(master.importBatchId)),sourceTask('other-project',String(master.importBatchId),{projectName:'Beta',scheduleProjectName:'Beta'}),sourceTask('second-other-project',String(master.importBatchId),{projectName:'Beta',scheduleProjectName:'Beta'}),
  sourceTask('hidden','archived-batch'),sourceTask('unlinked','no-listed-file'),sourceTask('deleted',String(master.importBatchId))],
  syncTombstones:[{entity_type:'schedule_item',record_id:'deleted',deleted_at:'2026-10-16T12:00:00Z'}]} as never);
  mockAuth.snapshot=await loadDAVEWebReadOnlySnapshot();mockProjectScope='Alpha';
