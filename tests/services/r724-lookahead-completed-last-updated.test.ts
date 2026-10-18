@@ -9,7 +9,8 @@ import { selectAuthoritativeScheduleItems } from '../../services/PIEScheduleReco
 import { mergeApprovedScheduleImportItems, scheduleItemsVisibleBeforeImport } from '../../services/ScheduleImportMerge';
 import { scheduleDocumentsAfterActivation } from '../../services/SharedDocumentActivation';
 import { scheduleItemsAfterLookaheadDeleted } from '../../services/ScheduleLookahead';
-import { reportTaskConfirmedAt } from '../../services/DAVEReportIntelligence';
+import { buildDAVEReportSourceFingerprint, reportTaskConfirmedAt } from '../../services/DAVEReportIntelligence';
+import { sameReportSource } from '../../services/DAVEReportSnapshot';
 import { normalizeProjectControls } from '../../services/VitruviusProjectControls';
 import type { ReferenceDocument, ScheduleItem } from '../../types';
 
@@ -113,6 +114,34 @@ describe('7.24: lookahead completion date beside an older note', () => {
     const before = hisPercent(seed(), 'Paint', 100, '2026-09-25T16:00:00.000Z');
     const state = approve(before, L, [paint('100')]);
     expect(completed(state)).toEqual(['Paint (Lot): Complete; 100% complete. Last updated Sep 25, 2026.']);
+  });
+
+  it('a later file that reopens then completes the task uses the new completion', () => {
+    const L3 = { ...schedule('LOOKAHEAD L3', '2026-10-03T12:00:00.000Z'), scheduleRole: 'lookahead' as const };
+    const state = approve(approve(approve(seed(), L, [paint('100')]), L2, [paint('75')]), L3, [paint('100')]);
+    expect(completed(state)).toEqual(['Paint (Lot): Complete; 100% complete. Last updated Oct 3, 2026.']);
+  });
+
+  it('a changed printed completion day changes the modern source identity in both report formats', () => {
+    const fingerprint = (state: State, format: 'project_manager' | 'executive') => buildDAVEReportSourceFingerprint(buildDAVEReportProjectTruths({
+      projects: [{ name: 'Alpha', projectId: 'report:alpha' }], projectRecords: [{ name: 'Alpha' }] as never,
+      updates: [], scheduleItems: shown(state), knownScheduleItems: state.items, knownScheduleDocuments: state.documents,
+      projectAreas: [], referenceDocuments: state.documents, now: NOW,
+    }), null, format);
+    const before = approve(seed(), L, [paint('100')]);
+    const after = approve(seed(), L, [paint('100')], '2026-10-02T12:00:00.000Z');
+    for (const format of ['project_manager', 'executive'] as const) {
+      expect(sameReportSource(fingerprint(before, format), fingerprint(after, format))).toBe(false);
+      expect(fingerprint(before, format)).toBe(fingerprint(JSON.parse(JSON.stringify(before)), format));
+    }
+  });
+
+  it('an old row with no recorded lookahead completion time keeps the historical fallback', () => {
+    const state = approve(seed(), L, [paint('100')]);
+    state.items = state.items.map(item => ({ ...item, lookaheadOverlay: item.lookaheadOverlay ? {
+      ...item.lookaheadOverlay, lookaheads: item.lookaheadOverlay.lookaheads.map(({ importedAt: _imported, approvedAt: _approved, ...entry }) => entry),
+    } : item.lookaheadOverlay }));
+    expect(completed(state)).toEqual(['Paint (Lot): Complete; 100% complete. Last updated Sep 9, 2026.']);
   });
 
   it('a lookahead deletion does not leave a fake completed line', () => {
