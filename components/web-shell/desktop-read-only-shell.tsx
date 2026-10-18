@@ -38,6 +38,7 @@ import {
   DAVEWebAuthorizationError,
   DAVEWebDocumentMutationError,
   DAVEWebSignOutNeedsConnectionError,
+  DAVEWebSignOutWaitError,
   DAVEWebTaskMutationError,
   type DAVEWebSignOutScope,
 } from '../../services/DAVEWebSupabaseClient';
@@ -7144,7 +7145,9 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
       // the cloud answers, like the phone with no signal, and the sign-in page says so when the cloud did not
       // confirm it. It comes here only if this browser itself would not finish, so its message does not speak
       // of the internet connection.
-      setProblem(error instanceof DAVEWebSignOutNeedsConnectionError
+      setProblem(error instanceof DAVEWebSignOutWaitError
+        ? error.message
+        : error instanceof DAVEWebSignOutNeedsConnectionError
         ? `${error.message} Try again when this computer is back online.`
         : scope === 'global'
           ? 'Sign out did not finish. Check the internet connection and try again.'
