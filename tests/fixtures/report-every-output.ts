@@ -1,3 +1,4 @@
+import { fieldUpdatesNewestFirst } from '../../services/PIEEvidenceFusion';
 /**
  * HIGH item 1f (the final review's F1; the coordinator's decision): every output a report of one format produces, on
  * the phone and on the desktop, as words a test can compare. "Already sent" (and an approval) is true to the reader
@@ -188,7 +189,7 @@ export function phoneOutputs({ briefing, draft, format, drawingReferences, updat
     '== Reports screen', ...reportScreenWords(briefing, format),
     '== Drawing References panel', ...drawingPanelWords(drawingReferences),
     ...(format === 'project_manager' ? ['== Work Areas & Photos panel', ...workAreasPanelWords(draft)] : []),
-    '== Word file', ...wordFileWords({ title: String(report.title), body, photos: cited, drawings: drawingReferences, taskLines: briefing.wordTaskLines }, updates),
+    '== Word file', ...wordFileWords({ title: String(report.title), body, photos: cited, drawings: drawingReferences, taskLines: briefing.wordTaskLines }, orderedUpdates),
     '== e-mail and text photos', ...cited.map(photo => `${photo.number} ${photo.photoId}`),
   ].join('\n');
 }
@@ -203,9 +204,11 @@ export function desktopOutputs({ briefing, format, drawingReferences, updates }:
   const since = RI.reportPeriodMovementLines(briefing);
   const body = formatDAVEWebReport(briefing, format, since ? { label: briefing.reportingPeriod.label, lines: since } : null)
     .split('\n').filter(text => !/^Generated: /.test(text)).join('\n');
-  const photos = updates.flatMap(update => (update.photos ?? []).map(photo => photo.id)).map((photoId, index) => ({ photoId, number: index + 1 }));
+  // The actual desktop producer uses the written report's order, not cloud upload order (7.58).
+  const orderedUpdates = fieldUpdatesNewestFirst(updates);
+  const photos = [...new Set(orderedUpdates.flatMap(update => (update.photos ?? []).map(photo => photo.id)))].map((photoId, index) => ({ photoId, number: index + 1 }));
   return [
     '== report', body,
-    '== Word file', ...wordFileWords({ title: buildDAVEWebReportTitle(briefing, format), body, photos, drawings: drawingReferences, taskLines: briefing.wordTaskLines }, updates),
+    '== Word file', ...wordFileWords({ title: buildDAVEWebReportTitle(briefing, format), body, photos, drawings: drawingReferences, taskLines: briefing.wordTaskLines }, orderedUpdates),
   ].join('\n');
 }
