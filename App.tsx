@@ -1,3 +1,5 @@
+import { fieldUpdateChronologyDate } from './services/FieldUpdateChronology';
+import { fieldUpdatesNewestFirst } from './services/PIEEvidenceFusion';
 import {
   deleteCloudProject,
   loadCloudArchivedProjectNames,
@@ -4212,12 +4214,11 @@ function buildProjectCardPIEStatus(
   projectNames: string[],
   savedUpdates: ProjectUpdate[],
 ) {
-  const scopedUpdates = (projectNames.length > 0
+  const scopedUpdates = fieldUpdatesNewestFirst(projectNames.length > 0
     ? savedUpdates.filter(update =>
         projectNames.some(projectName => projectMatchesScope(update, projectName)),
       )
-    : [...savedUpdates])
-    .sort((a, b) => b.date.localeCompare(a.date));
+    : savedUpdates);
   const currentConfirmedBlocker = findCurrentDAVEConfirmedBlocker(scopedUpdates);
   if (currentConfirmedBlocker && updateHasSafetyConcern(currentConfirmedBlocker)) {
     return 'Safety item needs review';
@@ -4257,13 +4258,14 @@ function buildProjectCardPIEStatus(
 
   const latest = scopedUpdates[0];
   if (!latest) return 'No recent updates';
+  const latestDate = fieldUpdateChronologyDate(latest) || latest.date;
 
   if (lifecycleStatusForUpdate(latest) === 'sent') {
-    return `Last update cloud synced ${relativeUpdateDateLabel(latest.date)}`;
+    return `Last update cloud synced ${relativeUpdateDateLabel(latestDate)}`;
   }
 
   if (lifecycleStatusForUpdate(latest) === 'queued') {
-    return `Last local update ${relativeUpdateDateLabel(latest.date)}`;
+    return `Last local update ${relativeUpdateDateLabel(latestDate)}`;
   }
 
   if (lifecycleStatusForUpdate(latest) === 'failed') {
@@ -4274,7 +4276,7 @@ function buildProjectCardPIEStatus(
     return 'Draft ready to sync';
   }
 
-  return `Last local update ${relativeUpdateDateLabel(latest.date)}`;
+  return `Last local update ${relativeUpdateDateLabel(latestDate)}`;
 }
 
 function relativeUpdateDateLabel(value: string) {

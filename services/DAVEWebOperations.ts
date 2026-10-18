@@ -1529,6 +1529,7 @@ function buildDAVEWebProjectTruths(
     // The Reports screen's: the report's projects by name.
     projectRecords: names.map(name => ({ name })),
     updates: appScope.updates,
+    cloudUpdateReceipts: true, // actual downloaded rows, without changing their persisted/raw contents
     scheduleItems: appScope.scheduleItems,
     knownScheduleItems: scheduleSavedTasksOfProjects(appScopeInput.knownScheduleItems, appScope.scheduleItems, appScope.projectNames),
     ...(handedAsBefore ? { asBuiltBefore: { scheduleItems: snapshot.scheduleItems, knownScheduleItems: snapshot.knownScheduleItems } } : {}),
