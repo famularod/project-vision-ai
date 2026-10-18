@@ -323,3 +323,32 @@ it('B77 an actually reviewed full A+B scope is distinct from the prior A-only im
  expect(queuedB).toMatchObject({id:reviewed[1].id,importBatchId:batch.id,sourceDocumentId:batch.documents[0].id});
  view.unmount();
 });
+
+for(const role of ['master','lookahead'] as const)it(`B77 hidden legacy source-linked import refuses ${role} using all known rows rather than only shown rows`,async()=>{
+ // Derive the legacy file's source IDs and linked rows through actual import, review, App approval and gateway.
+ const picked=pickedFile('csv'),first=await previouslyImported(picked);
+ expect(first.items.every(item=>item.importedAsLookahead===true)).toBe(true);
+ // A legacy record has no immutable batch metadata, but keeps its exact sourceDocumentId links.
+ const legacy:Saved={documents:first.documents.map(document=>({...document,importBatchId:''})),items:first.items.map(item=>({...item,importBatchId:'',alsoImportedInBatchIds:[]}))};
+ expect(legacy.items.every(item=>item.sourceDocumentId===legacy.documents[0].id)).toBe(true);
+ const newerPicked:Picked={name:'Next weekly plan.csv',mimeType:'text/csv',contents:BODY.replace('Pour footings','Survey trench').replace('Set steel','Inspect bolts')};
+ const newer=await prepare(newerPicked,legacy,[A]);
+ const newerReview=await openReview(newer,legacy,newerPicked);assign(newerReview.view,[A,A]);await accept(newerReview.view,'lookahead');
+ expect(newerReview.save.cloudSync).toHaveBeenCalledTimes(1);newerReview.view.unmount();
+ const all:Saved={documents:newerReview.save.referenceDocumentsCurrentRef.current,items:newerReview.save.scheduleItemsCurrentRef.current};
+ const shown=selectAuthoritativeScheduleItems({scheduleItems:all.items,scheduleDocuments:all.documents});
+ expect(all.items).toHaveLength(4);expect(shown).toHaveLength(2);
+ expect(shown.map(item=>item.taskName).sort()).toEqual(['Inspect bolts','Survey trench']);
+ expect(shown.some(item=>legacy.items.some(old=>old.id===item.id))).toBe(false);
+ expect(all.documents.find(document=>document.id===legacy.documents[0].id)?.importBatchId).toBe('');
+ // App passes shown rows for role suggestion, and all known rows separately for approval provenance/pairing.
+ expect(app).toContain('roleContext={{ documents: reviewDocuments, items: scheduleItems');
+ expect(app).toContain('savedItems={knownScheduleItems');
+ const batch=await prepare(picked,all,[A,B]),before=JSON.stringify({batch,all});
+ const save=approval([A,B],all,picked),onApprove=jest.fn(save.approveScheduleImport);
+ const view=render(<ScheduleImportFlow screenshotImportAvailable={false} onImportFile={jest.fn(async()=>null)} onImportScreenshots={jest.fn(async()=>null)} onAddManually={jest.fn()} onApprove={onApprove} onCancel={jest.fn()} incomingBatch={batch} roleContext={{documents:all.documents,items:shown}} savedItems={all.items} onIncomingBatchConsumed={jest.fn()}/>);
+ await act(settled);assign(view,[A,A]);await accept(view,role);
+ console.log('B77_HIDDEN_LEGACY_TRACE',JSON.stringify({role,legacyDocument:legacy.documents[0],knownSourceLinks:all.items.map(item=>[item.id,item.sourceDocumentId,item.importBatchId]),shown:shown.map(item=>item.id),approved:onApprove.mock.calls,queued:save.cloudSync.mock.calls,gateway:save.gatewayRows}));
+ expect(onApprove).not.toHaveBeenCalled();expect(save.cloudSync).not.toHaveBeenCalled();expect(save.gatewayRows).toEqual([]);
+ expect(view.getByText('Review Imported Schedule')).toBeTruthy();expect(JSON.stringify({batch,all})).toBe(before);view.unmount();
+});
