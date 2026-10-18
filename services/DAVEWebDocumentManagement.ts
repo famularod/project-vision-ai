@@ -75,10 +75,10 @@ export function daveWebDocumentCanArchive(document: Pick<DAVEWebReferenceDocumen
 /** Archive/Restore acts only on a document whose actual project identity resolves in this workspace. */
 export function daveWebArchiveScopeAllows(
   document: DAVEWebReferenceDocument,
-  projects: readonly { id?: string | null; name: string }[],
+  projects: readonly { id?: string | null; name?: string | null }[],
   selectedNames: readonly string[] = [],
 ): boolean {
-  const result = resolveOperationalReferenceDocumentScope(document, buildOperationalProjectIdentityAuthority(projects));
+  const result = resolveOperationalReferenceDocumentScope(document, buildOperationalProjectIdentityAuthority(projects.map(project => ({ ...project, name: project.name ?? '' }))));
   return result.ok && (selectedNames.length === 0 || result.scope.projectNames.some(name =>
     selectedNames.some(selected => selected.trim().toLowerCase() === name.trim().toLowerCase())));
 }

@@ -29,3 +29,9 @@ it('4.34 provider refuses stale or ambiguous project input before any gateway wr
 it('4.34 unmounted provider cannot publish or refresh a late acknowledgement',async()=>{
  const hold=deferred();gateway.setAuthorizedDocumentArchived.mockReturnValueOnce(hold.promise);const v=await mount();let run!:Promise<void>;act(()=>{run=auth.setDocumentArchived(document,true)});v.unmount();const reads=load.mock.calls.length;await act(async()=>{hold.resolve('2026-10-17T13:00:00Z');await run});expect(load.mock.calls.length).toBe(reads);
 });
+it('4.34 actual account transition prevents late old acknowledgement from updating the new workspace',async()=>{
+ const hold=deferred();gateway.setAuthorizedDocumentArchived.mockReturnValueOnce(hold.promise);const v=await mount();let run!:Promise<void>;act(()=>{run=auth.setDocumentArchived(document,true)});
+ const next={...snapshot,referenceDocuments:[],archivedDocumentIds:[],refreshedAt:'2026-10-17T14:00:00Z'};load.mockResolvedValue(next);const callback=gateway.subscribeToAuthStateChange.mock.calls[0][0];
+ await act(async()=>{callback('SIGNED_IN',{user:{id:'owner-B',email:'b@example.com'}} as any)});await waitFor(()=>expect(auth.userEmail).toBe('b@example.com'));
+ await act(async()=>{hold.resolve('2026-10-17T13:00:00Z');await run});expect(auth.snapshot?.referenceDocuments).toEqual([]);expect(auth.snapshot?.archivedDocumentIds).toEqual([]);v.unmount();
+});

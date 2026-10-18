@@ -1895,24 +1895,28 @@ export function createDAVEWebSupabaseGateway(
       if (!client) throw new Error('The desktop cloud connection is not configured.');
       if (!document.id || !document.cloudUpdatedAt || !expectedOwnerId) throw staleDocumentError();
       const generation = signInChanges;
+      const controller = new AbortController();
+      const failed = () => new DAVEWebDocumentMutationError('write_failed',
+        'The archive change could not be confirmed. Refresh Documents and try again when connected. Nothing is queued on this computer.');
+      let timer: ReturnType<typeof setTimeout>;
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => { controller.abort(); reject(failed()); }, 15_000);
+      });
+      const withinLimit = <T,>(work: PromiseLike<T>): Promise<T> => Promise.race([work, deadline]);
       const stillThisOwner = async () => {
-        const owner = await requireAuthorizedOwner(client);
+        const owner = await withinLimit(requireAuthorizedOwner(client));
         if (owner !== expectedOwnerId || generation !== signInChanges) {
           throw new DAVEWebAuthorizationError('The sign-in changed. Refresh Documents before trying again.');
         }
         return owner;
       };
-      const ownerId = await stillThisOwner();
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 15_000);
-      const failed = () => new DAVEWebDocumentMutationError('write_failed',
-        'The archive change could not be confirmed. Refresh Documents and try again when connected. Nothing is queued on this computer.');
       try {
-        const { data: current, error: readError } = await client.from('reference_documents')
+        const ownerId = await stillThisOwner();
+        const { data: current, error: readError } = await withinLimit(client.from('reference_documents')
           .select('id,updated_at,archived_at,document_data').eq('owner_id', ownerId).eq('id', document.id)
-          .abortSignal(controller.signal).maybeSingle();
+          .abortSignal(controller.signal).maybeSingle());
         if (readError) throw failed();
-        if (!current || readCloudTimestamp(current) !== document.cloudUpdatedAt) throw staleDocumentError();
+        if (!current || current.id !== document.id || readCloudTimestamp(current) !== document.cloudUpdatedAt) throw staleDocumentError();
         const seen = document.archivedAt ?? null;
         const mark = typeof current.archived_at === 'string' ? current.archived_at : null;
         // No clock ordering: either the exact mark is still there, or the owner must review the new state.
@@ -1927,7 +1931,7 @@ export function createDAVEWebSupabaseGateway(
         let query = client.from('reference_documents').update({ archived_at: next })
           .eq('owner_id', ownerId).eq('id', document.id).eq('updated_at', document.cloudUpdatedAt);
         query = seen === null ? query.is('archived_at', null) : query.eq('archived_at', seen);
-        const { data: written, error } = await query.select('id,archived_at').abortSignal(controller.signal);
+        const { data: written, error } = await withinLimit(query.select('id,archived_at').abortSignal(controller.signal));
         if (error) throw failed();
         if (!Array.isArray(written) || written.length !== 1 || written[0].id !== document.id || (next === null ? written[0].archived_at !== null : Date.parse(written[0].archived_at) !== Date.parse(next))) {
           throw staleDocumentError();
@@ -1945,7 +1949,7 @@ export function createDAVEWebSupabaseGateway(
         if (error instanceof DAVEWebDocumentMutationError || error instanceof DAVEWebAuthorizationError) throw error;
         throw failed();
       } finally {
-        clearTimeout(timer);
+        clearTimeout(timer!);
       }
     },
 

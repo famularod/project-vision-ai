@@ -27,3 +27,12 @@ it('4.34 account changes while original document check waits: no update is sent'
 it('4.34 changed archive mark refuses an old Restore instead of undoing another device',async()=>{
  const f=fixture();f.setRead({id:doc.id,updated_at:stamp,archived_at:'2026-10-17T14:00:00Z',document_data:doc});await expect(f.gateway.setAuthorizedDocumentArchived({...doc,archivedAt:'2026-10-16T12:00:00Z'},false,'owner-A')).rejects.toThrow();expect(f.writes).toHaveLength(0);
 });
+it('4.34 an owner check that stalls stops with actionable unconfirmed feedback and cannot write later',async()=>{
+ jest.useFakeTimers();try{
+ const f=fixture();let finish!:(x:any)=>void;f.client.auth.getUser.mockReturnValueOnce(new Promise(r=>finish=r));const run=f.gateway.setAuthorizedDocumentArchived(doc,true,'owner-A');const assertion=expect(run).rejects.toThrow(/could not be confirmed/);await jest.advanceTimersByTimeAsync(15001);await assertion;finish({data:{user:{id:'owner-A'}},error:null});await Promise.resolve();expect(f.writes).toHaveLength(0);
+ }finally{jest.useRealTimers()}
+});
+it('4.34 non-owner authorization and wrong returned document are both refused before writes',async()=>{
+ const f=fixture();f.client.rpc.mockResolvedValueOnce({data:false,error:null});await expect(f.gateway.setAuthorizedDocumentArchived(doc,true,'owner-A')).rejects.toThrow();expect(f.writes).toHaveLength(0);
+ const g=fixture();g.setRead({id:'another-document',updated_at:stamp,archived_at:null,document_data:doc});await expect(g.gateway.setAuthorizedDocumentArchived(doc,true,'owner-A')).rejects.toThrow();expect(g.writes).toHaveLength(0);
+});
