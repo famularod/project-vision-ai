@@ -57,10 +57,10 @@ describe('HIGH 1f: every output of a report, on every device, is held in its fin
     expect(found(word, /text: '(Photo Reference Guide|Media Requiring Review)'/g)).toEqual(["text: 'Media Requiring Review'", "text: 'Photo Reference Guide'"]);
     const media = word.slice(word.indexOf('export type ReportWordMedia = Readonly<{'), word.indexOf('}>;', word.indexOf('export type ReportWordMedia = Readonly<{')));
     expect(found(media, /^\s{2}[a-zA-Z]+\??:/gm).map(key => key.trim().replace(/\??:$/, ''))).toEqual([
-      'areaName', 'caption', 'citation', 'data', 'displayNumber', 'height', 'id', 'kind', 'linkedTaskName', 'mimeType', 'projectName',
+      'areaName', 'caption', 'citation', 'data', 'displayNumber', 'height', 'id', 'kind', 'linkedTaskId', 'linkedTaskName', 'mimeType', 'projectId', 'projectName',
       'reasonForInclusion', 'recordedAt', 'width',
     ]);
-    expect(found(source('services/ReportWordDocument.ts'), /input\.[a-zA-Z]+/g)).toEqual(['input.body', 'input.generatedAt', 'input.media', 'input.title', 'input.unavailableMedia']);
+    expect(found(source('services/ReportWordDocument.ts'), /input\.[a-zA-Z]+/g)).toEqual(['input.body', 'input.generatedAt', 'input.media', 'input.taskLines', 'input.title', 'input.unavailableMedia']);
   });
 
   it('both Word builders print a photo and a drawing in the words of one description, which the fingerprint holds', () => {

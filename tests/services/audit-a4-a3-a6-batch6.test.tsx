@@ -140,7 +140,7 @@ describe('reports (A6 pass 5)', () => {
 
   it('an approval-save error stays until the next approval, and the saved snapshot is the ref at once', () => {
     const screen = read('screens/ReportsScreen.tsx');
-    expect(screen).toContain("communicationError={[snapshotSaveError, communicationError].filter(Boolean).join(' ')}");
+    expect(screen).toContain("communicationError={[snapshotSaveError, communicationError, communicationPolicyMessage].filter(Boolean).join(' ')}");
     expect(screen).toMatch(/setSnapshotSaveError\(\n\s+'The report is approved, but its reporting-period snapshot could not be saved on this device\.',/);
     expect(screen).toMatch(/previousReportSnapshotRef\.current = snapshotToSave;\n\s+setPreviousReportSnapshot\(snapshotToSave\);/);
     expect(screen).toMatch(/previousReportSnapshotRef\.current = delivered;\n\s+setPreviousReportSnapshot\(delivered\);/);
