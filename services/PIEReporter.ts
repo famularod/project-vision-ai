@@ -213,6 +213,8 @@ export type PIEConstructionUnderstanding = {
 };
 
 export type PIEReportSourceEvidence = {
+  /** A Latest quote matched to the newest selected saved plain field note (4.81). */
+  authoredPlainLatest?: boolean;
   /** Authored field words, including the fused Latest update sentence; never machine boilerplate. */
   preservesCapturedFor?: boolean;
   /** Exact authored span protected from machine wording cleanup, never an unverified runtime sentence. */
@@ -365,7 +367,7 @@ export type PIEReporterRuntimeInput = {
   fusedEvidence?: {
     scheduleReconciliation?: PIEScheduleReconciliationResult;
     /** What the written report's "Latest update / Latest photo / Schedule focus" sentence is made from. */
-    userUpdateEvidence?: Parameters<typeof whatChangedForWrittenReport>[0]['userUpdateEvidence'];
+    userUpdateEvidence?: Array<Parameters<typeof whatChangedForWrittenReport>[0]['userUpdateEvidence'][number] & { projectName?: string; areaName?: string | null }>;
     photoEvidence?: Parameters<typeof whatChangedForWrittenReport>[0]['photoEvidence'];
     scheduleEvidence?: Parameters<typeof whatChangedForWrittenReport>[0]['scheduleEvidence'];
   } | null;
@@ -678,13 +680,24 @@ export function collectReportEvidence(
   }
   const fused = runtime?.fusedEvidence;
   const latestWrittenUpdate = fieldUpdatesNewestFirst(fused?.userUpdateEvidence ?? [])[0];
-  // Only the exact fused quote of this selected authored note is protected. An arbitrary runtime summary,
-  // an accepted provider suggestion, and the photo/schedule suffixes cannot acquire authorship this way.
-  const authoredLatest = fused?.photoEvidence && fused.scheduleEvidence && latestWrittenUpdate &&
-    /captured\s+for/i.test(latestWrittenUpdate.notes ?? '') &&
-    updates.some(saved => saved.id === latestWrittenUpdate.id && saved.notes.replace(/\s+/g, ' ').trim() === (latestWrittenUpdate.notes ?? '').replace(/\s+/g, ' ').trim() && !noteIsAcceptedPhotoSuggestion(saved))
-      ? whatChangedForWrittenReport({ userUpdateEvidence: [latestWrittenUpdate], photoEvidence: [], scheduleEvidence: [] }).replace(/\s+/g, ' ').trim()
-      : undefined;
+  // Match the newest selected saved record, including its project, area, date and words.
+  // A complete fusion recipe supplies the quote; arbitrary runtime/provider prose cannot become authored.
+  const latestSaved = updates[0];
+  const matchedLatest = fused?.photoEvidence && fused.scheduleEvidence && latestWrittenUpdate && latestSaved &&
+    latestSaved.id === latestWrittenUpdate.id &&
+    normalizeName(latestSaved.projectName) === normalizeName(latestWrittenUpdate.projectName || '') &&
+    normalizeName(latestSaved.selectedAreaName || '') === normalizeName(latestWrittenUpdate.areaName || '') &&
+    latestSaved.date === latestWrittenUpdate.date &&
+    latestSaved.notes.replace(/\s+/g, ' ').trim() === (latestWrittenUpdate.notes ?? '').replace(/\s+/g, ' ').trim() &&
+    !noteIsAcceptedPhotoSuggestion(latestSaved)
+      ? latestSaved : undefined;
+  const authoredPlainLatest = Boolean(matchedLatest && evidence.some(item =>
+    item.id === `note-${matchedLatest.id}` && isPlainFieldNote(item)));
+  const authoredLatest = matchedLatest && latestWrittenUpdate && (authoredPlainLatest || /captured\s+for/i.test(matchedLatest.notes))
+    ? whatChangedForWrittenReport({ userUpdateEvidence: [latestWrittenUpdate], photoEvidence: [], scheduleEvidence: [] }).replace(/\s+/g, ' ').trim()
+    : undefined;
+  const latestContext = authoredLatest && matchedLatest
+    ? reportContextForUpdate(matchedLatest, scheduleItems, selectedProjects.length > 1) : undefined;
   const rawRuntimeChanged = writtenReportWhatChanged(runtime)?.replace(/\s+/g, ' ').trim();
   const runtimeChanged = authoredLatest && rawRuntimeChanged && shouldSuppressReportBullet(rawRuntimeChanged, authoredLatest)
     ? authoredLatest : rawRuntimeChanged;
@@ -693,10 +706,11 @@ export function collectReportEvidence(
     evidence.push({
       id: 'runtime-what-changed',
       source: 'runtime',
+      authoredPlainLatest,
       preservesCapturedFor: Boolean(authoredLatest),
       preservedCapturedForText: authoredLatest,
-      projectName: input.currentUpdate?.projectName || selectedProjects[0] || '',
-      areaName: input.currentUpdate?.selectedAreaName || '',
+      projectName: latestContext?.projectName || input.currentUpdate?.projectName || selectedProjects[0] || '',
+      areaName: latestContext?.areaName ?? input.currentUpdate?.selectedAreaName ?? '',
       summary: cleanReportBulletText(runtimeChanged, authoredLatest),
       workAreaNameFrom: cleanReportBulletText(authoredLatest && shouldSuppressReportBullet(areaWords, authoredLatest) ? authoredLatest : areaWords, authoredLatest),
       confidence: 'medium',
@@ -2950,7 +2964,7 @@ function reportScheduleNote(value: string) {
 }
 
 function isVerifiedConstructionProgressEvidence(item: PIEReportSourceEvidence) {
-  if (isActionEvidence(item)) return false;
+  if (item.authoredPlainLatest || isActionEvidence(item)) return false;
   if (item.source === 'schedule' || item.source === 'safety' || item.source === 'issue') {
     return false;
   }
@@ -3063,8 +3077,9 @@ function shouldSuppressReportBullet(value: string, authoredCapturedForText?: str
 }
 
 /** Legacy sends kept no app-text digest. These source words can now print differently under the same facts. */
-export function reportWordingRequiresAppTextKey(report: Pick<PIEReportDraft, 'sourceEvidence'>): boolean {
+export function reportWordingRequiresAppTextKey(report: Pick<PIEReportDraft, 'sourceEvidence' | 'body'>): boolean {
   return report.sourceEvidence.some(item =>
+    (item.authoredPlainLatest && report.body.includes(item.summary)) ||
     (item.preservesCapturedFor && /captured\s+for/i.test(item.summary)) ||
     /^please\s+[a-z]+\b/i.test((item.actionRequired || item.summary).replace(/^next step:\s*/i, '')),
   );
