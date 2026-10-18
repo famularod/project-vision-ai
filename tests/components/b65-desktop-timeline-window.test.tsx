@@ -48,10 +48,10 @@ for(const zoom of ['day','week','month'] as const)it('mounted '+zoom+' keeps 200
 });
 
 it('scrolling a normal large job reuses task geometry and unchanged row subtrees',()=>{
- const tasks=Array.from({length:300},(_,n)=>task('normal-'+n));
+ const tasks=Array.from({length:300},(_,n)=>task('normal-'+n,n===299?{finishDate:'2027-07-24'}:{}));
  const build=jest.spyOn(GanttModel,'buildVitruviusGanttModel');
  try {
-  const s=open(tasks);expect(build).toHaveBeenCalled();build.mockClear();
+  const s=open(tasks);expect(build).toHaveBeenCalled();expect(build.mock.results[0].value.timelineWidth).toBeGreaterThan(1024);build.mockClear();
   const barStyle=s.getByTestId('gantt-bar:normal-0').props.style;
   const scroll=s.getByTestId('gantt-timeline-scroll');
   for(let n=1;n<=12;n++)budget(()=>fireEvent.scroll(scroll,{nativeEvent:{contentOffset:{x:n}}}));
