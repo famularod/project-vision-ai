@@ -376,6 +376,8 @@ export type PIEReporterRuntimeInput = {
     trust?: number;
   };
   fusedEvidence?: {
+    /** The existing runtime recipe's project scope; never broadened by a report projection. */
+    projectName?: string;
     scheduleReconciliation?: PIEScheduleReconciliationResult;
     /** What the written report's "Latest update / Latest photo / Schedule focus" sentence is made from. */
     userUpdateEvidence?: Array<Parameters<typeof whatChangedForWrittenReport>[0]['userUpdateEvidence'][number] & { projectName?: string; areaName?: string | null }>;
@@ -671,8 +673,14 @@ export function collectReportEvidence(
     });
 
   const projectedTasks = input.scheduleItems && projectScheduleItemsForReport(input.scheduleItems);
-  const tasksChanged = projectedTasks && projectedTasks !== input.scheduleItems;
   const originalRuntime = input.runtime;
+  const fusedProjectName = originalRuntime?.fusedEvidence?.projectName || selectedProjects[0];
+  const fusedProjectKey = normalizeName(fusedProjectName || '');
+  const tasksChanged = projectedTasks?.some((item, index) =>
+    item !== input.scheduleItems![index] &&
+    selectedProjects.includes(normalizeName(item.scheduleProjectName?.trim() || item.projectName)) &&
+    (!fusedProjectKey || fusedProjectKey === 'unassigned project' || normalizeName(item.projectName) === fusedProjectKey),
+  );
   // The report reads its own projected tasks, while retaining the runtime's authored
   // update/photo recipe and every other model product. Do not change the wider runtime.
   const runtime = tasksChanged && originalRuntime?.fusedEvidence?.scheduleEvidence
@@ -681,7 +689,8 @@ export function collectReportEvidence(
         fusedEvidence: {
           ...originalRuntime.fusedEvidence,
           scheduleEvidence: extractScheduleEvidence({
-            scheduleItems: projectedTasks.filter(item => selectedProjects.includes(
+            projectName: fusedProjectName,
+            scheduleItems: projectedTasks!.filter(item => selectedProjects.includes(
               normalizeName(item.scheduleProjectName?.trim() || item.projectName),
             )),
             now: input.generatedAt,
@@ -1746,6 +1755,7 @@ function buildReport(
     ...input,
     reportType,
     audience,
+    generatedAt,
   });
   const constructionUnderstanding = buildConstructionUnderstanding(input, sourceEvidence);
   const narrative = buildProjectNarrative(constructionUnderstanding);
