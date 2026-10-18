@@ -280,11 +280,23 @@ describe('Sign Out of All Devices still needs the server (owner answer Q21)', ()
 
     const refused = await whileTimePasses(tab.gateway!.signOut('global').then(() => null, (error: unknown) => error));
 
-    expect(refused.value).toBeInstanceOf(DAVEWebSignOutNeedsConnectionError);
+    expect((refused.value as Error).message).toBe('The sign-in server asked Vitruvius to wait because of too many requests. Nothing was signed out. Wait a few minutes and try again.');
+    expect((refused.value as Error).message).not.toMatch(/internet|offline|back online/i);
     expect(tabHoldsSignIn(tab.storage)).toBe(true);
     expect(browser.periodKeys()).toEqual([WEB_SIGN_IN_PERIOD_KEY]);
     expect(tab.heard).not.toContain('SIGNED_OUT');
     expect(server.refreshesAsked).toBe(2);
+    expect(server.logoutsAsked).toBe(0);
+    // A later attempt is classified from its own answer, not the earlier wait.
+    await jest.advanceTimersByTimeAsync(3 * 60_000);
+    server.refresh = 'ok';
+    server.logout = 'dropped';
+    const offline = await whileTimePasses(tab.gateway!.signOut('global').catch((error: unknown) => error));
+    expect(offline.value).toBeInstanceOf(DAVEWebSignOutNeedsConnectionError);
+    expect(tabHoldsSignIn(tab.storage)).toBe(true);
+    server.logout = 'ok';
+    await whileTimePasses(tab.gateway!.signOut('global'));
+    expectSignedOutOfThisComputer(tab);
   });
 
   it('guard: with no connection nothing is signed out and he is told, as before', async () => {

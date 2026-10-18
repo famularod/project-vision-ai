@@ -409,3 +409,48 @@ describe('Open item 5.26: a schedule PDF added without signal keeps its card', (
     expect(iPhone.projectScheduleImportCardRef.current).toBeNull();
   });
 });
+
+
+describe('5.32: empty remote extraction is explained once in the production preparation/review path', () => {
+  const serviceReadEmptyPayload = async ({ fileName, projects }: { fileName: string; projects: readonly string[] }) =>
+    remoteExtraction.scheduleItemsFromRemoteExtractorPayload({ ok: true, items: [] }, { fileName, projects, extractedAt: '2026-10-15T08:00:00.000Z' });
+  it.each(['Tasks', 'Documents'] as const)('%s uses the actual empty-payload error, preserves help and no fabricated activities', async road => {
+    schedule = serviceReadEmptyPayload;
+    const iPhone = phone();
+    const batch = road === 'Tasks'
+      ? await iPhone.addInTasks(F1)
+      : (await iPhone.addInDocuments(F1, 'Schedule'), iPhone.opened[0]);
+    expect(batch).toBeTruthy();
+    console.log('EMPTY_EXTRACTION_COPY', JSON.stringify({ road, message: batch!.message, nothingRead: batch!.nothingRead, items: batch!.items.map(item => ({ taskName: item.taskName, startDate: item.startDate, finishDate: item.finishDate })) }));
+    expect(batch!.message.match(/no dated(?: schedule)? activities (?:were|could be) extracted/gi)).toHaveLength(1);
+    expect(batch!.message).toContain('Check that the PDF is readable and includes task names and dates.');
+    expect(batch!.nothingRead).toBe(true);
+    expect(batch!.items.every(item => !item.taskName && !item.startDate && !item.finishDate)).toBe(true);
+    const view = review(batch!, iPhone.cancelScheduleImport);
+    expect(view.getByText(batch!.message)).toBeTruthy();
+    await act(async () => { fireEvent.press(view.getByLabelText('Close Review Imported Schedule')); });
+    expect(iPhone.deletedReferenceCopies).toEqual([batch!.documents[0].uri]);
+    expect(iPhone.savedCards()).toHaveLength(road === 'Documents' ? 1 : 0);
+    if (road === 'Documents') expect(mockDisk.get(iPhone.savedCards()[0].localUri as string)).toEqual(F1.bytes);
+  });
+  it.each([401, 403, 409, 429, 413, 415, 500])('keeps the genuine service/auth failure reason for HTTP %s', async status => {
+    const reason = remoteExtraction.scheduleExtractionFailureMessage({ code: 'REQUEST_IN_PROGRESS' }, status);
+    schedule = async () => { throw new remoteExtraction.PIEScheduleRemoteExtractionError(reason); };
+    const batch = await phone().addInTasks(F1);
+    expect(batch!.message).toBe(`The PDF's tasks could not be read: no dated activities were extracted. ${reason}`);
+    expect(batch!.nothingRead).toBe(true);
+    expect(batch!.items.every(item => !item.taskName && !item.startDate && !item.finishDate)).toBe(true);
+  });
+});
+
+ it.each([
+   remoteExtraction.SCHEDULE_EXTRACTION_UNREACHABLE_MESSAGE,
+   'Schedule extraction took too long. Try again on a stable connection.',
+   'An unexpected preparation error prevented reading this PDF.',
+   'Service reason: No dated schedule activities could be extracted. Retry later.',
+ ])('5.32 keeps a distinct failure reason unchanged: %s', async reason => {
+   schedule = async () => { throw new Error(reason); };
+   const batch = await phone().addInTasks(F1);
+   expect(batch!.message).toBe(`The PDF's tasks could not be read: no dated activities were extracted. ${reason}`);
+   expect(batch!.nothingRead).toBe(true);
+ });

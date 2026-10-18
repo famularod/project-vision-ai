@@ -12235,6 +12235,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
         extractionMethod = 'schedule service';
       } catch (error) {
         extractionIssue = error instanceof Error ? error.message : 'Automatic schedule extraction could not finish.';
+        // 5.32: the review already says no dated activities were extracted. Keep the
+        // empty-payload reader's readable-PDF guidance without repeating that result.
+        extractionIssue = extractionIssue.replace(/^No dated schedule activities could be extracted\.\s*/, '');
       }
     }
     if (extractedItems.length > 0) {

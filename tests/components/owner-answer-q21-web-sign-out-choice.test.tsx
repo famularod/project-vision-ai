@@ -9,7 +9,7 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 import { DesktopReadOnlyShell } from '../../components/web-shell/desktop-read-only-shell';
-import { DAVEWebSignOutNeedsConnectionError } from '../../services/DAVEWebSupabaseClient';
+import { DAVEWebSignOutNeedsConnectionError, DAVEWebSignOutWaitError } from '../../services/DAVEWebSupabaseClient';
 
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 jest.mock('@react-native-async-storage/async-storage', () => ({
@@ -194,4 +194,16 @@ test('the sign-in page says the same about the other tabs (A12 pass 6 L2)', () =
   } finally {
     Object.assign(mockAuth, ready);
   }
+});
+
+
+test('All Devices during a server-requested wait explains the wait and keeps both choices available', async () => {
+  mockAuth.signOutOfDesktop.mockRejectedValueOnce(new DAVEWebSignOutWaitError());
+  const screen = openSignOutChoice();
+  await act(async () => { fireEvent.press(screen.getByText('Sign Out of All Devices')); });
+  expect(await screen.findByText('The sign-in server asked Vitruvius to wait because of too many requests. Nothing was signed out. Wait a few minutes and try again.')).toBeTruthy();
+  expect(screen.queryByText(/back online|Check the internet/)).toBeNull();
+  expect(screen.getByText('Sign Out of This Computer')).toBeTruthy();
+  expect(screen.getByText('Sign Out of All Devices')).toBeTruthy();
+  expect(mockAuth.signOutOfDesktop).toHaveBeenCalledWith('global');
 });

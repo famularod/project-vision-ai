@@ -38,6 +38,7 @@ import {
   DAVEWebAuthorizationError,
   DAVEWebDocumentMutationError,
   DAVEWebSignOutNeedsConnectionError,
+  DAVEWebSignOutWaitError,
   DAVEWebTaskMutationError,
   type DAVEWebSignOutScope,
 } from '../../services/DAVEWebSupabaseClient';
@@ -7111,6 +7112,7 @@ function ReportWorkspace({
 function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
   const auth = useDesktopAuth();
   const [pending, setPending] = useState<DAVEWebSignOutScope | null>(null);
+  const signOutInFlight = useRef(false);
   const [problem, setProblem] = useState('');
   // Review N2 (5 Oct 2026): signing out removes this account's report periods from this browser (review N1). A
   // report sent from here while the shared record could not be reached was only in this browser, though the page
@@ -7120,7 +7122,8 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
   const [sendsNotShared, setSendsNotShared] = useState<Readonly<{ scope: DAVEWebSignOutScope; sentAts: readonly string[] }> | null>(null);
 
   const signOut = async (scope: DAVEWebSignOutScope, despiteSendsNotShared = false) => {
-    if (pending) return;
+    if (signOutInFlight.current) return;
+    signOutInFlight.current = true;
     setPending(scope);
     setProblem('');
     try {
@@ -7132,6 +7135,7 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
         );
         if (notShared.length > 0) {
           setSendsNotShared({ scope, sentAts: notShared.map(send => send.sentAt) });
+          signOutInFlight.current = false;
           setPending(null);
           return;
         }
@@ -7144,11 +7148,14 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
       // the cloud answers, like the phone with no signal, and the sign-in page says so when the cloud did not
       // confirm it. It comes here only if this browser itself would not finish, so its message does not speak
       // of the internet connection.
-      setProblem(error instanceof DAVEWebSignOutNeedsConnectionError
+      setProblem(error instanceof DAVEWebSignOutWaitError
+        ? error.message
+        : error instanceof DAVEWebSignOutNeedsConnectionError
         ? `${error.message} Try again when this computer is back online.`
         : scope === 'global'
           ? 'Sign out did not finish. Check the internet connection and try again.'
           : 'Sign out did not finish. Try again.');
+      signOutInFlight.current = false;
       setPending(null);
     }
   };
