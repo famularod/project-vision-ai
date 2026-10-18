@@ -21,7 +21,7 @@ import { KeyboardAvoidingModalCard } from '../components/KeyboardAvoidingModalCa
 import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPending } from '../components/native-workspace-owner';
 import { unsavedFieldNoteExists } from '../hooks/use-field-note-draft';
 import { unsavedWalkMemoryExists } from '../hooks/use-kept-walk-memory-draft';
-import { unusedScheduleVerificationNoteExists } from '../hooks/use-schedule-progress-draft';
+import { unusedScheduleProgressDraftExists, unusedScheduleVerificationNoteExists } from '../hooks/use-schedule-progress-draft';
 import { keptVoiceRecordingExists } from '../services/KeptVoiceRecording';
 import { copyDAVEReportCheckDetails } from '../services/DAVEReportCheckDetails';
 import { clearSignOutAskedHere, noteAskedSignOutAnswered, noteSignOutAskedHere } from '../services/SignOutIntent';
@@ -1326,7 +1326,8 @@ export function AdminScreen({
       (keptRecording ? 'The recording waiting for signal will be discarded. ' : '') +
       // Review pass 1, L8: the optional verification note typed on a task and not yet used goes too, and is named.
       // Second review, F6: this account's own note only; another account's kept note is neither named nor discarded.
-      (unusedScheduleVerificationNoteExists(fieldNoteOwnerKey) ? 'The verification note you have typed will be discarded. ' : '');
+      (unusedScheduleVerificationNoteExists(fieldNoteOwnerKey) ? 'The verification note you have typed will be discarded. ' : '') +
+      (unusedScheduleProgressDraftExists(fieldNoteOwnerKey) ? 'The task status and percent changes you have not saved will be discarded. ' : '');
     const message =
       notInCloudCount > 0
         // A11 pass 7 L1: "syncs after you sign in" covers only items not marked Review needed.
