@@ -20,6 +20,7 @@ import { sameReportSource, type DAVEReportSnapshot } from './DAVEReportSnapshot'
 import {
   bindPIEScheduleImportBatchProvenance,
   dedupeScheduleImportItems,
+  unresolvedScheduleFileProjectKey,
   scheduleImportItemIdentity,
   type PIEScheduleImportBatch,
 } from './PIEScheduleImportBatch';
@@ -356,7 +357,7 @@ export function prepareDAVEWebDocumentUpload({
   const fileTopLineProjectRows: string[] = [];
   const asNamed = readItems.map((item, index) => {
     const root = item.scheduleProjectName?.trim() || '';
-    const his = root && ownProjects.some(project => normalized(project) === normalized(root) || scheduleProjectScopeKey(project) === scheduleProjectScopeKey(root));
+    const his = root && ownProjects.some(project => normalized(project) === normalized(root) || sameNonemptyScheduleProjectScope(project, root));
     if (item.projectName?.trim() || parents[index] || !his) return item;
     fileTopLineProjectRows.push(item.id);
     return { ...item, projectName: root };
@@ -430,6 +431,14 @@ export function prepareDAVEWebDocumentUpload({
   });
 }
 
+/** Empty ASCII scope keys prove no alias. Exact Unicode names still resolve
+ * through validateScheduleImportScope; unrelated names must wait for review.
+ */
+function sameNonemptyScheduleProjectScope(left: string, right: string): boolean {
+  const key = scheduleProjectScopeKey(left);
+  return Boolean(key.trim()) && key === scheduleProjectScopeKey(right);
+}
+
 /**
  * Open item 2.35 (the 2.33 fixer's R-2, "the PDF root door"; 13 Oct 2026). A Microsoft Project PDF's root (the top line,
  * scheduleProjectNameFromGanttRoot) was saved as every task's schedule parent as written; where it was none of his
@@ -448,7 +457,7 @@ function daveWebRowParents(items: readonly ScheduleItem[], ticked: readonly stri
     selectedProjects: ticked.map(name => ({
       id: name,
       name,
-      ...(aliases ? { aliases: spellings.filter(spelling => scheduleProjectScopeKey(spelling) === scheduleProjectScopeKey(name)) } : {}),
+      ...(aliases ? { aliases: spellings.filter(spelling => sameNonemptyScheduleProjectScope(spelling, name)) } : {}),
     })),
   }).items.map(item => item.scheduleProjectName || null);
   const exact = kept(false);
@@ -485,7 +494,7 @@ function daveWebRowProjects(items: readonly ScheduleItem[], ownProjects: readonl
     selectedProjects: projects.map(name => ({
       id: name,
       name,
-      aliases: spellings.filter(spelling => scheduleProjectScopeKey(spelling) === scheduleProjectScopeKey(name)),
+      aliases: spellings.filter(spelling => sameNonemptyScheduleProjectScope(spelling, name)),
     })),
   }).itemResults;
   const exact = validateScheduleImportScope({ items: named, selectedProjects: ownProjects.map(name => ({ id: name, name })) }).itemResults;
@@ -507,7 +516,7 @@ function daveWebRowProjects(items: readonly ScheduleItem[], ownProjects: readonl
       const fileName = item.projectName.trim();
       waiting.add(item.id);
       if (fileName !== SCHEDULE_IMPORT_NEEDS_PROJECT) fileProjectNames[item.id] = fileName;
-      const fitsEqually = ownProjects.filter(project => scheduleProjectScopeKey(project) === scheduleProjectScopeKey(fileName));
+      const fitsEqually = ownProjects.filter(project => sameNonemptyScheduleProjectScope(project, fileName));
       // Review pass 2, H2S-1: the guess only says "may be another project"; it never names one (it read a year, a
       // street number, a short name inside a longer one as a project), and not where it also reads a ticked one.
       const guess = bestScheduleProjectMatch(fileName, [...ownProjects]);
@@ -515,7 +524,7 @@ function daveWebRowProjects(items: readonly ScheduleItem[], ownProjects: readonl
         fitsEqually: fitsEqually.length > 1 ? fitsEqually : [],
         mayBeAnother: fitsEqually.length < 2 && Boolean(guess) && !tickedKeys.has(normalized(guess)) && !bestScheduleProjectMatch(fileName, [...ticked]),
       };
-      const key = scheduleProjectScopeKey(fileName);
+      const key = unresolvedScheduleFileProjectKey(fileName);
       if (!firstSpelling.has(key)) firstSpelling.set(key, item.projectName);
       return [item, firstSpelling.get(key)!] as const;
     }
