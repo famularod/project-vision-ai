@@ -57,7 +57,7 @@ export function useScheduleProgressDraft(
   const workspace = useContext(NativeWorkspaceOwnerContext);
   const account = useSyncExternalStore(subscribe, () => workspace === undefined ? progressAccountHeard : workspace ?? 'local-device');
   const key = progressDraftKey(account, itemId);
-  const epoch = progressEpochs.get(account) ?? 0;
+  const epoch = useSyncExternalStore(subscribe, () => progressEpochs.get(account) ?? 0);
   const entry = useSyncExternalStore(subscribe, () => drafts.get(key));
   const activeKey = useRef<string | null>(key);
   activeKey.current = key;
@@ -109,10 +109,17 @@ function settleProgressOfNoKnownAccount(account: string | null | undefined): boo
   return changed;
 }
 
+function fenceProgressDraftCallbacks(account: string | null | undefined) {
+  progressEpochs.set(null, (progressEpochs.get(null) ?? 0) + 1);
+  if (account) progressEpochs.set(account, (progressEpochs.get(account) ?? 0) + 1);
+}
+
 /** An unasked sign-out keeps named accounts' edits, and cannot give an unknown edit to the next account. */
 export function setAsideScheduleProgressDrafts(account: string | null | undefined) {
-  const changed = settleProgressOfNoKnownAccount(account);
-  if (progressAccountHeard === null && !changed) return;
+  settleProgressOfNoKnownAccount(account);
+  // Even an empty fallback can have a callback retained by an in-flight interaction.
+  // End that interaction's generation without throwing away the named account's draft.
+  fenceProgressDraftCallbacks(account || progressAccountHeard);
   progressAccountHeard = null;
   notify();
 }
@@ -120,6 +127,7 @@ export function setAsideScheduleProgressDrafts(account: string | null | undefine
 export function bringBackScheduleProgressDrafts(account: string, previous?: string | null) {
   const changed = settleProgressOfNoKnownAccount(previous || account);
   if (progressAccountHeard === account && !changed) return;
+  fenceProgressDraftCallbacks(previous || progressAccountHeard);
   progressAccountHeard = account;
   notify();
 }
@@ -127,8 +135,7 @@ export function bringBackScheduleProgressDrafts(account: string, previous?: stri
 /** Settings' confirmed Sign Out drops only its account; stale callbacks cannot revive those edits. */
 export function forgetScheduleProgressDrafts(account?: string | null) {
   const whose = account || progressAccountHeard;
-  progressEpochs.set(whose, (progressEpochs.get(whose) ?? 0) + 1);
-  if (whose !== null) progressEpochs.set(null, (progressEpochs.get(null) ?? 0) + 1);
+  fenceProgressDraftCallbacks(whose);
   let changed = progressAccountHeard !== null;
   progressAccountHeard = null;
   [...drafts].forEach(([key, draft]) => {
