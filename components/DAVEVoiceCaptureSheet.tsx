@@ -11,6 +11,7 @@ import {
 import * as FileSystem from 'expo-file-system/legacy';
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
+  AccessibilityInfo,
   Alert,
   AppState,
   Modal,
@@ -230,6 +231,11 @@ export function DAVEVoiceCaptureSheet({
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    // iOS does not announce live-region text changes. Announce a new failure
+    // once; recorder ticks and unrelated rerenders must not repeat it.
+    if (visible && error && Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(error);
+  }, [visible, error]);
   const [notice, setNotice] = useState<string | null>(null);
   const [taskPickerOpen, setTaskPickerOpen] = useState(false);
   const [taskSearch, setTaskSearch] = useState('');
@@ -715,7 +721,7 @@ export function DAVEVoiceCaptureSheet({
       keptCopyRef.current = kept.uri;
       keptStateRef.current = kept.state;
       sentForWordsRef.current = kept.state !== 'ready';
-      captureRef.current = { recordedAt: kept.recordedAt, walkArea: kept.walkArea, restored: true };
+      captureRef.current = { recordedAt: kept.recordedAt, walkArea: kept.walkArea, restored: true, ...(kept.sentDespiteNoSound === true ? { sendAnyway: 'sent' as const } : {}) };
       recordingGenerationRef.current += 1;
       recordingDurationRef.current = kept.durationMs;
       setRecordingUri(kept.uri);
@@ -812,6 +818,7 @@ export function DAVEVoiceCaptureSheet({
           recordedAt: capture?.recordedAt,
           walkArea: capture?.restored ? capture.walkArea : capture?.walkArea ?? walkContext?.recommendedArea ?? null,
           state,
+          ...(capture?.sendAnyway === 'sent' ? { sentDespiteNoSound: true } : {}),
         });
         // Discarded, used or recorded again meanwhile: this copy does not stay kept.
         if (epoch !== keepEpochRef.current) {
@@ -1554,7 +1561,7 @@ export function DAVEVoiceCaptureSheet({
 
           {startIsWaiting ? <Text style={styles.notice} accessibilityLiveRegion="polite">{START_IS_WAITING}</Text> : null}
           {notice && !error ? <Text style={styles.notice} accessibilityLiveRegion="polite">{notice}</Text> : null}
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+          {error ? <Text style={styles.error} accessibilityLiveRegion={Platform.OS === 'android' ? 'polite' : undefined}>{error}</Text> : null}
 
           {recorderState.isRecording ? (
             <TouchableOpacity style={styles.stopButton} onPress={() => { void stopRecording(); }} accessibilityRole="button">

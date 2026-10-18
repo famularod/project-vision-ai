@@ -38,6 +38,8 @@ export type KeptVoiceRecording = Readonly<{
   recordedAt: string;
   walkArea: KeptVoiceWalkArea | null;
   state: KeptVoiceRecordingState;
+  /** This recording was explicitly sent after its no-sound warning. Absent on legacy entries. */
+  sentDespiteNoSound?: boolean;
 }>;
 
 /**
@@ -64,6 +66,7 @@ type KeptVoiceRecordingEntry = Readonly<{
   recordedAt?: string;
   walkArea?: KeptVoiceWalkArea | null;
   state?: KeptVoiceRecordingState;
+  sentDespiteNoSound?: boolean;
 }>;
 
 /** An entry as it is stored: `scope` is its key, `slot` the sheet that keeps it. */
@@ -153,6 +156,7 @@ export function keepVoiceRecording(
     recordedAt?: string;
     walkArea?: KeptVoiceWalkArea | null;
     state?: KeptVoiceRecordingState;
+  sentDespiteNoSound?: boolean;
   }>,
 ): Promise<string> {
   return oneAtATime(async () => {
@@ -177,6 +181,7 @@ export function keepVoiceRecording(
       recordedAt: validTime(recording.recordedAt) ? recording.recordedAt : new Date().toISOString(),
       walkArea: walkAreaOf(recording.walkArea),
       state: recording.state ?? 'no-signal',
+      ...(recording.sentDespiteNoSound === true ? { sentDespiteNoSound: true } : {}),
     };
     // An entry kept before review N1 M1 (its scope is its sheet) is rewritten where it is.
     const scope = (await storedKeptVoiceRecordings(ownerKey)).find(stored => stored.fileName === fileName)?.scope
@@ -215,6 +220,7 @@ async function storedKeptVoiceRecordings(ownerKey: string): Promise<StoredKeptVo
         recordedAt: validTime(entry.recordedAt) ? entry.recordedAt : kept.keptAt,
         walkArea: walkAreaOf(entry.walkArea),
         state: entry.state === 'ready' || entry.state === 'sent' ? entry.state : 'no-signal',
+        ...(entry.sentDespiteNoSound === true ? { sentDespiteNoSound: true } : {}),
       }),
     });
   }
