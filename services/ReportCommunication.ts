@@ -110,22 +110,29 @@ export function reportFileTitleWithDate(
   now: Date = new Date(),
 ): string {
   const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  const name = (title ?? '').replace(/[\\/\x00-\x1f\x7f-\x9f<>:"|?*]/g, ' ')
+  const safe = (value: string) => value.replace(/[\\/\x00-\x1f\x7f-\x9f<>:"|?*]/g, ' ')
     .replace(/\s+/g, ' ').replace(/^[. ]+|[. ]+$/g, '');
+  let name = safe(title ?? '');
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(name)) name = `Report ${name}`;
   const manualDate = deliberateTitleDate(title ?? '');
-  // Dates containing slashes must be sanitized exactly like the rest of the name.
-  const suffix = manualDate ? '' : ` ${day}`;
-  const budget = 235 - suffix.length;
-  let result = '';
-  let bytes = 0;
-  for (const character of name) {
-    const cp = character.codePointAt(0)!;
-    const size = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
-    if (bytes + size > budget) break;
-    result += character;
-    bytes += size;
+  const truncate = (value: string, budget: number) => {
+    let result = '';
+    let bytes = 0;
+    for (const character of value) {
+      const cp = character.codePointAt(0)!;
+      const size = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+      if (bytes + size > budget) break;
+      result += character;
+      bytes += size;
+    }
+    return result.replace(/[. ]+$/g, '');
+  };
+  if (manualDate) {
+    const result = truncate(name, 235);
+    const safeDate = safe(manualDate);
+    // Keep a deliberately supplied date even if a long title put it past the
+    // byte boundary. Never add a second (action) date to that title.
+    return result.includes(safeDate) ? result : `${truncate(name, 234 - safeDate.length)} ${safeDate}`.trim();
   }
-  result = result.replace(/[. ]+$/g, '');
-  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(result)) result = `Report ${result.slice(0, 220)}`;
-  return `${result}${suffix}`.trim() || day;
+  return `${truncate(name, 224)} ${day}`.trim();
 }

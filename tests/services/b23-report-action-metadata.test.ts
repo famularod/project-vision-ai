@@ -27,6 +27,13 @@ describe('7.23 action metadata', () => {
     expect(name).toContain(day);
     if (title.startsWith('工程')) expect(name).toContain('工程');
   });
+  it('preserves a manually dated long title and bounds reserved names', () => {
+    const name = reportFileTitleWithDate('工程🏗️'.repeat(200) + ' Oct 16, 2026', before, action);
+    expect(name).toContain('Oct 16, 2026');
+    expect(Buffer.byteLength(name + '.docx')).toBeLessThanOrEqual(240);
+    expect(reportFileTitleWithDate('CON.' + '工程'.repeat(200),before,action)).toMatch(/^Report CON/);
+    expect(Buffer.byteLength(reportFileTitleWithDate('CON.' + '工程'.repeat(200),before,action) + '.docx')).toBeLessThanOrEqual(240);
+  });
   it('both real Word producers use the report-specific basename directly, preserving body inputs', () => {
     const app=fs.readFileSync(path.resolve(__dirname,'../../App.tsx'),'utf8');
     const web=fs.readFileSync(path.resolve(__dirname,'../../components/web-shell/desktop-read-only-shell.tsx'),'utf8');
