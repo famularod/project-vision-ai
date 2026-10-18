@@ -23,11 +23,13 @@ function device(options: { pendingDisk?: boolean; pendingUpload?: boolean; offli
   const disk = deferred(), upload = deferred();
   const events: string[] = [], notices: Notice[] = [], reviews: unknown[] = [];
   let records: Card[] = [], writes = 0, created = 0;
+  let owner = 'first-owner';
   const current = { current: [] as Card[] };
   const deps: Record<string, unknown> = {
     documentUploadRequest: null, setDocumentUploadRequest: () => undefined, projectDocumentsCurrentRef: current,
     projectDocuments: [], referenceDocumentsCurrentRef: { current: [] },
     projectScheduleImportCardRef: { current: null },
+    bindProjectDocumentUploadToAccount: () => { const startedAs = owner; return () => owner === startedAs; },
     validateECOSMobileDrawingControls: () => ({ valid: true }),
     authorityProjectId: (name: string) => `project:${name}`,
     prepareScheduleImportFromAsset: async () => ({ id: 'review-1', nothingRead: true, message: 'No dated activities were read.' }),
@@ -64,7 +66,7 @@ function device(options: { pendingDisk?: boolean; pendingUpload?: boolean; offli
   }).outputText;
   // Each confirmation receives the captured selection for that one operation.
   return {
-    disk, upload, events, notices, reviews, current, saved: () => records,
+    disk, upload, events, notices, reviews, current, saved: () => records, switchAccount: () => { owner = 'second-owner'; },
     async add(category = 'Schedule', projects = ['First Project']) {
       const values = { ...deps, documentUploadRequest: { asset: { uri: 'file:///picker/test.pdf', name: 'test.pdf' }, selected: new Set(projects), category, attachToDraft: false, areaId: null, updateId: null, drawingControls: {} } };
       const run = new Function(...Object.keys(values), code)(...Object.values(values)) as { confirmDocumentProjectSelection: () => Promise<void> };
@@ -111,4 +113,36 @@ it('an ordinary document keeps its existing asked-upload failure notice', async 
   expect(phone.saved()).toHaveLength(1);
   expect(phone.reviews).toEqual([]);
   expect(phone.notices.map(notice => notice.title)).toEqual(['Document upload not completed']);
+});
+it('two unread schedule cards are durably saved before the review, and uploads run sequentially after it opens', async () => {
+  const phone = device({ pendingUpload: true });
+  const operation = phone.add('Schedule', ['First Project', 'Second Project']);
+  try {
+    await flush();
+    expect(phone.saved()).toHaveLength(2);
+    expect(phone.reviews).toHaveLength(1);
+    expect(phone.events).toEqual(['saved:document-1', 'saved:document-2', 'review', 'upload:document-1']);
+  } finally { phone.upload.resolve(); await operation; await flush(); }
+  expect(phone.events.slice(-3)).toEqual(['upload-ended:document-1', 'upload:document-2', 'upload-ended:document-2']);
+});
+it('a partial add retains and silently uploads its saved first copy, without opening an untrue schedule review', async () => {
+  const phone = device({ failDiskAt: 2, offline: true });
+  await phone.add('Schedule', ['First Project', 'Second Project', 'Third Project']); await flush();
+  expect(phone.saved()).toHaveLength(1);
+  expect(phone.reviews).toEqual([]);
+  expect(phone.notices.map(notice => notice.title)).toEqual(['Some document copies were saved']);
+  expect(phone.notices[0].message).toContain('Not attempted: Third Project.');
+  expect(phone.events.filter(event => event.startsWith('upload:'))).toEqual(['upload:document-1']);
+});
+it('an account change during the durable save prevents this selection from starting deferred uploads as the new account', async () => {
+  const phone = device({ pendingDisk: true });
+  const operation = phone.add();
+  await flush(); phone.switchAccount(); phone.disk.resolve(); await operation; await flush();
+  expect(phone.events.filter(event => event.startsWith('upload:'))).toEqual([]);
+});
+it('an account change during the first deferred upload prevents the second upload from starting', async () => {
+  const phone = device({ pendingUpload: true });
+  const operation = phone.add('Schedule', ['First Project', 'Second Project']);
+  await flush(); phone.switchAccount(); phone.upload.resolve(); await operation; await flush();
+  expect(phone.events.filter(event => event.startsWith('upload:'))).toEqual(['upload:document-1']);
 });

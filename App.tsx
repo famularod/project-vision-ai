@@ -7469,6 +7469,8 @@ useEffect(() => {
     const existingCardIds = new Set(projectDocumentsCurrentRef.current.map(document => document.id));
     const attemptCards: Array<{ document: ProjectDocument; projectName: string }> = [];
     let projectIndex = -1;
+    const uploadAfterReview: string[] = [];
+    let scheduleUploadIsCurrent: (() => boolean) | null = null;
 
     // Same picked file, one ProjectDocument record per selected project -
     // each project keeps its own independent upload/retry/status lifecycle,
@@ -7491,6 +7493,7 @@ useEffect(() => {
       // added here (it uploads as any added without signal), then reviewed; closing the review leaves the card.
       let unreadSchedule: PIEScheduleImportBatch | null = null;
       if (category === 'Schedule' && !attachToDraft) {
+        scheduleUploadIsCurrent = bindProjectDocumentUploadToAccount();
         const batch = await prepareScheduleImportFromAsset(asset, selectedProjectNames);
         if (!batch?.nothingRead) {
           if (batch) {
@@ -7523,7 +7526,12 @@ useEffect(() => {
           // attempt's new non-duplicate identity; the catch checks the durable ref.
           if (!attachToDraft && !duplicate && !existingCardIds.has(document.id)) attemptCards.push({ document, projectName });
           if (!duplicate) keptCards.push(document); // a duplicate is kept only if he says Upload Anyway
-          await confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
+          if (unreadSchedule && !duplicate) {
+            // 5.30: durable storage is required before saying saved. Waiting
+            // for the upload is not: the review also works without a signal.
+            await addProjectDocumentDurably(document);
+            uploadAfterReview.push(document.id);
+          } else await confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
         }
       } catch (error) {
         if (unreadSchedule) cancelScheduleImport(unreadSchedule); // no review says "saved"; its copy goes
@@ -7578,6 +7586,18 @@ useEffect(() => {
       );
     } finally {
       setDocumentUploadRequest(null);
+      // Keep the same sequential, silent background upload behavior as Retry.
+      // This attempt's saved copies stay retryable even after a partial add.
+      // Never start its deferred work in a different account's workspace.
+      const sameAccount = scheduleUploadIsCurrent;
+      if (sameAccount && uploadAfterReview.length) void (async () => {
+        for (const documentId of uploadAfterReview) {
+          if (!sameAccount()) break;
+          const current = projectDocumentsCurrentRef.current.find(document => document.id === documentId);
+          if (current?.status !== 'local' || current.isArchived) continue;
+          await retryProjectDocumentUpload(documentId);
+        }
+      })().catch(() => undefined);
     }
   }
 
