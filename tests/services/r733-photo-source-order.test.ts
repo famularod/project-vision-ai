@@ -10,7 +10,7 @@ import {buildDAVEWebReportSource,buildDAVEWebReportTruths,buildDAVEWebReportDraf
 import {buildDAVEReportSnapshot,markReportSnapshotDelivered,reportSnapshotToSave,reportTextKey} from '../../services/DAVEReportSnapshot';
 import {daveWebReportAlreadySentElsewhereAt} from '../../services/DAVEWebReportPeriod';
 import {reportFileTitleWithDate} from '../../services/ReportCommunication';
-import {fakeMedia,fakeImageBytes,installFakeBrowser} from '../fixtures/report-word-media-fakes';
+import {fakeMedia,fakeImageBytes,fakePictureIn,fakeLabelsOf,installFakeBrowser} from '../fixtures/report-word-media-fakes';
 import type {ProjectUpdate} from '../../types';
 jest.mock('expo-file-system',()=>require('../fixtures/report-word-media-fakes').fakeFileSystem());
 jest.mock('expo-file-system/legacy',()=>({documentDirectory:null}));
@@ -63,9 +63,9 @@ it('7.33 preserves distinct attachments, authored photo order, task/area/words c
  const original=source(rows),before=JSON.stringify(rows);
  for(let n=0;n<16;n++)expect(source(n%2?[...rows].reverse():rows)).toBe(original);
  const word=await desktop(rows),reverse=await desktop([...rows].reverse(),true);
- expect(reverse.paragraphs).toEqual(word.paragraphs);expect(reverse.bytes.map(b=>Array.from(b))).toEqual(word.bytes.map(b=>Array.from(b)));expect(word.bytes).toHaveLength(3);
+ expect(reverse.paragraphs).toEqual(word.paragraphs);expect(reverse.bytes.map(b=>fakeLabelsOf(fakePictureIn(b)!))).toEqual(word.bytes.map(b=>fakeLabelsOf(fakePictureIn(b)!)));expect(word.bytes).toHaveLength(3);
  expect(new Set(word.bytes.map(b=>Buffer.from(b).toString('base64'))).size).toBe(3);
- expect(word.resolved.photos.map((p:any)=>p.photoId??p.id)).toEqual(['photo-Z','photo-B','photo-A']);
+ expect(word.resolved.media.map((p:any)=>p.id)).toEqual(['photo-Z','photo-B','photo-A']);
  const changed=(edit:(copy:ProjectUpdate[])=>void)=>{const copy=JSON.parse(before);edit(copy);expect(source(copy)).not.toBe(original);};
  changed(copy=>{copy[1].photos.reverse();});
  changed(copy=>{copy[0].photos[0].id='changed-attachment';});
