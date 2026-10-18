@@ -3,6 +3,7 @@
 import fs from 'fs';
 import path from 'path';
 import ts from 'typescript';
+import { execFileSync } from 'child_process';
 import { reportFileTitleWithDate, reportSubjectWithDate, mailComposerOutcome } from '../../services/ReportCommunication';
 function producer(file: string, name: string, deps: Record<string, unknown>) {
   const text=fs.readFileSync(path.resolve(__dirname,'../..',file),'utf8');
@@ -40,6 +41,30 @@ describe('7.23 actual report producers',()=>{
     expect(Buffer.byteLength(filename.slice('file:///cache/'.length))).toBeLessThanOrEqual(240);
     expect(build).toHaveBeenCalledWith(expect.objectContaining({title:report.title,body:report.body,generatedAt:report.generatedAt,taskLines:report.daveBriefing.wordTaskLines}));
     expect(share).toHaveBeenCalledWith(filename,expect.objectContaining({dialogTitle:'Outlook'}));
+  });
+  it.each(['Report#17','%2Esecret','%2Fescape','%25literal','with space','工程🏗️','../escape','%2E%2E%2Fescape','a\\b\u0000c'])('native Foundation URI roundtrip retains the safe decoded filename: %s',async title=>{
+    for (const directory of ['file:///synthetic-cache/', 'file:///synthetic%20cache/%2525/']) {
+      const written:string[]=[],shared:string[]=[];
+      const fn=producer('App.tsx','shareWordReport',{
+        Sharing:{isAvailableAsync:async()=>true,shareAsync:async(uri:string)=>{shared.push(uri);}},Alert:{alert:jest.fn()},
+        FileSystem:{cacheDirectory:directory,writeAsStringAsync:async(uri:string)=>{written.push(uri);},deleteAsync:async()=>undefined,EncodingType:{Base64:'base64'}},
+        reportBodyCitesImages:()=>false,activeSavedUpdates:[],oneAtATime,
+        resolveNativeReportWordMedia:async()=>({media:[],unavailableMedia:[]}),reportFileTitleWithDate,
+        require:()=>({buildReportWordBase64:async()=> 'synthetic',summarizeReportWordUnavailableMedia:()=>''}),
+      });
+      expect(await fn({...report,title},[],'Word')).toBe(true);
+      expect(shared).toEqual(written);
+      // Actual Foundation NSURL, the bridge consumed by installed Expo URL
+      // conversion, rather than a JS mock or decodeURIComponent assumption.
+      const program='ObjC.import("Foundation"); $.NSURL.URLWithString('+JSON.stringify(written[0])+').path.js';
+      const decoded=execFileSync('/usr/bin/osascript',['-l','JavaScript','-e',program],{encoding:'utf8'}).trim();
+      const expectedName=reportFileTitleWithDate(title,report.generatedAt)+'.docx';
+      expect(path.basename(decoded)).toBe(expectedName);
+      expect(path.dirname(decoded)).toBe(directory.includes('%20') ? '/synthetic cache/%25' : '/synthetic-cache');
+      expect(path.basename(decoded)).not.toMatch(/^[. ]|[\\/\x00-\x1f]/);
+      expect(Buffer.byteLength(path.basename(decoded))).toBeLessThanOrEqual(240);
+      expect(written[0]).toBe(directory+encodeURIComponent(expectedName.slice(0,-5))+'.docx');
+    }
   });
   it('desktop Word download keeps its original body/date/numbering while dating the download today',async()=>{
     const download=jest.fn(),build=jest.fn(async()=>({synthetic:'blob'}));
