@@ -1913,7 +1913,7 @@ export function createDAVEWebSupabaseGateway(
       try {
         const ownerId = await stillThisOwner();
         const { data: current, error: readError } = await withinLimit(client.from('reference_documents')
-          .select('id,updated_at,archived_at,document_data').eq('owner_id', ownerId).eq('id', document.id)
+          .select('id,updated_at,archived_at,category,document_data').eq('owner_id', ownerId).eq('id', document.id)
           .abortSignal(controller.signal).maybeSingle());
         if (readError) throw failed();
         if (!current || current.id !== document.id || readCloudTimestamp(current) !== document.cloudUpdatedAt) throw staleDocumentError();
@@ -1922,7 +1922,8 @@ export function createDAVEWebSupabaseGateway(
         // No clock ordering: either the exact mark is still there, or the owner must review the new state.
         if (mark !== seen) throw staleDocumentError();
         const data = isRecord(current.document_data) ? current.document_data : {};
-        if (archived && (!daveWebDocumentCanArchive({ category: String(data.category || '') }) || scheduleDocumentIsScheduleLike(data as unknown as ReferenceDocument))) {
+        const currentDocument = { ...data, category: String(data.category || current.category || '') } as unknown as ReferenceDocument;
+        if (archived && (!daveWebDocumentCanArchive(currentDocument) || scheduleDocumentIsScheduleLike(currentDocument))) {
           throw new DAVEWebDocumentMutationError('write_failed', 'Only compliance documents can be archived here. Schedules keep their existing protections.');
         }
         await stillThisOwner();

@@ -36,3 +36,7 @@ it('4.34 non-owner authorization and wrong returned document are both refused be
  const f=fixture();f.client.rpc.mockResolvedValueOnce({data:false,error:null});await expect(f.gateway.setAuthorizedDocumentArchived(doc,true,'owner-A')).rejects.toThrow();expect(f.writes).toHaveLength(0);
  const g=fixture();g.setRead({id:'another-document',updated_at:stamp,archived_at:null,document_data:doc});await expect(g.gateway.setAuthorizedDocumentArchived(doc,true,'owner-A')).rejects.toThrow();expect(g.writes).toHaveLength(0);
 });
+
+it('4.34 a legacy shared record uses its row category without rewriting metadata',async()=>{
+ const f=fixture();f.setRead({id:doc.id,updated_at:stamp,archived_at:null,category:'Permit Card',document_data:{id:doc.id,name:doc.name}});await f.gateway.setAuthorizedDocumentArchived(doc,true,'owner-A');expect(f.writes).toHaveLength(1);expect(Object.keys(f.writes[0])).toEqual(['archived_at']);
+});
