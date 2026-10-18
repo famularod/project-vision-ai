@@ -153,7 +153,7 @@ it('changed authored-send ordering changes app text while preserving the actual 
 it('App relative send labels use local midnight for Z and offset timestamps and preserve legacy day-only fallback', () => {
   jest.setSystemTime(new Date('2026-10-18T07:30:00Z'));
   class PacificDate extends Date {
-    toDateString() { return new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(this); }
+    toDateString(): string { return new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(this); }
   }
   const label = appFunction('relativeUpdateDateLabel', { Date: PacificDate, formatDisplayDate: (v: string) => v });
   expect(label('2026-10-18T07:01:00Z')).toBe('today');
