@@ -4,6 +4,7 @@ import {
   reportBaselineSnapshot,
   reportReadAsEarlierVersionReport,
   sameReportSource,
+  reportTextKey,
   reportPeriodSend,
   reportPeriodSentAt,
   validReportPeriodSnapshot,
@@ -401,8 +402,10 @@ export function daveWebReportAlreadySentElsewhereAt(
   period: DAVEReportSnapshot | null | undefined,
   fingerprint: string,
   ownSends: ReadonlySet<string>,
+  wording?: Readonly<{ requiresTextKey: boolean; title: string; body: string }>,
 ): string | null {
   if (!period || typeof period.deliveredAt !== 'string' || ownSends.has(period.deliveredAt)) return null;
+  if (wording?.requiresTextKey && period.appTextKey !== reportTextKey(wording)) return null;
   return sameReportSource(period.sourceFingerprint, fingerprint) ? reportPeriodSentAt(period) : null;
 }
 

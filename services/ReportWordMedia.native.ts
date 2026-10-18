@@ -104,7 +104,8 @@ export async function resolveNativeReportWordMedia(args: {
       continue;
     }
     const resolved = await resolvePhoto(match.photo, match.update, displayNumber);
-    if ('media' in resolved) media.push(resolved.media);
+    if ('media' in resolved) media.push(args.updates.flatMap(update => update.photos).filter(photo => photo.id === photoId).length === 1
+      ? resolved.media : { ...resolved.media, linkedTaskId: null });
     else unavailableMedia.push(resolved.unavailable);
   }
 
@@ -166,6 +167,8 @@ async function resolvePhoto(
         projectName: described.projectName,
         areaName: described.areaName,
         linkedTaskName: described.linkedTaskName,
+        linkedTaskId: update.scheduleItemId,
+        projectId: update.projectId,
         recordedAt: described.recordedAt,
         reasonForInclusion: described.reasonForInclusion,
       },

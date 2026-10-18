@@ -136,6 +136,7 @@ export type DAVEReportDashboardMetrics = Readonly<{
 }>;
 
 export type DAVEReportBriefing = Readonly<{
+  wordTaskLines?: readonly import('./ReportWordDocument').ReportWordTaskLine[];
   version: typeof DAVE_REPORT_INTELLIGENCE_VERSION;
   generatedAt: string;
   scopeLabel: string;
@@ -660,6 +661,7 @@ export function buildDAVEReportBriefing({
     readAsEarlierVersionReport,
     waitingForOtherDevice,
     lastUpdatedAt: completedTaskLastUpdatedAt(scheduleItems),
+    wordIdentityItems: scheduleItems as readonly ScheduleItem[] | undefined,
   });
 }
 
@@ -671,6 +673,7 @@ function briefingOf({
   readAsEarlierVersionReport = false,
   waitingForOtherDevice = false,
   lastUpdatedAt,
+  wordIdentityItems,
 }: {
   truths: readonly DAVEProjectTruth[];
   selectedProjectNames?: readonly string[];
@@ -678,6 +681,7 @@ function briefingOf({
   readAsEarlierVersionReport?: boolean;
   waitingForOtherDevice?: boolean;
   lastUpdatedAt: CompletedTaskLastUpdatedAt;
+  wordIdentityItems?: readonly ScheduleItem[];
 }): DAVEReportBriefing {
   // HIGH item 1e (the coordinator's decision on review pass 3's case B and A6 pass 6 #6): a combined report prints its
   // projects by name, as its fingerprint works them out (1c), not in the order they were ticked: the same text, in the
@@ -816,6 +820,25 @@ function briefingOf({
     milestones,
     completedWork,
     currentWork,
+    wordTaskLines: !wordIdentityItems ? [] : truths.flatMap(truth => truth.schedule.flatMap(task => {
+      const section = scheduleProgressIsComplete(task) ? 'COMPLETED WORK' as const : 'CURRENT WORK' as const;
+      const line = scheduleProgressIsComplete(task)
+        ? reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt)
+        : reportTaskFact(truth.projectName, task, truths.length > 1);
+      const visible = section === 'COMPLETED WORK' ? completedWork : currentWork;
+      // IDs and exact names must each identify one current row in the complete scope.
+      const all = truths.flatMap(t => t.schedule.map(row => ({ project: t.projectName, row })));
+      const sameId = all.filter(other => other.row.taskId === task.taskId);
+      const sameName = all.filter(other => other.project === truth.projectName && other.row.taskName === task.taskName);
+      const original = wordIdentityItems?.filter(item => item.id === task.taskId) ?? [];
+      const originalMatches = original.length === 1 && original[0].taskName === task.taskName &&
+        (original[0].projectName || original[0].scheduleProjectName) === truth.projectName && original[0].locationName === task.areaName;
+      const uniqueProject = truths.filter(other => other.projectName === truth.projectName).length === 1 &&
+        (!truth.projectId || truths.filter(other => other.projectId === truth.projectId).length === 1);
+      return uniqueProject && originalMatches && visible.includes(line) && task.areaName && sameId.length === 1 && sameName.length === 1
+        ? [{ section, line, taskId: task.taskId, taskName: task.taskName, projectName: truth.projectName, projectId: original[0].projectId, areaName: task.areaName }]
+        : [];
+    })),
     whatChanged: unique([
       ...recentChanges.map(change => change.summary),
       ...truths.flatMap(truth =>
@@ -1090,7 +1113,9 @@ function buildDashboardMetrics({
   const areaMap = new Map<string, typeof tasks>();
   for (const task of tasks) {
     const areaName = clean(task.areaName) || 'Unassigned area';
-    const key = `${normalized(task.projectName)}|${normalized(areaName)}`;
+    const key = /[^\u0000-\u007f]/.test(areaName)
+      ? JSON.stringify([normalized(task.projectName), areaName.normalize('NFC').toLowerCase()])
+      : `${normalized(task.projectName)}|${normalized(areaName)}`;
     areaMap.set(key, [...(areaMap.get(key) || []), { ...task, areaName }]);
   }
   const workAreas = Array.from(areaMap.entries()).map(([key, areaTasks]) => {
