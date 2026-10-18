@@ -166,3 +166,6 @@ function scheduleItem(
 it('2.57 desktop latest activity uses actual time, not final stored entry',()=>{
  const activity=[{id:'latest',message:'Latest actual note',author:'PM',createdAt:'2026-10-17T12:00:00Z'},{id:'older',message:'Older stored last',author:'PM',createdAt:'2026-09-01T12:00:00Z'}];const task=scheduleItem('paving',{activity});const before=JSON.stringify(task);const {screen}=openDetails(task);expect(screen.getByText('Latest actual note')).toBeTruthy();expect(screen.queryByText('Older stored last')).toBeNull();expect(JSON.stringify(task)).toBe(before);
 });
+it('2.57 desktop Recent activity editor sorts before selecting three notes',()=>{
+ const activity=[['newest','2026-10-17T12:00:00Z'],['oldest','2026-09-01T12:00:00Z'],['third','2026-10-01T12:00:00Z'],['second','2026-10-15T12:00:00Z']].map(([message,createdAt])=>({id:message,message,createdAt,author:'PM'}));const task=scheduleItem('paving',{activity});const before=JSON.stringify(task);const {screen}=openDetails(task);fireEvent.press(screen.getByText('Edit Task'));expect(screen.getByText('Recent activity')).toBeTruthy();expect(screen.getAllByText(/^(newest|oldest|third|second)$/).map(n=>n.props.children)).toEqual(['newest','second','third']);expect(JSON.stringify(task)).toBe(before);
+});
