@@ -7555,7 +7555,7 @@ useEffect(() => {
         const currentProject = selectedProjectNames[projectIndex];
         const currentWasSaved = savedCopies.some(copy => copy.projectName === currentProject);
         const remainder = selectedProjectNames.slice(projectIndex + 1);
-        const reason = error instanceof Error ? error.message : 'The next document copy could not be saved.';
+        const reason = error instanceof Error ? error.message : 'The document add could not be completed.';
         // Scope the old single-copy storage failure to this incomplete copy;
         // earlier durable cards and their independent upload retries stay intact.
         const detail = reason === 'Vitruvius could not save this document record. The selected file was not uploaded.'

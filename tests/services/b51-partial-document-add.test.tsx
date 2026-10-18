@@ -163,7 +163,7 @@ type Picked = Readonly<{ name: string; bytes: Uint8Array }>;
 type Category = 'Schedule' | 'Other' | 'Drawing';
 
 /** One phone: its storage, its document list, what it shows and says. */
-function phone(options: Readonly<{ storageFails?: boolean; storageFailsAt?: number; copyFailsAt?: number; uploadThrowsAt?: number; uploadStatus?: ProjectDocument['status'] }> = {}) {
+function phone(options: Readonly<{ storageFails?: boolean; storageFailsAt?: number; copyFailsAt?: number; uploadThrowsAt?: number; uploadStatus?: ProjectDocument['status']; uploadFailure?: unknown }> = {}) {
   mockCopyFailureAt = options.copyFailsAt;
   const storage = new Map<string, string>();
   const projectDocumentsCurrentRef = { current: [] as ProjectDocument[] };
@@ -230,7 +230,7 @@ function phone(options: Readonly<{ storageFails?: boolean; storageFailsAt?: numb
     /** The upload tried at once, as for any add; with no signal it fails and the document waits (App.tsx retryProjectDocumentUpload). */
     retryProjectDocumentUpload: async (documentId: string) => {
       uploadAttempts.push(documentId);
-      if (uploadAttempts.length === options.uploadThrowsAt) throw new Error('Synthetic unexpected upload failure.');
+      if (uploadAttempts.length === options.uploadThrowsAt) throw ('uploadFailure' in options ? options.uploadFailure : new Error('Synthetic unexpected upload failure.'));
       // Only the uploader I/O boundary is synthetic. Persist its new status to
       // the same storage and ref the actual selection closure must read.
       if (options.uploadStatus) {
@@ -346,4 +346,8 @@ it.each(['uploaded','failed'] as const)('5.29 the notice uses the actual durable
 });
 it.each(['Schedule','Other'] as const)('5.29 successful %s multi-project adds retain their independent cards and behavior',async category=>{
  const device=phone();await device.addInDocuments(F1,category,[PROJECT,'Second Project']);expect(device.savedCards()).toHaveLength(2);expect(device.uploadAttempts).toHaveLength(2);expect(device.alerts).toEqual([]);expect(device.opened).toHaveLength(category==='Schedule'?1:0);for(const card of device.savedCards())expect(mockDisk.get(card.localUri!)).toEqual(F1.bytes);
+});
+
+it('5.29 non-Error failure after a durable save gives neutral guidance without saying that saved card was not saved',async()=>{
+ const device=phone({uploadThrowsAt:1,uploadFailure:undefined});await device.addInDocuments(F1,'Other',[PROJECT,'Second Project']);expect(device.savedCards()).toHaveLength(1);expect(device.alerts.at(-1)?.message).toContain('The document add could not be completed.');expect(device.alerts.at(-1)?.message).not.toContain(`The copy for ${PROJECT} was not saved.`);
 });
