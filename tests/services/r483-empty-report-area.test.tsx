@@ -154,7 +154,7 @@ test('writer advice-only area does not render an empty Reports work-area card', 
 test.each(['note', 'waiting task', 'future task', 'photo', 'photo only'] as const)('writer %s retains its evidence with consistent visible-card counts', async kind => {
   NAME = `Synthetic ${kind} Area`;
   const item = { ...task('task', 'Frame walls', 'North Wing', 20, '12/31/2026'),
-    ...(kind === 'waiting task' ? { status: 'Waiting' } : {}) };
+    ...(kind === 'waiting task' ? { status: 'Waiting' as const } : {}) };
   const isTask = kind === 'waiting task' || kind === 'future task';
   const hasPhoto = kind === 'photo' || kind === 'photo only';
   const updates = isTask ? [] : [update('note', item, '2026-10-16',
