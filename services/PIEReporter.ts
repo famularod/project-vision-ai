@@ -199,6 +199,9 @@ export type PIEWorkAreaLineSource = Readonly<{
   /** Exact authored span protected from machine wording cleanup, never an unverified runtime sentence. */
   preservedCapturedForText?: string;
   evidenceId: string;
+  /** B78: this record's printed location, separate from the unchanged raw bucket. */
+  printedAreaName?: string;
+  sourceKind?: PIEReportSourceEvidence['source'];
   /** Its words as a line prints them, compared without case or closing stop. */
   words: string;
   updateId: string | null;
@@ -520,6 +523,7 @@ export type PIEReportDraftInput = {
 };
 
 type PIEProjectNarrative = {
+  imageReferences: PIEReportImageReference[];
   executiveSummaryBullets: string[];
   locationGroups: PIEReportLocationGroup[];
   actionItems: PIEReportActionItem[];
@@ -1192,12 +1196,16 @@ export function buildProjectNarrative(
   understanding: PIEConstructionUnderstanding,
   legacyCandidateCaps = false,
 ): PIEProjectNarrative {
-  const locationGroups = understanding.locationGroups.map(group => ({
+  // Select and merge exactly as before. Printed ownership never awards a new cap.
+  const ownership = new Map<string, ReportLineOwnership>();
+  const sourceNames = new Map(understanding.workAreas.flatMap(area =>
+    (area.lineSources ?? []).map(source => [source.evidenceId, source.printedAreaName] as const)));
+  const legacyLocationGroups = understanding.locationGroups.map(group => ({
     id: group.id,
     title: group.title,
     workAreas: workAreasPrintedOncePerName(group.workAreas.map(area => {
       const actionItems = buildReportActionItems(area);
-      const bullets = buildReportBulletsFromUnderstanding(area, actionItems, legacyCandidateCaps);
+      const bullets = buildReportBulletsFromUnderstanding(area, actionItems, legacyCandidateCaps, ownership);
       const risks = area.issues.map(issue => ({
         id: slug(`risk-${area.id}-${issue.summary}`),
         projectName: area.projectName,
@@ -1229,23 +1237,109 @@ export function buildProjectNarrative(
     })),
   }));
 
-  const actionItems = locationGroups.flatMap(group =>
+  const actionItems = legacyLocationGroups.flatMap(group =>
     group.workAreas.flatMap(area => area.actionItems),
   );
-  const risks = locationGroups.flatMap(group =>
+  const risks = legacyLocationGroups.flatMap(group =>
     group.workAreas.flatMap(area => area.risks),
   );
-  const decisionsNeeded = locationGroups.flatMap(group =>
+  const decisionsNeeded = legacyLocationGroups.flatMap(group =>
     group.workAreas.flatMap(area => area.decisionsNeeded),
   );
 
+  // Global metadata retains the legacy order, independently of its placement
+  // beside the selected lines. Every object is attached to one printed run.
+  const imageReferences = legacyLocationGroups.flatMap(group => group.workAreas.flatMap(area => area.imageReferences));
+  const locationGroups = legacyLocationGroups.map(group => ({
+    ...group,
+    workAreas: adjacentPrintedRuns(group.workAreas.flatMap(area => printedRunsOfSelectedArea(area, ownership, sourceNames))),
+  }));
   return {
     executiveSummaryBullets: understanding.executiveSummaryBullets,
     locationGroups,
     actionItems,
     risks,
     decisionsNeeded,
+    imageReferences,
   };
+}
+
+/** B78: exact selected-line sources; broad public sourceEvidenceIds stay untouched. */
+type ReportLineOwnership = Readonly<{ name: string; evidenceIds: readonly string[] }>;
+
+function selectedLineOwnership(
+  area: PIEWorkAreaUnderstanding,
+  line: PIEReportBullet,
+  madeFrom: ReportLineMadeFrom,
+): ReportLineOwnership {
+  let sources = (area.lineSources ?? []).filter(source => madeFrom.evidenceIds.has(source.evidenceId));
+  if (sources.length === 0 && madeFrom.words) sources = (area.lineSources ?? []).filter(source => source.words === madeFrom.words);
+  // An image-only line carries photo ids, not the photo evidence ids.
+  if (sources.length === 0 && line.kind === 'image_reference') sources = (area.lineSources ?? []).filter(source =>
+    Boolean(source.photoId) && line.sourceEvidenceIds.includes(source.photoId!));
+  const recorded = sources.filter(source => source.sourceKind !== 'runtime');
+  const naming = recorded.length ? recorded : sources.filter(source => source.evidenceId !== SAVED_MODEL_EVIDENCE_ID);
+  const names = uniqueText(naming.map(source => source.printedAreaName || '').filter(Boolean));
+  return {
+    name: names.length === 1 ? names[0] : printedWorkAreaName(area),
+    evidenceIds: sources.map(source => source.evidenceId),
+  };
+}
+
+/** Only an area whose selected lines disagree with its printed heading changes.
+ * Consecutive runs keep the original selected order, including note/task/note.
+ * A repeated heading is necessary only across an intervening different heading.
+ */
+function printedRunsOfSelectedArea(
+  area: PIEReportWorkArea,
+  ownership: ReadonlyMap<string, ReportLineOwnership>,
+  sourceNames: ReadonlyMap<string, string | undefined>,
+): PIEReportWorkArea[] {
+  if (!area.bullets.length || area.bullets.every(line => (ownership.get(line.id)?.name || area.title) === area.title)) return [area];
+  const runs: PIEReportWorkArea[] = [];
+  area.bullets.forEach(line => {
+    const title = ownership.get(line.id)?.name || area.title;
+    const previous = runs.at(-1);
+    if (previous?.title === title) { previous.bullets.push(line); return; }
+    runs.push({
+      ...area,
+      id: slug(`${area.id}-printed-run-${runs.length + 1}-${title}`),
+      title, areaName: title,
+      bullets: [line], actionItems: [], risks: [], decisionsNeeded: [], imageReferences: [],
+    });
+  });
+  const runOf = (ids: readonly string[]) => {
+    const byLine = runs.find(run => run.bullets.some(line => ownership.get(line.id)?.evidenceIds.some(id => ids.includes(id))));
+    if (byLine) return byLine;
+    const names = uniqueText(ids.map(id => sourceNames.get(id) || '').filter(Boolean));
+    return (names.length === 1 ? runs.find(run => run.title === names[0]) : undefined) || runs[0];
+  };
+  area.actionItems.forEach(item => runOf(item.sourceEvidenceIds).actionItems.push(item));
+  area.risks.forEach(item => runOf(item.sourceEvidenceIds).risks.push(item));
+  area.decisionsNeeded.forEach(item => runOf(item.sourceEvidenceIds).decisionsNeeded.push(item));
+  area.imageReferences.forEach(reference => {
+    // Keep its actual selected citation, without adding or renumbering any.
+    const cited = runs.find(run => run.bullets.some(line =>
+      [...line.text.matchAll(/\bSee Images?\s+([\d,\s]+(?:and\s+)?[\d,\s]*)\./g)]
+        .some(match => (match[1].match(/\d+/g) ?? []).some(number => Number(number) === reference.imageNumber))));
+    const own = sourceNames.get(`photo-${reference.photoId}`);
+    (cited || runs.find(run => run.title === own) || runs[0]).imageReferences.push(reference);
+  });
+  return runs;
+}
+
+/** Merge only neighbours after a protected split: a global merge would move
+ * a later note across the intervening task. Unaffected reports are unchanged.
+ */
+function adjacentPrintedRuns(areas: PIEReportWorkArea[]): PIEReportWorkArea[] {
+  const result: PIEReportWorkArea[] = [];
+  areas.forEach(area => {
+    const previous = result.at(-1);
+    if (previous && normalizeName(previous.projectName) === normalizeName(area.projectName) && normalizeName(previous.title) === normalizeName(area.title)) {
+      result[result.length - 1] = workAreasPrintedOncePerName([previous, area])[0];
+    } else result.push(area);
+  });
+  return result;
 }
 
 /**
@@ -1847,9 +1941,7 @@ function buildReport(
     ],
     locationGroups: narrative.locationGroups,
     actionItems: narrative.actionItems,
-    imageReferences: narrative.locationGroups.flatMap(group =>
-      group.workAreas.flatMap(area => area.imageReferences),
-    ),
+    imageReferences: narrative.imageReferences,
     risks: narrative.risks,
     decisionsNeeded: narrative.decisionsNeeded,
     confidence,
@@ -1922,6 +2014,7 @@ function buildReportBulletsFromUnderstanding(
   area: PIEWorkAreaUnderstanding,
   actionItems: PIEReportActionItem[],
   legacyCandidateCaps = false,
+  ownership?: Map<string, ReportLineOwnership>,
 ): PIEReportBullet[] {
   const { lines: chosen, uncited, madeFrom } = linesAsBuild231ChoseThem(area, actionItems, legacyCandidateCaps);
   const progressKeys = new Set(area.progress.map(item => normalizeName(item.summary)));
@@ -1950,10 +2043,18 @@ function buildReportBulletsFromUnderstanding(
     chosen.length === 1 && chosen[0].kind === 'image_reference' && filling.length === 1 &&
     area.imageReferences.every(reference => lineIsOfPhoto(area, lineMadeFrom(madeFrom, filling[0]), reference))
   ) {
-    return [{ ...filling[0], text: `${stripTerminalPunctuation(filling[0].text)}. ${chosen[0].text}` }];
+    const selected = [{ ...filling[0], text: `${stripTerminalPunctuation(filling[0].text)}. ${chosen[0].text}` }];
+    if (ownership) selected.forEach(line => ownership.set(line.id, selectedLineOwnership(area, line, lineMadeFrom(madeFrom, filling[0]))));
+    return selected;
   }
 
-  return photosCitedOnTheirOwnLines(area, chosen, filling, uncited, madeFrom);
+  const selected = photosCitedOnTheirOwnLines(area, chosen, filling, uncited, madeFrom);
+  if (ownership) selected.forEach(line => {
+    // Plain notes retain their pre-citation words for exact source matching.
+    const original = filling.find(note => note.id === line.id) || line;
+    ownership.set(line.id, selectedLineOwnership(area, line, lineMadeFrom(madeFrom, original)));
+  });
+  return selected;
 }
 
 /** Open item 7.62: what one printed line is made from: its records, and its words (a plain note is known by them). */
@@ -1971,6 +2072,8 @@ function lineSourceOf(item: PIEReportSourceEvidence): PIEWorkAreaLineSource {
   return {
     ...(previewKind ? { previewKind } : {}),
     evidenceId: item.id,
+    printedAreaName: printedReportWorkAreaName(item.projectName, item.areaName, item.workAreaNameFrom ?? item.summary),
+    sourceKind: item.source,
     preservesCapturedFor: item.preservesCapturedFor,
     preservedCapturedForText: item.preservedCapturedForText,
     words: lineWords(cleanReportBulletText(item.summary, item.preservedCapturedForText)),
