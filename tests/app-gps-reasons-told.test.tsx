@@ -240,6 +240,11 @@ function storedDraft(fields: Record<string, unknown>) {
   });
 }
 
+const task = (id: string, taskName: string, projectName: string, locationName: string) => ({
+    id, taskName, projectName, status: 'In Progress', percentComplete: 20, priority: 'Medium',
+    startDate: '09/28/2026', finishDate: '10/30/2026', owner: '', contractor: '', locationName, notes: '',
+  });
+
 async function launch() {
   const tree = render(<NativeRoot />);
   await waitFor(() => expect(tree.getByTestId('app-bottom-tabs')).toBeTruthy(), COLD);
@@ -298,10 +303,7 @@ describe('1. the Current Area card after the update\'s area is deleted', () => {
 
 describe('2. the home screen and the project picker, with Precise Location off', () => {
   const WIDE = { width: 1194, height: 834, scale: 2, fontScale: 1 } as const;
-  const task = (id: string, taskName: string, projectName: string, locationName: string) => ({
-    id, taskName, projectName, status: 'In Progress', percentComplete: 20, priority: 'Medium',
-    startDate: '09/28/2026', finishDate: '10/30/2026', owner: '', contractor: '', locationName, notes: '',
-  });
+
 
   beforeEach(async () => {
     // Two projects, each with a mapped area, so GPS has a choice to make; an
