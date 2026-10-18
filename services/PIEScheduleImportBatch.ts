@@ -161,6 +161,20 @@ export function scheduleImportItemIdentity(item: ScheduleItem) {
     .join('|');
 }
 
+/** Compare unresolved file names without inventing project authority.
+ * Keep the established ASCII scope comparison unchanged. If that comparison
+ * contains no letters/digits, retain the name's Unicode spelling instead of
+ * making every such job the same empty key. Do not fold punctuation or NFKC:
+ * those may be distinct jobs and must remain separate for explicit review.
+ * Code-point hex also keeps identity-field delimiters out of this local key.
+ */
+export function unresolvedScheduleFileProjectKey(name: string): string {
+  const legacy = scheduleProjectScopeKey(name);
+  if (legacy.trim()) return legacy;
+  const spelling = name.trim().toLowerCase().replace(/\s+/g, ' ');
+  return `unicode:${Array.from(spelling, character => character.codePointAt(0)!.toString(16)).join('.')}`;
+}
+
 /**
  * A task the file gives twice (the same task, finish date, project, area and row) is listed once.
  * Open item 2.36 (review pass 1 H1S-1 on the phone; H2b's rule on the desktop): `waitingFileProjectNames` holds, for
@@ -178,7 +192,7 @@ export function dedupeScheduleImportItems(
   return items.filter((item, index) => {
     const fileName = waitingFileProjectNames?.[index];
     const identity = scheduleImportItemIdentity(typeof fileName === 'string'
-      ? { ...item, projectName: `${SCHEDULE_IMPORT_NEEDS_PROJECT}|${scheduleProjectScopeKey(fileName)}` }
+      ? { ...item, projectName: `${SCHEDULE_IMPORT_NEEDS_PROJECT}|${unresolvedScheduleFileProjectKey(fileName)}` }
       : item);
     if (seen.has(identity)) return false;
     seen.add(identity);
