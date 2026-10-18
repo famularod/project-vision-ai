@@ -7465,11 +7465,15 @@ useEffect(() => {
       return;
     }
 
+    const selectedProjectNames = Array.from(selected);
+    const existingCardIds = new Set(projectDocumentsCurrentRef.current.map(document => document.id));
+    const attemptCards: Array<{ document: ProjectDocument; projectName: string }> = [];
+    let projectIndex = -1;
+
     // Same picked file, one ProjectDocument record per selected project -
     // each project keeps its own independent upload/retry/status lifecycle,
     // matching how documents already work everywhere else in this screen.
     try {
-      const selectedProjectNames = Array.from(selected);
       const replacementDocument = category === 'Drawing' &&
         selectedProjectNames.length === 1 &&
         drawingControls.replacementDocumentId
@@ -7502,6 +7506,7 @@ useEffect(() => {
       const keptCards: ProjectDocument[] = [];
       try {
         for (const projectName of selected) {
+          projectIndex += 1;
           const document = await createProjectDocumentFromAsset(asset, {
             projectName,
             areaId: attachToDraft ? areaId : null,
@@ -7514,6 +7519,9 @@ useEffect(() => {
               name: document.name, mimeType: document.mimeType, size: document.sizeBytes,
             },
           );
+          // A created copy is not proof of a saved card. Remember only this
+          // attempt's new non-duplicate identity; the catch checks the durable ref.
+          if (!attachToDraft && !duplicate && !existingCardIds.has(document.id)) attemptCards.push({ document, projectName });
           if (!duplicate) keptCards.push(document); // a duplicate is kept only if he says Upload Anyway
           await confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
         }
@@ -7529,6 +7537,39 @@ useEffect(() => {
         setScreen('Schedule');
       }
     } catch (error) {
+      const savedCopies = attemptCards.flatMap(attempt => {
+        const made = attempt.document;
+        const saved = projectDocumentsCurrentRef.current.find(current =>
+          current.id === made.id && current.projectId === made.projectId &&
+          Boolean(made.ownedFileId) && current.ownedFileId === made.ownedFileId &&
+          current.localUri === made.localUri && current.name === made.name && current.category === made.category);
+        return saved ? [{ document: saved, projectName: attempt.projectName }] : [];
+      });
+      if (savedCopies.length > 0) {
+        const savedLines = savedCopies.map(({ document, projectName }) => {
+          const status = document.status === 'uploaded' ? 'file uploaded'
+            : document.status === 'uploading' ? 'upload in progress'
+              : document.status === 'failed' ? 'upload needs retry' : 'waiting to upload';
+          return `“${document.name}” — ${projectName} (${status}).`;
+        });
+        const currentProject = selectedProjectNames[projectIndex];
+        const currentWasSaved = savedCopies.some(copy => copy.projectName === currentProject);
+        const remainder = selectedProjectNames.slice(projectIndex + 1);
+        const reason = error instanceof Error ? error.message : 'The document add could not be completed.';
+        // Scope the old single-copy storage failure to this incomplete copy;
+        // earlier durable cards and their independent upload retries stay intact.
+        const detail = reason === 'Vitruvius could not save this document record. The selected file was not uploaded.'
+          ? 'Vitruvius could not save this document record.' : reason;
+        Alert.alert('Some document copies were saved', [
+          'Saved in Documents on this device:', ...savedLines,
+          currentProject ? currentWasSaved ? `The add for ${currentProject} did not finish.` : `The copy for ${currentProject} was not saved.` : '',
+          remainder.length ? `Not attempted: ${remainder.join(', ')}.` : '',
+          category === 'Schedule' ? 'Schedule review was not opened.' : '',
+          detail,
+          'Review Documents before adding the incomplete copies again.',
+        ].filter(Boolean).join('\n'));
+        return;
+      }
       Alert.alert(
         category === 'Schedule' ? 'Schedule review unavailable' : 'Document unavailable',
         error instanceof Error
