@@ -431,6 +431,14 @@ export function prepareDAVEWebDocumentUpload({
   });
 }
 
+/** Empty ASCII scope keys prove no alias. Exact Unicode names still resolve
+ * through validateScheduleImportScope; unrelated names must wait for review.
+ */
+function sameNonemptyScheduleProjectScope(left: string, right: string): boolean {
+  const key = scheduleProjectScopeKey(left);
+  return Boolean(key.trim()) && key === scheduleProjectScopeKey(right);
+}
+
 /**
  * Open item 2.35 (the 2.33 fixer's R-2, "the PDF root door"; 13 Oct 2026). A Microsoft Project PDF's root (the top line,
  * scheduleProjectNameFromGanttRoot) was saved as every task's schedule parent as written; where it was none of his
@@ -440,14 +448,6 @@ export function prepareDAVEWebDocumentUpload({
  * the phone's comparison, then, as a row's project is read on the desktop (High item 2), with each ticked project's
  * spellings by scheduleProjectScopeKey. Null where the row keeps no parent (it then stands under its own project).
  */
-/** Empty ASCII scope keys prove no alias. Exact Unicode names still resolve
- * through validateScheduleImportScope; unrelated names must wait for review.
- */
-function sameNonemptyScheduleProjectScope(left: string, right: string): boolean {
-  const key = scheduleProjectScopeKey(left);
-  return Boolean(key.trim()) && key === scheduleProjectScopeKey(right);
-}
-
 function daveWebRowParents(items: readonly ScheduleItem[], ticked: readonly string[]): (string | null)[] {
   const parentsOnly = items.map(item => ({ ...item, projectName: '' }));
   const spellings = [...new Set(items.map(item => item.scheduleProjectName?.trim() || '').filter(Boolean))];
