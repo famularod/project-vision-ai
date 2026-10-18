@@ -35,3 +35,15 @@ it('4.34 actual account transition prevents late old acknowledgement from updati
  await act(async()=>{callback('SIGNED_OUT',null);callback('INITIAL_SESSION',{user:{id:'owner-B',email:'b@example.com'}} as any)});await waitFor(()=>expect(auth.userEmail).toBe('b@example.com'));
  await act(async()=>{hold.resolve('2026-10-17T13:00:00Z');await run});expect(auth.snapshot?.referenceDocuments).toEqual([]);expect(auth.snapshot?.archivedDocumentIds).toEqual([]);v.unmount();
 });
+it('4.34 refreshed ambiguous project authority refuses a pending acknowledgement without claiming success',async()=>{
+ const hold=deferred();gateway.setAuthorizedDocumentArchived.mockReturnValueOnce(hold.promise);const v=await mount();let run!:Promise<void>;act(()=>{run=auth.setDocumentArchived(document,true)});
+ const ambiguous={...snapshot,projects:[...snapshot.projects,{id:'22222222-2222-4222-8222-222222222222',name:'alpha'}],refreshedAt:'2026-10-17T14:00:00Z'};load.mockResolvedValue(ambiguous);
+ await act(async()=>{await auth.refreshSnapshot()});expect(auth.snapshot?.projects).toHaveLength(2);
+ const rejected=expect(run).rejects.toThrow(/document changed/i);await act(async()=>{hold.resolve('2026-10-17T13:00:00Z');await rejected});
+ expect(auth.snapshot?.archivedDocumentIds).toEqual([]);expect(auth.snapshot?.referenceDocuments[0]).toEqual(document);v.unmount();
+});
+it('4.34 refreshed missing project authority refuses a pending restore acknowledgement',async()=>{
+ const marked={...document,archivedAt:'2026-10-16T12:00:00Z'};load.mockResolvedValue({...snapshot,referenceDocuments:[marked],archivedDocumentIds:[marked.id]});const hold=deferred();gateway.setAuthorizedDocumentArchived.mockReturnValueOnce(hold.promise);const v=await mount();let run!:Promise<void>;act(()=>{run=auth.setDocumentArchived(marked,false)});
+ load.mockResolvedValue({...snapshot,projects:[],referenceDocuments:[marked],archivedDocumentIds:[marked.id]});await act(async()=>{await auth.refreshSnapshot()});
+ const rejected=expect(run).rejects.toThrow(/document changed/i);await act(async()=>{hold.resolve(null);await rejected});expect(auth.snapshot?.archivedDocumentIds).toEqual([marked.id]);v.unmount();
+});
