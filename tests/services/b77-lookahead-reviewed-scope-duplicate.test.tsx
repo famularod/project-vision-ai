@@ -242,12 +242,15 @@ async function accept(view:ReturnType<typeof render>,role:ScheduleImportRole,par
  fireEvent.press(view.getByText(role==='master'?FULL:LOOK));
  await act(async()=>{fireEvent.press(view.getByText(partial?'Accept Selected (1)':'Accept All (2)'));await settled();});
 }
-function assertQueuedIdentity(save:ReturnType<typeof approval>,batch:PIEScheduleImportBatch,projects:string[],role:ScheduleImportRole){
+function assertQueuedIdentity(save:ReturnType<typeof approval>,batch:PIEScheduleImportBatch,projects:string[],role:ScheduleImportRole,exactQueuedIdByIncomingId?:ReadonlyMap<string,string>){
  expect(save.cloudSync).toHaveBeenCalledTimes(1);
  const sent=save.cloudSync.mock.calls[0][0];
  expect(sent.referenceDocuments).toHaveLength(1);const document=sent.referenceDocuments[0];
  expect(document).toMatchObject({id:batch.documents[0].id,contentSha256:batch.documents[0].contentSha256,importBatchId:batch.id,scheduleRole:role,projectNames:projects});
- expect(sent.scheduleItems.map(item=>item.id)).toEqual(batch.items.filter(item=>projects.includes(item.projectName)).map(item=>item.id));
+ if(exactQueuedIdByIncomingId){
+  const expected=batch.items.filter(item=>projects.includes(item.projectName)).map(item=>exactQueuedIdByIncomingId.get(item.id) ?? item.id);
+  expect(sent.scheduleItems.map(item=>item.id).sort()).toEqual(expected.sort());
+ }else expect(sent.scheduleItems.map(item=>item.id)).toEqual(batch.items.filter(item=>projects.includes(item.projectName)).map(item=>item.id));
  expect(save.gatewayRows).toHaveLength(1);
  expect(save.gatewayRows[0]).toMatchObject({id:document.id,owner_id:'b77-owner',document_data:{id:document.id,contentSha256:document.contentSha256,importBatchId:batch.id,projectNames:projects,scheduleRole:role,storagePath:expect.stringContaining(document.id)}});
 }
@@ -303,5 +306,20 @@ for(const project of [A,B])it(`B77 partial ready ${project} uses the reviewed su
 it('B77 an actually reviewed full A+B scope is distinct from the prior A-only import',async()=>{
  const picked=pickedFile('csv'),saved=await previouslyImported(picked),batch=await prepare(picked,saved,[A,B]);
  const {view,save}=await openReview(batch,saved,picked);assign(view,[A,B]);await accept(view,'master');
- assertQueuedIdentity(save,{...batch,items:batch.items.map((item,index)=>({...item,projectName:[A,B][index]}))},[A,B],'master');view.unmount();
+ // RED3 oracle correction: an unchanged task is rehomed under its existing ID, not duplicated with the incoming row ID.
+ const reviewed=batch.items.map((item,index)=>({...item,projectName:[A,B][index]}));
+ const tuple=(item:ScheduleItem)=>[item.projectName,item.taskName,item.locationName,item.startDate,item.finishDate,item.owner,item.contractor];
+ const matches=saved.items.filter(item=>JSON.stringify(tuple(item))===JSON.stringify(tuple(reviewed[0])));
+ expect(matches).toHaveLength(1);const priorA=matches[0];
+ expect(priorA.id).not.toBe(reviewed[0].id);
+ const exactIds=new Map([[reviewed[0].id,priorA.id],[reviewed[1].id,reviewed[1].id]]);
+ assertQueuedIdentity(save,{...batch,items:reviewed},[A,B],'master',exactIds);
+ const queued=save.cloudSync.mock.calls[0][0].scheduleItems;
+ expect(queued).toHaveLength(2);
+ const queuedA=queued.find(item=>item.id===priorA.id),queuedB=queued.find(item=>item.id===reviewed[1].id);
+ expect(queuedA).toBeTruthy();expect(queuedB).toBeTruthy();
+ expect(tuple(queuedA!)).toEqual(tuple(reviewed[0]));expect(tuple(queuedB!)).toEqual(tuple(reviewed[1]));
+ expect(queuedA).toMatchObject({id:priorA.id,importBatchId:priorA.importBatchId,sourceDocumentId:priorA.sourceDocumentId,alsoImportedInBatchIds:expect.arrayContaining([batch.id])});
+ expect(queuedB).toMatchObject({id:reviewed[1].id,importBatchId:batch.id,sourceDocumentId:batch.documents[0].id});
+ view.unmount();
 });
