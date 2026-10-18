@@ -438,15 +438,15 @@ describe('Kept from Build 232 items 10 and 10b, as Build 231 does it: the deskto
   // desktop keeps the file's spelling on the rows", which filed the tasks under a second project called by that
   // spelling. Such rows now wait for a project on the desktop too, as on the phone (below); the suggestion still
   // reads the file's spelling, as before.
-  it('a Project column that spells no project of the app: the rows wait for a project on the desktop too, and the suggestion reads the ticked project (as on Build 231)', async () => {
+  it('a Project column that spells no project of the app: desktop service keeps its ticked-project suggestion; unresolved phone review waits for assignment', async () => {
     const shortened = P2321.split(' ').slice(0, 2).join(' '); // the project's name without its last word
     const misspelt = threeWeeks(shortened, 'Field plan.csv');
     expect([...new Set(upload([P2321], misspelt).scheduleItems.map(item => item.projectName))]).toEqual(['Needs Project']);
     expect(suggestion([P2321], misspelt)).toEqual({ role: 'lookahead', reason: `its dates cover 3 weeks and the master for ${P2321} covers about 16 months` });
-    // On the phone such a row is left without a project, so the label is read, as before.
+    // B77 test-only compatibility correction: unresolved phone review is provisional (B76 4.63); desktop service assertions above stay unchanged.
     const onThePhone = await fromTheTasksTab(ACCOUNT, misspelt);
     expect([...new Set(onThePhone.batch.items.map(item => item.projectName))]).toEqual(['Needs Project']);
-    expect(onThePhone.sentence).toBe(`${LOOKAHEAD} its dates cover 3 weeks and the master for 2321 Compliance Project covers about 16 months. ${CHANGE}`);
+    expect(onThePhone.sentence).toBe('Assign projects to suggest an import type');
   });
 
   // CHANGED by item 10b, part 2 (review pass 4, O-3; the coordinator's decision). This test pinned what item 10

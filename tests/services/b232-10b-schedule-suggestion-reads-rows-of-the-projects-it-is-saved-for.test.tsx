@@ -213,7 +213,8 @@ async function fromTheTasksTab(saved: Saved, picked: Picked, active: readonly st
     view.UNSAFE_getAllByType(Modal)[0].props.onDismiss();
     await settled();
   });
-  const sentence = String(view.getByText(/^Suggested: /).props.children);
+  // B77: only unresolved phone rows use the explicit provisional prompt.
+  const sentence = String((view.queryByText(/^Suggested: /) ?? view.getByText('Assign projects to suggest an import type')).props.children);
   const acceptAll = view.queryByText(/^Accept All \(\d+\)$/);
   if (acceptAll) {
     await act(async () => {
@@ -283,7 +284,7 @@ describe('Kept from Build 232 item 10b part 1, as Build 231 does it: a real thre
     }
   });
 
-  it('on the phone, from the Tasks tab: spelled as the project it is a lookahead against its master; spelled another way the rows wait for a project and the file\'s project names are read, as before', async () => {
+  it('on the phone, from the Tasks tab: spelled as the project it is a lookahead against its master; spelled another way the rows wait for assignment with a provisional hint', async () => {
     const exact = await fromTheTasksTab(ACCOUNT, threeWeeks(LONG, 'Field plan.csv'));
     expect([...new Set(exact.batch.items.map(item => item.projectName))]).toEqual([LONG]);
     expect(exact.sentence).toBe(`${LOOKAHEAD} ${AGAINST_LONG}. ${CHANGE}`);
@@ -291,7 +292,7 @@ describe('Kept from Build 232 item 10b part 1, as Build 231 does it: a real thre
     for (const spelling of ANOTHER_SPELLING) {
       const other = await fromTheTasksTab(ACCOUNT, threeWeeks(spelling, 'Field plan.csv'));
       expect([...new Set(other.batch.items.map(item => item.projectName))]).toEqual(['Needs Project']);
-      expect([spelling, other.sentence]).toEqual([spelling, `${LOOKAHEAD} ${AGAINST_LONG}. ${CHANGE}`]);
+      expect([spelling, other.sentence]).toEqual([spelling, 'Assign projects to suggest an import type']);
     }
   });
 });
