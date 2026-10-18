@@ -74,7 +74,7 @@ jest.mock('expo-crypto', () => ({
 jest.mock('@expo/vector-icons/Ionicons', () => () => null);
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 
-import { act, fireEvent, render } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 import { ScheduleImportFlow } from '../../components/ScheduleImportFlow';
 import { deletedDAVERecordIds } from '../../services/DAVESyncTombstones';
@@ -360,18 +360,23 @@ describe('Open item 5.26: a schedule PDF added without signal keeps its card', (
     expect(iPhone.projectScheduleImportCardRef.current).toBeNull();
   });
 
-  it('the same file already has a card in the project: the duplicate question is asked, as for any add, and the review is not tied to a card that may not be kept', async () => {
+  it('the same file already has a card: wait for the duplicate decision before claiming a saved review; Cancel keeps only the original card', async () => {
     const iPhone = phone();
     await iPhone.addInDocuments(F1, 'Other');
     expect(iPhone.savedCards()).toHaveLength(1);
 
-    await iPhone.addInDocuments(F1, 'Schedule');
+    const operation = iPhone.addInDocuments(F1, 'Schedule');
+    await waitFor(() => expect(iPhone.alerts.some(alert => alert.title === 'Possible duplicate document')).toBe(true));
 
     expect(iPhone.alerts.map(alert => [alert.title, alert.buttons?.map(button => button.text)])).toEqual([
       ['Possible duplicate document', ['Cancel', 'Upload Anyway']],
     ]);
-    expect(iPhone.opened).toHaveLength(1);
+    expect(iPhone.opened).toHaveLength(0);
     expect(iPhone.projectScheduleImportCardRef.current).toBeNull();
+    iPhone.alerts[0].buttons!.find(button => button.text === 'Cancel')!.onPress!();
+    await operation;
+    expect(iPhone.opened).toHaveLength(0);
+    expect(iPhone.savedCards()).toHaveLength(1);
   });
 
   it('when the card cannot be saved, no review says "saved": its copy is removed and the alert says why', async () => {

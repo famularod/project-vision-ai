@@ -7525,19 +7525,48 @@ useEffect(() => {
           // A created copy is not proof of a saved card. Remember only this
           // attempt's new non-duplicate identity; the catch checks the durable ref.
           if (!attachToDraft && !duplicate && !existingCardIds.has(document.id)) attemptCards.push({ document, projectName });
-          if (!duplicate) keptCards.push(document); // a duplicate is kept only if he says Upload Anyway
-          if (unreadSchedule && !duplicate) {
+          if (unreadSchedule && duplicate) {
+            if (!scheduleUploadIsCurrent?.()) return;
+            // 5.31: the duplicate question is a decision before the review,
+            // not a saved card. Only the acknowledged durable copy can own it.
+            const keepCopy = await new Promise<boolean>(resolve => Alert.alert(
+              'Possible duplicate document',
+              `${document.name} looks like it already exists for this project. Choose Upload Anyway to keep a separate copy and continue the schedule review. Cancel stops this review.`,
+              [
+                { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+                { text: 'Upload Anyway', onPress: () => resolve(true) },
+              ],
+              { cancelable: false },
+            ));
+            if (!scheduleUploadIsCurrent()) return;
+            if (!keepCopy) {
+              await deleteOwnedProjectDocument(document).catch(() => undefined);
+              cancelScheduleImport(unreadSchedule);
+              if (uploadAfterReview.length) Alert.alert('Schedule review cancelled', 'Review Documents for any copies saved before cancellation. Remaining project copies were not added.');
+              return;
+            }
+            const keptDuplicate = { ...document, duplicateOf: duplicate.id };
+            if (!existingCardIds.has(keptDuplicate.id)) attemptCards.push({ document: keptDuplicate, projectName });
+            await addProjectDocumentDurably(keptDuplicate);
+            keptCards.push(keptDuplicate);
+            uploadAfterReview.push(keptDuplicate.id);
+          } else if (unreadSchedule) {
             // 5.30: durable storage is required before saying saved. Waiting
             // for the upload is not: the review also works without a signal.
             await addProjectDocumentDurably(document);
+            keptCards.push(document);
             uploadAfterReview.push(document.id);
-          } else await confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
+          } else {
+            if (!duplicate) keptCards.push(document);
+            await confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
+          }
         }
       } catch (error) {
         if (unreadSchedule) cancelScheduleImport(unreadSchedule); // no review says "saved"; its copy goes
         throw error;
       }
       if (unreadSchedule) {
+        if (!scheduleUploadIsCurrent?.()) return;
         // One project: its tasks saved from the review make this card current, as Import This Schedule does.
         if (selectedProjectNames.length === 1 && keptCards.length === 1) projectScheduleImportCardRef.current = { batchId: unreadSchedule.id, documentId: keptCards[0].id };
         setIncomingScheduleImportBatch({ ...unreadSchedule, message: `The PDF is saved in Documents. ${unreadSchedule.message}` });
