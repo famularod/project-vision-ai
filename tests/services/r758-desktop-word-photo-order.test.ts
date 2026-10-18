@@ -74,3 +74,15 @@ it('7.38 actual downloaded queued-verbatim rows use acknowledged send order for 
  expect(right.paragraphs.some(p=>p.includes('Pour slab')&&p.endsWith('Photos 2 and 3 show this work.'))).toBe(true);
  expect(JSON.stringify([a,b])).toBe(original);
 });
+
+it.each(['2026-02-30T23:00:00Z','2026-04-31T23:00:00Z'])('B59 malformed calendar tap %s cannot renumber the actual desktop Word photo guide',async badTap=>{
+ const goodTap=badTap.includes('-04-')?'2026-04-30T12:00:00Z':'2026-03-01T12:00:00Z';
+ const a={...A(),date:'2026-02-15',status:'queued' as const,workflowTimestamps:{sendTappedAt:goodTap}},
+  b={...B(),date:'2026-02-01',status:'queued' as const,workflowTimestamps:{sendTappedAt:badTap}};
+ const before=JSON.stringify([a,b]);
+ const output=await desktop([b,a],true,undefined,true);
+ expect(output.resolved.media.map((m:any)=>[m.displayNumber,m.id])).toEqual([[1,'photo-A'],[2,'photo-Z'],[3,'photo-B']]);
+ expect(output.paragraphs.some(p=>p.includes('Frame walls')&&p.endsWith('Photo 1 shows this work.'))).toBe(true);
+ expect(output.paragraphs.some(p=>p.includes('Pour slab')&&p.endsWith('Photos 2 and 3 show this work.'))).toBe(true);
+ expect(JSON.stringify([a,b])).toBe(before);
+});
