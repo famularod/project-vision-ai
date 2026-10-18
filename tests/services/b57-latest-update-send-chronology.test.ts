@@ -99,7 +99,8 @@ function appFunction(name: string, dependencies: Record<string, unknown>) {
 it('Home project-card chooses and dates the last authored send, preserving draft and failure precedence', () => {
   const chronology = jest.requireActual('../../services/PIEEvidenceFusion');
   const shared = jest.requireActual('../../services/FieldUpdateChronology');
-  const relativeUpdateDateLabel = appFunction('relativeUpdateDateLabel', { formatDisplayDate: (v: string) => v });
+  const updateDateValue = appFunction('updateDateValue', { parsePlainDate: jest.requireActual('../../services/ProjectDateTime').parsePlainDate });
+  const relativeUpdateDateLabel = appFunction('relativeUpdateDateLabel', { updateDateValue, formatDisplayDate: (v: string) => v });
   const card = appFunction('buildProjectCardPIEStatus', { ...chronology, ...shared,
     projectMatchesScope: (u: ProjectUpdate, p: string) => u.projectName === p,
     findCurrentDAVEConfirmedBlocker: () => null, updateHasSafetyConcern: () => false,
@@ -155,13 +156,14 @@ it('App relative send labels use local midnight for Z and offset timestamps and 
   class PacificDate extends Date {
     toDateString(): string { return new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(this); }
   }
-  const label = appFunction('relativeUpdateDateLabel', { Date: PacificDate, formatDisplayDate: (v: string) => v });
+  const updateDateValue = appFunction('updateDateValue', { Date: PacificDate, parsePlainDate: jest.requireActual('../../services/ProjectDateTime').parsePlainDate });
+  const label = appFunction('relativeUpdateDateLabel', { Date: PacificDate, updateDateValue, formatDisplayDate: (v: string) => v });
   expect(label('2026-10-18T07:01:00Z')).toBe('today');
   expect(label('2026-10-18T00:01:00-07:00')).toBe('today');
   expect(label('2026-10-18T06:59:00Z')).toBe('yesterday');
   expect(label('2026-10-17T23:59:00-07:00')).toBe('yesterday');
-  // Existing date-only display semantics stay unchanged here (7.66 is separate).
-  expect(label('2026-10-18')).toBe('yesterday');
+  // 7.66: a calendar-only update names this local day. Explicit timestamp expectations above stay unchanged.
+  expect(label('2026-10-18')).toBe('today');
   expect(label('not-a-date')).toBe('not-a-date');
 });
 

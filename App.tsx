@@ -678,6 +678,7 @@ import { checkScheduleTaskProject, scheduleTaskSaveNotice } from './services/Sch
 import {
   DEFAULT_PROJECT_TIME_ZONE,
   parseMonthNameDateParts,
+  parsePlainDate,
   projectDateRelativeDays,
   projectTimeZoneOrDefault,
 } from './services/ProjectDateTime';
@@ -1333,6 +1334,16 @@ function formatDisplayDate(date: string) {
 type UpdateTimelineGroup = 'Today' | 'Yesterday' | 'Earlier';
 
 function updateDateValue(value: string) {
+  // An update's legacy YYYY-MM-DD is a local calendar day, not midnight UTC (7.66).
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const day = parsePlainDate(value);
+    if (!day) return null;
+    const [year, month, dayOfMonth] = day.split('-').map(Number);
+    const date = new Date(0);
+    date.setFullYear(year, month - 1, dayOfMonth);
+    date.setHours(0, 0, 0, 0);
+    return date;
+  }
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? date : null;
 }
@@ -4280,8 +4291,8 @@ function buildProjectCardPIEStatus(
 }
 
 function relativeUpdateDateLabel(value: string) {
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return formatDisplayDate(value);
+  const date = updateDateValue(value);
+  if (!date) return formatDisplayDate(value);
 
   const today = new Date();
   if (date.toDateString() === today.toDateString()) return 'today';

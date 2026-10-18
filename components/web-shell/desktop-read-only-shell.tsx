@@ -4716,7 +4716,7 @@ function DocumentManagementWorkspace({
       <WorkspaceSummary metrics={[
         { icon: 'checkmark-circle-outline', label: 'Current Schedule', value: groups.currentSchedule.length, tone: groups.currentSchedule.length ? 'success' : 'warning' },
         { icon: 'time-outline', label: 'Prior Versions', value: groups.priorScheduleVersions.length, tone: 'neutral' },
-        { icon: 'checkbox-outline', label: 'Linked Tasks', value: documents.reduce((total, document) => total + document.linkedScheduleItems.length, 0) },
+        { icon: 'checkbox-outline', label: 'Linked Tasks', value: documents.reduce((total, document) => total + documentLinkedTaskCount(document), 0) },
       ]} />
       <DesktopDocumentOnboarding
         documents={documents}
@@ -5319,8 +5319,8 @@ function DocumentList({
                   <Text style={styles.dataMeta}>{documentProjectLabel(document)} · {document.category}</Text>
                   <Text style={styles.dataMeta}>
                     Imported {formatDateTime(document.importedAt)}
-                    {document.linkedScheduleItems.length > 0
-                      ? ` · ${document.linkedScheduleItems.length} linked task${document.linkedScheduleItems.length === 1 ? '' : 's'}`
+                    {documentLinkedTaskCount(document) > 0
+                      ? ` · ${documentLinkedTaskCount(document)} linked task${documentLinkedTaskCount(document) === 1 ? '' : 's'}`
                       : ''}
                   </Text>
                 </View>
@@ -5364,6 +5364,13 @@ function DocumentList({
       {progressive.showMore ? <ProgressiveListFooter remaining={documents.length - progressive.limit} onShowMore={progressive.showMore} /> : null}
     </View>
   );
+}
+
+/** All tasks this file contains, including memberships shared with another import (7.66).
+ * linkedScheduleItems remains the exclusive set used by deletion decisions. */
+function documentLinkedTaskCount(document: DAVEWebReferenceDocument): number {
+  const imported = document.importedScheduleItemCount;
+  return Math.max(Number.isFinite(imported) ? imported : 0, document.linkedScheduleItems.length);
 }
 
 function DocumentDetailsPanel({
@@ -5479,7 +5486,7 @@ function DocumentDetailsPanel({
         <TaskDetailFact label="Projects" value={projectLabel} />
         <TaskDetailFact label="Source" value={document.sourceProvider === 'google_drive' ? 'Google Drive' : 'Protected Vitruvius storage'} />
         <TaskDetailFact label="Imported" value={formatDateTime(document.importedAt)} />
-        <TaskDetailFact label="Linked Tasks" value={String(document.linkedScheduleItems.length)} />
+        <TaskDetailFact label="Linked Tasks" value={String(documentLinkedTaskCount(document))} />
         <TaskDetailFact label="File Size" value={sizeLabel} />
         <TaskDetailFact
           label="ECOS Index"

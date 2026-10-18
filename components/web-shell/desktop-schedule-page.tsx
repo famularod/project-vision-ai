@@ -82,6 +82,8 @@ type ScheduleEditorState = Readonly<{
   projectName: string;
   locationName: string;
   wbsCode: string;
+  /** A typed code stays his choice; only generated defaults are allocated again at Save (7.66). */
+  wbsCodeWasEdited?: boolean;
   parentItemId: string;
   startDate: string;
   finishDate: string;
@@ -243,7 +245,7 @@ export function DesktopSchedulePage({
   }, [editingTask, editor, scheduleTasks, linkTarget]);
 
   const openNew = (kind: ScheduleEditorKind, parentItemId: string | null = null) => {
-    const projectTasks = tasks.filter(task => inProject(task, defaultProject));
+    const projectTasks = scheduleTasks.filter(task => inProject(task, defaultProject));
     setEditingTask(null);
     setConflict(null);
     setEditor({
@@ -330,7 +332,14 @@ export function DesktopSchedulePage({
       const limitProblem = scheduleEditorLimitProblem(form, opened);
       if (limitProblem) return { ok: false, message: limitProblem };
     }
-    const projectTasks = tasks.filter(task => inProject(task, form.projectName));
+    const projectTasks = scheduleTasks.filter(task => inProject(task, form.projectName));
+    // Refresh a generated default at Save: another task may have arrived while this form stayed open.
+    const wbsCode = !opened && !form.wbsCodeWasEdited
+      ? nextScheduleWbsCode(form.parentItemId || null, projectTasks)
+      : form.wbsCode;
+    if (!opened && wbsCode.trim() && projectTasks.some(task => task.wbsCode?.trim() === wbsCode.trim())) {
+      return { ok: false, message: `WBS ${wbsCode.trim()} is already used in this project. Enter an unused WBS code.` };
+    }
     // A new item's cloud project is looked up by its project's name among
     // the open projects, as on the Tasks page. It had been copied from
     // another task of the project: with no task yet nothing could be added,
@@ -389,7 +398,7 @@ export function DesktopSchedulePage({
         notes: form.notes,
         nextAction: opened?.nextAction || '',
         activityMessage: '',
-        wbsCode: form.wbsCode,
+        wbsCode,
         parentItemId: form.parentItemId,
         sortOrder: opened?.sortOrder ??
           nextScheduleSortOrder(form.parentItemId || null, projectTasks),
@@ -1761,7 +1770,7 @@ function ScheduleEditor({
           disabled={Boolean(editingTask)}
           wide
         />
-        <EditorField label="WBS" value={state.wbsCode} onChange={value => update('wbsCode', value)} />
+        <EditorField label="WBS" value={state.wbsCode} onChange={value => onChange({ ...state, wbsCode: value, wbsCodeWasEdited: true })} />
         <ChoiceField
           label="Parent phase"
           value={state.parentItemId}

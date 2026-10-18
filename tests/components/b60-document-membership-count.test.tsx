@@ -124,7 +124,7 @@ jest.setTimeout(60_000);
 import { loadDAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import { daveWebSupabaseGateway } from '../../services/DAVEWebSupabaseClient';
 import { within } from '@testing-library/react-native';
-it('actual downloaded shared import membership is counted in file line, inspector and summary while deletion stays exclusive',async()=>{
+it.each(['line','panel','summary'])('actual downloaded shared import membership is counted in file %s while deletion stays exclusive',async surface=>{
  const raw={projects:[{id:'alpha',name:'Alpha'}],projectUpdates:[],syncTombstones:[],referenceDocuments:[master,older].map(d=>({id:d.id,document_data:d})),
  scheduleItems:[{id:'shared',item_data:{id:'shared',taskName:'Shared roof task',projectName:'Alpha',scheduleProjectName:'Alpha',locationName:'Roof',status:'Not Started',percentComplete:0,
  startDate:'10/01/2026',finishDate:'10/02/2026',importBatchId:older.importBatchId,sourceDocumentId:older.id,alsoImportedInBatchIds:[master.importBatchId],
@@ -134,10 +134,14 @@ it('actual downloaded shared import membership is counted in file line, inspecto
  expect(mockAuth.snapshot.referenceDocuments.map(d=>({id:d.id,count:d.importedScheduleItemCount,deleteCount:d.linkedScheduleItems.length})))
  .toEqual([{id:master.id,count:1,deleteCount:0},{id:older.id,count:1,deleteCount:0}]);
  const screen=render(<DesktopReadOnlyShell page="documents"/>);
- expect(within(screen.getByLabelText(`View ${older.name}`)).getByText(/1 linked task/)).toBeTruthy();
- fireEvent.press(screen.getByLabelText(`View ${older.name}`));
- const fact=screen.getAllByText('Linked Tasks').find(n=>n.parent?.findAllByProps({children:'1'}).length);
- expect(fact).toBeTruthy();
- fireEvent.press(await screen.findByLabelText(`Edit project document details for ${older.name}`));expect(screen.getByText(STAYS)).toBeTruthy();
+ if(surface==='line') expect(within(screen.getByLabelText(`View ${older.name}`)).getByText(/1 linked task/)).toBeTruthy();
+ else if(surface==='panel') {
+  fireEvent.press(screen.getByLabelText(`View ${older.name}`));
+  const facts=screen.getAllByText('Linked Tasks');
+  expect(facts.some(n=>n.parent?.findAllByProps({children:'1'}).length)).toBe(true);
+  fireEvent.press(await screen.findByLabelText(`Edit project document details for ${older.name}`));expect(screen.getByText(STAYS)).toBeTruthy();
+ } else {
+  expect(screen.getAllByText('Linked Tasks').some(n=>n.parent?.findAllByProps({children:2}).length || n.parent?.findAllByProps({children:'2'}).length)).toBe(true);
+ }
  expect(JSON.stringify(raw)).toBe(before);expect(mockAuth.snapshot.referenceDocuments.every(d=>d.linkedScheduleItems.length===0)).toBe(true);
 });

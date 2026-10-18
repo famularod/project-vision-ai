@@ -1,7 +1,9 @@
 import { fireEvent, render, waitFor } from '@testing-library/react-native';
 import { DesktopSchedulePage } from '../../components/web-shell/desktop-schedule-page';
-import { createDAVEWebSupabaseGateway } from '../../services/DAVEWebSupabaseClient';
+import { createDAVEWebSupabaseGateway, daveWebSupabaseGateway } from '../../services/DAVEWebSupabaseClient';
+import { loadDAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
+jest.mock('../../services/DAVEWebSupabaseClient',()=>{const actual=jest.requireActual('../../services/DAVEWebSupabaseClient');return {...actual,daveWebSupabaseGateway:{...actual.daveWebSupabaseGateway,loadAuthorizedRows:jest.fn()}};});
 jest.mock('@expo/vector-icons',()=>({Ionicons:()=>null}));
 jest.mock('@react-native-async-storage/async-storage',()=>({getItem:jest.fn(),setItem:jest.fn(),removeItem:jest.fn()}));
 const PROJECT='Synthetic Tower';const PROJECT_ID='607c7eed-5dea-4a5a-8b52-0f165c71c4b5';
@@ -21,6 +23,7 @@ beforeEach(()=>{
  const client={auth:{getUser:async()=>({data:{user:{id:'synthetic-owner'}},error:null}),getSession:async()=>({data:{session:null},error:null})},
  rpc:async()=>({data:true,error:null}),from:()=>query};
  const gateway=createDAVEWebSupabaseGateway(client as never);
+ jest.mocked(daveWebSupabaseGateway.loadAuthorizedRows).mockImplementation(async()=>({projects:[{id:PROJECT_ID,name:PROJECT}],scheduleItems:persisted,projectUpdates:[],referenceDocuments:[],syncTombstones:[]} as never));
  mockCreate.mockImplementation((item:DAVEWebScheduleItem)=>gateway.createAuthorizedScheduleItem(item));
 });
 const page=()=> <DesktopSchedulePage tasks={mockRows} projects={[PROJECT]} selectedProject={PROJECT}/>;
@@ -32,6 +35,7 @@ it('actual builder persists a fresh code after seven siblings already include WB
  expect(written.wbsCode).toBe('9');expect(written.projectId).toBe(PROJECT_ID);expect(written.parentItemId).toBeNull();
  expect(new Set([...mockRows.map(r=>r.wbsCode),written.wbsCode]).size).toBe(8);expect(JSON.stringify(mockRows)).toBe(before);
  expect(persisted[0]).toMatchObject({id:written.id,owner_id:'synthetic-owner',project_id:PROJECT_ID,item_data:{taskName:'Hand made task',wbsCode:'9'}});
+ const reloaded=await loadDAVEWebReadOnlySnapshot();expect(reloaded.scheduleItems).toEqual([expect.objectContaining({id:written.id,projectId:PROJECT_ID,wbsCode:'9',taskName:'Hand made task'})]);
 });
 it('a received task while the form is open cannot reuse its generated WBS at durable save',async()=>{
  mockRows=[task('first','1')];const screen=render(page());fill(screen);expect(screen.getByLabelText('WBS').props.value).toBe('2');
