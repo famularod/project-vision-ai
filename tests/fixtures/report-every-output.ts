@@ -138,19 +138,29 @@ const drawingWords = (reference: ReportDrawingReference, index: number) => JSON.
 export const drawingPanelWords = (references: readonly ReportDrawingReference[]): string[] =>
   references.slice(0, 6).flatMap(reference => [`${reference.projectName} · ${reference.areaName}`, reference.citation.label, drawingWords(reference, 0)]);
 
-/** A Word file: its title, its body, each photo (numbered as the file numbers it) and each drawing excerpt. */
-export function wordFileWords({ title, body, photos, drawings }: {
+/** A Word file: its title, body, numbered photos and drawings. The authority inputs
+ * also hold whether Word may append a task's photo reference (7.78): changing
+ * that reference cannot disappear from this fingerprint guard's model.
+ */
+export function wordFileWords({ title, body, photos, drawings, taskLines }: {
   title: string;
   body: string;
   photos: ReadonlyArray<Readonly<{ photoId: string; number: number }>>;
   drawings: readonly ReportDrawingReference[];
+  taskLines?: Briefing['wordTaskLines'];
 }, updates: readonly ProjectUpdate[]): string[] {
   const byId = new Map(updates.flatMap(update => (update.photos ?? []).map(photo => [photo.id, { photo, update }] as const)));
   return [
     `TITLE ${title}`, body,
+    JSON.stringify({ wordTaskLines: taskLines ?? [] }),
     ...photos.map(({ photoId, number }) => {
       const found = byId.get(photoId);
-      return JSON.stringify(found ? { label: `Photo ${number}`, photoId, ...reportWordPhotoDescription(found.photo, found.update) } : { label: `Photo ${number}`, photoId, missing: true });
+      return JSON.stringify(found ? {
+        label: `Photo ${number}`, photoId,
+        ...reportWordPhotoDescription(found.photo, found.update),
+        linkedTaskId: found.update.scheduleItemId,
+        projectId: found.update.projectId,
+      } : { label: `Photo ${number}`, photoId, missing: true });
     }),
     ...drawings.map(drawingWords),
   ];
@@ -178,7 +188,7 @@ export function phoneOutputs({ briefing, draft, format, drawingReferences, updat
     '== Reports screen', ...reportScreenWords(briefing, format),
     '== Drawing References panel', ...drawingPanelWords(drawingReferences),
     ...(format === 'project_manager' ? ['== Work Areas & Photos panel', ...workAreasPanelWords(draft)] : []),
-    '== Word file', ...wordFileWords({ title: String(report.title), body, photos: cited, drawings: drawingReferences }, updates),
+    '== Word file', ...wordFileWords({ title: String(report.title), body, photos: cited, drawings: drawingReferences, taskLines: briefing.wordTaskLines }, updates),
     '== e-mail and text photos', ...cited.map(photo => `${photo.number} ${photo.photoId}`),
   ].join('\n');
 }
@@ -196,6 +206,6 @@ export function desktopOutputs({ briefing, format, drawingReferences, updates }:
   const photos = updates.flatMap(update => (update.photos ?? []).map(photo => photo.id)).map((photoId, index) => ({ photoId, number: index + 1 }));
   return [
     '== report', body,
-    '== Word file', ...wordFileWords({ title: buildDAVEWebReportTitle(briefing, format), body, photos, drawings: drawingReferences }, updates),
+    '== Word file', ...wordFileWords({ title: buildDAVEWebReportTitle(briefing, format), body, photos, drawings: drawingReferences, taskLines: briefing.wordTaskLines }, updates),
   ].join('\n');
 }
