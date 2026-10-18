@@ -19,6 +19,7 @@ import { reportTextKey } from '../../services/DAVEReportSnapshot';
 jest.mock('../../services/DAVEWebSupabaseClient', () => ({ daveWebSupabaseGateway: { loadAuthorizedRows: jest.fn() } }));
 import type { ProjectUpdate } from '../../types';
 
+const NativeDate = Date;
 const NOW = '2026-10-17T23:00:00Z';
 function update(id: string, date: string, sendTappedAt: string | undefined, notes: string, projectName = 'Tower'): ProjectUpdate {
   return { id, date, projectName, scheduleProjectName: projectName, selectedAreaName: 'Roof', notes,
@@ -153,7 +154,11 @@ it('changed authored-send ordering changes app text while preserving the actual 
 
 it('App relative send labels use local midnight for Z and offset timestamps and preserve legacy day-only fallback', () => {
   jest.setSystemTime(new Date('2026-10-18T07:30:00Z'));
-  class PacificDate extends Date {
+  class PacificDate extends NativeDate {
+    constructor(value?: string | number | Date) {
+      // Fake Date's constructor may return its own object and discard a subclass's timezone override.
+      super(value === undefined ? Date.now() : typeof value === 'string' ? NativeDate.parse(value) : typeof value === 'number' ? value : value.getTime());
+    }
     toDateString(): string { return new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(this); }
   }
   const updateDateValue = appFunction('updateDateValue', { Date: PacificDate, parsePlainDate: jest.requireActual('../../services/ProjectDateTime').parsePlainDate });
