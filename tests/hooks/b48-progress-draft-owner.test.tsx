@@ -115,6 +115,53 @@ it('outside a workspace an immediate known sign-in owns the draft; an account sw
   expect(shown(first).percentComplete).toBe(60);
   expect(shown(second).percentComplete).toBe(80);
 });
+it.each([undefined, first])('a fallback callback retained before an unexpected sign-out cannot create a draft for the next account (previous=%s)', previous => {
+  const hook = row();
+  act(() => hook.result.current[1](() => ({ status: 'In Progress', percentComplete: 60 })));
+  const late = hook.result.current[1];
+  act(() => settleUnsavedDraftsOnAccountChange('SIGNED_OUT', previous, null));
+  act(() => late(() => ({ status: 'Complete', percentComplete: 100 })));
+  act(() => settleUnsavedDraftsOnAccountChange('SIGNED_IN', null, second));
+  expect(hook.result.current[0]).toEqual(saved);
+  expect(shown(second)).toEqual(saved);
+  expect(shown(first)).toEqual(previous ? { status: 'In Progress', percentComplete: 60 } : saved);
+  hook.unmount();
+});
+it('an empty unknown fallback is fenced at sign-out and its new callback remains usable', () => {
+  const hook = row();
+  const old = hook.result.current[1];
+  act(() => settleUnsavedDraftsOnAccountChange('SIGNED_OUT', undefined, null));
+  act(() => old(() => ({ status: 'Complete', percentComplete: 100 })));
+  expect(hook.result.current[0]).toEqual(saved);
+  act(() => hook.result.current[1](() => ({ status: 'In Progress', percentComplete: 80 })));
+  expect(hook.result.current[0].percentComplete).toBe(80);
+  hook.unmount();
+});
+it('a named fallback callback from before an unasked sign-out stays fenced when its account returns', () => {
+  act(() => settleUnsavedDraftsOnAccountChange('SIGNED_IN', null, first));
+  const hook = row();
+  act(() => hook.result.current[1](() => ({ status: 'In Progress', percentComplete: 60 })));
+  const old = hook.result.current[1];
+  act(() => settleUnsavedDraftsOnAccountChange('SIGNED_OUT', first, null));
+  act(() => settleUnsavedDraftsOnAccountChange('SIGNED_IN', null, first));
+  act(() => old(() => ({ status: 'Complete', percentComplete: 100 })));
+  expect(hook.result.current[0].percentComplete).toBe(60);
+  act(() => hook.result.current[1](() => ({ status: 'In Progress', percentComplete: 80 })));
+  expect(hook.result.current[0].percentComplete).toBe(80);
+  hook.unmount();
+});
+it('an old named fallback callback stays fenced across a direct switch and return without a sign-out event', () => {
+  act(() => settleUnsavedDraftsOnAccountChange('SIGNED_IN', null, first));
+  const hook = row();
+  act(() => hook.result.current[1](() => ({ status: 'In Progress', percentComplete: 60 })));
+  const old = hook.result.current[1];
+  act(() => settleUnsavedDraftsOnAccountChange('SIGNED_IN', first, second));
+  act(() => settleUnsavedDraftsOnAccountChange('SIGNED_IN', second, first));
+  act(() => old(() => ({ status: 'Complete', percentComplete: 100 })));
+  expect(hook.result.current[0].percentComplete).toBe(60);
+  expect(shown(second)).toEqual(saved);
+  hook.unmount();
+});
 it('the actual Settings sign-out producer names only the selected account unsaved status and percent', async () => {
   const source = fs.readFileSync(path.resolve(__dirname, '../../screens/AdminScreen.tsx'), 'utf8');
   const tree = ts.createSourceFile('AdminScreen.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
