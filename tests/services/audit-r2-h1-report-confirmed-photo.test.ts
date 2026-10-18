@@ -248,3 +248,8 @@ describe('H1: review prompts show the comparison that is waiting for review', ()
     expect(photoAttention?.whyItMatters).toBe(UNCONFIRMED);
   });
 });
+
+it('7.49 confirmed comparison progress retains its Progress presentation',async()=>{
+ const {runtimeDraft,coreDraft}=await reportDrafts({confirmedAgeDays:1,unconfirmedAgeDays:null});
+ for(const draft of [runtimeDraft,coreDraft]){const bullet=draft.locationGroups.flatMap(g=>g.workAreas).flatMap(a=>a.bullets).find(b=>b.text.includes(CONFIRMED));expect(bullet).toBeTruthy();expect(bullet!.kind).toBe('progress');expect(bullet!.previewKind).toBeUndefined();}
+});
