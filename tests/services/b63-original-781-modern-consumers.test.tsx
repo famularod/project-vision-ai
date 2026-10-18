@@ -184,6 +184,7 @@ import { buildPIECoreIntelligence } from '../../services/PIECoreIntelligence';
 import { formatDAVEWebReport } from '../../services/DAVEWebOperations';
 import { buildReportWordBase64 } from '../../services/ReportWordDocument';
 import JSZip from 'jszip';
+const legacyGoldens:Record<string,{phone:string;desktop:string}>=require('../fixtures/b63-raw-legacy-goldens.json');
 import { reportWordPhotoDescription } from '../../services/ReportWordMediaDescription';
 const rawTask = task({ id:'legacy-task',taskName:'Install canopy',locationName:'Canopy',startDate:'10/01/2026',finishDate:'10/20/2026',notes:'Confirm canopy bolts',createdAt:isoAt(-14),updatedAt:isoAt(-2),status:'In Progress',percentComplete:40 });
 const validVerificationInput={status:'pm_verified',reportedAt:isoAt(-4),reportedBy:'Dana',priorScheduleStatus:'In Progress',priorPercentComplete:40,verifiedAt:isoAt(-3),verifiedBy:'Dana',verificationNote:'Canopy accepted',evidence:[{id:'inspection',kind:'pm_confirmation',sourceName:'Dana',sourceRecordId:'legacy-task',summary:'Canopy accepted',recordedAt:isoAt(-3)}]};
@@ -219,6 +220,7 @@ async function observe(rows:Rows,format:Format){
  const nativeWord=await word(nativeBody,[...nativeBriefing.wordTaskLines],held.updates);
  const rawLegacy={phone:buildDAVELegacyReportSourceFingerprint(phone),desktop:buildDAVELegacyReportSourceFingerprint(desktop)};
  const goldenKey=JSON.stringify([format,rows.scheduleItems[0].item_data,rows.projectUpdates]);
+ expect(rawLegacy).toEqual(legacyGoldens[goldenKey]);
  console.log('B63_RAW_LEGACY '+JSON.stringify({goldenKey,rawLegacy}));
  const result={rawLegacy,desktopRawVsNativeWordDiff:differences(nativeWord,dw),desktopRawVsNativeBodyDiff:differences(nativeBody,webBody),phoneWord:pw,desktopWord:dw,format,phoneFingerprint:p.fingerprint,desktopFingerprint:d.fingerprint,recognizesPhoneSend:p.fingerprint===d.fingerprint,held:held.tasks[0],loaded:snapshot.scheduleItems[0],recipeDiff:differences(daveReportSourceParts(phone,sent,format),daveReportSourceParts(desktop,sent,format)),briefingDiff:differences(pb,db),actualWordDiff:differences(pw,dw),phoneRuntimeBody:written.body,desktopBody:webBody};
  console.log('B63_DIAGNOSTIC '+JSON.stringify(result));
