@@ -101,6 +101,14 @@ describe('Owner answer Q31: Add Task suggests the area you are standing in', () 
     fireEvent.press(screen.getByRole('button', { name: 'Apply proposed changes to task form' }));
   }
 
+  it('manual native Add Task leaves WBS unassigned on successive forms',()=>{
+    const first=open(undefined);fireEvent.changeText(first.screen.getByLabelText('Task or milestone'),'First hand task');fireEvent.press(first.screen.getByLabelText('Save Task'));
+    expect(first.props.onSubmit).toHaveBeenCalledWith(expect.objectContaining({taskName:'First hand task',projectName:'Tower B'}));
+    expect(first.props.onSubmit.mock.calls[0][0].wbsCode).toBeUndefined();first.screen.unmount();
+    const second=open(undefined);fireEvent.changeText(second.screen.getByLabelText('Task or milestone'),'Second hand task');fireEvent.press(second.screen.getByLabelText('Save Task'));
+    expect(second.props.onSubmit.mock.calls[0][0].wbsCode).toBeUndefined();
+  });
+
   describe('the rule (services/AreaSuggestion addTaskAreaSuggestion)', () => {
     const tower = AREAS.filter(item => item.projectName === 'Tower B');
 

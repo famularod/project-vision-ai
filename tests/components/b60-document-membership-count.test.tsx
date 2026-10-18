@@ -79,6 +79,7 @@ const mockAuth = {
   setCurrentSchedule: jest.fn(async () => 'project'),
   setCurrentDocument: jest.fn(async () => undefined),
   updateDocument: jest.fn(async (_document: DAVEWebReferenceDocument) => undefined),
+  createTask: jest.fn(async (_item: unknown) => undefined),
   deleteDocument: jest.fn(),
   uploadDocument: jest.fn(),
   getArtifactUrl: jest.fn(),
@@ -137,11 +138,26 @@ it.each(['line','panel','summary'])('actual downloaded shared import membership 
  if(surface==='line') expect(within(screen.getByLabelText(`View ${older.name}`)).getByText(/1 linked task/)).toBeTruthy();
  else if(surface==='panel') {
   fireEvent.press(screen.getByLabelText(`View ${older.name}`));
-  const facts=screen.getAllByText('Linked Tasks');
-  expect(facts.some(n=>n.parent?.findAllByProps({children:'1'}).length)).toBe(true);
+  const fact=screen.UNSAFE_root.findAll(n=>typeof n.type==='function' && n.type.name==='TaskDetailFact' && n.props.label==='Linked Tasks')[0];
+  expect(within(fact).getByText('1')).toBeTruthy();
   fireEvent.press(await screen.findByLabelText(`Edit project document details for ${older.name}`));expect(screen.getByText(STAYS)).toBeTruthy();
  } else {
-  expect(screen.getAllByText('Linked Tasks').some(n=>n.parent?.findAllByProps({children:2}).length || n.parent?.findAllByProps({children:'2'}).length)).toBe(true);
+  const summary=screen.UNSAFE_root.findAll(n=>typeof n.type==='function' && n.type.name==='WorkspaceSummary')[0];
+  expect(within(summary).getByText('2')).toBeTruthy();
  }
  expect(JSON.stringify(raw)).toBe(before);expect(mockAuth.snapshot.referenceDocuments.every(d=>d.linkedScheduleItems.length===0)).toBe(true);
+});
+
+it('the desktop Tasks create consumer leaves manual WBS unassigned, preserving each new task id and project',async()=>{
+ mockAuth.snapshot={...mockAuth.snapshot!,projects:[{id:'607c7eed-5dea-4a5a-8b52-0f165c71c4b5',name:'Alpha'}] as DAVEWebReadOnlySnapshot['projects'],referenceDocuments:[],scheduleItems:[]};
+ const screen=render(<DesktopReadOnlyShell page="tasks"/>);
+ for(const name of ['First hand task','Second hand task']) {
+  fireEvent.press(screen.getByText('Add Task'));fireEvent.changeText(screen.getByLabelText('Task name'),name);
+  await act(async()=>fireEvent.press(screen.getByText('Create Task')));
+ }
+ expect(mockAuth.createTask.mock.calls).toHaveLength(2);
+ const rows=mockAuth.createTask.mock.calls.map(([r])=>r as {id:string;wbsCode?:string|null;projectId:string;taskName:string});
+ expect(new Set(rows.map(r=>r.id)).size).toBe(2);
+ expect(rows.map(r=>r.wbsCode??null)).toEqual([null,null]);
+ expect(rows.every(r=>r.projectId==='607c7eed-5dea-4a5a-8b52-0f165c71c4b5')).toBe(true);
 });

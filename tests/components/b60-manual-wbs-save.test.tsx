@@ -58,3 +58,11 @@ it('child allocation stays under its actual parent and ignores another project c
  const screen=render(page());fireEvent.press(screen.getByText('Add Task'));fireEvent(screen.getByLabelText('Parent phase'),'change',{target:{value:'phase'}});fireEvent.changeText(screen.getByLabelText('Name'),'Second child');
  const written=await save(screen);expect(written).toMatchObject({wbsCode:'2.3',parentItemId:'phase',projectName:PROJECT,projectId:PROJECT_ID});
 });
+
+it('sequential hand-made tasks receive separate WBS values and task ids through insert and reload',async()=>{
+ mockRows=[task('existing-eight','8')];const screen=render(page());fill(screen,'First new task');const first=await save(screen);
+ mockRows=[...mockRows,first];screen.rerender(page());fill(screen,'Second new task');fireEvent.press(screen.getByText('Create Task'));
+ await waitFor(()=>expect(persisted).toHaveLength(2));const second=persisted[1].item_data as DAVEWebScheduleItem;
+ expect([first.wbsCode,second.wbsCode]).toEqual(['9','10']);expect(second.id).not.toBe(first.id);
+ expect((await loadDAVEWebReadOnlySnapshot()).scheduleItems.map(r=>[r.id,r.wbsCode])).toEqual([[first.id,'9'],[second.id,'10']]);
+});
