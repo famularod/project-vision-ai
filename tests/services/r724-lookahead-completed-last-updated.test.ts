@@ -117,7 +117,7 @@ describe('7.24: lookahead completion date beside an older note', () => {
 
   it('a lookahead deletion does not leave a fake completed line', () => {
     const state = approve(seed(), L, [paint('100')]);
-    const items = scheduleItemsAfterLookaheadDeleted(state.items, L, [F]);
+    const items = scheduleItemsAfterLookaheadDeleted(state.items, L, '2026-10-02T12:00:00.000Z', [F]);
     expect(completed({ items, documents: [F] })).toEqual([]);
   });
 
