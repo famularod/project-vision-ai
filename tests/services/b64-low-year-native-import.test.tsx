@@ -199,7 +199,7 @@ it.each(LOW)('actual native file pick, review approval, App normalization and du
  await act(async()=>{fireEvent.press(accept!);await settled();});
  const approved=saved.scheduleItemsCurrentRef.current;expect(approved.map(i=>i.taskName)).toEqual(['Install canopy checked']);console.log('B64_NATIVE_APPROVAL '+JSON.stringify({year,imported:batch!.items.map(i=>[i.startDate,i.finishDate]),approved:approved.map(i=>[i.startDate,i.finishDate]),queued:saved.cloudSync.mock.calls[0]?.[0].scheduleItems.map(i=>[i.startDate,i.finishDate])}));
  view.unmount();const store=render(<Persist items={approved}/>);await act(async()=>{await flushPendingStoragePersistence();});
- const raw=await AsyncStorage.getItem('projectPhotoUpdate.scheduleItems.v1');expect(raw).not.toBeNull();const reloaded=JSON.parse(raw!).map(nativeNormalizeScheduleItem);store.unmount();
+ const raw=await AsyncStorage.getItem('projectPhotoUpdate.scheduleItems.v1');expect(raw).not.toBeNull();const reloaded=JSON.parse(raw!).map((t:ScheduleItem)=>nativeNormalizeScheduleItem(t));store.unmount();
  expect(batch!.items.map(i=>[i.startDate,i.finishDate])).toEqual([[`05/01/${year}`,`05/04/${year}`]]);expect(reloaded.map((i:ScheduleItem)=>[i.startDate,i.finishDate])).toEqual([[`05/01/${year}`,`05/04/${year}`]]);
 });
 it.each([...LOW,'2000','2100','2026'])('actual ISO CSV and MS Project file routes preserve %s',year=>{

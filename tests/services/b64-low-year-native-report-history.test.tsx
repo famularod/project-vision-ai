@@ -345,7 +345,7 @@ for(const format of ['project_manager','executive'] as const){
  it.each(['0100','0202','0999'])('B64 '+format+' actual native send is recognized by desktop for %s',async year=>{
   phoneFormat=format;
   const raw=OCT15.map(t=>t.id==='noarea'?{...t,startDate:`5/1/${year}`,finishDate:`5/4/${year}`}:t);
-  await thePhoneSendsAtNineSeventeen(raw.map(nativeSchedule));
+  await thePhoneSendsAtNineSeventeen(raw.map(t=>nativeSchedule(t)));
   const web=await computer(UPDATES,raw,'2026-10-15T16:19:00.000Z',{executive:format==='executive'});
   console.log('B64_RECEIPT '+JSON.stringify({format,year,web}));expect(web.alreadySent).toBe(true);
   const changed=raw.map(t=>t.id==='noarea'?{...t,finishDate:`5/5/${year}`}:t);
