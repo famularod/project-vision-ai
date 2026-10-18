@@ -12,7 +12,7 @@ import {ReportsScreen} from '../../screens/ReportsScreen';
 import {buildDailyProjectUpdate,buildPIEReportDraft,buildReportBullets,buildReportActionItems,buildConstructionUnderstanding,collectReportEvidence,cleanReportWorkAreaName,printedReportWorkAreaName,type PIEReportType,type PIEReportSourceEvidence} from '../../services/PIEReporter';
 import {buildRuntime} from '../../services/PIERuntime';
 import {buildPIECoreIntelligence} from '../../services/PIECoreIntelligence';
-import {buildDAVEWebReportDraft,formatDAVEWebReport,buildDAVEWebReportSource} from '../../services/DAVEWebOperations';
+import {buildDAVEWebReportDraft,buildDAVEWebReportTruths,formatDAVEWebReport,buildDAVEWebReportSource} from '../../services/DAVEWebOperations';
 import {buildReportWordBase64} from '../../services/ReportWordDocument';
 import {forgetAllReportSessionState} from '../../services/ReportSessionState';
 const NOW='2026-10-18T12:00:00Z',PROJECT='Birch Lane',ID='11111111-1111-4111-8111-111111111111';
@@ -96,9 +96,13 @@ it('3.30 already-fixed silent ordinary task/advice variant preserves selected co
 it('3.30 actual desktop formatter retains its note provenance and numeric task text',()=>{
  const w=world(NOTE,'','Unit 2026 punch list');
  const text=formatDAVEWebReport(buildDAVEWebReportDraft(w.snapshot,PROJECT),'project_manager');
- const own=text.split('\n').filter(line=>line.includes(NOTE)&&!line.includes('Latest update:'));
- expect(own.length).toBeGreaterThan(0);
- expect(own.some(line=>line.includes(`${PROJECT} — 2026 ${PROJECT}: ${NOTE}`))).toBe(false);
+ // The desktop formatter prints briefing summaries, not every raw note.
+ // Verify the actual desktop source route rather than inventing a verbatim-summary contract.
+ const truths=buildDAVEWebReportTruths(w.snapshot,PROJECT);
+ const own=truths.flatMap(truth=>truth.evidence.records).filter(record=>record.kind==='update'&&record.sourceRecordId==='own-note');
+ expect(own).toHaveLength(1);
+ expect(own[0]).toMatchObject({id:'update:own-note',sourceRecordId:'own-note',text:NOTE,projectName:PROJECT,areaName:''});
+ expect(text).not.toContain(`${PROJECT} — 2026 ${PROJECT}: ${NOTE}`);
  expect(text).toContain('Unit 2026 punch list');
  expect(formatDAVEWebReport(buildDAVEWebReportDraft(w.snapshot,PROJECT),'executive')).toContain(PROJECT);
 });
