@@ -318,7 +318,19 @@ it('B76 intentional different-project import control: same projectless bytes rem
  const saved=afterApproval(ACCOUNT,one!,'master');const b=phone(saved,picked,[P2375]),other=await b.prepareScheduleImportFromAsset(b.file,[P2375]);
  expect(other).toBeTruthy();expect(b.alerts).toEqual([]);expect(other!.documents[0].id).not.toBe(one!.documents[0].id);
  expect(other!.documents[0].contentSha256).toBe(one!.documents[0].contentSha256);
- expect(other!.items.every(i=>i.projectName===P2375)).toBe(true);
+ // RED3: a projectless file may correctly remain unassigned until review.
+ // The control asserts the user's actual explicit different-project intent.
+ const frozen=JSON.stringify(other),{view,onApprove}=await openBatch(other!,saved);
+ if(other!.items.some(i=>i.projectName==='Needs Project'))fillProjects(view,P2375);
+ fireEvent.press(view.getByText(LOOK));await act(settled);
+ await act(async()=>{fireEvent.press(view.getByText('Accept All (3)'));await settled();});
+ expect(onApprove).toHaveBeenCalledTimes(1);const approved=onApprove.mock.calls[0][0];
+ expect(approved.items.every(i=>i.projectName===P2375)).toBe(true);
+ expect(approved.items.map(i=>i.id)).toEqual(other!.items.map(i=>i.id));
+ expect(approved.documents[0].id).toBe(other!.documents[0].id);
+ expect(approved.documents[0].contentSha256).toBe(one!.documents[0].contentSha256);
+ expect(approved.documents[0].scheduleRole).toBe('lookahead');
+ expect(JSON.stringify(other)).toBe(frozen);view.unmount();
 });
 
 it('B76 gateway control: reviewed source identity and narrowed project metadata reach the actual document_data insertion unchanged',async()=>{
@@ -327,7 +339,11 @@ it('B76 gateway control: reviewed source identity and narrowed project metadata 
  const frozen=JSON.stringify({approved,document}),insert=jest.fn(async(_row:unknown)=>({data:null,error:null})),upload=jest.fn(async()=>({data:{path:'synthetic'},error:null})),rpc=jest.fn(async(name:string)=>({data:name==='dave_is_app_owner'?true:null,error:null,status:200}));
  const client={auth:{getUser:jest.fn(async()=>({data:{user:{id:'b76-owner'}},error:null}))},rpc,from:jest.fn((table:string)=>{if(table!=='reference_documents')throw Error('Unexpected synthetic table '+table);return{insert};}),storage:{from:jest.fn(()=>({upload,remove:jest.fn(async()=>({data:[],error:null}))}))}};
  const gateway=createDAVEWebSupabaseGateway(client as never);
- await gateway.uploadAuthorizedReferenceDocument({document,bytes:utf8ToBytes(picked.contents).buffer as ArrayBuffer});
+ // RED3: ReferenceDocument permits unknown legacy report metadata; this
+ // synthetic schedule has none. State that actual gateway contract explicitly.
+ expect(document.webReport ?? null).toBeNull();
+ const gatewayDocument: Parameters<typeof gateway.uploadAuthorizedReferenceDocument>[0]['document']={...document,webReport:null};
+ await gateway.uploadAuthorizedReferenceDocument({document:gatewayDocument,bytes:utf8ToBytes(picked.contents).buffer as ArrayBuffer});
  expect(insert).toHaveBeenCalledTimes(1);const row=insert.mock.calls[0][0]as any;
  expect(row).toMatchObject({id:batch!.documents[0].id,owner_id:'b76-owner',category:'Schedules',document_data:{id:batch!.documents[0].id,projectName:P2321,projectNames:[P2321],importBatchId:batch!.documents[0].importBatchId,contentSha256:batch!.documents[0].contentSha256,scheduleRole:'lookahead'}});
  expect(row.document_data.storagePath).toContain(batch!.documents[0].id);
