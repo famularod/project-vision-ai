@@ -684,15 +684,16 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
 
   async function guardedFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
     if (pathOf(input)?.pathname.endsWith('/auth/v1/logout')) {
+      const signOut = leaving;
       const sessionId = sessionIdOf(bearerOf(init));
       // Sign Out of This Computer does not wait on a server that does not answer (review pass 1, web L3): the
       // request stays sent, and auth-js is told the server is not reachable just now.
-      const response = leaving?.here
-        ? await answeredWhileSigningOut(leaving.until, options.fetch(input, init)) ?? new Response(JSON.stringify({
+      const response = signOut?.here
+        ? await answeredWhileSigningOut(signOut.until, options.fetch(input, init)) ?? new Response(JSON.stringify({
             message: 'The sign-in server did not answer the sign-out in time.',
           }), { status: 503, headers: { 'content-type': 'application/json' } })
         : await options.fetch(input, init);
-      if (response.status === 429) leaving?.onServerWait?.();
+      if (response.status === 429) signOut?.onServerWait?.();
       // auth-js takes the sign-in out of this tab on these answers (the others it reports as a failure).
       if (response.ok || response.status === 401 || response.status === 403 || response.status === 404) {
         // The server took the sign-out, or says that sign-in is not there (second review, web F5).
