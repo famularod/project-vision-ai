@@ -56,3 +56,21 @@ it.each(['','Same caption'])('7.33 same-day distinct photos with caption %p reta
  const sent=markReportSnapshotDelivered(buildDAVEReportSnapshot({truths:nativeA,scopeKey:'tower',sourceFingerprint:source(nativeA),capturedAt:NOW,reportFormat:'project_manager'}),NOW,'phone',null,null,reportTextKey({title:'Tower manual review',body}));expect(sameReportSource(sent.sourceFingerprint,source(nativeB))).toBe(true);expect(daveWebReportAlreadySentElsewhereAt(sent,source(webB),new Set(),{requiresTextKey:true,title:'Tower manual review',body})).toBe(NOW);
  const first=await desktop(rows),second=await desktop(reverse);expect(second.paragraphs).toEqual(first.paragraphs);expect(JSON.stringify(rows)).toBe(before);
 });
+
+it('7.33 preserves distinct attachments, authored photo order, task/area/words changes, and legacy as-built identity',async()=>{
+ const rows=twins('Same caption');rows[1].photos.push({...B().photos[1],caption:'Same caption'});
+ const source=(updates:ProjectUpdate[])=>buildDAVEReportSourceOnPeriod(nativeTruths(updates),null).fingerprint;
+ const original=source(rows),before=JSON.stringify(rows);
+ for(let n=0;n<16;n++)expect(source(n%2?[...rows].reverse():rows)).toBe(original);
+ const word=await desktop(rows),reverse=await desktop([...rows].reverse(),true);
+ expect(reverse.paragraphs).toEqual(word.paragraphs);expect(reverse.bytes.map(b=>Array.from(b))).toEqual(word.bytes.map(b=>Array.from(b)));expect(word.bytes).toHaveLength(3);
+ expect(new Set(word.bytes.map(b=>Buffer.from(b).toString('base64'))).size).toBe(3);
+ expect(word.resolved.photos.map((p:any)=>p.photoId??p.id)).toEqual(['photo-Z','photo-B','photo-A']);
+ const changed=(edit:(copy:ProjectUpdate[])=>void)=>{const copy=JSON.parse(before);edit(copy);expect(source(copy)).not.toBe(original);};
+ changed(copy=>{copy[1].photos.reverse();});
+ changed(copy=>{copy[0].photos[0].id='changed-attachment';});
+ changed(copy=>{copy[0].scheduleItemId='pour';copy[0].scheduleTaskName='Pour slab';});
+ changed(copy=>{copy[0].selectedAreaName='West';copy[0].photos[0].selectedAreaName='West';});
+ changed(copy=>{copy[0].notes='An actual changed field observation.';});
+ expect(JSON.stringify(rows)).toBe(before);
+});
