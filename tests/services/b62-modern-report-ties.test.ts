@@ -6,7 +6,8 @@ import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, buildDAVELeg
 import { buildDailyProjectUpdate } from '../../services/PIEReporter';
 import { buildDAVEReportSnapshot, reportSnapshotToSave, sameReportSource, markReportSnapshotDelivered, otherDeviceSendNotReceived } from '../../services/DAVEReportSnapshot';
 import { buildDAVEProjectTruth, daveProjectTruthAsBuilt } from '../../services/DAVEProjectTruth';
-import { buildDAVEWebReportSource } from '../../services/DAVEWebOperations';
+import { buildDAVEWebReportSource, buildDAVEWebReportTruths } from '../../services/DAVEWebOperations';
+import { phoneOutputs, desktopOutputs } from '../fixtures/report-every-output';
 import type { DAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import type { ScheduleItem, ProjectUpdate } from '../../types';
 const NOW = '2026-10-17T12:00:00.000Z';
@@ -21,7 +22,7 @@ function open(items: ScheduleItem[], updates: ProjectUpdate[]) {
  const draft = buildDailyProjectUpdate({ selectedProjectNames: ['Tower'], savedUpdates: updates, scheduleItems: items, knownScheduleItems: items } as never);
  const body = enhanceDAVEReportDraft(draft, briefing, 'project_manager').body;
  const snapshot = buildDAVEReportSnapshot({ truths, scopeKey: 'tower', sourceFingerprint: fingerprint, capturedAt: NOW, reportFormat: 'project_manager' });
- return { truths, fingerprint, body, snapshot, legacy: buildDAVELegacyReportSourceFingerprint(truths) };
+ return { truths, fingerprint, body, snapshot, output: phoneOutputs({ briefing, draft, format: 'project_manager', drawingReferences: [], updates }), desktop: desktopOutputs({ briefing, format: 'project_manager', drawingReferences: [], updates }), legacy: buildDAVELegacyReportSourceFingerprint(truths) };
 }
 const permutations = <T,>(a: T[]): T[][] => a.length < 2 ? [a] : a.flatMap((v, i) => permutations(a.filter((_, j) => i !== j)).map(rest => [v, ...rest]));
 function invariant(items: ScheduleItem[], updates: ProjectUpdate[]) {
@@ -29,6 +30,7 @@ function invariant(items: ScheduleItem[], updates: ProjectUpdate[]) {
  for (const order of permutations(items)) {
   const after = open(order, updates);
   expect(after.body).toEqual(before.body);
+  expect(after.output).toBe(before.output); expect(after.desktop).toBe(before.desktop);
   expect(after.fingerprint).toEqual(before.fingerprint);
   expect(reportSnapshotToSave(after.snapshot, before.snapshot)).toBeNull();
  }
@@ -44,7 +46,8 @@ it('identical photo descriptions retain the same survivor across task and update
  const before = open(items, updates);
  for (const updateOrder of permutations(updates)) for (const itemOrder of permutations(items)) {
   const after = open(itemOrder, updateOrder);
-  expect(after.body).toEqual(before.body); expect(after.fingerprint).toEqual(before.fingerprint);
+  expect(after.body).toEqual(before.body);
+  expect(after.output).toBe(before.output); expect(after.desktop).toBe(before.desktop); expect(after.fingerprint).toEqual(before.fingerprint);
   expect(reportSnapshotToSave(after.snapshot, before.snapshot)).toBeNull();
  }
 });
@@ -82,7 +85,23 @@ it('retained delivered 3.0 receipt stays current on desktop after a task-only pe
  for (const order of permutations(items)) {
   const snapshot = { projects: [{ id: 'report:tower', name: 'Tower' }], scheduleItems: order, knownScheduleItems: order, projectUpdates: updates.map(updateData => ({ id: updateData.id, updateData })), referenceDocuments: [], refreshedAt: NOW } as unknown as DAVEWebReadOnlySnapshot;
   const source = buildDAVEWebReportSource(snapshot, 'Tower');
-  expect(sameReportSource(sent.sourceFingerprint, source.fingerprint)).toBe(true);
-  expect(otherDeviceSendNotReceived({ period: sent, currentFingerprint: source.fingerprint, ownSends: new Set(), pulledAt: NOW })).toBeNull();
+  const desktopFingerprint = buildDAVEReportSourceFingerprint(buildDAVEWebReportTruths(snapshot, 'Tower'));
+  expect(source.fingerprint.split(':media-')[0]).toBe(desktopFingerprint);
+  expect(sameReportSource(sent.sourceFingerprint, desktopFingerprint)).toBe(true);
+  expect(otherDeviceSendNotReceived({ period: sent, currentFingerprint: desktopFingerprint, ownSends: new Set(), pulledAt: NOW })).toBeNull();
  }
+});
+
+it('a stronger name match beats the deterministic tie order', () => {
+ const items = [task('a', 'Paint wall south'), task('z', 'Paint wall')];
+ const current = open(items, [update('u', [photo('p')])]);
+ expect(current.truths[0].photoComparisons[0].taskId).toBe('z');
+});
+it('actual photo order remains meaningful for Word numbering', () => {
+ const items = [task('a')];
+ const original = update('u', [photo('p-a'), { ...photo('p-b'), caption: 'Roof flashing' }]);
+ const before = open(items, [original]);
+ const after = open(items, [{ ...original, photos: [...original.photos].reverse() }]);
+ expect(after.fingerprint).not.toBe(before.fingerprint);
+ expect(after.output).not.toBe(before.output);
 });
