@@ -1238,6 +1238,7 @@ function GanttWorkspace({
                     row.baselineLeft !== null &&
                     row.baselineWidth !== null ? (
                       <View
+                        testID={`gantt-baseline:${row.item.id}`}
                         style={[
                           styles.ganttBaselineBar,
                           {

@@ -19,7 +19,7 @@ for(const zoom of ['day','week','month'] as const)it('actual desktop '+zoom+' in
  const scroll=s.getByTestId('gantt-timeline-scroll');budget(()=>fireEvent(scroll,'layout',{nativeEvent:{layout:{width:900}}}));budget(()=>fireEvent.scroll(scroll,{nativeEvent:{contentOffset:{x:row.left}}}));bounded(s);
  expect(headings(s).some(n=>String(n.props.testID).includes('2062'))).toBe(true);expect(s.getByText(/Viewing .*2062/)).toBeTruthy();
  expect(StyleSheet.flatten(s.getByTestId('gantt-bar:future').props.style)).toMatchObject({left:row.left,width:row.width});
- fireEvent.press(s.getByLabelText('Open timeline item future'));expect(s.getByDisplayValue('future')).toBeTruthy();expect(s.getByDisplayValue('2062-07-20')).toBeTruthy();expect(JSON.stringify(tasks)).toBe(before);
+ fireEvent.press(s.getByLabelText('Open timeline item future'));expect(s.getByDisplayValue('future')).toBeTruthy();expect(s.getByLabelText('Start date').props.value).toBe('2062-07-20');expect(JSON.stringify(tasks)).toBe(before);
 });
 it('zoom and resize retain the future calendar context and clamp end/invalid scroll or layout safely',()=>{
  const s=open([ordinary,future]);const scroll=s.getByTestId('gantt-timeline-scroll');
@@ -32,6 +32,16 @@ it('zoom and resize retain the future calendar context and clamp end/invalid scr
 for(const year of ['0202','9999'])it('shows stored '+year+' dates with an explicit date check, no bar, and opens the same task',()=>{
  const stray=task('stray',{startDate:year+'-05-01',finishDate:year+'-05-04'});const s=open([ordinary,stray]);
  expect(s.queryByText('Set dates to place this item')).toBeNull();expect(s.getByText(new RegExp('Date check:.*'+year+'-05-01.*outside 2000 to 2100'))).toBeTruthy();expect(s.queryByTestId('gantt-bar:stray')).toBeNull();expect(s.queryByTestId('gantt-progress:stray')).toBeNull();expect(s.getByTestId('gantt-bar:ordinary')).toBeTruthy();
- fireEvent.press(s.getByLabelText('Open timeline item stray'));expect(s.getByDisplayValue('stray')).toBeTruthy();expect(s.getByDisplayValue(year+'-05-01')).toBeTruthy();expect(stray.startDate).toBe(year+'-05-01');
+ fireEvent.press(s.getByLabelText('Open timeline item stray'));expect(s.getByDisplayValue('stray')).toBeTruthy();expect(s.getByLabelText('Start date').props.value).toBe(year+'-05-01');expect(stray.startDate).toBe(year+'-05-01');
 });
 it('genuinely missing dates retain the missing-date instruction',()=>{const s=open([ordinary,task('missing',{startDate:'',finishDate:''})]);expect(s.getByText('Set dates to place this item')).toBeTruthy();});
+
+for(const zoom of ['day','week','month'] as const)it('mounted '+zoom+' keeps 2000/2100 summary, baseline, milestone and progress geometry',()=>{
+ const tasks=[task('phase',{isSummary:true,startDate:'',finishDate:''}),task('child',{parentItemId:'phase',startDate:'2000-01-01',finishDate:'2000-01-05',baselineStartDate:'2000-01-02',baselineFinishDate:'2000-01-04'}),task('end',{isMilestone:true,startDate:'2100-12-31',finishDate:'2100-12-31'})];
+ const s=open(tasks);budget(()=>fireEvent.press(s.getByText(zoom[0].toUpperCase()+zoom.slice(1))));bounded(s);
+ const m=buildVitruviusGanttModel({items:tasks,zoom,groupBy:'appProject',columnWindow:{left:0,width:900}});
+ for(const id of ['phase','child']){const row=m.rows.find(r=>r.item.id===id)!;expect(StyleSheet.flatten(s.getByTestId('gantt-bar:'+id).props.style)).toMatchObject({left:row.left,width:row.width});}
+ const child=m.rows.find(r=>r.item.id==='child')!;expect(StyleSheet.flatten(s.getByTestId('gantt-baseline:child').props.style)).toMatchObject({left:child.baselineLeft,width:child.baselineWidth});expect(StyleSheet.flatten(s.getByTestId('gantt-progress:child').props.style).width).toBe(child.progressWidth);
+ expect(StyleSheet.flatten(s.getByTestId('gantt-milestone:end').props.style).left).toBe(m.rows.find(r=>r.item.id==='end')!.left);
+ budget(()=>fireEvent.scroll(s.getByTestId('gantt-timeline-scroll'),{nativeEvent:{contentOffset:{x:m.timelineWidth}}}));bounded(s);expect(s.getByText(/Viewing .*2100/)).toBeTruthy();
+});

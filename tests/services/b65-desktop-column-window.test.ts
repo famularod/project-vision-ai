@@ -5,7 +5,7 @@ const mixed=[task('ordinary',{baselineStartDate:'2026-07-19',baselineFinishDate:
 const now=new Date('2026-07-21T12:00:00Z');
 // Cast is deliberate: RED must exercise the real old model which ignores the proposed optional input.
 const windowed=(items:readonly ScheduleItem[],zoom:VitruviusGanttZoom,left=0,width=900)=>buildVitruviusGanttModel({items,zoom,today:now,columnWindow:{left,width,overscan:256}} as Parameters<typeof buildVitruviusGanttModel>[0]);
-export function steps<T>(limit:number, work:()=>T):T { let n=0;const real=Date.prototype.setUTCDate;const spy=jest.spyOn(Date.prototype,'setUTCDate').mockImplementation(function(this:Date,day:number){ if(++n>limit)throw new Error(`column materialization exceeded ${limit} calendar steps`);return real.call(this,day);});try{return work();}finally{spy.mockRestore();} }
+export function steps<T>(limit:number, work:()=>T):T { let n=0, labels=0;const labelReal=Date.prototype.toLocaleDateString;const labelSpy=jest.spyOn(Date.prototype,'toLocaleDateString').mockImplementation(function(this:Date,...args:Parameters<Date['toLocaleDateString']>){if(++labels>50)throw new Error('more than 50 column labels materialized');return labelReal.apply(this,args);});const real=Date.prototype.setUTCDate;const spy=jest.spyOn(Date.prototype,'setUTCDate').mockImplementation(function(this:Date,day:number){ if(++n>limit)throw new Error(`column materialization exceeded ${limit} calendar steps`);return real.call(this,day);});try{return work();}finally{spy.mockRestore();labelSpy.mockRestore();} }
 for(const zoom of ['day','week','month'] as const)describe(zoom+' window',()=>{
  it('jumps directly to the viewport and preserves full row, baseline, progress, today and range geometry',()=>{
   const full=buildVitruviusGanttModel({items:mixed,zoom,today:now});
@@ -14,7 +14,8 @@ for(const zoom of ['day','week','month'] as const)describe(zoom+' window',()=>{
   const futureLeft=full.rows.find(r=>r.item.id==='future')!.left!;
   const future=steps(150,()=>windowed(mixed,zoom,futureLeft,900));expect(future.columns.length).toBeLessThanOrEqual(40);expect(future.rows).toEqual(full.rows);
   expect(future.columns.some(c=>c.startDate.startsWith('2062'))).toBe(true);
-  expect(future.columns).toEqual(full.columns.filter(c=>c.left+c.width>Math.max(0,futureLeft-256)&&c.left<futureLeft+900+256));
+  const clampedLeft=Math.max(0,Math.min(futureLeft,full.timelineWidth-900));
+  expect(future.columns).toEqual(full.columns.filter(c=>c.left+c.width>Math.max(0,clampedLeft-256)&&c.left<clampedLeft+900+256));
  });
  it('preserves 2000/2100 boundaries, summary children and milestone geometry without mutating saved items',()=>{
   const items=[task('phase',{isSummary:true,startDate:'',finishDate:''}),task('child',{parentItemId:'phase',startDate:'2000-01-01',finishDate:'2100-12-31'}),task('milestone',{startDate:'2100-12-31',finishDate:'2100-12-31',isMilestone:true,percentComplete:100})];
