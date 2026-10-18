@@ -68,6 +68,7 @@ it('keeps raw 1.0 truth and fingerprint in each original arrival order', () => {
   const raw = buildDAVEProjectTruth({ projectId: 'report:tower', projectName: 'Tower', scheduleItems: items, knownScheduleItems: items, knownScheduleDocuments: [], reportLookaheadReplacement: true, updates, projectAreas: [], referenceDocuments: [], now: NOW });
   expect(daveProjectTruthAsBuilt(modern.truths[0])).toEqual(raw);
   expect(modern.legacy).toBe(buildDAVELegacyReportSourceFingerprint([raw]));
+  console.info('B62_RAW_LEGACY_GOLDEN', items.map(item => item.id).join(','), modern.legacy);
  }
 });
 it('isolated identical-description photo survivor already follows authored update order', () => {
