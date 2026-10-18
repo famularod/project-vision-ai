@@ -21,12 +21,14 @@ jest.mock('@react-native-async-storage/async-storage', () => {
 
 type MockCloudRow = { snapshot: unknown; deliveredAt: string | null };
 const mockCloud = new Map<string, MockCloudRow>();
+let mockPeriodReadGate: Promise<void> | null = null;
 const mockOk = <T,>(data: T) => ({ ok: true, configured: true, data });
 jest.mock('../../services/SupabaseService', () => ({
   getSupabaseClient: () => null,
-  loadReportSnapshotCloud: jest.fn(async (scopeKey: string, format: string) => (
-    mockOk({ ownerId: 'owner-1', snapshot: mockCloud.get(`${scopeKey}|${format}`)?.snapshot ?? null })
-  )),
+  loadReportSnapshotCloud: jest.fn(async (scopeKey: string, format: string) => {
+    await mockPeriodReadGate;
+    return mockOk({ ownerId: 'owner-1', snapshot: mockCloud.get(`${scopeKey}|${format}`)?.snapshot ?? null });
+  }),
   // The shared record keeps the later send (the table's own rule).
   saveReportSnapshotCloud: jest.fn(async (row: { scopeKey: string; format: string; snapshot: unknown; deliveredAt: string | null }) => {
     const key = `${row.scopeKey}|${row.format}`;
@@ -87,6 +89,7 @@ import { DesktopReadOnlyShell } from '../../components/web-shell/desktop-read-on
 import { loadDAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import { forgetDAVEWebReportPeriodSession } from '../../services/DAVEWebReportPeriod';
 import { forgetDAVEWebOwnReportSends, forgetDAVEWebReportPeriods, forgetDAVEWebReportTabMemory } from '../../services/DAVEWebReportSend';
+import { forgetDAVEReportCheckInput, heldDAVEReportCheckInput } from '../../services/DAVEReportCheckDetails';
 
 jest.setTimeout(240_000);
 const SLOW = { timeout: 40_000 } as const;
@@ -218,6 +221,7 @@ beforeAll(() => {
 beforeEach(() => {
   mockDevices.clear();
   mockCloud.clear();
+  mockPeriodReadGate = null;
   mockDevice = 'phone';
   phoneFormat = 'project_manager';
   forgetAllReportSessionState();
@@ -237,7 +241,13 @@ async function deviceSends(device: string, updates: ProjectUpdate[], items: Sche
   forgetAllReportSessionState();
   mockDevice = device;
   mockAuthority = authority(updates, items);
+  // A review applies to the loaded period's fingerprint. Clear the previous
+  // mount's diagnostic, then observe this screen's actual loading effect.
+  forgetDAVEReportCheckInput();
   current = render(reportsScreen(updates, items));
+  await waitFor(() => expect(heldDAVEReportCheckInput()).toMatchObject({
+    periodState: 'read', shared: 'checked', format: phoneFormat,
+  }), SLOW);
   fireEvent.press(await screen.findByRole('button', { name: `Mark reviewed: ${REVIEW_ITEM}` }, SLOW));
   await screen.findByText('Copy, Email, and Text unlock after approval. No report is sent automatically.', {}, SLOW);
   fireEvent.press(screen.getByRole('button', { name: 'Approve Report' }));
@@ -251,6 +261,28 @@ async function deviceSends(device: string, updates: ProjectUpdate[], items: Sche
   return said;
 }
 const SENT_AT = '2026-10-15T16:17:00.000Z';
+it('B67 fixture readiness: a delayed reporting period is loaded before review and the unchanged send completes', async () => {
+  await deviceSends('ipad', UPDATES_13, onThePhone(BASE_TASKS), '2026-10-13T23:00:00.000Z');
+  let release!: () => void;
+  mockPeriodReadGate = new Promise<void>(resolve => { release = resolve; });
+  const press = jest.spyOn(fireEvent, 'press');
+  const sending = deviceSends('phone', UPDATES, OCT14, SENT_AT);
+  // Attach rejection handling immediately; even a failed assertion must
+  // release the controlled load and finish the actual screen reader.
+  const completed = sending.then(() => null, error => error);
+  try {
+    await screen.findByRole('button', { name: `Mark reviewed: ${REVIEW_ITEM}` }, SLOW);
+    await act(async () => { await Promise.resolve(); });
+    expect(heldDAVEReportCheckInput()?.periodState).toBe('loading');
+    expect(press).not.toHaveBeenCalled();
+  } finally {
+    mockPeriodReadGate = null;
+    release();
+    press.mockRestore();
+    expect(await completed).toBeNull();
+  }
+  expect(cloudRow()?.deliveredAt).toBe(SENT_AT);
+});
 /** 13 Oct, 14 Oct (the iPad, then the phone), and the phone's report of 15 Oct at 9:17 (local), counted from 14 Oct. */
 async function thePhoneSendsAtNineSeventeen(final: ScheduleItem[] = OCT15) {
   await deviceSends('ipad', UPDATES_13, onThePhone(BASE_TASKS), '2026-10-13T23:00:00.000Z');
