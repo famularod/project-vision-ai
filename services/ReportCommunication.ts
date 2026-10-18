@@ -66,8 +66,8 @@ function deliberateTitleDate(title: string): string | undefined {
     if (year < 1900 || year > 2199 || month < 1 || month > 12 || day < 1) return false;
     return day <= new Date(year, month, 0).getDate();
   };
-  for (const match of title.matchAll(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/g)) {
-    if (valid(+match[1], +match[2], +match[3])) return match[0];
+  for (const match of title.matchAll(/\b(\d{4})([-/])(\d{1,2})\2(\d{1,2})\b/g)) {
+    if (valid(+match[1], +match[3], +match[4])) return match[0];
   }
   // Require a full year and slash/hyphen separators: bare years and dotted
   // version numbers are too ambiguous to suppress the action date.
