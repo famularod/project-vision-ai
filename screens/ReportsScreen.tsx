@@ -598,7 +598,7 @@ export function ReportsScreen({
     selectedProjectNames.every(daveProjectTruthHasProjectKey);
   const sentReportWordsMatch = typeof previousReportSnapshot?.appTextKey === 'string'
     ? previousReportSnapshot.appTextKey === builtReportTextKey
-    : reportSourceCanRepresentSelectedProjects && !reportWordingRequiresAppTextKey(builtReportDraft);
+    : reportSourceCanRepresentSelectedProjects && !reportWordingRequiresAppTextKey(builtReportDraft, reportFormat);
   const sentFromHereAt = snapshotScopeLoaded && !snapshotLoadFailed &&
     typeof previousReportSnapshot?.deliveredAt === 'string' &&
     ownReportSendTimes().has(previousReportSnapshot.deliveredAt) &&
@@ -1251,7 +1251,7 @@ export function ReportsScreen({
   // it again. Said until the owner approves it again, over an earlier notice
   // about a report that differed from it (this device's sync caught up).
   const alreadySentNotice = snapshotScopeLoaded && !reportApproved &&
-    ((reportSourceCanRepresentSelectedProjects && !reportWordingRequiresAppTextKey(builtReportDraft)) || sentReportWordsMatch) &&
+    ((reportSourceCanRepresentSelectedProjects && !reportWordingRequiresAppTextKey(builtReportDraft, reportFormat)) || sentReportWordsMatch) &&
     typeof previousReportSnapshot?.deliveredAt === 'string' &&
     sameReportSource(previousReportSnapshot.sourceFingerprint, reportSourceFingerprint) &&
     !ownReportSendTimes().has(previousReportSnapshot.deliveredAt)

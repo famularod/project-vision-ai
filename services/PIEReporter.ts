@@ -3194,8 +3194,12 @@ function printedAreaWords(narrative: PIEProjectNarrative): string {
 }
 
 /** Legacy sends kept no app-text digest. These source words can now print differently under the same facts. */
-export function reportWordingRequiresAppTextKey(report: Pick<PIEReportDraft, 'sourceEvidence' | 'daveBriefing' | 'body'> & Partial<Pick<PIEReportDraft, 'candidateSelectionRequiresAppTextKey'>>): boolean {
-  return Boolean(report.candidateSelectionRequiresAppTextKey) || Boolean(report.daveBriefing?.dashboard.workAreas.some(area => /[^\u0000-\u007f]/.test(area.areaName))) || report.sourceEvidence.some(item =>
+export function reportWordingRequiresAppTextKey(
+  report: Pick<PIEReportDraft, 'sourceEvidence' | 'daveBriefing' | 'body'> & Partial<Pick<PIEReportDraft, 'candidateSelectionRequiresAppTextKey' | 'reportType'>>,
+  format: 'project_manager' | 'executive' = report.reportType === 'executive_summary' ? 'executive' : 'project_manager',
+): boolean {
+  // Executive output omits area notes; recovered hidden candidates do not change its sent words.
+  return Boolean(report.candidateSelectionRequiresAppTextKey && format !== 'executive') || Boolean(report.daveBriefing?.dashboard.workAreas.some(area => /[^\u0000-\u007f]/.test(area.areaName))) || report.sourceEvidence.some(item =>
     // Earlier writers removed substantive owner words from action text, even without a Please prefix.
     (isActionEvidence(item) && /\bowner\s*:?\s*[A-Z][A-Za-z]+(?:\s*\/\s*[A-Z][A-Za-z]+)?/i.test(item.actionRequired || item.summary)) ||
     (item.authoredPlainLatest && report.body.includes(item.summary)) ||
