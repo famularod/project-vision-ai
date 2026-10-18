@@ -3998,6 +3998,13 @@ function DocumentManagementWorkspace({
     [documents, selectedProject],
   );
   const groups = useMemo(() => groupDAVEWebDocuments(documents), [documents]);
+  const linkedTaskCount = useMemo(() => {
+    const saved = knownTasks ?? tasks;
+    const scoped = selectedProject ? scheduleTasksForParentProject(selectedProject, [...saved]) : saved;
+    return new Set(documents.flatMap(document =>
+      scheduleItemsForExactImportBatch(scoped, document).map(task => task.id),
+    )).size;
+  }, [documents, knownTasks, selectedProject, tasks]);
   const categoryOptions = useMemo(
     () => uniqueOptions(documents.map(document => document.category)),
     [documents],
@@ -4716,9 +4723,7 @@ function DocumentManagementWorkspace({
       <WorkspaceSummary metrics={[
         { icon: 'checkmark-circle-outline', label: 'Current Schedule', value: groups.currentSchedule.length, tone: groups.currentSchedule.length ? 'success' : 'warning' },
         { icon: 'time-outline', label: 'Prior Versions', value: groups.priorScheduleVersions.length, tone: 'neutral' },
-        { icon: 'checkbox-outline', label: 'Linked Tasks', value: new Set(documents.flatMap(document =>
-          scheduleItemsForExactImportBatch(knownTasks ?? tasks, document).map(task => task.id),
-        )).size },
+        { icon: 'checkbox-outline', label: 'Linked Tasks', value: linkedTaskCount },
       ]} />
       <DesktopDocumentOnboarding
         documents={documents}
