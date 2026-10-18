@@ -1115,7 +1115,7 @@ describe('the Add Photos location notice', () => {
     expect(text({ kind: 'no-mapped-areas' }, { selectedAreaName: 'Room 204', areaStatus: 'confirmed' })).toBeNull();
     // Denied and Precise Location off explain every update until the setting changes.
     expect(text({ kind: 'precise-off' }, { selectedArea: lot, selectedAreaName: 'North Lot' })).toContain('Precise Location');
-    expect(text({ kind: 'denied' }, { selectedAreaName: 'Room 204', areaStatus: 'confirmed' })).toContain('denied');
+    expect(text({ kind: 'denied' }, { selectedAreaName: 'Room 204', areaStatus: 'confirmed' })).toContain('Location was not allowed');
   });
 
   it('what the fix says about the areas: nothing with a containing area; else only what it allows', () => {
