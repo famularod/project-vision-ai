@@ -5,7 +5,8 @@ import { projectScheduleItemsForReport } from '../../services/ReportScheduleProj
 import { normalizeDAVECompletionVerification } from '../../services/DAVECompletionVerification';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
 import { buildPIEReportDraft } from '../../services/PIEReporter';
-import { extractScheduleEvidence } from '../../services/PIEEvidenceFusion';
+import { buildPIECoreIntelligence } from '../../services/PIECoreIntelligence';
+import { extractScheduleEvidence, buildFusedEvidence } from '../../services/PIEEvidenceFusion';
 import { buildDAVEReportBriefing,enhanceDAVEReportDraft } from '../../services/DAVEReportIntelligence';
 const NOW='2026-10-17T12:00:00.000Z';
 function task(over:Partial<ScheduleItem>={}):ScheduleItem{return {id:'canopy',projectName:'Alpha',scheduleProjectName:'Alpha',locationName:'Court',taskName:'Install canopy',startDate:'10/01/2026',finishDate:'10/20/2026',milestone:'',owner:'Dana',contractor:'',notes:'',nextAction:'',priority:'Medium',status:'In Progress',percentComplete:40,createdAt:'2026-10-01T12:00:00.000Z',...over} as ScheduleItem;}
@@ -48,4 +49,31 @@ it.each([['Alpha'],['Alpha','Beta']])('actual report writer and modern truth agr
 it('a caller without a complete fusion recipe keeps its supplied runtime sentence',()=>{
  const draft=buildPIEReportDraft({selectedProjectNames:['Alpha'],scheduleItems:[task({projectName:''})],runtime:{intelligentSummary:{whatChanged:'Owner requested inspection.'}},generatedAt:new Date(NOW)});
  expect(JSON.stringify(draft.sourceEvidence)).toContain('Owner requested inspection.');
+});
+
+it.each([false,true])('actual core fusion keeps its parent scope beside an affected blank task (combined=%s)',combined=>{
+ const parent=combined?'Beta':'Alpha';const selected=combined?['Alpha','Beta']:['Alpha'];
+ const rows=[task({projectName:'',scheduleProjectName:parent}),task({id:'building',taskName:'Ordinary subproject task',projectName:'Building 7',scheduleProjectName:parent,finishDate:'10/10/2026'})];
+ const core=buildPIECoreIntelligence({runtimeContext:{projectName:parent,projectNames:selected,reportType:combined?'combined_project_update':'daily_project_update',updates:[],scheduleItems:rows,knownScheduleItems:rows,currentUpdate:null,projectAreas:[],contacts:{contacts:[]},referenceDocuments:[],surface:'reports'},reportType:combined?'combined_project_update':'daily_project_update',reportProjectNames:selected,organizationId:'local-unverified-anonymous',projectId:'synthetic-project'} as never);
+ const facts=truths(rows,selected);const focus=facts.find(t=>t.projectName===parent)!.writtenReportFacts!.scheduleFocus!;
+ const body=enhanceDAVEReportDraft(core.reportDraft,buildDAVEReportBriefing({truths:facts}),'project_manager').body;
+ expect(body).toContain(focus);expect(body).not.toContain('Schedule focus: Ordinary subproject task');
+});
+it('only a foreign row needing projection leaves the existing selected fusion recipe intact',()=>{
+ const included=task();const ordinaryGlobal=task({id:'withheld',taskName:'Other globally saved task',finishDate:'10/10/2026'});
+ const foreign=task({id:'foreign',projectName:'',scheduleProjectName:'Foreign',completionVerification:{status:'pm_verified'} as any});
+ const fused=buildFusedEvidence({projectName:'Alpha',projectNames:['Alpha'],scheduleItems:[included],now:new Date(NOW)});
+ const draft=buildPIEReportDraft({selectedProjectNames:['Alpha'],scheduleItems:[included,ordinaryGlobal,foreign],savedUpdates:[],runtime:{fusedEvidence:fused},generatedAt:new Date(NOW)});
+ const changed=draft.sourceEvidence.find(e=>e.id==='runtime-what-changed')!;
+ expect(changed.summary).toContain('Schedule focus: Install canopy');expect(changed.summary).not.toContain('Other globally saved task');
+});
+it('omitted report time is captured once before an advancing midnight clock changes the focus window',()=>{
+ const ActualDate=Date;let reads=0;const before='2026-10-17T23:59:59-07:00',after='2026-10-18T00:00:01-07:00';
+ class BoundaryDate extends ActualDate{constructor(...args:any[]){super(...((args.length?args:[reads++?after:before]) as [string]));}static now(){return new ActualDate(before).getTime();}}
+ globalThis.Date=BoundaryDate as DateConstructor;
+ try{
+  const draft=buildPIEReportDraft({selectedProjectNames:['Alpha'],scheduleItems:[task({projectName:'',finishDate:'11/01/2026'})],runtime:{fusedEvidence:{userUpdateEvidence:[],photoEvidence:[],scheduleEvidence:[]}}});
+  expect(draft.generatedAt).toBe(new ActualDate(before).toISOString());
+  expect(draft.sourceEvidence.some(e=>e.summary.includes('Schedule focus:'))).toBe(false);
+ }finally{globalThis.Date=ActualDate;}
 });
