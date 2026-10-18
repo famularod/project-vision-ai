@@ -1,3 +1,4 @@
+import { useReportRecipients } from '../hooks/useReportRecipients';
 import { reportWordingRequiresAppTextKey } from '../services/PIEReporter';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -79,11 +80,7 @@ import {
   withReportEditedText,
 } from '../services/DAVEReportSnapshot';
 import {
-  pickReportRecipient,
-  reportRecipientPickMessage,
-  withReportRecipient,
   withReportRecipients,
-  type ReportRecipient,
 } from '../services/ReportRecipients';
 import {
   loadDAVEReportPeriod,
@@ -352,10 +349,6 @@ export function ReportsScreen({
   const [approvalSavedHereCheckedKey, setApprovalSavedHereCheckedKey] = useState<string | null>(null);
   const [markSentRecording, setMarkSentRecording] = useState(false);
   const [markSentMessage, setMarkSentMessage] = useState('');
-  // Open item 7.21, part two: who Email Report and Text Report open with (chosen from his contacts; none: as before).
-  const [reportRecipients, setReportRecipients] = useState<ReportRecipient[]>([]);
-  const [recipientPicking, setRecipientPicking] = useState(false);
-  const [recipientMessage, setRecipientMessage] = useState('');
   const liveAuthority = usePIELiveAuthority();
   const runtime = liveAuthority.runtime;
   const reportGenerationAllowed = liveAuthority.policy.reportGenerationAllowed;
@@ -560,6 +553,8 @@ export function ReportsScreen({
     reportFormat,
     ...selectedProjectNames.map(name => reportProjectKey(name)).sort(),
   ].join('|');
+  const recipientSelection = useReportRecipients(reportStateIdentityKey);
+  const reportRecipients = recipientSelection.recipients;
   const reportCommunicationIdentityKey = [
     reportStateIdentityKey,
     effectiveReportDraft.title,
@@ -947,23 +942,8 @@ export function ReportsScreen({
     setApprovalChecking(false);
     approvalCheckRef.current = null;
     pendingCommunicationTokenRef.current = null;
-    // Another report (projects, type or format): its own recipients.
-    setReportRecipients([]);
-    setRecipientMessage('');
   }, [reportStateIdentityKey]);
 
-  /** Add from Contacts: contacts access is asked for here and only here (open item 7.21, part two). */
-  const addReportRecipient = () => {
-    if (recipientPicking) return;
-    setRecipientPicking(true);
-    setRecipientMessage('');
-    void pickReportRecipient().then(pick => {
-      if (!mountedRef.current) return;
-      setRecipientPicking(false);
-      if (pick.status === 'picked') setReportRecipients(list => withReportRecipient(list, pick.recipient));
-      else setRecipientMessage(reportRecipientPickMessage(pick));
-    });
-  };
   // Email Report and Text Report carry the people he chose (none: Mail and Messages open as before).
   const onEmailReport = (report: PIEReportDraft) => emailReportFromTheApp(withReportRecipients(report, reportRecipients));
   const onTextReport = (report: PIEReportDraft) => textReportFromTheApp(withReportRecipients(report, reportRecipients));
@@ -1517,11 +1497,11 @@ export function ReportsScreen({
             recipientsPanel={(
               <ReportRecipientsPanel
                 recipients={reportRecipients}
-                picking={recipientPicking}
-                message={recipientMessage}
-                disabled={communicationPending}
-                onAdd={addReportRecipient}
-                onRemove={key => setReportRecipients(list => list.filter(item => item.key !== key))}
+                picking={recipientSelection.picking}
+                message={recipientSelection.message}
+                disabled={communicationPending || recipientSelection.loading}
+                onAdd={recipientSelection.add}
+                onRemove={recipientSelection.remove}
               />
             )}
             onDownloadWordReport={() => {

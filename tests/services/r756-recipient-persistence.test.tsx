@@ -206,5 +206,5 @@ it('7.56 RED same account report restores picked recipients after full mounted r
  await mockLocal().set('@vitruvius/owner-storage-sandbox/metadata/v1',JSON.stringify({version:1,activeOwnerId:'owner-1'}));
  setClock('2026-10-05T17:00:00.000Z');current=render(reportsScreen());await approveAndOpenShare();fireEvent.press(screen.getByRole('button',{name:'Add from Contacts'}));await screen.findByText('Dana Ruiz · dana@example.com · +1 555 0199',{},SLOW);
  await settle();current.unmount();current=null;forgetAllReportSessionState();current=render(reportsScreen());
- await approveAndOpenShare();expect(screen.getByText('Dana Ruiz · dana@example.com · +1 555 0199')).toBeTruthy();
+ await approveAndOpenShare();await waitFor(()=>expect(screen.getByText('Dana Ruiz · dana@example.com · +1 555 0199')).toBeTruthy());
 });
