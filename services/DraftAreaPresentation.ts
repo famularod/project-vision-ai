@@ -274,11 +274,9 @@ export function draftAreaPresentation(input: Readonly<{
       ? 'gps-pending'
       : selectedArea
         ? 'user-selection'
-        : namesRecommendedArea
-          ? 'schedule'
-          : namedArea
-            ? 'named-location'
-            : 'last-active-area';
+        : input.hasScheduleRecommendation
+          ? namedArea && !namesRecommendedArea ? 'named-location' : 'schedule'
+          : 'last-active-area';
   const baseScore = suggestionIsShown
     ? areaSuggestion?.withinRadius ? 90 : 70
     : pendingSuggestion ? 60 : selectedArea ? 80 : 45;
