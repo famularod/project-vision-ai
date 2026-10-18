@@ -4,7 +4,10 @@ jest.mock('expo-file-system/legacy', () => ({ documentDirectory: null }));
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
 import { buildDAVEReportBriefing, buildDAVEReportSourceFingerprint, buildDAVELegacyReportSourceFingerprint, enhanceDAVEReportDraft } from '../../services/DAVEReportIntelligence';
 import { buildDailyProjectUpdate } from '../../services/PIEReporter';
-import { buildDAVEReportSnapshot, reportSnapshotToSave, sameReportSource } from '../../services/DAVEReportSnapshot';
+import { buildDAVEReportSnapshot, reportSnapshotToSave, sameReportSource, markReportSnapshotDelivered, otherDeviceSendNotReceived } from '../../services/DAVEReportSnapshot';
+import { buildDAVEProjectTruth, daveProjectTruthAsBuilt } from '../../services/DAVEProjectTruth';
+import { buildDAVEWebReportSource } from '../../services/DAVEWebOperations';
+import type { DAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
 import type { ScheduleItem, ProjectUpdate } from '../../types';
 const NOW = '2026-10-17T12:00:00.000Z';
 const task = (id: string, taskName = 'Paint wall', locationName = 'Roof') => ({ id, taskName, locationName, projectName: 'Tower', scheduleProjectName: 'Tower', startDate: '10/01/2026', finishDate: '10/20/2026', milestone: '', owner: '', contractor: '', percentComplete: 0, priority: 'Medium', status: 'Not Started', notes: '', createdAt: '2026-10-01T12:00:00.000Z', updatedAt: '2026-10-01T12:00:00.000Z' }) as ScheduleItem;
@@ -52,5 +55,34 @@ it('real notes, photo content and explicit task link changes still invalidate ap
   const after = open(items, [changed] as ProjectUpdate[]);
   expect(sameReportSource(before.fingerprint, after.fingerprint)).toBe(false);
   expect(reportSnapshotToSave(after.snapshot, before.snapshot)).not.toBeNull();
+ }
+});
+
+it('keeps raw 1.0 truth and fingerprint in each original arrival order', () => {
+ for (const items of permutations([task('b'), task('a'), task('c', 'Inspect roof')])) {
+  const updates = [update('u', [photo('p')])];
+  const modern = open(items, updates);
+  const raw = buildDAVEProjectTruth({ projectId: 'report:tower', projectName: 'Tower', scheduleItems: items, knownScheduleItems: items, knownScheduleDocuments: [], reportLookaheadReplacement: true, updates, projectAreas: [], referenceDocuments: [], now: NOW });
+  expect(daveProjectTruthAsBuilt(modern.truths[0])).toEqual(raw);
+  expect(modern.legacy).toBe(buildDAVELegacyReportSourceFingerprint([raw]));
+ }
+});
+it('isolated identical-description photo survivor already follows authored update order', () => {
+ const items = [task('a', 'Paint wall')];
+ const updates = [update('u-b', [photo('p-b')]), update('u-a', [photo('p-a')])];
+ const before = open(items, updates);
+ const after = open(items, [...updates].reverse());
+ expect(after.body).toBe(before.body); expect(after.fingerprint).toBe(before.fingerprint);
+ expect(after.truths[0].evidence.records.filter(r => r.kind === 'photo')).toEqual(before.truths[0].evidence.records.filter(r => r.kind === 'photo'));
+});
+it('retained delivered 3.0 receipt stays current on desktop after a task-only permutation', () => {
+ const items = [task('b'), task('a')]; const updates = [update('u', [photo('p')])];
+ const before = open(items, updates);
+ const sent = markReportSnapshotDelivered(before.snapshot, NOW, 'synthetic-phone');
+ for (const order of permutations(items)) {
+  const snapshot = { projects: [{ id: 'report:tower', name: 'Tower' }], scheduleItems: order, knownScheduleItems: order, projectUpdates: updates.map(updateData => ({ id: updateData.id, updateData })), referenceDocuments: [], refreshedAt: NOW } as unknown as DAVEWebReadOnlySnapshot;
+  const source = buildDAVEWebReportSource(snapshot, 'Tower');
+  expect(sameReportSource(sent.sourceFingerprint, source.fingerprint)).toBe(true);
+  expect(otherDeviceSendNotReceived({ period: sent, currentFingerprint: source.fingerprint, ownSends: new Set(), pulledAt: NOW })).toBeNull();
  }
 });
