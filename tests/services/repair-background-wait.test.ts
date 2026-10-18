@@ -190,3 +190,17 @@ it('actual automatic refresh429 supplies cached first-signout provenance', async
    expect(server.refreshesAsked).toBe(1); expect(tabHoldsSignIn(t.storage)).toBe(true);
  } finally { await t.client.auth.stopAutoRefresh(); }
 });
+
+it('a successful same-session token rotation invalidates the earlier marker', async () => {
+ const t = await signedInTab(); browser.hourlyTokenRunsOut(t.storage); server.refresh = 'too-many-requests';
+ const failed = await whileTimePasses(t.client.auth.getSession());
+ expect(t.guard.serverRequestedWait!(failed.value.error!)).toBe(true);
+ expect([...t.storage.values.values()].join(' ')).not.toContain('rate limited');
+ expect(browser.noteText()).not.toContain('rate limited');
+ await jest.advanceTimersByTimeAsync(660000); server.refresh = 'ok';
+ const refreshed = await whileTimePasses(t.client.auth.refreshSession()); expect(refreshed.value.error).toBeNull();
+ expect(t.guard.serverRequestedWait!(failed.value.error!)).toBe(false);
+ browser.hourlyTokenRunsOut(t.storage); server.refresh = 503;
+ expect((await whileTimePasses(t.gateway!.signOut('global').catch(e => e))).value).toBeInstanceOf(DAVEWebSignOutNeedsConnectionError);
+ expect(tabHoldsSignIn(t.storage)).toBe(true);
+});

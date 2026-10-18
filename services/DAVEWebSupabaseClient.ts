@@ -313,7 +313,7 @@ function keepRealtimeOnThisTabsSignIn(client: SupabaseClient): void {
 export function createDAVEWebSupabaseGateway(
   client: SupabaseClient | null,
   /** The guard the client's requests go through, when it has one (batch W1). */
-  signInGuard: (Pick<DAVEWebSignInRefreshGuard, 'gaveWay'> & Partial<Pick<DAVEWebSignInRefreshGuard, 'signInOver' | 'vouchedFor' | 'signingOut' | 'signOutConfirmed'>>) | null = null,
+  signInGuard: (Pick<DAVEWebSignInRefreshGuard, 'gaveWay'> & Partial<Pick<DAVEWebSignInRefreshGuard, 'signInOver' | 'vouchedFor' | 'signingOut' | 'signOutConfirmed' | 'serverRequestedWait'>>) | null = null,
 ) {
   if (client) keepRealtimeOnThisTabsSignIn(client);
   let artifactPathOwnerId: string | null = null;
