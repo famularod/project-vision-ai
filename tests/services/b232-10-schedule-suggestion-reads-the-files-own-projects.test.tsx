@@ -214,7 +214,7 @@ async function fromTheTasksTab(saved: Saved, picked: Picked, active: readonly st
     view.UNSAFE_getAllByType(Modal)[0].props.onDismiss();
     await settled();
   });
-  const sentence = String(view.getByText(/^Suggested: /).props.children);
+  const sentence = String((view.queryByText(/^Suggested: /) || view.getByText('Assign projects to suggest an import type')).props.children);
   const acceptAll = view.queryByText(/^Accept All \(\d+\)$/);
   if (acceptAll) {
     await act(async () => {
@@ -281,7 +281,8 @@ describe('Kept from Build 232 item 10, as Build 231 does it: an account whose ma
   it('on the phone a file naming one building comes up unassigned (the name is the root\'s too), so the label is read, as before', async () => {
     const north = await fromTheTasksTab(CAMPUS, northOctober, HARBOR);
     expect(north.batch.items.map(item => [item.projectName, item.scheduleProjectName])).toEqual([['Needs Project', null], ['Needs Project', null]]);
-    expect(north.sentence).toBe(`${LOOKAHEAD} its dates cover 12 days and the master for 2400 Compliance Project covers 16 weeks. ${CHANGE}`);
+    // B76 RED2: unresolved root/building assignment withholds the automatic UI recommendation; direct root-master safety controls remain.
+    expect(north.sentence).toBe('Assign projects to suggest an import type');
   });
 });
 
@@ -291,7 +292,8 @@ describe('Kept from Build 232 item 10, as Build 231 does it: a file with no Proj
     expect([...new Set(unnamed.batch.items.map(item => item.projectName))]).toEqual(['Needs Project']);
     expect(unnamed.batch.documents[0].projectNames).toEqual(ACTIVE);
     // Kept as it was: with nothing in the rows to go by, the longest master among the projects it could be for.
-    expect(unnamed.sentence).toBe(`${LOOKAHEAD} its dates cover 3 weeks and the master for 2321 Compliance Project covers about 16 months. ${CHANGE}`);
+    // B76 RED2: do not name an unrelated master before projects resolve.
+    expect(unnamed.sentence).toBe('Assign projects to suggest an import type');
     // Nothing is saved until each row has its project: Accept All is not offered yet.
     expect(unnamed.savedAs).toBeNull();
   });

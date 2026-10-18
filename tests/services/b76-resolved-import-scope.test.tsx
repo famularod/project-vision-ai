@@ -53,6 +53,7 @@ import { validateScheduleImportScope } from '../../services/ScheduleImportScopeG
 import { bindStableScheduleImportItemIds } from '../../services/ScheduleImportSourceIdentity';
 import {
   scheduleImportRoleRefusal,
+  scheduleImportAddsToMaster,
   suggestScheduleImportRole,
   withScheduleImportRole,
   type ScheduleImportRole,
@@ -272,7 +273,9 @@ const suggestion=(view:ReturnType<typeof render>)=>String(view.getByText(/^Sugge
 it('B76 4.63: assigning every unresolved row recomputes the automatic role using its project alone',async()=>{
  const batch=await batchFor();expect(batch).toBeTruthy();const frozen=JSON.stringify(batch);
  const {view,onApprove}=await openBatch(batch!);
- expect(suggestion(view)).toContain(LOOK); // inherited provisional choice, no silent full-schedule assumption
+ // RED2 full4.63: replace9292's inherited unrelated-master display contract.
+ expect(view.getByText('Assign projects to suggest an import type')).toBeTruthy();
+ expect(view.queryByText(/^Suggested: /)).toBeNull();
  fillProjects(view,TEST);await act(settled);
  expect(suggestion(view)).toContain(MASTER);
  expect(suggestion(view)).not.toContain(P2321);
@@ -329,4 +332,42 @@ it('B76 gateway control: reviewed source identity and narrowed project metadata 
  expect(row).toMatchObject({id:batch!.documents[0].id,owner_id:'b76-owner',category:'Schedules',document_data:{id:batch!.documents[0].id,projectName:P2321,projectNames:[P2321],importBatchId:batch!.documents[0].importBatchId,contentSha256:batch!.documents[0].contentSha256,scheduleRole:'lookahead'}});
  expect(row.document_data.storagePath).toContain(batch!.documents[0].id);
  expect(JSON.stringify({approved,document})).toBe(frozen);
+});
+
+// B76 RED2 adds the initial unresolved-scope and partial-save contract before
+// any product edit. The six9292 cases remain, with only their necessary initial
+// display expectation revised above; source IDs/payload/control assertions stay.
+it('B76 full4.63: unresolved projects show a provisional prompt with neither role automatically selected',async()=>{
+ const batch=await batchFor();const frozen=JSON.stringify(batch);const {view,onApprove}=await openBatch(batch!);
+ expect(view.getByText('Assign projects to suggest an import type')).toBeTruthy();
+ expect(view.queryByText(/^Suggested: /)).toBeNull();
+ const radios=view.getAllByRole('radio');expect(radios).toHaveLength(2);
+ for(const radio of radios){expect(radio.props.accessibilityState.checked).toBe(false);expect(radio.props.accessibilityState.disabled).toBe(false);}
+ expect(view.queryByText(/^Accept Selected/)).toBeNull();expect(view.getByText('Complete Missing Tasks or Dates')).toBeTruthy();
+ expect(onApprove).not.toHaveBeenCalled();expect(JSON.stringify(batch)).toBe(frozen);view.unmount();
+});
+async function partialBatch(){const batch=await batchFor();expect(batch).toBeTruthy();return{...batch!,items:batch!.items.slice(0,2).map((item,index)=>index===0?{...item,projectName:P2321,locationName:'Site',owner:'David'}:item)};}
+it('B76 full4.63: Accept Selected cannot silently use an automatic role while another row has no project',async()=>{
+ const batch=await partialBatch(),frozen=JSON.stringify(batch);const {view,onApprove}=await openBatch(batch);
+ expect(view.getByText('Assign projects to suggest an import type')).toBeTruthy();
+ await act(async()=>{fireEvent.press(view.getByText('Accept Selected (1)'));await settled();});
+ expect(onApprove).not.toHaveBeenCalled();
+ expect(view.getAllByRole('radio').every(r=>r.props.accessibilityState.checked===false)).toBe(true);
+ expect(JSON.stringify(batch)).toBe(frozen);view.unmount();
+});
+it.each([['master',MASTER],['lookahead',LOOK]]as const)('B76 full4.63: explicit %s permits the ready subset and remains the role inherited by remaining rows',async(role,title)=>{
+ const batch=await partialBatch(),frozen=JSON.stringify(batch);const {view,props,onApprove}=await openBatch(batch);
+ fireEvent.press(view.getByText(title));
+ await act(async()=>{fireEvent.press(view.getByText('Accept Selected (1)'));await settled();});
+ expect(onApprove).toHaveBeenCalledTimes(1);const first=onApprove.mock.calls[0][0];
+ expect(first.items.map(i=>i.id)).toEqual([batch.items[0].id]);expect(first.documents[0].scheduleRole).toBe(role);
+ expect(first.documents[0].id).toBe(batch.documents[0].id);expect(first.documents[0].contentSha256).toBe(batch.documents[0].contentSha256);
+ const saved=afterApproval(ACCOUNT,first,role);
+ view.rerender(<ScheduleImportFlow {...props} incomingBatch={batch} roleContext={{documents:saved.documents,items:saved.items}}/>);await act(settled);
+ fillProjects(view,TEST);await act(settled);
+ await act(async()=>{fireEvent.press(view.getByText('Accept All (1)'));await settled();});
+ expect(onApprove).toHaveBeenCalledTimes(2);const remaining=onApprove.mock.calls[1][0];
+ expect(remaining.items.map(i=>i.id)).toEqual([batch.items[1].id]);expect(remaining.documents).toEqual([]);
+ expect(scheduleImportAddsToMaster(remaining,saved.documents)).toBe(role==='lookahead');
+ expect(JSON.stringify(batch)).toBe(frozen);view.unmount();
 });
