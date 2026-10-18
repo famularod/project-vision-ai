@@ -180,7 +180,7 @@ it.each([
    // Compare exact direct selected ids/text/kind/sources; runtime recipes may
    // add their own Latest evidence, whose source ownership is checked above.
    if(key==='daily'||key==='pie'){
-    const expected=report.constructionUnderstanding.locationGroups.flatMap(group=>bullets(singles[names.indexOf(group.title as typeof names[number])][key]));
+    const expected=report.constructionUnderstanding.locationGroups.flatMap(group=>bullets(singles[names.findIndex(name=>name===group.title)][key]));
     expect(bullets(report)).toEqual(expected);
    }
   }
