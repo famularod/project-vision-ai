@@ -128,3 +128,62 @@ it('3.30 mounted native card and real Word paragraphs retain the note beneath it
  const heading=paragraphs.slice(0,noteIndex).reverse().find(p=>/^\d+\. /.test(p));expect(heading).toMatch(/^\d+\. Birch Lane$/);
  expect(xml).toContain('Unit 2026 punch list');v.unmount();
 });
+
+
+/** Product1 regression controls: rendered ids predate B78 and can collide.
+ * They are deliberately preserved; private ownership must be scoped by the
+ * selected line object/area, never treated as globally unique project identity.
+ * No 7.28 identity-scheme repair is requested by these cases.
+ */
+function collisionPaths(names:readonly string[],updates:any[]){
+ const input={selectedProjectNames:[...names],savedUpdates:updates,scheduleItems:[],generatedAt:new Date(NOW)};
+ const ctx:any={projectName:names[0],projectNames:[...names],reportType:names.length>1?'combined_project_update':'daily_project_update',updates,scheduleItems:[],knownScheduleItems:[],currentUpdate:null,projectAreas:[],contacts:{contacts:[]},referenceDocuments:[],surface:'reports',now:new Date(NOW)};
+ return {
+  daily:buildDailyProjectUpdate(input),
+  pie:buildPIEReportDraft({...input,reportType:names.length>1?'combined_project_update':'daily_project_update'}),
+  runtime:buildRuntime(ctx).response.reportDraft,
+  core:buildPIECoreIntelligence({runtimeContext:ctx,reportType:ctx.reportType,reportProjectNames:[...names],organizationId:'local-unverified-anonymous',projectId:'b78-collision-synthetic'}as any).reportDraft,
+ };
+}
+it.each([
+ ['all-Unicode unassigned projects',['东楼','西楼']],
+ ['ASCII punctuation-colliding projects',['A-B','A B']],
+]as const)('B78 private ownership cannot cross %s despite actual colliding legacy ids',(_label,names)=>{
+ const texts=['Conduit is installed.','Forms are set.'];
+ const updates=names.map((projectName,index)=>({id:`collision-own-${index}`,projectId:`collision-project-${index}`,projectName,scheduleProjectName:projectName,date:`2026-10-${16-index}T12:00:00Z`,notes:texts[index],selectedAreaName:'',photos:[],recipients:{contactIds:[]},status:'sent'}));
+ const frozen=JSON.stringify(updates);
+ const singles=names.map((name,index)=>collisionPaths([name],[updates[index]]));
+ // Witness the real prerequisite from the writer, without reproducing slug().
+ const singleHeadings=singles.map((reports,index)=>noteAreas(reports.daily,texts[index]).map(area=>area.title));
+ expect(singleHeadings).toEqual(names.map(name=>[name]));
+ expect(singleHeadings[0]).not.toEqual(singleHeadings[1]);
+ const areaIds=singles.map(reports=>reports.daily.constructionUnderstanding.workAreas[0].id);
+ const noteIds=singles.map((reports,index)=>bullets(reports.daily).find(line=>line.text===texts[index])!.id);
+ expect(areaIds[0]).toBe(areaIds[1]);expect(noteIds[0]).toBe(noteIds[1]);
+ for(const reverse of [false,true]){
+  const orderedNames=reverse?[...names].reverse():[...names];
+  const orderedUpdates=reverse?[...updates].reverse():[...updates];
+  const combined=collisionPaths(orderedNames,orderedUpdates);
+  for(const key of ['daily','pie','runtime','core']as const){
+   const report=combined[key];
+   expect(report.locationGroups.map(group=>group.title)).toEqual(report.constructionUnderstanding.locationGroups.map(group=>group.title));
+   for(let index=0;index<names.length;index++){
+    const own=noteAreas(report,texts[index]);
+    expect(own.map(area=>[area.projectName,area.title])).toEqual(noteAreas(singles[index][key],texts[index]).map(area=>[area.projectName,area.title]));
+    const lines=bullets(report).filter(line=>line.text===texts[index]);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].id).toBe(noteIds[index]);
+    expect(lines[0].sources).toContain(`note-collision-own-${index}`);
+    expect(lines[0].sources).not.toContain(`note-collision-own-${1-index}`);
+   }
+   // The raw legacy ordering and each single-project selected material survive.
+   // Compare exact direct selected ids/text/kind/sources; runtime recipes may
+   // add their own Latest evidence, whose source ownership is checked above.
+   if(key==='daily'||key==='pie'){
+    const expected=report.constructionUnderstanding.locationGroups.flatMap(group=>bullets(singles[names.indexOf(group.title as typeof names[number])][key]));
+    expect(bullets(report)).toEqual(expected);
+   }
+  }
+ }
+ expect(JSON.stringify(updates)).toBe(frozen);
+});
