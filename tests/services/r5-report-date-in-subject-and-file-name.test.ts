@@ -1,13 +1,4 @@
-/**
- * R5 item 6a (a send extra deferred on 29 Sep 2026): the report's date in the
- * email subject and in the Word file's name.
- *
- * Both were the report's title alone ("Tower Project Status Report"), so two
- * reports of one project made on different days could not be told apart in a
- * mailbox or a folder, and a second Word copy saved under the first one's
- * name. The day is the one the Word copy prints as "Prepared ...": the
- * device's calendar day of the report's own time.
- */
+/** Report metadata uses action day; the Word body retains its prepared timestamp. */
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -27,7 +18,7 @@ describe('R5 item 6a: the email subject carries the day the action is prepared',
     expect(reportSubjectWithDate('Tower report, Oct 6, 2026', PREPARED, NOW)).toBe('Tower report, Oct 6, 2026');
   });
 
-  it('a report with no time of its own, or one that cannot be read, is dated today, as its Word copy is', () => {
+  it('a report with no time of its own, or one that cannot be read, is dated today, when preparing the action', () => {
     expect(reportSubjectWithDate('Tower Project Status Report', null, NOW)).toBe('Tower Project Status Report — Nov 2, 2026');
     expect(reportSubjectWithDate('Tower Project Status Report', 'not a date', NOW)).toBe('Tower Project Status Report — Nov 2, 2026');
   });

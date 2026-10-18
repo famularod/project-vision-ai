@@ -25,7 +25,7 @@ afterEach(()=>jest.useRealTimers());
 beforeEach(()=>jest.useFakeTimers({now:new Date(2026,9,17,12),doNotFake:['nextTick','setImmediate','setTimeout']}));
 describe('7.23 actual report producers',()=>{
   it('native Word/Outlook share uses a visible bounded action-day file and exact body/title/task numbering',async()=>{
-    const write=jest.fn(async()=>undefined), share=jest.fn(async()=>undefined), build=jest.fn(async()=> 'fake base64');
+    const write=jest.fn(async(..._args: unknown[])=>undefined), share=jest.fn(async()=>undefined), build=jest.fn(async()=> 'fake base64');
     const fn=producer('App.tsx','shareWordReport',{
       Sharing:{isAvailableAsync:async()=>true,shareAsync:share},Alert:{alert:jest.fn()},
       FileSystem:{cacheDirectory:'file:///cache/',writeAsStringAsync:write,deleteAsync:async()=>undefined,EncodingType:{Base64:'base64'}},
@@ -55,6 +55,20 @@ describe('7.23 actual report producers',()=>{
     expect(download).toHaveBeenCalledWith(expect.stringMatching(/2026-10-17\.docx$/),{synthetic:'blob'});
     expect(Buffer.byteLength(download.mock.calls[0][0])).toBeLessThanOrEqual(240);
     expect(build).toHaveBeenCalledWith(expect.objectContaining({title:report.title,body:report.body,generatedAt:report.generatedAt,taskLines:report.daveBriefing.wordTaskLines}));
+  });
+  it('desktop email dates the approved draft on action day and still refuses unapproved text',async()=>{
+    const open=jest.fn(),question=jest.fn();
+    const deps={reportStatus:'approved',window:{open},draftSaysNotCounted:false,approvedPeriodMoved:false,
+      sendCheckStands:()=>true,reportAsShared:()=>({id:'approved'}),reportSubjectWithDate,
+      reportTitle:'Tower',reportGeneratedAt:report.generatedAt,reportBody:report.body,
+      prepareDAVEWebReportEmailBody:(text:string)=>({text,shortened:false}),sentFromHereAt:null,setNotice:jest.fn(),setSendQuestion:question};
+    const file='components/web-shell/desktop-read-only-shell.tsx';
+    await producer(file,'prepareApprovedReportEmail',deps)();
+    expect(open).toHaveBeenCalledWith(`mailto:?subject=${encodeURIComponent('Tower — Oct 17, 2026')}&body=${encodeURIComponent(report.body)}`,'_blank','noopener,noreferrer');
+    expect(question).toHaveBeenCalledWith({id:'approved'});
+    open.mockClear();
+    await producer(file,'prepareApprovedReportEmail',{...deps,reportStatus:'draft'})();
+    expect(open).not.toHaveBeenCalled();
   });
   it.each(['sent','cancelled','undetermined'])('native Mail preserves body and composer outcome %s',async status=>{
     const compose=jest.fn(async()=>({status}));
