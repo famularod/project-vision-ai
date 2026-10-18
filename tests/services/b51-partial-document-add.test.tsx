@@ -84,7 +84,7 @@ import { dedupeScheduleImportItems, type PIEScheduleImportBatch } from '../../se
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import * as remoteExtraction from '../../services/PIEScheduleRemoteExtraction';
 import { cleanupProjectDocumentOwnedFileForRecordRemoval, importProjectDocumentIntoOwnedStorage } from '../../services/ProjectDocumentLifecycle';
-import { createProjectDocumentUploadRetryRunner, projectDocumentsAwaitingUpload } from '../../services/ProjectDocumentUploadRetry';
+import { bindProjectDocumentUploadToAccount, createProjectDocumentUploadRetryRunner, projectDocumentsAwaitingUpload } from '../../services/ProjectDocumentUploadRetry';
 import { normalizeReferenceDocument } from '../../services/ReferenceDocumentRepository';
 import { validateScheduleImportScope } from '../../services/ScheduleImportScopeGuard';
 import { bindStableScheduleImportItemIds } from '../../services/ScheduleImportSourceIdentity';
@@ -228,6 +228,7 @@ function phone(options: Readonly<{ storageFails?: boolean; storageFailsAt?: numb
     cleanupProjectDocumentOwnedFileForRecordRemoval,
     reportStoragePersistenceFailure: () => undefined,
     /** The upload tried at once, as for any add; with no signal it fails and the document waits (App.tsx retryProjectDocumentUpload). */
+    bindProjectDocumentUploadToAccount,
     retryProjectDocumentUpload: async (documentId: string) => {
       uploadAttempts.push(documentId);
       if (uploadAttempts.length === options.uploadThrowsAt) throw ('uploadFailure' in options ? options.uploadFailure : new Error('Synthetic unexpected upload failure.'));
