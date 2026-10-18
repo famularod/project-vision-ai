@@ -152,7 +152,7 @@ export function ScheduleImportFlow({
     if (!scheduleImportAsksRole(batch) || activeRoleReview?.batchId !== batch.id) return null;
     if (activeRoleReview.provisional && !activeRoleReview.chosen)
       return 'Choose Full schedule or Lookahead for the selected items before saving.';
-    return scheduleImportRoleRefusal(batch, activeRoleReview.chosen || activeRoleReview.role, roleContext?.documents);
+    return scheduleImportRoleRefusal(batch, activeRoleReview.chosen || activeRoleReview.role, roleContext?.documents, roleContext?.items);
   }
 
   useEffect(() => {

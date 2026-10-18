@@ -1907,14 +1907,31 @@ function scheduleFileFullCopyInUse(file: ReferenceDocument, documents: readonly 
  * refused too: Set Active shows it again (A8 pass 6 L1).
  */
 export function scheduleImportRoleRefusal(
-  batch: Pick<PIEScheduleImportBatch, 'documents'> & Partial<Pick<PIEScheduleImportBatch, 'items'>>,
+  batch: Pick<PIEScheduleImportBatch, 'documents'> & Partial<Pick<PIEScheduleImportBatch, 'items' | 'id'>>,
   role: ScheduleImportRole,
   /** The schedules saved now. */
   documents: readonly ReferenceDocument[] = [],
+  scheduleItems: readonly ScheduleItem[] = [],
 ): string | null {
   const scoped = scheduleImportWithReviewedProjectScope(batch);
   const preset = scoped.documents.find(document => document.category === 'Schedules');
   if (!preset) return null;
+  // The label before review may cover every ticked project. Only the ready
+  // rows establish this save's scope; another scope is an intentional import.
+  const reviewedScope = batch.items?.length && batch.items.every(item => item.projectName.trim() && item.projectName.trim() !== 'Needs Project')
+    ? scopeOf(preset) : '';
+  const currentBatch = key(batch.id);
+  const importedLookaheadCopy = Boolean(preset.contentSha256 && reviewedScope) && documents.some(document => {
+    const savedBatch = key(document.importBatchId);
+    if (document.id === preset.id || (currentBatch && savedBatch === currentBatch)) return false;
+    if (document.contentSha256 !== preset.contentSha256 || scopeOf(document) !== reviewedScope || !scheduleDocumentAddsToMaster(document)) return false;
+    // A document-only upload is not an import. Match actual task provenance,
+    // as the initial file duplicate check does, without a filename guess.
+    return Boolean(savedBatch) || scheduleItems.some(item =>
+      Boolean(key(item.sourceDocumentId)) && key(item.sourceDocumentId) === key(document.id));
+  });
+  if (importedLookaheadCopy)
+    return 'This exact schedule has already been imported as a lookahead for these projects. Open its saved schedule source instead of importing it again.';
   const confirmedFullCopy = Boolean(preset.contentSha256) && documents.some(document => document.id !== preset.id &&
     document.contentSha256 === preset.contentSha256 && scopeOf(document) === scopeOf(preset) &&
     scheduleDocumentIsScheduleLike(document) && !scheduleDocumentAddsToMaster(document));
