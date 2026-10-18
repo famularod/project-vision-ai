@@ -165,7 +165,7 @@ function phone(options: Readonly<{ storageFails?: boolean }> = {}) {
   const storage = new Map<string, string>();
   const projectDocumentsCurrentRef = { current: [] as ProjectDocument[] };
   const projectScheduleImportCardRef = { current: null as null | { batchId: string; documentId: string } };
-  const alerts: Array<{ title: string; message: string; buttons?: Array<{ text: string }> }> = [];
+  const alerts: Array<{ title: string; message: string; buttons?: Array<{ text: string; onPress?: () => void }> }> = [];
   const uploadAttempts: string[] = [];
   const deletedReferenceCopies: string[] = [];
   const opened: PIEScheduleImportBatch[] = [];
@@ -173,7 +173,7 @@ function phone(options: Readonly<{ storageFails?: boolean }> = {}) {
   let picks = 0;
   let ids = 0;
 
-  const Alert = { alert: (title: string, message: string, buttons?: Array<{ text: string }>) => { alerts.push({ title, message, buttons }); } };
+  const Alert = { alert: (title: string, message: string, buttons?: Array<{ text: string; onPress?: () => void }>) => { alerts.push({ title, message, buttons }); } };
   const shared: Record<string, unknown> = {
     Alert, screen: 'ProjectDocuments',
     // The projects

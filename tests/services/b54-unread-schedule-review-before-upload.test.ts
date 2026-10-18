@@ -19,10 +19,10 @@ function deferred() {
 }
 type Card = { id: string; projectId: string; name: string; category: string; ownedFileId: string; localUri: string; status: string; mimeType: string; sizeBytes: number };
 type Notice = { title: string; message: string; buttons?: Array<{ text: string; onPress?: () => void }> };
-function device(options: { pendingDisk?: boolean; pendingUpload?: boolean; offline?: boolean; failDiskAt?: number; duplicate?: boolean } = {}) {
+function device(options: { pendingDisk?: boolean; pendingUpload?: boolean; offline?: boolean; failDiskAt?: number; duplicate?: boolean; duplicateProject?: string } = {}) {
   const disk = deferred(), upload = deferred();
   const events: string[] = [], notices: Notice[] = [], reviews: unknown[] = [];
-  const existing: Card[] = options.duplicate ? [{ id: 'existing-document', projectId: 'project:First Project', name: 'test.pdf', category: 'Schedule', ownedFileId: 'existing-owned', localUri: 'file:///owned/existing.pdf', status: 'uploaded', mimeType: 'application/pdf', sizeBytes: 100 }] : [];
+  const existing: Card[] = options.duplicate ? [{ id: 'existing-document', projectId: `project:${options.duplicateProject || 'First Project'}`, name: 'test.pdf', category: 'Schedule', ownedFileId: 'existing-owned', localUri: 'file:///owned/existing.pdf', status: 'uploaded', mimeType: 'application/pdf', sizeBytes: 100 }] : [];
   let records: Card[] = [...existing], writes = 0, created = 0;
   let owner = 'first-owner';
   const current = { current: [...existing] };
@@ -172,4 +172,59 @@ it('5.31 Upload Anyway ties the review to the newly kept duplicate card, after t
   expect(phone.reviews).toHaveLength(1);
   expect(phone.reviewCard.current).toEqual({ batchId: 'review-1', documentId: 'document-1' });
   expect(phone.saved()[0].id).toBe('document-1');
+});
+it('5.31 Cancel leaves the original card and opens no saved review or upload for the rejected copy', async () => {
+  const phone = device({ duplicate: true });
+  const operation = phone.add(); await flush(); phone.choose('Cancel'); await operation; await flush();
+  expect(phone.saved().map(card => card.id)).toEqual(['existing-document']);
+  expect(phone.reviews).toEqual([]);
+  expect(phone.events.filter(event => event.startsWith('upload:'))).toEqual([]);
+});
+it('5.31 the acknowledged duplicate still waits for durable disk before it owns a review', async () => {
+  const phone = device({ duplicate: true, pendingDisk: true, pendingUpload: true });
+  const operation = phone.add(); await flush(); phone.choose('Upload Anyway');
+  try {
+    await flush();
+    expect(phone.saved().map(card => card.id)).toEqual(['existing-document']);
+    expect(phone.reviews).toEqual([]);
+    expect(phone.reviewCard.current).toBeNull();
+    phone.disk.resolve(); await operation; await flush();
+    expect(phone.reviews).toHaveLength(1);
+    expect(phone.reviewCard.current?.documentId).toBe('document-1');
+    expect(phone.events).not.toContain('upload-ended:document-1');
+  } finally { phone.disk.resolve(); phone.upload.resolve(); await operation; await flush(); }
+});
+it('5.31 a duplicate record-save failure retains the original and never opens a saved review', async () => {
+  const phone = device({ duplicate: true, failDiskAt: 1 });
+  const operation = phone.add(); await flush(); phone.choose('Upload Anyway'); await operation;
+  expect(phone.saved().map(card => card.id)).toEqual(['existing-document']);
+  expect(phone.reviews).toEqual([]);
+  expect(phone.notices.at(-1)?.title).toBe('Schedule review unavailable');
+  expect(phone.events.filter(event => event.startsWith('upload:'))).toEqual([]);
+});
+it('5.31 an account changed while the question is open cannot keep the old copy or open the old review', async () => {
+  const phone = device({ duplicate: true });
+  const operation = phone.add(); await flush(); phone.switchAccount(); phone.choose('Upload Anyway'); await operation;
+  expect(phone.saved().map(card => card.id)).toEqual(['existing-document']);
+  expect(phone.reviews).toEqual([]);
+  expect(phone.events.filter(event => event.startsWith('upload:'))).toEqual([]);
+});
+it('5.31 a later failed copy truthfully acknowledges the earlier durable Upload Anyway copy', async () => {
+  const phone = device({ duplicate: true, failDiskAt: 2 });
+  const operation = phone.add('Schedule', ['First Project', 'Second Project', 'Third Project']);
+  await flush(); phone.choose('Upload Anyway'); await operation; await flush();
+  expect(phone.saved().map(card => card.id)).toEqual(['document-1', 'existing-document']);
+  expect(phone.reviews).toEqual([]);
+  expect(phone.notices.at(-1)?.title).toBe('Some document copies were saved');
+  expect(phone.notices.at(-1)?.message).toContain('“test.pdf” — First Project (waiting to upload).');
+  expect(phone.notices.at(-1)?.message).toContain('Not attempted: Third Project.');
+});
+it('5.31 cancelling a later duplicate stops the review and remaining copies while retaining prior durable work', async () => {
+  const phone = device({ duplicate: true, duplicateProject: 'Second Project' });
+  const operation = phone.add('Schedule', ['First Project', 'Second Project', 'Third Project']);
+  await flush(); phone.choose('Cancel'); await operation; await flush();
+  expect(phone.saved().map(card => card.id)).toEqual(['document-1', 'existing-document']);
+  expect(phone.reviews).toEqual([]);
+  expect(phone.notices.at(-1)?.title).toBe('Schedule review cancelled');
+  expect(phone.events.filter(event => event.startsWith('upload:'))).toEqual(['upload:document-1']);
 });
