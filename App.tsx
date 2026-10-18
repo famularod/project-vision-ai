@@ -10363,7 +10363,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       drawingReferences: readableDrawingReferences,
     });
     const fileUri =
-      `${directory}${sanitizeFilename(reportFileTitleWithDate(report.title || 'Vitruvius Project Report', report.generatedAt))}.docx`;
+      `${directory}${reportFileTitleWithDate(report.title || 'Vitruvius Project Report', report.generatedAt)}.docx`;
 
     try {
       const {

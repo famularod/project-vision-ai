@@ -56,41 +56,76 @@ export function shouldApplyCommunicationOutcome({
     startedReportIdentity === currentReportIdentity;
 }
 
-/**
- * R5 item 6a (a send extra deferred on 29 Sep 2026). The email subject and
- * the Word file's name were the report's title alone ("Tower Project Status
- * Report"): two reports of one project made on different days could not be
- * told apart in a mailbox or a folder, and a second Word copy saved under
- * the first one's name. Both now carry the day the report was prepared,
- * which is the day its Word copy prints ("Prepared October 6, 2026"): the
- * device's calendar day of the report's own time, or today when it has none.
+/** Communication metadata uses the device's local calendar day when the
+ * composer/download is prepared. generatedAt remains the immutable report-body
+ * timestamp. A draft sent later from an external mail client cannot be redated.
+ * The legacy timestamp parameter is retained for existing callers only.
  */
-function reportPreparedDay(generatedAt: string | Date | null | undefined, now: Date): Date {
-  const date = generatedAt instanceof Date ? generatedAt : generatedAt ? new Date(generatedAt) : now;
-  return Number.isNaN(date.getTime()) ? now : date;
+function deliberateTitleDate(title: string): string | undefined {
+  const valid = (year: number, month: number, day: number) => {
+    if (year < 1900 || year > 2199 || month < 1 || month > 12 || day < 1) return false;
+    return day <= new Date(year, month, 0).getDate();
+  };
+  for (const match of title.matchAll(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/g)) {
+    if (valid(+match[1], +match[2], +match[3])) return match[0];
+  }
+  // Require a full year and slash/hyphen separators: bare years and dotted
+  // version numbers are too ambiguous to suppress the action date.
+  for (const match of title.matchAll(/\b(\d{1,2})([/-])(\d{1,2})\2(\d{4})\b/g)) {
+    if (valid(+match[4], +match[1], +match[3]) || valid(+match[4], +match[3], +match[1])) return match[0];
+  }
+  const months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+  const monthName = '(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\\.?';
+  for (const pattern of [
+    new RegExp('\\b' + monthName + '\\s+(\\d{1,2})(?:st|nd|rd|th)?[,]?\\s+(\\d{4})\\b', 'gi'),
+    new RegExp('\\b(\\d{1,2})(?:st|nd|rd|th)?\\s+' + monthName + '[,]?\\s+(\\d{4})\\b', 'gi'),
+  ]) {
+    for (const match of title.matchAll(pattern)) {
+      const monthFirst = /^[A-Za-z]/.test(match[1]);
+      const month = months.indexOf((monthFirst ? match[1] : match[2]).slice(0, 3).toLowerCase()) + 1;
+      if (valid(+match[3], month, +(monthFirst ? match[2] : match[1]))) return match[0];
+    }
+  }
+  return undefined;
 }
 
-/** "Tower Project Status Report — Oct 6, 2026". A title that already says that day is left as it is. */
 export function reportSubjectWithDate(
   title: string | null | undefined,
-  generatedAt: string | Date | null | undefined,
+  _generatedAt: string | Date | null | undefined,
   now: Date = new Date(),
 ): string {
-  const day = reportPreparedDay(generatedAt, now).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const day = now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   const subject = (title ?? '').trim();
   if (!subject) return day;
-  return subject.includes(day) ? subject : `${subject} — ${day}`;
+  return deliberateTitleDate(subject) ? subject : `${subject} — ${day}`;
 }
 
-/** "Tower Project Status Report 2026-10-06", for a file name: the day as numbers, so the files sort by day in a folder. */
+/** Report-only basename, at most 235 UTF-8 bytes (240 with .docx).
+ * Iterate code points so truncation never splits a surrogate pair. Leave the
+ * generic document/schedule filename policy alone.
+ */
 export function reportFileTitleWithDate(
   title: string | null | undefined,
-  generatedAt: string | Date | null | undefined,
+  _generatedAt: string | Date | null | undefined,
   now: Date = new Date(),
 ): string {
-  const date = reportPreparedDay(generatedAt, now);
-  const day = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
-  const name = (title ?? '').trim();
-  if (!name) return day;
-  return name.includes(day) ? name : `${name} ${day}`;
+  const day = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+  const name = (title ?? '').replace(/[\\/\x00-\x1f\x7f-\x9f<>:"|?*]/g, ' ')
+    .replace(/\s+/g, ' ').replace(/^[. ]+|[. ]+$/g, '');
+  const manualDate = deliberateTitleDate(title ?? '');
+  // Dates containing slashes must be sanitized exactly like the rest of the name.
+  const suffix = manualDate ? '' : ` ${day}`;
+  const budget = 235 - suffix.length;
+  let result = '';
+  let bytes = 0;
+  for (const character of name) {
+    const cp = character.codePointAt(0)!;
+    const size = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+    if (bytes + size > budget) break;
+    result += character;
+    bytes += size;
+  }
+  result = result.replace(/[. ]+$/g, '');
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(result)) result = `Report ${result.slice(0, 220)}`;
+  return `${result}${suffix}`.trim() || day;
 }

@@ -6309,7 +6309,7 @@ function ReportWorkspace({
         media: resolvedMedia.media,
         unavailableMedia: resolvedMedia.unavailableMedia,
       });
-      downloadBlob(`${safeDownloadName(reportFileTitleWithDate(title, generatedAt))}.docx`, blob);
+      downloadBlob(`${reportFileTitleWithDate(title, generatedAt)}.docx`, blob);
       const embeddedPhotos = resolvedMedia.media.filter(item => item.kind === 'photo').length;
       const embeddedDrawings = resolvedMedia.media.filter(item => item.kind === 'drawing').length;
       const embedded = embeddedPhotos + embeddedDrawings;

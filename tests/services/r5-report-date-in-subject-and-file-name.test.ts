@@ -17,10 +17,10 @@ import { reportFileTitleWithDate, reportSubjectWithDate } from '../../services/R
 const PREPARED = '2026-10-06T18:00:00.000Z';
 const NOW = new Date('2026-11-02T18:00:00.000Z');
 
-describe('R5 item 6a: the email subject carries the day the report was prepared', () => {
+describe('R5 item 6a: the email subject carries the day the action is prepared', () => {
   it('the title, then the day', () => {
-    expect(reportSubjectWithDate('Tower Project Status Report', PREPARED, NOW)).toBe('Tower Project Status Report — Oct 6, 2026');
-    expect(reportSubjectWithDate('  Tower — Executive Summary ', new Date(PREPARED), NOW)).toBe('Tower — Executive Summary — Oct 6, 2026');
+    expect(reportSubjectWithDate('Tower Project Status Report', PREPARED, NOW)).toBe('Tower Project Status Report — Nov 2, 2026');
+    expect(reportSubjectWithDate('  Tower — Executive Summary ', new Date(PREPARED), NOW)).toBe('Tower — Executive Summary — Nov 2, 2026');
   });
 
   it('a title he typed the day into is left as it is', () => {
@@ -33,14 +33,14 @@ describe('R5 item 6a: the email subject carries the day the report was prepared'
   });
 
   it('with no title the day alone', () => {
-    expect(reportSubjectWithDate('  ', PREPARED, NOW)).toBe('Oct 6, 2026');
+    expect(reportSubjectWithDate('  ', PREPARED, NOW)).toBe('Nov 2, 2026');
   });
 });
 
-describe('R5 item 6a: the Word file\'s name carries the day the report was prepared', () => {
+describe('R5 item 6a: the Word file\'s name carries the day the action is prepared', () => {
   it('the title, then the day as numbers, so the files sort by day in a folder', () => {
-    expect(reportFileTitleWithDate('Tower Project Status Report', PREPARED, NOW)).toBe('Tower Project Status Report 2026-10-06');
-    expect(reportFileTitleWithDate('Tower Project Status Report', '2026-01-09T18:00:00.000Z', NOW)).toBe('Tower Project Status Report 2026-01-09');
+    expect(reportFileTitleWithDate('Tower Project Status Report', PREPARED, NOW)).toBe('Tower Project Status Report 2026-11-02');
+    expect(reportFileTitleWithDate('Tower Project Status Report', '2026-01-09T18:00:00.000Z', NOW)).toBe('Tower Project Status Report 2026-11-02');
   });
 
   it('a title that already says the day is left as it is; none, or an unreadable time, is today', () => {
@@ -56,7 +56,7 @@ describe('R5 item 6a: where they are used', () => {
   it('the phone: the Mail subject and the Word file it shares (also the file attached for Outlook)', () => {
     const app = source('App.tsx');
     expect(app).toContain('subject: reportSubjectWithDate(report.subject || report.title, report.generatedAt),');
-    expect(app).toContain("sanitizeFilename(reportFileTitleWithDate(report.title || 'Vitruvius Project Report', report.generatedAt))}.docx`;");
+    expect(app).toContain("reportFileTitleWithDate(report.title || 'Vitruvius Project Report', report.generatedAt)}.docx`;");
     // The title alone is no longer the subject or the file name.
     expect(app).not.toContain('subject: report.subject || report.title,');
     expect(app).not.toContain("sanitizeFilename(report.title || 'Vitruvius Project Report')");
@@ -65,6 +65,6 @@ describe('R5 item 6a: where they are used', () => {
   it('the web: the email draft\'s subject and the Word download', () => {
     const shell = source('components/web-shell/desktop-read-only-shell.tsx');
     expect(shell).toContain('const subject = encodeURIComponent(reportSubjectWithDate(reportTitle, reportGeneratedAt));');
-    expect(shell).toContain('downloadBlob(`${safeDownloadName(reportFileTitleWithDate(title, generatedAt))}.docx`, blob);');
+    expect(shell).toContain('downloadBlob(`${reportFileTitleWithDate(title, generatedAt)}.docx`, blob);');
   });
 });
