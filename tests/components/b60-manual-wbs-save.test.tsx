@@ -54,7 +54,7 @@ it('unchanged existing duplicate/custom codes and task identity survive an ordin
  expect(mockCreate).not.toHaveBeenCalled();
 });
 it('child allocation stays under its actual parent and ignores another project codes',async()=>{
- mockRows=[task('phase','2',{isSummary:true}),task('child','2.2',{parentItemId:'phase'}),task('foreign','99',{projectName:'Other Tower'})];
+ mockRows=[task('phase','2',{isSummary:true}),task('child','2.2',{parentItemId:'phase'}),task('foreign','2.3',{projectName:'Other Tower'})];
  const screen=render(page());fireEvent.press(screen.getByText('Add Task'));fireEvent(screen.getByLabelText('Parent phase'),'change',{target:{value:'phase'}});fireEvent.changeText(screen.getByLabelText('Name'),'Second child');
  const written=await save(screen);expect(written).toMatchObject({wbsCode:'2.3',parentItemId:'phase',projectName:PROJECT,projectId:PROJECT_ID});
 });

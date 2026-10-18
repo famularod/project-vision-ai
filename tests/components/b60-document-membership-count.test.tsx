@@ -28,9 +28,10 @@ jest.mock('expo-linear-gradient', () => {
     ),
   };
 });
+let mockProjectScope:string|null=null;
 jest.mock('expo-router', () => ({
   Link: ({ children }: { children: React.ReactNode }) => children,
-  useLocalSearchParams: () => ({}),
+  useLocalSearchParams: () => mockProjectScope ? {project:mockProjectScope} : {},
   usePathname: () => '/documents',
   useRouter: () => ({ setParams: jest.fn() }),
 }));
@@ -103,6 +104,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockProjectScope=null;
   mockAuth.snapshot = {
     projects: [{ id: 'alpha', name: 'Alpha' }, { id: 'beta', name: 'Beta' }] as DAVEWebReadOnlySnapshot['projects'],
     scheduleItems: [],
@@ -123,10 +125,13 @@ jest.setTimeout(60_000);
 
 
 import { loadDAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
-import { daveWebSupabaseGateway } from '../../services/DAVEWebSupabaseClient';
+import fs from 'fs';
+import path from 'path';
+import ts from 'typescript';
+import { createDAVEWebSupabaseGateway, daveWebSupabaseGateway } from '../../services/DAVEWebSupabaseClient';
 import { within } from '@testing-library/react-native';
-it.each(['line','panel','summary'])('actual downloaded shared import membership is counted in file %s while deletion stays exclusive',async surface=>{
- const raw={projects:[{id:'alpha',name:'Alpha'}],projectUpdates:[],syncTombstones:[],referenceDocuments:[master,older].map(d=>({id:d.id,document_data:d})),
+it.each(['line','panel','summary','delete'])('actual downloaded shared import membership is counted in file %s while deletion stays exclusive',async surface=>{
+ const raw={projects:[{id:'alpha',name:'Alpha'}],projectUpdates:[],syncTombstones:[],referenceDocuments:[master,older].map(d=>({id:d.id,document_data:d,updated_at:d.cloudUpdatedAt})),
  scheduleItems:[{id:'shared',item_data:{id:'shared',taskName:'Shared roof task',projectName:'Alpha',scheduleProjectName:'Alpha',locationName:'Roof',status:'Not Started',percentComplete:0,
  startDate:'10/01/2026',finishDate:'10/02/2026',importBatchId:older.importBatchId,sourceDocumentId:older.id,alsoImportedInBatchIds:[master.importBatchId],
  owner:'Dana',notes:'',createdAt:'2026-10-01T12:00:00Z'}}]};
@@ -141,11 +146,39 @@ it.each(['line','panel','summary'])('actual downloaded shared import membership 
   const fact=screen.UNSAFE_root.findAll(n=>typeof n.type==='function' && n.type.name==='TaskDetailFact' && n.props.label==='Linked Tasks')[0];
   expect(within(fact).getByText('1')).toBeTruthy();
   fireEvent.press(await screen.findByLabelText(`Edit project document details for ${older.name}`));expect(screen.getByText(STAYS)).toBeTruthy();
- } else {
+ } else if(surface==='summary') {
   const summary=screen.UNSAFE_root.findAll(n=>typeof n.type==='function' && n.type.name==='WorkspaceSummary')[0];
-  expect(within(summary).getByText('2')).toBeTruthy();
+  expect(summary.props.metrics.find((m:{label:string})=>m.label==='Linked Tasks').value).toBe(1);
+  expect(within(summary).getAllByText('1')).toHaveLength(3);
+ } else {
+  const markers:Record<string,unknown>[]=[];
+  const queryFor=(table:string)=>{const q:Record<string,any>={};for(const method of ['select','eq','order'])q[method]=()=>q;
+   q.maybeSingle=async()=>({data:table==='reference_documents'?{updated_at:older.cloudUpdatedAt}:null,error:null});
+   q.upsert=async(rows:Record<string,unknown>[])=>{markers.push(...JSON.parse(JSON.stringify(rows)));return {error:null};};
+   q.limit=async()=>({data:[],error:null});return q;};
+  const gateway=createDAVEWebSupabaseGateway({auth:{getUser:async()=>({data:{user:{id:'synthetic-owner'}},error:null})},rpc:async()=>({data:true,error:null}),from:queryFor} as never);
+  jest.mocked(daveWebSupabaseGateway.loadAuthorizedRows).mockImplementation(async()=>({...raw,syncTombstones:markers} as never));
+  // Compile the unchanged actual auth-provider callback, rather than restating how it chooses deletion targets.
+  const source=fs.readFileSync(path.resolve(__dirname,'../../components/web-shell/desktop-auth-provider.tsx'),'utf8');
+  const tree=ts.createSourceFile('provider.tsx',source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);let arrow:ts.Node|undefined;
+  function walk(n:ts.Node){if(ts.isVariableDeclaration(n)&&n.name.getText(tree)==='deleteDocument'&&n.initializer&&ts.isCallExpression(n.initializer))arrow=n.initializer.arguments[0];ts.forEachChild(n,walk);}walk(tree);
+  if(!arrow)throw new Error('Missing actual provider delete consumer');
+  const code=ts.transpileModule(`const extracted=${arrow.getText(tree)};`,{compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText;
+  const deps={snapshotRef:{current:mockAuth.snapshot},daveWebSupabaseGateway:gateway,
+   scheduleDocumentAddsToMaster:jest.requireActual('../../services/ScheduleLookahead').scheduleDocumentAddsToMaster,
+   planDAVEWebScheduleDocumentDelete:jest.requireActual('../../services/DAVEWebOperations').planDAVEWebScheduleDocumentDelete,
+   announceMutation:jest.fn(),refreshSnapshotInBackground:async()=>{mockAuth.snapshot=await loadDAVEWebReadOnlySnapshot();}};
+  mockAuth.deleteDocument.mockImplementation(new Function(...Object.keys(deps),`${code};return extracted;`)(...Object.values(deps)));
+  fireEvent.press(screen.getByLabelText(`Delete ${older.name}`));
+  expect(screen.getByText(/linked tasks are also contained in another schedule/)).toBeTruthy();
+  expect(screen.queryByText(/Delete Document \+ 1 Task/)).toBeNull();
+  await act(async()=>fireEvent.press(screen.getByText('Delete Document')));
+  expect(mockAuth.deleteDocument).toHaveBeenCalledWith(expect.objectContaining({id:older.id,linkedScheduleItems:[]}),false);
+  expect(markers.map(m=>[m.entity_type,m.record_id])).toEqual([['reference_document',older.id]]);
+  expect(mockAuth.snapshot!.scheduleItems.map(t=>t.id)).toEqual(['shared']);
+  expect(mockAuth.snapshot!.referenceDocuments.map(d=>d.id)).toEqual([master.id]);
  }
- expect(JSON.stringify(raw)).toBe(before);expect(mockAuth.snapshot.referenceDocuments.every(d=>d.linkedScheduleItems.length===0)).toBe(true);
+ expect(JSON.stringify(raw)).toBe(before);expect(mockAuth.snapshot!.referenceDocuments.every(d=>d.linkedScheduleItems.length===0)).toBe(true);
 });
 
 it('the desktop Tasks create consumer leaves manual WBS unassigned, preserving each new task id and project',async()=>{
@@ -160,4 +193,23 @@ it('the desktop Tasks create consumer leaves manual WBS unassigned, preserving e
  expect(new Set(rows.map(r=>r.id)).size).toBe(2);
  expect(rows.map(r=>r.wbsCode??null)).toEqual([null,null]);
  expect(rows.every(r=>r.projectId==='607c7eed-5dea-4a5a-8b52-0f165c71c4b5')).toBe(true);
+});
+
+it('actual summary counts distinct task ids only in listed project file memberships, excluding archived/other project/unlinked/deleted rows',async()=>{
+ const beta=scheduleDocument('Beta file',{projectName:'Beta',projectNames:['Beta'],importBatchId:'beta-batch'});
+ const hidden=scheduleDocument('Archived file',{importBatchId:'archived-batch'});
+ const sourceTask=(id:string,batch:string,extra:Record<string,unknown>={})=>({id,item_data:{id,taskName:id,projectName:'Alpha',scheduleProjectName:'Alpha',owner:'Dana',status:'Not Started',percentComplete:0,
+ startDate:'10/01/2026',finishDate:'10/02/2026',createdAt:'2026-10-01T12:00:00Z',importBatchId:batch,...extra}});
+ jest.mocked(daveWebSupabaseGateway.loadAuthorizedRows).mockResolvedValue({projects:[{id:'alpha',name:'Alpha'},{id:'beta',name:'Beta'}],projectUpdates:[],
+ referenceDocuments:[{...master},{...older},beta,{...hidden,archivedAt:'2026-10-15T12:00:00Z'}].map(d=>({id:d.id,document_data:d,...(d.id===hidden.id?{archived_at:'2026-10-15T12:00:00Z'}:{})})),
+ scheduleItems:[sourceTask('shared',String(older.importBatchId),{alsoImportedInBatchIds:[master.importBatchId]}),sourceTask('second',String(master.importBatchId)),sourceTask('other-project','beta-batch',{projectName:'Beta',scheduleProjectName:'Beta'}),
+ sourceTask('hidden','archived-batch'),sourceTask('unlinked','no-listed-file'),sourceTask('deleted',String(master.importBatchId))],
+ syncTombstones:[{entity_type:'schedule_item',record_id:'deleted',deleted_at:'2026-10-16T12:00:00Z'}]} as never);
+ mockAuth.snapshot=await loadDAVEWebReadOnlySnapshot();mockProjectScope='Alpha';
+ const screen=render(<DesktopReadOnlyShell page="documents"/>);
+ expect(screen.queryByLabelText('View Beta file')).toBeNull();expect(screen.queryByLabelText('View Archived file')).toBeNull();
+ const summary=screen.UNSAFE_root.findAll(n=>typeof n.type==='function' && n.type.name==='WorkspaceSummary')[0];
+ expect(summary.props.metrics.find((m:{label:string})=>m.label==='Linked Tasks').value).toBe(2);
+ expect(within(summary).getByText('2')).toBeTruthy();
+ expect(mockAuth.snapshot.knownScheduleItems?.some(t=>t.id==='deleted')).toBe(false);
 });

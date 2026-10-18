@@ -72,7 +72,7 @@ import {
   scheduleTasksForParentProject,
 } from '../../services/dave-project-schedule-rollup';
 import { projectUpdateBelongsToParentProject } from '../../services/DAVEProjectUpdateScope';
-import { scheduleProjectScopeNames } from '../../services/PIEScheduleImportBatch';
+import { scheduleItemsForExactImportBatch, scheduleProjectScopeNames } from '../../services/PIEScheduleImportBatch';
 import {
   scheduleDocumentAddsToMaster,
   scheduleDocumentCurrentLabel,
@@ -4716,7 +4716,9 @@ function DocumentManagementWorkspace({
       <WorkspaceSummary metrics={[
         { icon: 'checkmark-circle-outline', label: 'Current Schedule', value: groups.currentSchedule.length, tone: groups.currentSchedule.length ? 'success' : 'warning' },
         { icon: 'time-outline', label: 'Prior Versions', value: groups.priorScheduleVersions.length, tone: 'neutral' },
-        { icon: 'checkbox-outline', label: 'Linked Tasks', value: documents.reduce((total, document) => total + documentLinkedTaskCount(document), 0) },
+        { icon: 'checkbox-outline', label: 'Linked Tasks', value: new Set(documents.flatMap(document =>
+          scheduleItemsForExactImportBatch(knownTasks ?? tasks, document).map(task => task.id),
+        )).size },
       ]} />
       <DesktopDocumentOnboarding
         documents={documents}
@@ -5029,7 +5031,9 @@ function DocumentManagementWorkspace({
                   : ' Its Vitruvius-managed file and ECOS index will be queued for cleanup.'}
                 {deleteCandidate.linkedScheduleItems.length > 0
                   ? ` This import has ${deleteCandidate.linkedScheduleItems.length} linked task${deleteCandidate.linkedScheduleItems.length === 1 ? '' : 's'}.`
-                  : ' No linked imported tasks were found.'}
+                  : documentLinkedTaskCount(deleteCandidate) > 0
+                    ? ' Its linked tasks are also contained in another schedule, so they will be kept.'
+                    : ' No linked imported tasks were found.'}
                 {deleteCandidate.linkedScheduleItems.length > 0 && !linkedTasksAreRevisionSafe
                   ? keepsDocumentOnlyDelete ? ' Those legacy tasks do not have safe cloud revisions, so this page will keep them.'
                     : ' Those legacy tasks do not have safe cloud revisions, so this page cannot delete them with the file. Delete this schedule on the iPhone or iPad: Delete PDF + Items there removes them with it.'
