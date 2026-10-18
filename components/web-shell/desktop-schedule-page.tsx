@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { createElement, useMemo, useState } from 'react';
+import { createElement, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -27,6 +27,7 @@ import { daveWebLinkCircleRefusal } from '../../services/DAVEWebTaskLinkCircle';
 import {
   buildVitruviusGanttModel,
   parseVitruviusScheduleDate,
+  vitruviusGanttColumnsInWindow,
   type VitruviusGanttZoom,
 } from '../../services/VitruviusGanttModel';
 import {
@@ -989,21 +990,152 @@ function GanttWorkspace({
   const [showCriticalPath, setShowCriticalPath] = useState(true);
   const [showBaselines, setShowBaselines] = useState(true);
   const [showImpactPreview, setShowImpactPreview] = useState(false);
+  const [viewport, setViewport] = useState({ left: 0, width: 1024 });
+  const timelineScroll = useRef<ScrollView>(null);
+  const previousGeometry = useRef<{ rangeStart: string; dayWidth: number } | null>(null);
   const model = useMemo(
     // By building, as the Builder groups (A5 pass 13); the phone keeps the root.
-    () => buildVitruviusGanttModel({ items: tasks, zoom, groupBy: 'appProject' }),
+    () => buildVitruviusGanttModel({ items: tasks, zoom, groupBy: 'appProject', columnWindow: { left: 0, width: 1, overscan: 0 } }),
     [tasks, zoom],
   );
+  // Scrolling changes only bounded columns, never the hierarchy or task geometry.
+  const columns = useMemo(() => vitruviusGanttColumnsInWindow(model, viewport), [model, viewport]);
+  useEffect(() => {
+    const previous = previousGeometry.current;
+    previousGeometry.current = { rangeStart: model.rangeStart, dayWidth: model.dayWidth };
+    // Preserve the calendar day at the left edge through zoom/range changes,
+    // then clamp after a resize or a shorter schedule replaces this one.
+    const requested = previous
+      ? ((Date.parse(previous.rangeStart) - Date.parse(model.rangeStart)) / 86400000 + viewport.left / previous.dayWidth) * model.dayWidth
+      : viewport.left;
+    const left = Math.max(0, Math.min(Math.max(0, model.timelineWidth - viewport.width), requested));
+    timelineScroll.current?.scrollTo({ x: left, animated: false });
+    setViewport(current => left === current.left ? current : { ...current, left });
+  }, [model.rangeStart, model.dayWidth, model.timelineWidth, viewport.width]);
   const analytics = useMemo(
     () => analyzeVitruviusListedSchedule(tasks, shownTasks),
     [tasks, shownTasks],
   );
   const criticalIds = analytics.criticalPath.criticalItemIds;
-  const lateBaselineCount = analytics.baselineVariance.filter(
+  const lateBaselineCount = useMemo(() => analytics.baselineVariance.filter(
     variance => variance.status === 'late',
-  ).length;
+  ).length, [analytics.baselineVariance]);
+  const baselineCount = useMemo(() => analytics.baselineVariance.filter(
+    variance => variance.status !== 'no_baseline',
+  ).length, [analytics.baselineVariance]);
   const rowHeight = 58;
   const timelineHeight = Math.max(180, model.rows.length * rowHeight);
+
+  const activityRows = useMemo(() => model.rows.map((row, index) => {
+    const previousProject = model.rows[index - 1]?.projectName;
+    return (
+      <Pressable
+        key={row.item.id}
+        style={[
+          styles.ganttActivityRow,
+          index % 2 === 1 && styles.ganttRowAlternate,
+          row.summary && styles.ganttSummaryRow,
+        ]}
+        onPress={() => onOpenItem(row.item)}
+        accessibilityRole="button"
+        accessibilityLabel={`Open timeline item ${row.item.taskName}`}
+      >
+        <View style={[styles.ganttActivityCopy, { paddingLeft: row.depth * 18 }]}>
+          {row.projectName !== previousProject ? (
+            <Text style={styles.ganttProjectLabel} numberOfLines={1}>
+              {row.projectName}
+            </Text>
+          ) : null}
+          <Text
+            style={[styles.ganttItemName, row.summary && styles.ganttSummaryName]}
+            numberOfLines={1}
+          >
+            {row.item.wbsCode ? `${row.item.wbsCode}  ` : ''}{row.item.taskName}
+          </Text>
+          {showCriticalPath && criticalIds.has(row.item.id) ? (
+            <Text style={styles.ganttCriticalLabel}>CRITICAL</Text>
+          ) : null}
+        </View>
+        <Text style={styles.ganttDateText} numberOfLines={row.outsideSupportedYears ? 3 : 1}>
+          {row.outsideSupportedYears
+            ? `Date check\n${row.item.startDate || '—'}\n${row.item.finishDate || '—'}`
+            : row.startDate && row.finishDate
+            ? `${shortDate(row.startDate)} – ${shortDate(row.finishDate)}`
+            : 'Set dates'}
+        </Text>
+      </Pressable>
+    );
+  }), [model.rows, showCriticalPath, criticalIds, onOpenItem]);
+  const timelineRows = useMemo(() => model.rows.map((row, index) => (
+    <View
+      key={row.item.id}
+      style={[
+        styles.ganttTimelineRow,
+        {
+          top: index * rowHeight,
+          width: model.timelineWidth,
+          height: rowHeight,
+        },
+        index % 2 === 1 && styles.ganttTimelineRowAlternate,
+      ]}
+    >
+      {showBaselines &&
+      row.baselineLeft !== null &&
+      row.baselineWidth !== null ? (
+        <View
+          testID={`gantt-baseline:${row.item.id}`}
+          style={[
+            styles.ganttBaselineBar,
+            {
+              left: row.baselineLeft,
+              width: row.baselineWidth,
+              top: 38,
+            },
+          ]}
+        />
+      ) : null}
+      {row.left !== null && row.width !== null ? (
+        row.milestone ? (
+          <View
+            testID={`gantt-milestone:${row.item.id}`}
+            style={[
+              styles.ganttMilestone,
+              { left: row.left, top: 19 },
+            ]}
+          />
+        ) : (
+          <View
+            testID={`gantt-bar:${row.item.id}`}
+            style={[
+              styles.ganttBar,
+              row.summary && styles.ganttSummaryBar,
+              row.item.status === 'Complete' && styles.ganttCompleteBar,
+              showCriticalPath &&
+              criticalIds.has(row.item.id) &&
+              styles.ganttCriticalBar,
+              { left: row.left, width: row.width, top: row.summary ? 18 : 16 },
+            ]}
+          >
+            {!row.summary && row.progressWidth !== null ? (
+              <View
+                testID={`gantt-progress:${row.item.id}`}
+                style={[
+                  styles.ganttProgressBar,
+                  { width: row.progressWidth },
+                ]}
+              />
+            ) : null}
+          </View>
+        )
+      ) : (
+        <Text style={styles.ganttMissingDate}>
+          {row.outsideSupportedYears
+            ? `Date check: ${row.item.startDate || row.startDate || '—'} – ${row.item.finishDate || row.finishDate || '—'} is outside 2000 to 2100. Open this item to review its dates.`
+            : 'Set dates to place this item'}
+        </Text>
+      )}
+    </View>
+  )), [model.rows, model.timelineWidth, showBaselines, showCriticalPath, criticalIds]);
 
   return (
     <View style={styles.ganttSurface}>
@@ -1013,6 +1145,11 @@ function GanttWorkspace({
           <Text style={styles.ganttRange}>
             {shortDate(model.rangeStart)} – {shortDate(model.rangeFinish)}
           </Text>
+          {columns.length > 0 ? (
+            <Text style={styles.ganttRange}>
+              Viewing {columns[0].startDate} – {columns[columns.length - 1].endDate}
+            </Text>
+          ) : null}
         </View>
         <View style={styles.zoomToggle}>
           {(['day', 'week', 'month'] as VitruviusGanttZoom[]).map(option => (
@@ -1043,9 +1180,7 @@ function GanttWorkspace({
           disabled={!analytics.criticalPath.available}
         />
         <ScheduleControl
-          label={`Baselines (${analytics.baselineVariance.filter(
-            variance => variance.status !== 'no_baseline',
-          ).length})`}
+          label={`Baselines (${baselineCount})`}
           selected={showBaselines}
           onPress={() => setShowBaselines(value => !value)}
         />
@@ -1106,57 +1241,35 @@ function GanttWorkspace({
               <Text style={styles.ganttHeaderText}>ACTIVITY</Text>
               <Text style={styles.ganttHeaderText}>DATES</Text>
             </View>
-            {model.rows.map((row, index) => {
-              const previousProject = model.rows[index - 1]?.projectName;
-              return (
-                <Pressable
-                  key={row.item.id}
-                  style={[
-                    styles.ganttActivityRow,
-                    index % 2 === 1 && styles.ganttRowAlternate,
-                    row.summary && styles.ganttSummaryRow,
-                  ]}
-                  onPress={() => onOpenItem(row.item)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Open timeline item ${row.item.taskName}`}
-                >
-                  <View style={[styles.ganttActivityCopy, { paddingLeft: row.depth * 18 }]}>
-                    {row.projectName !== previousProject ? (
-                      <Text style={styles.ganttProjectLabel} numberOfLines={1}>
-                        {row.projectName}
-                      </Text>
-                    ) : null}
-                    <Text
-                      style={[styles.ganttItemName, row.summary && styles.ganttSummaryName]}
-                      numberOfLines={1}
-                    >
-                      {row.item.wbsCode ? `${row.item.wbsCode}  ` : ''}{row.item.taskName}
-                    </Text>
-                    {showCriticalPath && criticalIds.has(row.item.id) ? (
-                      <Text style={styles.ganttCriticalLabel}>CRITICAL</Text>
-                    ) : null}
-                  </View>
-                  <Text style={styles.ganttDateText} numberOfLines={1}>
-                    {row.startDate && row.finishDate
-                      ? `${shortDate(row.startDate)} – ${shortDate(row.finishDate)}`
-                      : 'Set dates'}
-                  </Text>
-                </Pressable>
-              );
-            })}
+            {activityRows}
           </View>
 
           <ScrollView
+            ref={timelineScroll}
+            testID="gantt-timeline-scroll"
             horizontal
             showsHorizontalScrollIndicator
             style={styles.ganttTimelineScroll}
             contentContainerStyle={{ width: model.timelineWidth }}
+            scrollEventThrottle={16}
+            onLayout={event => {
+              const width = event.nativeEvent.layout.width;
+              if (Number.isFinite(width) && width > 0) {
+                setViewport(current => width === current.width ? current : { ...current, width });
+              }
+            }}
+            onScroll={event => {
+              const x = event.nativeEvent.contentOffset.x;
+              const left = Math.max(0, Math.min(Math.max(0, model.timelineWidth - viewport.width), Number.isFinite(x) ? x : 0));
+              setViewport(current => left === current.left ? current : { ...current, left });
+            }}
           >
             <View style={{ width: model.timelineWidth }}>
               <View style={styles.ganttTimelineHeader}>
-                {model.columns.map(column => (
+                {columns.map(column => (
                   <View
                     key={column.key}
+                    testID={`gantt-column-header:${column.key}`}
                     style={[
                       styles.ganttColumnHeader,
                       { left: column.left, width: column.width },
@@ -1169,9 +1282,10 @@ function GanttWorkspace({
                 ))}
               </View>
               <View style={[styles.ganttTimelineCanvas, { height: timelineHeight }]}>
-                {model.columns.map(column => (
+                {columns.map(column => (
                   <View
                     key={`grid:${column.key}`}
+                    testID={`gantt-grid-column:${column.key}`}
                     style={[
                       styles.ganttGridColumn,
                       { left: column.left, width: column.width },
@@ -1183,68 +1297,7 @@ function GanttWorkspace({
                     <Text style={styles.ganttTodayLabel}>TODAY</Text>
                   </View>
                 ) : null}
-                {model.rows.map((row, index) => (
-                  <View
-                    key={row.item.id}
-                    style={[
-                      styles.ganttTimelineRow,
-                      {
-                        top: index * rowHeight,
-                        width: model.timelineWidth,
-                        height: rowHeight,
-                      },
-                      index % 2 === 1 && styles.ganttTimelineRowAlternate,
-                    ]}
-                  >
-                    {showBaselines &&
-                    row.baselineLeft !== null &&
-                    row.baselineWidth !== null ? (
-                      <View
-                        style={[
-                          styles.ganttBaselineBar,
-                          {
-                            left: row.baselineLeft,
-                            width: row.baselineWidth,
-                            top: 38,
-                          },
-                        ]}
-                      />
-                    ) : null}
-                    {row.left !== null && row.width !== null ? (
-                      row.milestone ? (
-                        <View
-                          style={[
-                            styles.ganttMilestone,
-                            { left: row.left, top: 19 },
-                          ]}
-                        />
-                      ) : (
-                        <View
-                          style={[
-                            styles.ganttBar,
-                            row.summary && styles.ganttSummaryBar,
-                            row.item.status === 'Complete' && styles.ganttCompleteBar,
-                            showCriticalPath &&
-                            criticalIds.has(row.item.id) &&
-                            styles.ganttCriticalBar,
-                            { left: row.left, width: row.width, top: row.summary ? 18 : 16 },
-                          ]}
-                        >
-                          {!row.summary && row.progressWidth !== null ? (
-                            <View
-                              style={[
-                                styles.ganttProgressBar,
-                                { width: row.progressWidth },
-                              ]}
-                            />
-                          ) : null}
-                        </View>
-                      )
-                    ) : (
-                      <Text style={styles.ganttMissingDate}>Set dates to place this item</Text>
-                    )}
-                  </View>
-                ))}
+                {timelineRows}
               </View>
             </View>
           </ScrollView>
