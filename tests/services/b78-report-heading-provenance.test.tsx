@@ -32,6 +32,23 @@ beforeEach(()=>{forgetAllReportSessionState();jest.useFakeTimers({now:new Date(N
 afterEach(()=>jest.useRealTimers());
 jest.setTimeout(120000);
 const NOTE='Lane closure moved to 10/20/2026.';
+
+/** Labeled observations of actual writer output, before assertions can stop a
+ * case. Root compares candidate and accepted-B75 with this exact same adapter.
+ * Diagnostics never replace the frozen heading/content/cap assertions.
+ */
+function actualMaterial(report:any){return{
+ body:report.body,
+ areas:areas(report).map(area=>({id:area.id,project:area.projectName,title:area.title,lines:area.bullets,actions:area.actionItems,risks:area.risks,decisions:area.decisionsNeeded,photos:area.imageReferences})),
+ rawAreas:report.constructionUnderstanding.workAreas.map((area:any)=>({id:area.id,project:area.projectName,filed:area.workAreaName,printed:area.printedName,changed:area.whatChanged,progress:area.progress,nextSteps:area.nextSteps,lineSources:area.lineSources})),
+ evidence:report.sourceEvidence,
+};}
+async function actualWordParagraphs(report:any){
+ const zip=await JSZip.loadAsync(Buffer.from(await buildReportWordBase64({title:report.title,body:report.body,generatedAt:report.generatedAt}),'base64'));
+ const xml=await zip.file('word/document.xml')!.async('string');
+ return (xml.match(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g)??[]).map(p=>[...p.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map(m=>m[1]).join(''));
+}
+
 /** Existing public lower-level selector, preserving the legacy raw buckets and
  * each original cap before presentation. B78 must not change this selector.
  * This is a no-photo oracle; photo ownership has its own actual-path case below.
@@ -53,6 +70,7 @@ function rawSelected(input:Parameters<typeof collectReportEvidence>[0]){
 
 it.each(['Inspect 2026','2026 inspection','Unit 2026 punch list'])('3.30 recorded Waiting task %s cannot name an unassigned dated note on real fallback/Runtime/Core paths',taskName=>{
  const w=world(NOTE,'',taskName),before=JSON.stringify({tasks:w.tasks,updates:w.updates});
+ console.log('B78_ACTUAL_WAITING_MATERIAL',JSON.stringify({taskName,paths:{direct:actualMaterial(w.direct),runtime:actualMaterial(w.runtime.response.reportDraft),core:actualMaterial(w.core.reportDraft)}}));
  for(const report of [w.direct,w.runtime.response.reportDraft,w.core.reportDraft]){
   expect(noteAreas(report,NOTE).map(a=>a.title)).toEqual([PROJECT]);
   // Keep the task's own numeric authority; do not guess year versus unit.
@@ -110,6 +128,7 @@ it('3.30 photo ownership/citation numbers survive a raw-bucket collision with Un
  const w=world(NOTE,'','Unit 2026 punch list');
  w.updates[0].photos=[{id:'note-photo',uri:'file:///synthetic/note-photo.jpg',caption:'Conduit installed on 10/20/2026.',category:'Progress',actionRequired:'',actionOwner:'',actionDueDate:'',actionStatus:'Open',fileName:'note-photo.jpg',mimeType:'image/jpeg',selectedAreaName:''}];
  const report=buildDailyProjectUpdate(w.input),refs=areas(report).flatMap(a=>a.imageReferences);
+ console.log('B78_ACTUAL_PHOTO_MATERIAL',JSON.stringify({report:actualMaterial(report),refs}));
  expect(noteAreas(report,NOTE).map(a=>a.title)).toEqual([PROJECT]);
  expect(refs.map((ref:any)=>[ref.photoId,ref.imageNumber,ref.sourceUpdateId])).toEqual([['note-photo',1,'own-note']]);
  expect(bullets(report).filter(b=>b.text.includes('See Image 1.'))).toHaveLength(1);
@@ -117,13 +136,14 @@ it('3.30 photo ownership/citation numbers survive a raw-bucket collision with Un
  expect(bullets(report).some(b=>b.text.includes('Unit 2026 punch list'))).toBe(true);
 });
 it('3.30 mounted native card and real Word paragraphs retain the note beneath its own heading',async()=>{
- const w=world(NOTE,'','Unit 2026 punch list');mockAuthority={state:'ready',policy:{reportGenerationAllowed:true,layer4DecisionCreationAllowed:false},reportDraft:w.core.reportDraft,runtime:w.runtime,executiveJudgmentRecord:null};
+ const w=world(NOTE,'','Unit 2026 punch list');console.log('B78_ACTUAL_NATIVE_CORE_MATERIAL',JSON.stringify(actualMaterial(w.core.reportDraft)));mockAuthority={state:'ready',policy:{reportGenerationAllowed:true,layer4DecisionCreationAllowed:false},reportDraft:w.core.reportDraft,runtime:w.runtime,executiveJudgmentRecord:null};
  const v=render(<ReportsScreen projectName={PROJECT} reportType="daily_project_update" onReportTypeChange={()=>{}} availableProjectNames={[PROJECT]} selectedProjectNames={[PROJECT]} onToggleProject={()=>{}} reportFormat="project_manager" onReportFormatChange={()=>{}} updates={w.updates} scheduleItems={w.tasks} knownScheduleItems={w.tasks} onSavedUpdates={()=>{}} onCopyReport={jest.fn()} onEmailReport={jest.fn()} onTextReport={jest.fn()} onDownloadWordReport={jest.fn()} onOutlookReport={jest.fn()}/>);
  await act(async()=>{for(let i=0;i<15;i++)await Promise.resolve()});await waitFor(()=>expect(screen.queryByText('The reporting period is still loading.')).toBeNull());
  expect(screen.getByRole('button',{name:`${PROJECT} work area`})).toBeTruthy();expect(screen.getByRole('button',{name:`2026 ${PROJECT} work area`})).toBeTruthy();
  const zip=await JSZip.loadAsync(Buffer.from(await buildReportWordBase64({title:w.core.reportDraft.title,body:w.core.reportDraft.body,generatedAt:w.core.reportDraft.generatedAt}),'base64'));
  const xml=await zip.file('word/document.xml')!.async('string');
  const paragraphs=(xml.match(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/g)??[]).map(p=>[...p.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map(m=>m[1]).join(''));
+ console.log('B78_ACTUAL_NATIVE_WORD_PARAGRAPHS',JSON.stringify({body:w.core.reportDraft.body,paragraphs}));
  const noteIndex=paragraphs.findIndex(p=>p.includes(NOTE)&&!p.includes('Latest update:'));expect(noteIndex).toBeGreaterThan(0);
  const heading=paragraphs.slice(0,noteIndex).reverse().find(p=>/^\d+\. /.test(p));expect(heading).toMatch(/^\d+\. Birch Lane$/);
  expect(xml).toContain('Unit 2026 punch list');v.unmount();
@@ -149,7 +169,7 @@ it.each([
  ['all-Unicode unassigned projects',['东楼','西楼']],
  ['ASCII punctuation-colliding projects',['A-B','A B']],
 ]as const)('B78 private ownership cannot cross %s despite actual colliding legacy ids',(_label,names)=>{
- const texts=['Conduit is installed.','Forms are set.'];
+ const texts=['Conduit is installed.','Conduit is installed along the west fence.'];
  const updates=names.map((projectName,index)=>({id:`collision-own-${index}`,projectId:`collision-project-${index}`,projectName,scheduleProjectName:projectName,date:`2026-10-${16-index}T12:00:00Z`,notes:texts[index],selectedAreaName:'',photos:[],recipients:{contactIds:[]},status:'sent'}));
  const frozen=JSON.stringify(updates);
  const singles=names.map((name,index)=>collisionPaths([name],[updates[index]]));
@@ -186,4 +206,15 @@ it.each([
   }
  }
  expect(JSON.stringify(updates)).toBe(frozen);
+});
+
+
+it('B78 diagnostic: actual candidate/B75 selected material and Word paragraphs before heading adjudication',async()=>{
+ const w=world(NOTE,'','Unit 2026 punch list'),before=JSON.stringify({updates:w.updates,tasks:w.tasks});
+ const observed:any={};
+ for(const [path,report]of [['direct',w.direct],['runtime',w.runtime.response.reportDraft],['core',w.core.reportDraft]]as const){
+  observed[path]={...actualMaterial(report),wordParagraphs:await actualWordParagraphs(report)};
+ }
+ console.log('B78_ACTUAL_BASELINE_COMPARISON',JSON.stringify({fixture:{tasks:w.tasks,updates:w.updates},paths:observed}));
+ expect(JSON.stringify({updates:w.updates,tasks:w.tasks})).toBe(before);
 });
