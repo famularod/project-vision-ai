@@ -15337,6 +15337,7 @@ function AddPhotosScreen({
     areaStatus: update.areaStatus,
     areaSuggestion,
     hasScheduleRecommendation: Boolean(scheduleRecommendation),
+    scheduleRecommendationAreaName: scheduleRecommendation?.areaName,
     correctionPenalty: walkCorrectionMemory?.correctionPenalty,
     locationNotice,
   });

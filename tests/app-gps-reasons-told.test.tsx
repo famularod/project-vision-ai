@@ -496,7 +496,7 @@ describe('3. an unfinished update resumed after the app was closed says why it h
     mockLocation.granted = false;
     const first = await launch();
     await startUpdateForLot9(first);
-    await waitFor(() => expect(first.getByText(DENIED)).toBeTruthy(), COLD);
+    await waitFor(() => expect(first.getByText(DENIED_WHEN_STARTED)).toBeTruthy(), COLD);
     await keepAndCloseApp(first);
 
     const again = await reopenAndResume();
@@ -510,7 +510,7 @@ describe('3. an unfinished update resumed after the app was closed says why it h
     mockLocation.granted = false;
     const first = await launch();
     await startUpdateForLot9(first);
-    await waitFor(() => expect(first.getByText(DENIED)).toBeTruthy(), COLD);
+    await waitFor(() => expect(first.getByText(DENIED_WHEN_STARTED)).toBeTruthy(), COLD);
     await keepAndCloseApp(first);
 
     // He sets Location to While Using in iOS Settings, then opens the app.
@@ -527,7 +527,7 @@ describe('3. an unfinished update resumed after the app was closed says why it h
     mockLocation.precise = false;
     const first = await launch();
     await startUpdateForLot9(first);
-    await waitFor(() => expect(first.getByText(PRECISE_OFF)).toBeTruthy(), COLD);
+    await waitFor(() => expect(first.getByText(PRECISE_OFF_WHEN_STARTED)).toBeTruthy(), COLD);
     await keepAndCloseApp(first);
 
     // He turns Precise Location on in iOS Settings, then opens the app.
@@ -571,7 +571,7 @@ describe('3. an unfinished update resumed after the app was closed says why it h
     mockLocation.granted = false;
     const first = await launch();
     await startUpdateForLot9(first);
-    await waitFor(() => expect(first.getByText(DENIED)).toBeTruthy(), COLD);
+    await waitFor(() => expect(first.getByText(DENIED_WHEN_STARTED)).toBeTruthy(), COLD);
     await keepAndCloseApp(first);
 
     // Location is allowed now. He opens the app and starts a new update instead of resuming.
