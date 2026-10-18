@@ -31,18 +31,21 @@ it.each([
  ['2026-03-09T00:30:00-07:00','2026-03-08','yesterday','Yesterday'],
  ['2026-11-02T00:30:00-08:00','2026-11-01','yesterday','Yesterday'],
 ])('actual Home card/activity retain local calendar day at %s', (clock,day,expected,heading)=>{
- jest.useFakeTimers({now:Date.parse(clock)});
+ // Local calendar components make the committed suite portable; the evidence runner exercises Pacific and UTC.
+ jest.useFakeTimers({now:new Date(clock.slice(0,19)).getTime()});
  const update={id:'evening',date:day,status:'sent',projectName:'Tower',photos:[],notes:'Evening work.'} as unknown as ProjectUpdate;
  expect(card(['Tower'],[update])).toBe(`Last update cloud synced ${expected}`);
  expect(group(day)).toBe(heading);
  expect(label(day)).toBe(expected);
 });
 it('Home keeps explicit timestamps on their actual local day around midnight',()=>{
- jest.useFakeTimers({now:Date.parse('2026-10-18T00:30:00-07:00')});
- expect(label('2026-10-18T07:01:00Z')).toBe('today');
- expect(label('2026-10-18T06:59:00Z')).toBe('yesterday');
- expect(label('2026-10-18T00:01:00-07:00')).toBe('today');
- expect(group('2026-10-18T06:59:00Z')).toBe('Yesterday');
+ jest.useFakeTimers({now:new Date(2026,9,18,0,30).getTime()});
+ const today=new Date(2026,9,18,0,1),yesterday=new Date(2026,9,17,23,59);
+ expect(label(today.toISOString())).toBe('today');
+ expect(label(yesterday.toISOString())).toBe('yesterday');
+ const offset=-today.getTimezoneOffset(),sign=offset>=0?'+':'-',zone=`${sign}${String(Math.floor(Math.abs(offset)/60)).padStart(2,'0')}:${String(Math.abs(offset)%60).padStart(2,'0')}`;
+ expect(label(`2026-10-18T00:01:00${zone}`)).toBe('today');
+ expect(group(yesterday.toISOString())).toBe('Yesterday');
 });
 it.each(['2026-02-29','2026-02-30','2026-04-31'])('Home refuses normalized impossible calendar day %s',day=>{
  jest.useFakeTimers({now:Date.parse('2026-03-01T12:00:00-08:00')});

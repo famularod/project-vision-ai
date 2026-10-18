@@ -178,7 +178,8 @@ it.each(['line','panel','summary','delete'])('actual downloaded shared import me
   expect(mockAuth.snapshot!.scheduleItems.map(t=>t.id)).toEqual(['shared']);
   expect(mockAuth.snapshot!.referenceDocuments.map(d=>d.id)).toEqual([master.id]);
  }
- expect(JSON.stringify(raw)).toBe(before);expect(mockAuth.snapshot!.referenceDocuments.every(d=>d.linkedScheduleItems.length===0)).toBe(true);
+ expect(JSON.stringify(raw)).toBe(before);if(surface==='delete') expect(mockAuth.snapshot!.referenceDocuments[0].linkedScheduleItems.map(t=>t.id)).toEqual(['shared']);
+ else expect(mockAuth.snapshot!.referenceDocuments.every(d=>d.linkedScheduleItems.length===0)).toBe(true);
 });
 
 it('the desktop Tasks create consumer leaves manual WBS unassigned, preserving each new task id and project',async()=>{

@@ -163,7 +163,10 @@ it('App relative send labels use local midnight for Z and offset timestamps and 
   expect(label('2026-10-18T06:59:00Z')).toBe('yesterday');
   expect(label('2026-10-17T23:59:00-07:00')).toBe('yesterday');
   // 7.66: a calendar-only update names this local day. Explicit timestamp expectations above stay unchanged.
-  expect(label('2026-10-18')).toBe('today');
+  jest.setSystemTime(new Date(2026, 9, 18, 12));
+  const localValue = appFunction('updateDateValue', { parsePlainDate: jest.requireActual('../../services/ProjectDateTime').parsePlainDate });
+  const localLabel = appFunction('relativeUpdateDateLabel', { updateDateValue: localValue, formatDisplayDate: (v: string) => v });
+  expect(localLabel('2026-10-18')).toBe('today');
   expect(label('not-a-date')).toBe('not-a-date');
 });
 
