@@ -20,6 +20,7 @@ import * as RI from '../../services/DAVEReportIntelligence';
 import { buildDAVEWebReportTitle, formatDAVEWebReport } from '../../services/DAVEWebOperations';
 import type { ReportDrawingReference } from '../../services/ReportDrawingReferences';
 import type * as Description from '../../services/ReportWordMediaDescription';
+import { reportWordBodyLines, type ReportWordMedia } from '../../services/ReportWordDocument';
 import type { ProjectUpdate } from '../../types';
 
 /**
@@ -138,9 +139,9 @@ const drawingWords = (reference: ReportDrawingReference, index: number) => JSON.
 export const drawingPanelWords = (references: readonly ReportDrawingReference[]): string[] =>
   references.slice(0, 6).flatMap(reference => [`${reference.projectName} · ${reference.areaName}`, reference.citation.label, drawingWords(reference, 0)]);
 
-/** A Word file: its title, body, numbered photos and drawings. The authority inputs
- * also hold whether Word may append a task's photo reference (7.78): changing
- * that reference cannot disappear from this fingerprint guard's model.
+/** A Word file: its title, actual body lines, numbered photos and drawings.
+ * Reuse the renderer's photo-reference transform so authority changes count
+ * exactly when they change a visible sentence, not as unused metadata.
  */
 export function wordFileWords({ title, body, photos, drawings, taskLines }: {
   title: string;
@@ -150,16 +151,27 @@ export function wordFileWords({ title, body, photos, drawings, taskLines }: {
   taskLines?: Briefing['wordTaskLines'];
 }, updates: readonly ProjectUpdate[]): string[] {
   const byId = new Map(updates.flatMap(update => (update.photos ?? []).map(photo => [photo.id, { photo, update }] as const)));
+  const preparedPhotos: ReportWordMedia[] = photos.flatMap(({ photoId, number }) => {
+    const found = byId.get(photoId);
+    if (!found) return [];
+    const unique = updates.flatMap(update => update.photos ?? []).filter(photo => photo.id === photoId).length === 1;
+    return [{
+      ...reportWordPhotoDescription(found.photo, found.update),
+      id: photoId, kind: 'photo', displayNumber: number,
+      linkedTaskId: unique ? found.update.scheduleItemId : null,
+      projectId: found.update.projectId,
+      // The pure body transform only reads authority and numbering; these
+      // stand-ins do not fetch/encode images or replace the real DOCX tests.
+      data: new Uint8Array(), mimeType: 'image/png', width: 1, height: 1,
+    }];
+  });
   return [
-    `TITLE ${title}`, body,
-    JSON.stringify({ wordTaskLines: taskLines ?? [] }),
+    `TITLE ${title}`, ...reportWordBodyLines(body, preparedPhotos, taskLines ?? []),
     ...photos.map(({ photoId, number }) => {
       const found = byId.get(photoId);
       return JSON.stringify(found ? {
         label: `Photo ${number}`, photoId,
         ...reportWordPhotoDescription(found.photo, found.update),
-        linkedTaskId: found.update.scheduleItemId,
-        projectId: found.update.projectId,
       } : { label: `Photo ${number}`, photoId, missing: true });
     }),
     ...drawings.map(drawingWords),

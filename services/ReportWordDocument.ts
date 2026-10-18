@@ -414,12 +414,16 @@ function buildMasthead() {
   });
 }
 
-function reportBodyParagraphs(
+/** The exact body lines consumed by the Word renderer, after photo references.
+ * Callers supply already-prepared photos. Unused identity metadata must not be
+ * treated as visible report output when no printed task line uses it.
+ */
+export function reportWordBodyLines(
   body: string,
   photos: readonly ReportWordMedia[] = [],
   taskLines?: readonly ReportWordTaskLine[],
-) {
-  const lines = addInlinePhotoReferences(
+): string[] {
+  return addInlinePhotoReferences(
     body
     .replace(/\r\n/g, '\n')
     .split('\n')
@@ -427,6 +431,14 @@ function reportBodyParagraphs(
     photos,
     taskLines,
   );
+}
+
+function reportBodyParagraphs(
+  body: string,
+  photos: readonly ReportWordMedia[] = [],
+  taskLines?: readonly ReportWordTaskLine[],
+) {
+  const lines = reportWordBodyLines(body, photos, taskLines);
   const paragraphs: Paragraph[] = [];
 
   for (const rawLine of lines) {
