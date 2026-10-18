@@ -53,14 +53,14 @@ it('a caller without a complete fusion recipe keeps its supplied runtime sentenc
 
 it.each([false,true])('actual core fusion keeps its parent scope beside an affected blank task (combined=%s)',combined=>{
  const parent=combined?'Beta':'Alpha';const selected=combined?['Alpha','Beta']:['Alpha'];
- const rows=[task({id:'building',taskName:'Ordinary subproject task',projectName:'Building 7',scheduleProjectName:parent,finishDate:'10/10/2026'}),task({projectName:'',scheduleProjectName:parent})];
+ const rows=[task({id:'building',taskName:'Ordinary subproject task',projectName:'Building 7',scheduleProjectName:parent,finishDate:'10/10/2026',priority:'High',status:'Waiting'}),task({projectName:'',scheduleProjectName:parent})];
  const core=buildPIECoreIntelligence({runtimeContext:{projectName:parent,projectNames:selected,reportType:combined?'combined_project_update':'daily_project_update',updates:[],scheduleItems:rows,knownScheduleItems:rows,currentUpdate:null,projectAreas:[],contacts:{contacts:[]},referenceDocuments:[],surface:'reports'},reportType:combined?'combined_project_update':'daily_project_update',reportProjectNames:selected,organizationId:'local-unverified-anonymous',projectId:'synthetic-project'} as never);
  const facts=truths(rows,selected);const focus=facts.find(t=>t.projectName===parent)!.writtenReportFacts!.scheduleFocus!;
  const body=enhanceDAVEReportDraft(core.reportDraft,buildDAVEReportBriefing({truths:facts}),'project_manager').body;
  expect(body).toContain(focus);expect(body).not.toContain('Schedule focus: Ordinary subproject task');
 });
 it('only a foreign row needing projection leaves the existing selected fusion recipe intact',()=>{
- const included=task();const ordinaryGlobal=task({id:'withheld',taskName:'Other globally saved task',finishDate:'10/10/2026'});
+ const included=task();const ordinaryGlobal=task({id:'withheld',taskName:'Other globally saved task',finishDate:'10/10/2026',priority:'High',status:'Waiting'});
  const foreign=task({id:'foreign',projectName:'',scheduleProjectName:'Foreign',completionVerification:{status:'pm_verified'} as any});
  const fused=buildFusedEvidence({projectName:'Alpha',projectNames:['Alpha'],scheduleItems:[included],now:new Date(NOW)});
  const draft=buildPIEReportDraft({selectedProjectNames:['Alpha'],scheduleItems:[ordinaryGlobal,included,foreign],savedUpdates:[],runtime:{fusedEvidence:fused},generatedAt:new Date(NOW)});
