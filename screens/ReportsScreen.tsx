@@ -2217,7 +2217,7 @@ function PIEReporterPreview({
         </Text>
       ) : null}
 
-      {hasManualEdits && !reportEditing ? (
+      {hasManualEdits ? (
         <TouchableOpacity onPress={onDiscardEdits} accessibilityRole="button" accessibilityLabel="Discard report edits">
           <Text style={styles.reportActionText}>Discard edits and use the current report</Text>
         </TouchableOpacity>
