@@ -90,7 +90,7 @@ function upright(width: number, height: number, orientation: number | null) {
 function jpegSize(bytes: ReportImageBytes) {
   let offset = 2;
   let orientation: number | null = null;
-  let orientationCount = 0;
+  let exifBlockCount = 0;
   let uncertain = false;
   let frameSize: ReportImageHeaderSize | null = null;
   let exifBytesLeft = MAX_JPEG_EXIF_BYTES;
@@ -128,13 +128,15 @@ function jpegSize(bytes: ReportImageBytes) {
     if (marker === 0xe1) {
       const prefix = bytes.read(offset + 4, Math.min(length - 2, 6));
       if (startsWithText(prefix, 'Exif\0\0') && exifBytesLeft > 0) {
+        // Even a valid first IFD with no orientation can govern the platform.
+        // Multiple EXIF blocks therefore cannot establish display authority here.
+        exifBlockCount += 1;
+        if (exifBlockCount > 1) uncertain = true;
         const block = bytes.read(offset + 4, Math.min(length - 2, MAX_EXIF_BYTES, exifBytesLeft));
         exifBytesLeft -= block.length;
         const directory = tiffDirectory(windowOf(block, 6), true);
         if (block.length !== length - 2 || !directory || directory.orientationUncertain) uncertain = true;
         if (directory?.orientation !== null && directory?.orientation !== undefined) {
-          orientationCount += 1;
-          if (orientationCount > 1) uncertain = true;
           orientation = directory.orientation;
         }
       } else {

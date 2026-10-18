@@ -204,11 +204,11 @@ function localFileFormat(uri: string): ReportImageFormat {
 }
 
 /**
- * A local picture's size as it is shown upright, read from the header of its
- * file: a few short reads, with nothing decoded and the file not loaded
- * (review pass 1, L6 and L7). Null when this app does not read a size from
- * that kind of header or the file cannot be read; the device is asked then,
- * as it was before.
+ * A local picture's pixel budget and, when unambiguous, upright size, read
+ * from bounded header reads without decoding or loading the whole file.
+ * An uncertain JPEG retains encoded dimensions for the early guard; its
+ * displaySizeKnown flag tells the caller to ask the device for upright size.
+ * Null when this app cannot read dimensions from the header.
  */
 function localHeaderSize(uri: string, format: ReportImageFormat): ReportImageHeaderInfo | null {
   try {
