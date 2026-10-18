@@ -1,6 +1,7 @@
 import { fireEvent, render } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
 import { DesktopSchedulePage } from '../../components/web-shell/desktop-schedule-page';
+import * as GanttModel from '../../services/VitruviusGanttModel';
 import { buildVitruviusGanttModel, type VitruviusGanttZoom } from '../../services/VitruviusGanttModel';
 import type { DAVEWebScheduleItem } from '../../services/DAVEWebTaskEditing';
 jest.mock('@expo/vector-icons',()=>({Ionicons:()=>null}));
@@ -44,4 +45,17 @@ for(const zoom of ['day','week','month'] as const)it('mounted '+zoom+' keeps 200
  const child=m.rows.find(r=>r.item.id==='child')!;expect(StyleSheet.flatten(s.getByTestId('gantt-baseline:child').props.style)).toMatchObject({left:child.baselineLeft,width:child.baselineWidth});expect(StyleSheet.flatten(s.getByTestId('gantt-progress:child').props.style).width).toBe(child.progressWidth);
  expect(StyleSheet.flatten(s.getByTestId('gantt-milestone:end').props.style).left).toBe(m.rows.find(r=>r.item.id==='end')!.left);
  budget(()=>fireEvent.scroll(s.getByTestId('gantt-timeline-scroll'),{nativeEvent:{contentOffset:{x:m.timelineWidth}}}));bounded(s);expect(s.getByText(/Viewing .*2100/)).toBeTruthy();
+});
+
+it('scrolling a normal large job reuses task geometry and unchanged row subtrees',()=>{
+ const tasks=Array.from({length:300},(_,n)=>task('normal-'+n));
+ const build=jest.spyOn(GanttModel,'buildVitruviusGanttModel');
+ try {
+  const s=open(tasks);expect(build).toHaveBeenCalled();build.mockClear();
+  const barStyle=s.getByTestId('gantt-bar:normal-0').props.style;
+  const scroll=s.getByTestId('gantt-timeline-scroll');
+  for(let n=1;n<=12;n++)budget(()=>fireEvent.scroll(scroll,{nativeEvent:{contentOffset:{x:n}}}));
+  expect(build).not.toHaveBeenCalled();
+  expect(s.getByTestId('gantt-bar:normal-0').props.style).toBe(barStyle);bounded(s);
+ }finally{build.mockRestore();}
 });
