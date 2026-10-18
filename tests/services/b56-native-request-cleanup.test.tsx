@@ -497,3 +497,7 @@ it('B56 cancellation during the first durable save keeps that card retryable but
 it('B56 a readable batch that finishes after Close releases only its unopened review and never navigates',async()=>{
  const service=barrier();schedule=async args=>{await service.promise;return SERVICE_READS_ONE_TASK(args)};const p=phone();const work=p.addInDocuments(F1,'Schedule');await waitFor(()=>expect(reviewFiles()).toHaveLength(1));selectionActions(p).cancelDocumentProjectSelection();service.release();await work;await settle();expect(p.savedCards()).toEqual([]);expect(reviewFiles()).toEqual([]);expect(p.opened).toEqual([]);expect(p.screens).toEqual([]);
 });
+
+it.each(['other-owner','round-trip'])('B56 Cancel notice after cleanup must recheck owner generation (%s)',async change=>{
+ const p=phone();await p.addInDocuments(F1,'Other',['Second Pier']);p.uploadAttempts.splice(0);const work=p.addInDocuments(F1,'Schedule',[PROJECT,'Second Pier']);await question(p);const cleanup=barrier();mockNativeStatBarrier=cleanup.promise;choose(p,'Cancel');await settle();noteSignedInOwner('another-owner');if(change==='round-trip')noteSignedInOwner(p.owner);cleanup.release();await work;await settle();expect(p.alerts.some(a=>a.title==='Schedule review cancelled')).toBe(false);expect(p.savedCards()).toHaveLength(2);expect(ownedFiles().sort()).toEqual(p.savedCards().map(d=>d.localUri!).sort());expect(reviewFiles()).toEqual([]);expect(p.uploadAttempts).toEqual([]);
+});
