@@ -210,14 +210,14 @@ async function observe(rows:Rows,format:Format){
  const core=buildPIECoreIntelligence({runtimeContext:{projectName:P1.name,projectNames:[P1.name],reportType:'daily_project_update',updates:held.updates,scheduleItems:held.tasks,knownScheduleItems:held.tasks,currentUpdate:null,projectAreas:[],contacts:{contacts:[]},referenceDocuments:[],surface:'reports'},reportType:'daily_project_update',reportProjectNames:[P1.name],organizationId:'local-unverified-anonymous',projectId:'synthetic-project'} as never);
  const written=enhanceDAVEReportDraft(core.reportDraft as never,pb,format);
  const webBody=formatDAVEWebReport(db,format);
- const pw=await word(written.body,[...pb.wordTaskLines],held.updates),dw=await word(webBody,[...db.wordTaskLines],held.updates);
+ const pw=await word(written.body,[...(pb.wordTaskLines ?? [])],held.updates),dw=await word(webBody,[...(db.wordTaskLines ?? [])],held.updates);
  const nativeRows={...rows,scheduleItems:rows.scheduleItems.map(row=>({...row,item_data:normalizeScheduleItem(row.item_data)}))};
  const nativeSnapshot=await computerSnapshot(nativeRows);
  const nativeTruth=buildDAVEWebReportTruths(nativeSnapshot,P1.name);
  const nativePeriod=buildDAVEReportSourceOnPeriod(nativeTruth,sent,format);
  const nativeBriefing=buildDAVEWebReportDraft(nativeSnapshot,P1.name,{previousSnapshot:nativePeriod.countedFrom,waitingForOtherDevice:false});
  const nativeBody=formatDAVEWebReport(nativeBriefing,format);
- const nativeWord=await word(nativeBody,[...nativeBriefing.wordTaskLines],held.updates);
+ const nativeWord=await word(nativeBody,[...(nativeBriefing.wordTaskLines ?? [])],held.updates);
  const rawLegacy={phone:buildDAVELegacyReportSourceFingerprint(phone),desktop:buildDAVELegacyReportSourceFingerprint(desktop)};
  const goldenKey=JSON.stringify([format,rows.scheduleItems[0].item_data,rows.projectUpdates]);
  expect(rawLegacy).toEqual(legacyGoldens[goldenKey]);

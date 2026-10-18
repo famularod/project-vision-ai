@@ -93,7 +93,8 @@ import type { PIERecommendationChallengeResult } from './PIERecommendationChalle
 import type { PIEJarvisReasoningValidation } from './PIEJarvisReasoningValidation';
 import type { PIEConfidenceDecomposition } from './PIEConfidenceDecomposition';
 import type { PIEEvidenceValuePrioritization } from './PIEEvidenceValuePrioritization';
-import { fieldUpdatesNewestFirst, scheduleTasksInReportOrder, whatChangedForWrittenReport } from './PIEEvidenceFusion';
+import { projectScheduleItemsForReport } from './ReportScheduleProjection';
+import { fieldUpdatesNewestFirst, scheduleTasksInReportOrder, whatChangedForWrittenReport, extractScheduleEvidence } from './PIEEvidenceFusion';
 import { confirmedComparisonQuoted, isEmptyRuntimeSummary, noteIsAcceptedPhotoSuggestion } from './ReportWrittenFacts';
 import { resolvePIEReportProjectNames } from './PIEReportScope';
 import { SCHEDULE_CHECK_REVIEW_FLAG } from './ReportApprovalPolicy';
@@ -669,7 +670,25 @@ export function collectReportEvidence(
       });
     });
 
-  const runtime = input.runtime;
+  const projectedTasks = input.scheduleItems && projectScheduleItemsForReport(input.scheduleItems);
+  const tasksChanged = projectedTasks && projectedTasks !== input.scheduleItems;
+  const originalRuntime = input.runtime;
+  // The report reads its own projected tasks, while retaining the runtime's authored
+  // update/photo recipe and every other model product. Do not change the wider runtime.
+  const runtime = tasksChanged && originalRuntime?.fusedEvidence?.scheduleEvidence
+    ? {
+        ...originalRuntime,
+        fusedEvidence: {
+          ...originalRuntime.fusedEvidence,
+          scheduleEvidence: extractScheduleEvidence({
+            scheduleItems: projectedTasks.filter(item => selectedProjects.includes(
+              normalizeName(item.scheduleProjectName?.trim() || item.projectName),
+            )),
+            now: input.generatedAt,
+          }),
+        },
+      }
+    : originalRuntime;
   const situation = runtime?.situationIntelligence;
   if (situation?.situationSummary.headline) {
     evidence.push({
@@ -2862,7 +2881,7 @@ function selectedProjectsFromInput(input: PIEReportDraftInput) {
  * read as before; none is added or left out by the order.
  */
 function reportScheduleItems(input: PIEReportDraftInput) {
-  return scheduleTasksInReportOrder(input.scheduleItems || []);
+  return scheduleTasksInReportOrder(projectScheduleItemsForReport(input.scheduleItems || []));
 }
 
 function selectedUpdates(

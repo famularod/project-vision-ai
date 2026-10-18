@@ -4,12 +4,13 @@ import type {
   ReferenceDocument,
   ScheduleItem,
 } from '../types';
-import { buildDAVEProjectTruth, daveProjectTruthInStableOrder, type DAVEProjectTruth } from './DAVEProjectTruth';
+import { buildDAVEProjectTruth, daveProjectTruthInStableOrder, daveProjectTruthAsBuilt, daveProjectTruthCountsOtherUpdatesThanBefore, type DAVEProjectTruth } from './DAVEProjectTruth';
 import type { ProjectRecord } from './ProjectCoverPhotoService';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
 import { buildAutomaticReportDrawingReferences } from './ReportDrawingReferences';
 import { buildWrittenReportFacts } from './ReportWrittenFacts';
 import { reportTaskConfirmedAt } from './DAVEReportIntelligence';
+import { projectScheduleItemsForReport } from './ReportScheduleProjection';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
 import { fieldUpdatesNewestFirst, scheduleTasksInReportOrder } from './PIEEvidenceFusion';
 
@@ -84,6 +85,28 @@ export type DAVEReportProjectTruthsInput = {
  * for a name.
  */
 export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput): DAVEProjectTruth[] {
+  const scheduleItems = projectScheduleItemsForReport(input.scheduleItems);
+  const knownScheduleItems = input.knownScheduleItems && projectScheduleItemsForReport(input.knownScheduleItems);
+  if (scheduleItems === input.scheduleItems && knownScheduleItems === input.knownScheduleItems) {
+    return buildReportTruthsFromInput(input);
+  }
+  // One moment for the modern reading and the original input's frozen history.
+  const now = input.now ?? new Date().toISOString();
+  const original = buildReportTruthsFromInput({ ...input, now });
+  const modern = buildReportTruthsFromInput({ ...input, scheduleItems, knownScheduleItems, now });
+  return modern.map((truth, index) => daveProjectTruthInStableOrder(
+    // A fresh view: the stable-order helper deliberately keeps an already-associated history.
+    { ...truth },
+    daveProjectTruthAsBuilt(original[index]),
+    daveProjectTruthCountsOtherUpdatesThanBefore(truth),
+    truth.drawingCitations,
+    truth.writtenReportFacts,
+    truth.completedWorkConfirmedAt,
+  ));
+}
+
+/** The B62 recipe, also used verbatim for each original input's historical truth. */
+function buildReportTruthsFromInput(input: DAVEReportProjectTruthsInput): DAVEProjectTruth[] {
   const known = input.knownScheduleItems;
   return input.projects.map(project => {
     const scopeInput = {
