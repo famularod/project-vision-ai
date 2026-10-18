@@ -101,7 +101,7 @@ it('3.30 actual desktop formatter retains its note provenance and numeric task t
  const truths=buildDAVEWebReportTruths(w.snapshot,PROJECT);
  const own=truths.flatMap(truth=>truth.evidence.records).filter(record=>record.kind==='update'&&record.sourceRecordId==='own-note');
  expect(own).toHaveLength(1);
- expect(own[0]).toMatchObject({id:'update:own-note',sourceRecordId:'own-note',text:NOTE,projectName:PROJECT,areaName:''});
+ expect(own[0]).toMatchObject({id:'update:own-note',sourceRecordId:'own-note',summary:NOTE,projectName:PROJECT,areaName:null});
  expect(text).not.toContain(`${PROJECT} — 2026 ${PROJECT}: ${NOTE}`);
  expect(text).toContain('Unit 2026 punch list');
  expect(formatDAVEWebReport(buildDAVEWebReportDraft(w.snapshot,PROJECT),'executive')).toContain(PROJECT);
