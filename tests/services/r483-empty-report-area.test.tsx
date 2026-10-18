@@ -186,8 +186,8 @@ test.each(['note', 'waiting task', 'future task', 'photo', 'photo only'] as cons
   expect(screen.getByText(`1 area · ${hasPhoto ? 1 : 0} photo${hasPhoto ? '' : 's'}`)).toBeTruthy();
   expect(screen.queryByText('0 updates · 0 photos')).toBeNull();
   if (kind === 'note') {
-    expect(screen.getByText('Neighbors asked about weekend hours.', { exact: true })).toBeTruthy();
-    expect(screen.getByText(/^Latest update: Neighbors asked about weekend hours\./)).toBeTruthy();
+    expect(screen.getByText(/^Progress:\s*Neighbors asked about weekend hours\.$/)).toBeTruthy();
+    expect(screen.getByText(/^Progress:\s*Latest update: Neighbors asked about weekend hours\.$/)).toBeTruthy();
   }
   if (hasPhoto) expect(screen.getByLabelText('Photo 1 from North Wing')).toBeTruthy();
   expect(JSON.stringify(draft)).toBe(before);
