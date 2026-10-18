@@ -12,6 +12,7 @@ import type {
 // stays, and saves the rest as before; a document that is not a schedule with tasks keeps every category choice.
 // Made-up projects; the shell harness of desktop-lookahead-document.test.tsx.
 
+jest.mock('../../services/DAVEWebSupabaseClient',()=>{const actual=jest.requireActual('../../services/DAVEWebSupabaseClient');return {...actual,daveWebSupabaseGateway:{...actual.daveWebSupabaseGateway,loadAuthorizedRows:jest.fn()}};});
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(),
@@ -128,8 +129,8 @@ it('actual downloaded shared import membership is counted in file line, inspecto
  scheduleItems:[{id:'shared',item_data:{id:'shared',taskName:'Shared roof task',projectName:'Alpha',scheduleProjectName:'Alpha',locationName:'Roof',status:'Not Started',percentComplete:0,
  startDate:'10/01/2026',finishDate:'10/02/2026',importBatchId:older.importBatchId,sourceDocumentId:older.id,alsoImportedInBatchIds:[master.importBatchId],
  owner:'Dana',notes:'',createdAt:'2026-10-01T12:00:00Z'}}]};
- const before=JSON.stringify(raw);const read=jest.spyOn(daveWebSupabaseGateway,'loadAuthorizedRows').mockResolvedValue(raw as never);
- mockAuth.snapshot=await loadDAVEWebReadOnlySnapshot();read.mockRestore();
+ const before=JSON.stringify(raw);jest.mocked(daveWebSupabaseGateway.loadAuthorizedRows).mockResolvedValue(raw as never);
+ mockAuth.snapshot=await loadDAVEWebReadOnlySnapshot();
  expect(mockAuth.snapshot.referenceDocuments.map(d=>({id:d.id,count:d.importedScheduleItemCount,deleteCount:d.linkedScheduleItems.length})))
  .toEqual([{id:master.id,count:1,deleteCount:0},{id:older.id,count:1,deleteCount:0}]);
  const screen=render(<DesktopReadOnlyShell page="documents"/>);

@@ -24,7 +24,7 @@ beforeEach(()=>{
  mockCreate.mockImplementation((item:DAVEWebScheduleItem)=>gateway.createAuthorizedScheduleItem(item));
 });
 const page=()=> <DesktopSchedulePage tasks={mockRows} projects={[PROJECT]} selectedProject={PROJECT}/>;
-function fill(screen:ReturnType<typeof render>,name='Hand made task') {fireEvent.press(screen.getByText('Add Task'));fireEvent(screen.getByLabelText('Name'),'change',{target:{value:name}});}
+function fill(screen:ReturnType<typeof render>,name='Hand made task') {fireEvent.press(screen.getByText('Add Task'));fireEvent.changeText(screen.getByLabelText('Name'),name);}
 async function save(screen:ReturnType<typeof render>) {fireEvent.press(screen.getByText('Create Task'));await waitFor(()=>expect(persisted).toHaveLength(1));return persisted[0].item_data as DAVEWebScheduleItem;}
 it('actual builder persists a fresh code after seven siblings already include WBS8',async()=>{
  mockRows=[...Array.from({length:6},(_,i)=>task(`row-${i}`,String(i+1))),task('existing-eight','8')];const before=JSON.stringify(mockRows);
@@ -38,19 +38,19 @@ it('a received task while the form is open cannot reuse its generated WBS at dur
  mockRows=[...mockRows,task('arrived','2')];screen.rerender(page());const written=await save(screen);expect(written.wbsCode).toBe('3');
 });
 it('an explicitly entered occupied WBS is refused before insert and remains available for correction',async()=>{
- mockRows=[task('first','8')];const screen=render(page());fill(screen);fireEvent(screen.getByLabelText('WBS'),'change',{target:{value:'8'}});
+ mockRows=[task('first','8')];const screen=render(page());fill(screen);fireEvent.changeText(screen.getByLabelText('WBS'),'8');
  fireEvent.press(screen.getByText('Create Task'));await waitFor(()=>expect(screen.getByText(/WBS 8 is already used/)).toBeTruthy());
  expect(persisted).toHaveLength(0);expect(mockCreate).not.toHaveBeenCalled();expect(screen.getByLabelText('WBS').props.value).toBe('8');
- fireEvent(screen.getByLabelText('WBS'),'change',{target:{value:'ROOF-A'}});const written=await save(screen);expect(written.wbsCode).toBe('ROOF-A');
+ fireEvent.changeText(screen.getByLabelText('WBS'),'ROOF-A');const written=await save(screen);expect(written.wbsCode).toBe('ROOF-A');
 });
 it('unchanged existing duplicate/custom codes and task identity survive an ordinary edit',async()=>{
  mockRows=[task('first','8'),task('second','8')];const screen=render(page());fireEvent.press(screen.getByLabelText('Edit second'));
- fireEvent(screen.getByLabelText('Name'),'change',{target:{value:'Revised second'}});fireEvent.press(screen.getByText('Save Changes'));
+ fireEvent.changeText(screen.getByLabelText('Name'),'Revised second');fireEvent.press(screen.getByText('Save Changes'));
  await waitFor(()=>expect(mockUpdate).toHaveBeenCalledWith(expect.objectContaining({id:'second',wbsCode:'8',projectId:PROJECT_ID,taskName:'Revised second'})));
  expect(mockCreate).not.toHaveBeenCalled();
 });
 it('child allocation stays under its actual parent and ignores another project codes',async()=>{
  mockRows=[task('phase','2',{isSummary:true}),task('child','2.2',{parentItemId:'phase'}),task('foreign','99',{projectName:'Other Tower'})];
- const screen=render(page());fireEvent.press(screen.getByLabelText('Add task under phase'));fireEvent(screen.getByLabelText('Name'),'change',{target:{value:'Second child'}});
+ const screen=render(page());fireEvent.press(screen.getByText('Add Task'));fireEvent(screen.getByLabelText('Parent phase'),'change',{target:{value:'phase'}});fireEvent.changeText(screen.getByLabelText('Name'),'Second child');
  const written=await save(screen);expect(written).toMatchObject({wbsCode:'2.3',parentItemId:'phase',projectName:PROJECT,projectId:PROJECT_ID});
 });
