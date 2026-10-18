@@ -823,14 +823,20 @@ export function scheduleItemLaterPercentGivenBack(
   return { progressConfirmedAt: givenBackAt, progressJudgment: { judgedAt: scheduleProgressJudgedAt(remote) ?? givenBackAt, givenBackAt } };
 }
 
-/** The activity log both copies added to: the cloud's entries, then this device's the cloud lacks. */
+/** Both copies' activity in date order, with the cloud's record authoritative for a shared id. */
 export function scheduleItemActivityOfBoth(
   local: readonly ProjectItemActivity[] | null | undefined,
   remote: readonly ProjectItemActivity[] | null | undefined,
 ): ProjectItemActivity[] {
   const cloudEntries = Array.isArray(remote) ? remote : [];
   const known = new Set(cloudEntries.map(entry => entry?.id));
-  return [...cloudEntries, ...(Array.isArray(local) ? local : []).filter(entry => !known.has(entry?.id))];
+  // Match the history of two rows of one task: unknown times use zero,
+  // and equal times retain the existing cloud-then-local encounter order.
+  const when = (entry: ProjectItemActivity) => { const time = Date.parse(entry?.createdAt || ''); return Number.isFinite(time) ? time : 0; };
+  return [...cloudEntries, ...(Array.isArray(local) ? local : []).filter(entry => !known.has(entry?.id))]
+    .map((entry, index) => ({ entry, index }))
+    .sort((left, right) => when(left.entry) - when(right.entry) || left.index - right.index)
+    .map(({ entry }) => entry);
 }
 
 /** The base kept for the asked fields only, as the conflict saves it. */
