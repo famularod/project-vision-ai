@@ -137,9 +137,9 @@ it('new structured inputs do not run the old ambiguous Action/Decisions matcher'
  expect((await word(body.replace(/^## (.+)$/gm, (_, h) => h.toUpperCase()), u, [])).some(p => p.endsWith('Photo 7 shows this work.'))).toBe(false);
 });
 it('Unicode-area native legacy sends require exact words evidence', () => {
- const { briefing } = web([task('t', 'Alpha', 'Hang doors', 'Подвал 1', '09/30/2026', 100)], []);
- expect(reportWordingRequiresAppTextKey({ sourceEvidence: [], daveBriefing: briefing })).toBe(true);
- expect(reportWordingRequiresAppTextKey({ sourceEvidence: [] })).toBe(false);
+ const { briefing, body } = web([task('t', 'Alpha', 'Hang doors', 'Подвал 1', '09/30/2026', 100)], []);
+ expect(reportWordingRequiresAppTextKey({ sourceEvidence: [], daveBriefing: briefing, body })).toBe(true);
+ expect(reportWordingRequiresAppTextKey({ sourceEvidence: [], body: '' })).toBe(false);
 });
 
 import { daveWebReportAlreadySentElsewhereAt } from '../../services/DAVEWebReportPeriod';
