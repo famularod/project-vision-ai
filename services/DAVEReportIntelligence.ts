@@ -399,6 +399,18 @@ export function buildDAVELegacyReportSourceFingerprint(
   const truthFingerprints = truths
     .map(daveProjectTruthAsBuilt)
     .map(truth => ({
+      ...truth,
+      intelligence: {
+        ...truth.intelligence,
+        // The desktop's archive UI projection was introduced after Build
+        // 230. Historical 1.0 fingerprints retain that build's document facts.
+        referenceDocuments: truth.intelligence.referenceDocuments.map(document => {
+          const { archivedAt: _archiveView, ...saved } = document as typeof document & { archivedAt?: unknown };
+          return saved;
+        }),
+      },
+    }))
+    .map(truth => ({
       projectName: normalized(truth.projectName),
       fingerprint: stableHash(stableStringify(canonicalizeReportSourceValue(
         withoutVolatileReportSourceFields(truth),
