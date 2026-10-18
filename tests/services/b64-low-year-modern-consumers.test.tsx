@@ -242,6 +242,7 @@ for(const format of ['project_manager','executive'] as const){
   expect(changed.phoneFingerprint).not.toBe(r.phoneFingerprint);
   expect(changed.desktopFingerprint).not.toBe(r.desktopFingerprint);
   expect(changed.phoneWord).not.toEqual(r.phoneWord);
-  expect(changed.desktopWord).not.toEqual(r.desktopWord);
+  if(format==='project_manager')expect(changed.desktopWord).not.toEqual(r.desktopWord);
+  else expect(changed.desktopWord).toEqual(r.desktopWord); // The Executive summary aggregates the same overdue task.
  });
 }
