@@ -91,7 +91,7 @@ function appFunction(name: string, dependencies: Record<string, unknown>) {
 
 it('Home project-card chooses and dates the last authored send, preserving draft and failure precedence', () => {
   const chronology = jest.requireActual('../../services/PIEEvidenceFusion');
-  const shared = (() => { try { return jest.requireActual('../../services/FieldUpdateChronology'); } catch { return {}; } })();
+  const shared = jest.requireActual('../../services/FieldUpdateChronology');
   const relativeUpdateDateLabel = appFunction('relativeUpdateDateLabel', { formatDisplayDate: (v: string) => v });
   const card = appFunction('buildProjectCardPIEStatus', { ...chronology, ...shared,
     projectMatchesScope: (u: ProjectUpdate, p: string) => u.projectName === p,
@@ -104,4 +104,10 @@ it('Home project-card chooses and dates the last authored send, preserving draft
   expect(card(['Other'], [yesterday, late])).toBe('No recent updates');
   expect(card(['Tower'], [late, { ...yesterday, status: 'failed' }])).toBe('Failure requires retry');
   expect(card(['Tower'], [{ ...late, status: 'ready_to_send' }])).toBe('Draft ready to sync');
+});
+
+it.each(['draft', 'queued', 'failed', 'ready_to_send'] as const)('an unsent %s record cannot use a leftover send timestamp as acknowledged chronology', status => {
+  const a = morning(), b = { ...midday(), date: '2026-10-15', status, workflowTimestamps: { sendTappedAt: '2026-10-18T23:00:00Z' } };
+  expect(fusion([b, a]).intelligentSummary.whatChanged).toContain(`Latest update: ${a.notes}`);
+  expect(fieldUpdatesNewestFirst([b, a]).map(u => u.id)).toEqual([a.id, b.id]);
 });

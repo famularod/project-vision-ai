@@ -2879,7 +2879,7 @@ function selectedUpdates(
   // for the parent must still carry it.
   //
   // Build 232 item 2 part A (the coordinator's decision): NEWEST FIRST BY THE
-  // UPDATES' OWN DATES, the one place the report's updates are put in order.
+  // SHARED SEND TIMES (legacy records keep their dates), the report's update order.
   // Which notes lead each work area, and the numbers of the images, followed
   // the order this device's list held them in, and two devices hold the same
   // updates in different orders. The same updates are read as before; none is

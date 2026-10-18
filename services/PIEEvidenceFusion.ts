@@ -1,3 +1,4 @@
+import { fieldUpdateChronologyDate, type FieldUpdateChronology } from './FieldUpdateChronology';
 import type {
   ProjectArea,
   ProjectUpdate,
@@ -207,6 +208,9 @@ export type PIEUserUpdateEvidence = {
   areaName: string | null;
   notes: string | null;
   date: string | null;
+  /** Shared authored send metadata; completion times are not chronology. */
+  status?: ProjectUpdate['status'];
+  workflowTimestamps?: Pick<NonNullable<ProjectUpdate['workflowTimestamps']>, 'sendTappedAt'>;
   photoCount: number;
   mentionedIssues: string[];
   mentionedSafety: string[];
@@ -934,6 +938,9 @@ export function extractUserUpdateEvidence({
         areaName: trimOrNull(update.selectedAreaName ?? ''),
         notes,
         date: update.date || null,
+        status: update.status,
+        workflowTimestamps: update.workflowTimestamps?.sendTappedAt
+          ? { sendTappedAt: update.workflowTimestamps.sendTappedAt } : undefined,
         photoCount: update.photos.length,
         mentionedIssues,
         mentionedSafety,
@@ -1687,7 +1694,7 @@ function scheduleStatusSummary(fusedEvidence: PIEFusedEvidence) {
  * update in the list this device holds as the latest, so the device that
  * recorded an update and the device that received it by sync were handed
  * two different "latest" updates. It now takes the newest by the update's
- * own date, by the one rule the written report reads them by
+ * authored send time (or legacy date), by the rule the written report reads them by
  * (`fieldUpdatesNewestFirst`), and the task in focus the same way
  * (`taskInScheduleFocus`). Its count of days stays ("Due in 4 days"): it is
  * read on the day, not sent.
@@ -1697,30 +1704,16 @@ function whatChangedSummary(fusedEvidence: PIEFusedEvidence) {
 }
 
 /**
- * Field updates NEWEST FIRST BY THEIR OWN DATE, the one order the written
- * report reads them in (Build 232 item 2 part A, the coordinator's decision
- * on reports review pass 4, P4-1 and P4-2).
- *
- * The phone's written report took "latest" to be the first update in the
- * list this device holds, and led each work area with the notes at the front
- * of that list. A device that records an update puts it at the front of its
- * list; a device that receives it by sync puts it at the end. So an iPad
- * called a three-day-old note the "Latest update", and showed "Your other
- * device already sent this report" above a report that read differently
- * from the one the phone sent.
- *
- * The date is the update's `date`, the one the app shows as the update's
- * date. It names a day and carries no time of day, so the updates of one day
- * go by their id, the later id first: every device holds the same ids, and
- * the app's own ids begin with the moment the update was started
- * (services/RecordValues uid), so the later id is the later update. An update
- * with no readable date goes last. The saved list itself is not reordered
- * (App.tsx stores and merges it as before).
+ * Newest authored send first, using the original tap persisted on acknowledged updates.
+ * Legacy or unsent records retain their own day. Equal moments use the saved id so
+ * two devices holding the same updates in different list orders write the same report.
+ * Completion times are deliberately ignored: failed/background attempts stamp them too.
+ * The input list is never reordered in place.
  */
-export function fieldUpdatesNewestFirst<T extends { id: string; date?: string | null }>(updates: readonly T[]): T[] {
+export function fieldUpdatesNewestFirst<T extends FieldUpdateChronology & { id: string }>(updates: readonly T[]): T[] {
   return updates
     .map((update, index) => {
-      const moment = Date.parse(update.date || '');
+      const moment = Date.parse(fieldUpdateChronologyDate(update) || '');
       return { update, index, moment: Number.isFinite(moment) ? moment : null };
     })
     .sort((left, right) => {
@@ -1811,7 +1804,7 @@ function taskInScheduleFocus(scheduleEvidence: readonly PIEScheduleEvidence[]) {
  * AREAS / PHOTO NOTES section (Build 232 item 2 part A). The same three parts
  * as `whatChangedSummary`, the runtime's own, and since Build 232 item 3
  * part 3 the same latest update and latest photo: the newest by the
- * update's own date (`fieldUpdatesNewestFirst`), not the first in this
+ * update's authored send time or legacy date (`fieldUpdatesNewestFirst`), not the first in this
  * device's list.
  *
  * Part B (the coordinator's decision): one difference from the runtime's
@@ -1829,7 +1822,7 @@ function taskInScheduleFocus(scheduleEvidence: readonly PIEScheduleEvidence[]) {
  */
 export function whatChangedForWrittenReport(
   fusedEvidence: Readonly<{
-    userUpdateEvidence: ReadonlyArray<Pick<PIEUserUpdateEvidence, 'id' | 'date' | 'notes'>>;
+    userUpdateEvidence: ReadonlyArray<Pick<PIEUserUpdateEvidence, 'id' | 'date' | 'notes' | 'status' | 'workflowTimestamps'>>;
     photoEvidence: ReadonlyArray<Pick<PIEPhotoEvidence, 'updateId' | 'caption'>>;
     scheduleEvidence: readonly PIEScheduleEvidence[];
   }>,
