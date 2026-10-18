@@ -947,7 +947,7 @@ describe('DAVE browser Supabase gateway', () => {
   // Whole-app audit A8 pass 1 F1 (30 Sep 2026): the phone ranks the cloud copy
   // by document_data.updatedAt, so a web detail edit writes it equal to
   // updated_at. Left stale, an older offline phone edit overwrote the web edit.
-  test('a web detail edit writes document_data.updatedAt equal to updated_at', async () => {
+  test('a web detail edit writes its revision but strips the archive mark view projection', async () => {
     const documentUpdate = mutationQuery({ data: { updated_at: 'row-written' }, error: null });
     const fixture = mutationClient(table => {
       if (table === 'reference_documents') return documentUpdate;
@@ -966,12 +966,15 @@ describe('DAVE browser Supabase gateway', () => {
       importedAt: '2026-09-01T12:00:00.000Z',
       updatedAt: '2026-09-02T12:00:00.000Z',
       cloudUpdatedAt: '2026-09-29T12:00:00.000Z',
+      archivedAt: '2026-10-17T12:00:00Z',
     } as any);
 
     const row = documentUpdate.update.mock.calls[0][0];
     expect(row.document_data.updatedAt).toBe(row.updated_at);
     expect(row.document_data.updatedAt).not.toBe('2026-09-02T12:00:00.000Z');
     expect(row.document_data).not.toHaveProperty('cloudUpdatedAt');
+    expect(row.document_data).not.toHaveProperty('archivedAt');
+    expect(row).not.toHaveProperty('archived_at');
     expect(row.document_data.notes).toBe('Edited on the web');
     expect(documentUpdate.eq).toHaveBeenCalledWith('updated_at', '2026-09-29T12:00:00.000Z');
   });

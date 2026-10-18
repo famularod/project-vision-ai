@@ -2647,6 +2647,7 @@ function referenceDocumentRow(
     : compactECOSDocumentIndexForCloud(document);
   const {
     cloudUpdatedAt: _cloudUpdatedAt,
+    archivedAt: _archivedAt, // Archive is a separate conditional column; never save its view projection into metadata.
     cloudDetailsSeen: _cloudDetailsSeen,
     linkedScheduleItems: _linkedScheduleItems,
     importedScheduleItemCount: _importedScheduleItemCount,
