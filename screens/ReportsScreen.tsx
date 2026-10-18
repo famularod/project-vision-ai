@@ -1,3 +1,4 @@
+import { nativeScheduleItemsAsBeforeLowYearFormatting } from '../services/ReportScheduleProjection';
 import { reportWordingRequiresAppTextKey } from '../services/PIEReporter';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -381,7 +382,10 @@ export function ReportsScreen({
   const baseReportDraft = stableReportDraft.draft;
   // One recipe with the web's Reports page (open item, 6 Oct 2026): the saved
   // tasks decide whose update it is here too, as in the app's own scope.
-  const reportTruths = useMemo(() => buildDAVEReportProjectTruths({
+  const reportTruths = useMemo(() => {
+    const beforeSchedule = nativeScheduleItemsAsBeforeLowYearFormatting(scheduleItems);
+    const beforeKnown = knownScheduleItems && nativeScheduleItemsAsBeforeLowYearFormatting(knownScheduleItems);
+    return buildDAVEReportProjectTruths({
     projects: selectedProjectNames.map(name => ({
       name,
       projectId: `report:${reportProjectKey(name) || 'project'}`,
@@ -391,12 +395,16 @@ export function ReportsScreen({
     scheduleItems,
     // What a newer lookahead replaced, for "since the last report" (owner answer 3 Oct 2026).
     knownScheduleItems,
+    ...(beforeSchedule !== scheduleItems || beforeKnown !== knownScheduleItems ? {
+      asBuiltBefore: { scheduleItems: beforeSchedule, knownScheduleItems: beforeKnown },
+    } : {}),
     knownScheduleDocuments,
     projectAreas,
     // High item 3: the documents are held as before (the 1.0 fingerprint does not move); the drawings are cited as listed.
     referenceDocuments: referenceDocuments && withoutListedPageIndexes(referenceDocuments),
     drawingDocuments: citedDocuments,
-  }), [
+    });
+  }, [
     citedDocuments,
     knownScheduleDocuments,
     knownScheduleItems,

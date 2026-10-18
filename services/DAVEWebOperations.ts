@@ -1575,7 +1575,7 @@ function scheduleDateAsThePhoneSavesIt(value: string): string {
     (named ? new Date(named.year, named.month - 1, named.day) : null);
   if (!date) return trimmed;
   const pad = (part: number) => part.toString().padStart(2, '0');
-  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())}/${date.getFullYear()}`;
+  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())}/${date.getFullYear() >= 100 && date.getFullYear() <= 999 ? String(date.getFullYear()).padStart(4, '0') : date.getFullYear()}`;
 }
 
 export function buildDAVEWebReportTitle(

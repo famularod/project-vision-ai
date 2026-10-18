@@ -144,7 +144,7 @@ export function formatAppDate(value: string) {
 }
 
 export function formatCalendarDate(date: Date) {
-  return `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}/${date.getFullYear()}`;
+  return `${String(date.getMonth() + 1).padStart(2, '0')}/${String(date.getDate()).padStart(2, '0')}/${date.getFullYear() >= 100 && date.getFullYear() <= 999 ? String(date.getFullYear()).padStart(4, '0') : date.getFullYear()}`;
 }
 
 export function daysUntilDate(

@@ -111,7 +111,7 @@ function MobileScheduleTimeline({
               <Text style={styles.dateText}>
                 {dateSpan(row.startDate, row.finishDate)}
               </Text>
-              {row.startDate || row.finishDate ? (
+              {row.left !== null && row.width !== null ? (
                 <View style={styles.timelineTrack}>
                   <View
                     style={[
@@ -136,7 +136,7 @@ function MobileScheduleTimeline({
               ) : (
                 <View style={styles.needsDateRow}>
                   <Ionicons name="calendar-outline" size={16} color={colors.warning} />
-                  <Text style={styles.needsDateText}>Dates needed</Text>
+                  <Text style={styles.needsDateText}>{row.startDate || row.finishDate ? 'Check dates: outside the timeline range' : 'Dates needed'}</Text>
                 </View>
               )}
             </Pressable>

@@ -2331,7 +2331,7 @@ function formatAppDate(value: string) {
 
   if (!date) return value.trim();
 
-  return `${zeroPad(date.getMonth() + 1)}/${zeroPad(date.getDate())}/${date.getFullYear()}`;
+  return `${zeroPad(date.getMonth() + 1)}/${zeroPad(date.getDate())}/${date.getFullYear() >= 100 && date.getFullYear() <= 999 ? String(date.getFullYear()).padStart(4, '0') : date.getFullYear()}`;
 }
 
 function formatCompactAppDate(value: string) {
