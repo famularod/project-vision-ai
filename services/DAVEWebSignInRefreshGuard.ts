@@ -261,6 +261,8 @@ export type DAVEWebSignInRefreshGuard = Readonly<{
    * take), or no answer in time (the request stays sent, so the server may still end it later).
    */
   signOutConfirmed: () => boolean;
+  /** Provenance of a retryable refresh error, including auth-js's cached background failure. */
+  serverRequestedWait?: (error: { message: string }) => boolean;
 }>;
 
 function pathOf(input: RequestInfo | URL): URL | null {
@@ -352,13 +354,26 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
   let signOutConfirmed = false;
   /** Until when the sign-in server asked this tab not to refresh. */
   let refreshWaitsUntil = 0;
+  let waitSequence = 0;
+  let refreshWait: { message: string; signIn: string; token: string } | null = null;
+  function serverRequestedWait(error: { message: string }): boolean {
+    const current = tabItem();
+    return refreshWait !== null && error.message === refreshWait.message &&
+      current?.signIn === refreshWait.signIn && current.holds === refreshWait.token;
+  }
   /** The tab's key as it was last made ready for use. */
   let readied: { key: string; made: Promise<CryptoKey | null> } | null = null;
 
   /** auth-js keeps the sign-in and tries again later (a 503 is "not reachable just now" to it). */
-  const askedToWait = () => new Response(JSON.stringify({
-    message: 'The sign-in server asked this tab to wait before it refreshes again.',
-  }), { status: 503, headers: { 'content-type': 'application/json' } });
+  const askedToWait = () => {
+    const response = new Response(JSON.stringify({
+      message: 'The sign-in server asked this tab to wait before it refreshes again.',
+    }), { status: 503, headers: { 'content-type': 'application/json' } });
+    // auth-js's public retryable error preserves Response.message for 503; it does not parse its body.
+    // Only this guard's proven rate-limit response gets this marker. No token or session enters it.
+    if (refreshWait) Object.defineProperty(response, 'message', { value: refreshWait.message });
+    return response;
+  };
 
   /** auth-js takes this for the server's last word on the refresh, and does not try again. */
   const signOutWithoutRefresh = () => new Response(JSON.stringify({
@@ -747,6 +762,8 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
     // Inside the wait the server asked for, only a sign-out's own refresh goes out, and only once.
     if (grant === 'refresh_token' && Date.now() < refreshWaitsUntil && (!signOut || signOut.refreshSent)) return notNow();
     if (signOut) signOut.refreshSent = true;
+    // A real request supersedes the old provenance even when it drops or answers unavailable.
+    if (grant === 'refresh_token') refreshWait = null;
     let response: Response;
     if (signOut?.here) {
       try {
@@ -761,6 +778,10 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
       response = await options.fetch(input, init);
     }
     if (grant === 'refresh_token' && response.status === 429) {
+      if (signInAtStart && mine) refreshWait = {
+        message: `This tab's refresh was rate limited (${++waitSequence}).`,
+        signIn: signInAtStart, token: mine,
+      };
       signOut?.onServerWait?.();
       const asked = Number(response.headers.get('retry-after')) * 1_000;
       refreshWaitsUntil = Date.now() + (asked > 0 ? Math.min(asked, REFRESH_WAIT_LIMIT_MS) : DAVE_WEB_REFRESH_WAIT_MS);
@@ -813,5 +834,5 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
     // Nothing noted, nothing removed: every token is sent as before.
   }
 
-  return Object.freeze({ fetch: guardedFetch, gaveWay: () => gaveWay, signInOver, vouchedFor, signingOut, signOutConfirmed: () => signOutConfirmed });
+  return Object.freeze({ fetch: guardedFetch, gaveWay: () => gaveWay, signInOver, vouchedFor, signingOut, signOutConfirmed: () => signOutConfirmed, serverRequestedWait });
 }

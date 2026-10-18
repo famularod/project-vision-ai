@@ -367,8 +367,6 @@ export function createDAVEWebSupabaseGateway(
   let signInChanges = 0;
   /** The Sign Out of This Computer last made in this tab signed it out without the cloud confirming it. */
   let signedOutUnconfirmed = false;
-  // auth-js can return the identical failed-refresh error again without invoking fetch.
-  const globalWaitErrors = new WeakSet<object>();
   let globalSignOut: { session: string; work: Promise<void> } | null = null;
 
   function invalidateAuthorization() {
@@ -768,8 +766,9 @@ export function createDAVEWebSupabaseGateway(
           const { error } = await (signInGuard?.signingOut
             ? signInGuard.signingOut('everywhere', askAuth, () => { serverAskedToWait = true; })
             : askAuth());
-          if (error && serverAskedToWait) globalWaitErrors.add(error);
-          if (error && globalWaitErrors.has(error)) throw new DAVEWebSignOutWaitError();
+          if (error && (serverAskedToWait || error.status === 429 || signInGuard?.serverRequestedWait?.(error))) {
+            throw new DAVEWebSignOutWaitError();
+          }
           if (error && isAuthRetryableFetchError(error)) throw new DAVEWebSignOutNeedsConnectionError();
           if (error) throw new Error('The desktop session could not be closed.');
         } else {
