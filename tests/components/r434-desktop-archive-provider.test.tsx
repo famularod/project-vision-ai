@@ -47,3 +47,7 @@ it('4.34 refreshed missing project authority refuses a pending restore acknowled
  load.mockResolvedValue({...snapshot,projects:[],referenceDocuments:[marked],archivedDocumentIds:[marked.id]});await act(async()=>{await auth.refreshSnapshot()});
  const rejected=expect(run).rejects.toThrow(/document changed/i);await act(async()=>{hold.resolve(null);await rejected});expect(auth.snapshot?.archivedDocumentIds).toEqual([marked.id]);v.unmount();
 });
+
+it('inventory followup: provider mount and explicit read refresh do not call the archive writer',async()=>{
+ const v=await mount();expect(gateway.setAuthorizedDocumentArchived).not.toHaveBeenCalled();await act(async()=>{await auth.refreshSnapshot();});expect(gateway.setAuthorizedDocumentArchived).not.toHaveBeenCalled();v.unmount();
+});

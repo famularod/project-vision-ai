@@ -70,7 +70,10 @@ describe('Vitruvius web workspace design contract', () => {
     expect(shell).toContain('styles.documentListCard');
     expect(shell).toContain('styles.documentListPaneIndependent');
     expect(shell).toContain('styles.documentInspectorPaneIndependent');
-    expect(shell).toContain('accessibilityLabel={`Delete ${document.name}`}');
+    // Both the list and inspector name the action the compliance policy actually offers.
+    const documentActionLabel = "accessibilityLabel={`${daveWebDocumentCanArchive(document) ? 'Archive' : 'Delete'} ${document.name}`}";
+    expect(shell.split(documentActionLabel)).toHaveLength(3);
+    expect(shell).toContain('accessibilityLabel={`Restore ${document.name}`}');
     expect(shell).toContain('The original Google Drive file will not be deleted.');
     expect(shell).toContain('loadDocumentCoverageSummary');
     expect(shell).toContain("'Loading page analysis…'");

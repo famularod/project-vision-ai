@@ -13,6 +13,7 @@
  */
 import fs from 'fs';
 import path from 'path';
+import ts from 'typescript';
 import { createDAVEWebSupabaseGateway } from '../../services/DAVEWebSupabaseClient';
 import { compactECOSDocumentIndexForCloud } from '../../services/ECOSDocumentIndexPersistence';
 import { createFakeWebCloud } from '../fixtures/fake-web-cloud';
@@ -91,6 +92,7 @@ describe('no document row is written but as part of something he does', () => {
       'services/DAVEWebSupabaseClient.ts compensateFailedLinkedDocumentImport delete (takes back his Google Drive link when it failed half-way)',
       'services/DAVEWebSupabaseClient.ts saveAuthorizedLinkedReferenceDocument insert (his Google Drive link)',
       'services/DAVEWebSupabaseClient.ts saveAuthorizedReportArtifact update (his saved report)',
+      'services/DAVEWebSupabaseClient.ts setAuthorizedDocumentArchived update (his confirmed Archive or explicit Restore on the computer; archived_at only)',
       'services/DAVEWebSupabaseClient.ts updateAuthorizedReferenceDocument update (his edit of the details on the computer)',
       'services/DAVEWebSupabaseClient.ts uploadAuthorizedReferenceDocument insert (his upload on the computer)',
       'services/SharedDocumentArchive.ts syncOnce update (his Archive or Restore taps; the archived_at column only)',
@@ -165,3 +167,22 @@ function enclosingFunction(lines: string[], index: number): string {
   }
   return '(top level)';
 }
+
+// The inventory entry is narrow: it grants no authority to rewrite metadata or
+// to invoke the archive gateway from a loader/background effect.
+it('the added desktop archive writer changes only its archive column and has only the explicit provider action caller',()=>{
+ const file=path.join(ROOT,'services/DAVEWebSupabaseClient.ts');const source=ts.createSourceFile(file,fs.readFileSync(file,'utf8'),ts.ScriptTarget.Latest,true);
+ let method:ts.MethodDeclaration|undefined;const visit=(n:ts.Node)=>{if(ts.isMethodDeclaration(n)&&n.name.getText(source)==='setAuthorizedDocumentArchived')method=n;ts.forEachChild(n,visit);};visit(source);expect(method).toBeDefined();
+ const patches:string[][]=[];const writes=(n:ts.Node)=>{if(ts.isCallExpression(n)&&ts.isPropertyAccessExpression(n.expression)&&n.expression.name.text==='update'){const arg=n.arguments[0];expect(ts.isObjectLiteralExpression(arg)).toBe(true);if(ts.isObjectLiteralExpression(arg))patches.push(arg.properties.map(p=>p.name?.getText(source)??''));}ts.forEachChild(n,writes);};writes(method!);expect(patches).toEqual([['archived_at']]);
+ const callers:string[]=[];
+ for(const file of ['services','components','screens','hooks','providers'].flatMap(folder=>walk(path.join(ROOT,folder))).concat(path.join(ROOT,'App.tsx'))){
+  const text=fs.readFileSync(file,'utf8'),tree=ts.createSourceFile(file,text,ts.ScriptTarget.Latest,true,file.endsWith('tsx')?ts.ScriptKind.TSX:ts.ScriptKind.TS);
+  const scan=(n:ts.Node)=>{if(ts.isCallExpression(n)&&ts.isPropertyAccessExpression(n.expression)&&n.expression.name.text==='setAuthorizedDocumentArchived'){
+   let parent:ts.Node|undefined=n.parent;while(parent&&!ts.isArrowFunction(parent)&&!ts.isFunctionDeclaration(parent))parent=parent.parent;
+   while(parent&&!ts.isVariableDeclaration(parent)&&!ts.isFunctionDeclaration(parent))parent=parent.parent;
+   const owner=parent&&(ts.isVariableDeclaration(parent)||ts.isFunctionDeclaration(parent))?parent.name?.getText(tree):undefined;
+   callers.push(`${path.relative(ROOT,file)} ${owner??'(unnamed)'}`);
+  }ts.forEachChild(n,scan);};scan(tree);
+ }
+ expect(callers).toEqual(['components/web-shell/desktop-auth-provider.tsx setDocumentArchived']);
+});

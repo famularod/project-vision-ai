@@ -137,3 +137,12 @@ it('4.34 same-render Restore double press calls once and rejects late unmounted 
 it('4.34 archive scope refuses an ambiguous project identity without a write',async()=>{
  workspace();mockAuth.snapshot={...mockAuth.snapshot!,projects:[{id:'11111111-1111-4111-8111-111111111111',name:'Alpha'},{id:'22222222-2222-4222-8222-222222222222',name:'alpha '}] as any};const v=render(<DesktopReadOnlyShell page="documents"/>);fireEvent.press(v.getByLabelText('Archive Grading permit'));expect(v.queryByText('Confirm archive')).toBeNull();expect(v.getByText('This document’s project identity needs review. Refresh Documents before trying again.')).toBeTruthy();expect(mockAuth.setDocumentArchived).not.toHaveBeenCalled();v.unmount();
 });
+
+it('inventory followup: exact accessible Archive/Delete labels match their real confirmation routes and reads never mutate',async()=>{
+ workspace([]);mockAuth.snapshot={...mockAuth.snapshot!,referenceDocuments:[...mockAuth.snapshot!.referenceDocuments,sharedDocument('Site plan','Plans')]};const before=JSON.stringify(mockAuth.snapshot);
+ const v=render(<DesktopReadOnlyShell page="documents"/>);expect(v.getByLabelText('Archive Grading permit')).toBeTruthy();expect(v.queryByLabelText('Delete Grading permit')).toBeNull();expect(v.getByLabelText('Delete Site plan')).toBeTruthy();expect(v.queryByLabelText('Archive Site plan')).toBeNull();
+ expect(mockAuth.setDocumentArchived).not.toHaveBeenCalled();expect(mockAuth.deleteDocument).not.toHaveBeenCalled();
+ fireEvent.press(v.getByLabelText('Archive Grading permit'));expect(v.getByText('Archive “Grading permit”?')).toBeTruthy();expect(mockAuth.setDocumentArchived).not.toHaveBeenCalled();fireEvent.press(v.getByText('Cancel archive'));
+ fireEvent.press(v.getByLabelText('Delete Site plan'));expect(v.getByText('Delete “Site plan”?')).toBeTruthy();expect(mockAuth.deleteDocument).not.toHaveBeenCalled();fireEvent.press(v.getByText('Cancel'));
+ expect(JSON.stringify(mockAuth.snapshot)).toBe(before);expect(mockAuth.setDocumentArchived).not.toHaveBeenCalled();expect(mockAuth.deleteDocument).not.toHaveBeenCalled();v.unmount();
+});
