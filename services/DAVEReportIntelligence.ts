@@ -1,3 +1,4 @@
+import { reportProjectNameOrder } from './ReportProjectOrder';
 import { daveProjectTruthAsBuilt, daveProjectTruthCountsOtherUpdatesThanBefore, type DAVEProjectTruth } from './DAVEProjectTruth';
 import type { PIEReportDraft } from './PIEReporter';
 import {
@@ -698,7 +699,7 @@ function briefingOf({
   // HIGH item 1e (the coordinator's decision on review pass 3's case B and A6 pass 6 #6): a combined report prints its
   // projects by name, as its fingerprint works them out (1c), not in the order they were ticked: the same text, in the
   // same order, under the same value, on every device and in every body written from this briefing.
-  const truths = [...ticked].sort((left, right) => normalized(left.projectName).localeCompare(normalized(right.projectName)));
+  const truths = [...ticked].sort((left, right) => reportProjectNameOrder(left.projectName, right.projectName));
   const projectNames = unique(
     (selectedProjectNames?.length ? selectedProjectNames : truths.map(truth => truth.projectName))
       .map(clean)

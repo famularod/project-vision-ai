@@ -1,3 +1,4 @@
+import { reportProjectNameOrder } from './ReportProjectOrder';
 import type {
   ContactBook,
   ProjectArea,
@@ -2889,12 +2890,6 @@ function groupUnderstandingByLocation(
   return severalProjects
     ? [...groups].sort((left, right) => reportProjectNameOrder(left.title, right.title))
     : groups;
-}
-
-/** HIGH item 1e: the order a report of several projects lists them in: by name, not in the order they were ticked. */
-function reportProjectNameOrder(left: string, right: string) {
-  const byName = (name: string) => normalizeName(name).replace(/[^a-z0-9]+/g, ' ').trim();
-  return byName(left).localeCompare(byName(right));
 }
 
 function selectedProjectsFromInput(input: PIEReportDraftInput) {
