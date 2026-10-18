@@ -12,7 +12,9 @@
  * suggestScheduleImportRole (services/ScheduleLookahead.ts) is Build 231's
  * again, word for word.
  *
- * WHAT THIS FILE IS NOW: the 11 of item 10's 23 tests that hold on Build
+ * B76 TEST-ONLY CONTRACT UPDATE: original4.64/4.65 assertions below now demand resolved-file-scope duplicate/current-copy protection. The historical bug assertions are preserved in parent9403823 and the B76 packet; positive same-scope, root/building and role controls are retained. No product code changes in this RED commit.
+ *
+ * WHAT THIS FILE WAS BEFORE B76: the 11 of item 10's 23 tests that hold on Build
  * 231's function, kept as guards on what Build 231 does. The 12 that
  * asserted the removed behaviour are gone (they are whole in the commits
  * that added them). Open item 4.58 (a new project's first full schedule can
@@ -329,23 +331,21 @@ describe('Kept from Build 232 item 10, as Build 231 does it: the other readers o
       .toMatchObject({ alreadyImported: false, asLookahead: true });
   });
 
-  it('scheduleImportOfFile (REPORTED, not changed): saved for Test project alone, then picked from the Tasks tab, it is not recognised', async () => {
-    // Saved first from a pick for Test project alone (the Documents screen's project choice): another id, label Test project.
+  it('B76 4.64: a file already saved for Test alone is recognised from a widened Tasks selection', async () => {
     const alone = phone(ACCOUNT, picked);
     const aloneBatch = await alone.prepareScheduleImportFromAsset(alone.file, [TEST]);
     const saved = afterApproval(ACCOUNT, aloneBatch!, 'master');
-    // The saved copy's label is compared with every active project, and its id is another scope's: a plain new import.
+    const before = JSON.stringify(saved);
     const fromTasksTab = pick(saved.documents, saved.items, ACTIVE);
+    // The requested wider scope keeps its deterministic identity; duplicate
+    // detection must reconcile the file's actual projects, not rewrite IDs.
     expect(fromTasksTab.identity.documentId).not.toBe(aloneBatch!.documents[0].id);
-    expect(fromTasksTab).toMatchObject({ alreadyImported: false, asLookahead: false });
-    // Picked for Test project alone again, it is recognised.
+    expect(fromTasksTab).toMatchObject({ alreadyImported: true, asLookahead: false });
     expect(pick(saved.documents, saved.items, [TEST])).toMatchObject({ alreadyImported: true, asLookahead: false });
-    // The review of that unrecognised second import. ITEM 10c: this last line said "Full schedule ... the master for
-    // [the new project] covers 3 weeks" while item 10 was in; it is restated as Build 231 says it (the longest master
-    // among the projects the pick was for: ACTIVE[0], the one with the 16-month master). Everything above it is
-    // unchanged.
-    const review = await fromTheTasksTab(saved, picked);
-    expect(review.sentence).toBe(`${LOOKAHEAD} its dates cover 3 weeks and the master for ${ACTIVE[0]} covers about 16 months. ${CHANGE}`);
+    const h = phone(saved, picked);
+    expect(await h.importScheduleFile()).toBeNull();
+    expect(h.alerts.map(a => a.title)).toEqual(['Schedule already added']);
+    expect(JSON.stringify(saved)).toBe(before);
   });
 
   it('scheduleFileFullCopyInUse: when the review opens it agrees with the pick, wide label or not', async () => {
@@ -362,7 +362,7 @@ describe('Kept from Build 232 item 10, as Build 231 does it: the other readers o
     expect(again.savedAs).toBe('lookahead');
   });
 
-  it('the four sentences of a file already saved as a full schedule name no project; scheduleFileFullCopyInUse (REPORTED, not changed) finds the saved copy only when the two labels are the same', () => {
+  it('B76 4.65: widened preapproval labels preserve every saved-copy refusal and message', () => {
     // A file for Test project and 2375, saved as their full schedule: its label is its rows' two projects.
     const SHA = 'f'.repeat(64);
     const copy = savedDocument('copy', [TEST, P2375], '2026-10-01T12:00:00.000Z', { contentSha256: SHA });
@@ -391,9 +391,10 @@ describe('Kept from Build 232 item 10, as Build 231 does it: the other readers o
       expect(own).toEqual({ role: 'lookahead', reason: sentence, only: true });
       ACTIVE.forEach(name => expect(own.reason).not.toContain(name));
       expect(scheduleImportRoleRefusal(again([TEST, P2375]), 'lookahead', documents)).toBe(refusal);
-      // Labelled with every active project, the saved copy is not found: always the first sentence, never refused.
-      expect(suggestScheduleImportRole({ batch: again(ACTIVE), documents, scheduleItems: [] })).toEqual({ role: 'lookahead', reason: states[0][2], only: true });
-      expect(scheduleImportRoleRefusal(again(ACTIVE), 'lookahead', documents)).toBeNull();
+      // B76: resolved rows bind the two projects even though the preapproval label is wider; all four controls retained.
+      const widened = {...again(ACTIVE), items: [savedRow('resolved-test', TEST, '10/26/2026', '11/13/2026', 'again'), savedRow('resolved-2375', P2375, '10/26/2026', '11/13/2026', 'again')]};
+      expect(suggestScheduleImportRole({ batch: widened, documents, scheduleItems: [] })).toEqual({ role: 'lookahead', reason: sentence, only: true });
+      expect(scheduleImportRoleRefusal(widened, 'lookahead', documents)).toBe(refusal);
     });
   });
 });
