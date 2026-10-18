@@ -442,3 +442,15 @@ describe('5.32: empty remote extraction is explained once in the production prep
     expect(batch!.items.every(item => !item.taskName && !item.startDate && !item.finishDate)).toBe(true);
   });
 });
+
+ it.each([
+   remoteExtraction.SCHEDULE_EXTRACTION_UNREACHABLE_MESSAGE,
+   'Schedule extraction took too long. Try again on a stable connection.',
+   'An unexpected preparation error prevented reading this PDF.',
+   'Service reason: No dated schedule activities could be extracted. Retry later.',
+ ])('5.32 keeps a distinct failure reason unchanged: %s', async reason => {
+   schedule = async () => { throw new Error(reason); };
+   const batch = await phone().addInTasks(F1);
+   expect(batch!.message).toBe(`The PDF's tasks could not be read: no dated activities were extracted. ${reason}`);
+   expect(batch!.nothingRead).toBe(true);
+ });
