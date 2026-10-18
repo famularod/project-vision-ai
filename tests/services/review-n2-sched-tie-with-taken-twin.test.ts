@@ -10,6 +10,8 @@
  * A row the guess leaves new is now also asked about when two of all the
  * saved same-named tasks are equally nearest to it. The merge and its review
  * questions, the real CSV normalizer and shown-schedule pick. Synthetic data.
+ * Accepted issue 2.17 subsequently expanded review to changed duplicate groups even
+ * with a unique date-based guess; unchanged identical groups still need no question.
  */
 import { scheduleImportPairingQuestions, scheduleImportReviewPairingQuestions } from '../../services/ScheduleImportMerge';
 import fs from 'fs';
@@ -179,7 +181,7 @@ describe('Review N2 G2: a lookahead row tied between two same-named tasks is ask
   });
 });
 
-describe('Review N2 G2: what is asked, and not asked, as before', () => {
+describe('Review N2 G2: changed duplicate groups follow accepted issue 2.17 review policy', () => {
   it('the tied row listed alone is asked (ce64474)', () => {
     expect(asked([TIED[0]])).toHaveLength(1);
   });
@@ -188,11 +190,20 @@ describe('Review N2 G2: what is asked, and not asked, as before', () => {
     expect(asked(['Pour slab,Alpha,Lot,10/01/2026,10/05/2026,', 'Pour slab,Alpha,Lot,10/15/2026,10/19/2026,', 'Pour slab,Alpha,Lot,10/29/2026,11/02/2026,'])).toEqual([]);
   });
 
-  it('one row, on one task\'s days: no question', () => {
-    expect(asked(['Pour slab,Alpha,Lot,10/15/2026,10/19/2026,'])).toEqual([]);
+  it('one matching row still asks about the changed duplicate group, keeping the exact-days guess', () => {
+    const lines = ['Pour slab,Alpha,Lot,10/15/2026,10/19/2026,'];
+    const [question, ...others] = asked(lines);
+    expect(others).toEqual([]);
+    expect(question.saved.map(item => item.id)).toEqual([firstId, secondId, thirdId]);
+    expect(question.guess).toEqual({ [rows(L, lines)[0].id]: secondId });
   });
 
-  it('a row far from every Pour slab and nearest one alone, beside a row on a task\'s days: no question', () => {
-    expect(asked(['Pour slab,Alpha,Lot,11/10/2026,11/14/2026,', 'Pour slab,Alpha,Lot,10/15/2026,10/19/2026,'])).toEqual([]);
+  it('a unique nearest guess still asks about the changed duplicate group, retaining both guesses and all choices', () => {
+    const lines = ['Pour slab,Alpha,Lot,11/10/2026,11/14/2026,', 'Pour slab,Alpha,Lot,10/15/2026,10/19/2026,'];
+    const [question, ...others] = asked(lines);
+    const [far, exact] = rows(L, lines);
+    expect(others).toEqual([]);
+    expect(question.saved.map(item => item.id)).toEqual([firstId, secondId, thirdId]);
+    expect(question.guess).toEqual({ [far.id]: thirdId, [exact.id]: secondId });
   });
 });
