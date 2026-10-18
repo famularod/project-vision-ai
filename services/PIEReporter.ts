@@ -878,13 +878,19 @@ export function buildConstructionUnderstanding(
     // The area's progress LINES: the verified progress, and with it, in the
     // same order, his field notes of none of the three kinds (item 4 part B).
     // Only verified construction evidence still COUNTS as progress above.
-    const changed = items
+    const changedItems = items
       .filter(item => isVerifiedConstructionProgressEvidence(item) || isPlainFieldNote(item) ||
-        (item.id === 'runtime-what-changed' && item.preservesCapturedFor && /^Latest update:/i.test(item.summary)))
+        (item.id === 'runtime-what-changed' && item.preservesCapturedFor && /^Latest update:/i.test(item.summary)));
+    const changed = changedItems
       .map(item => cleanReportBulletText(item.summary, item.preservedCapturedForText))
       .filter(Boolean);
 
-    const printedName = printedNameOfFiledWorkArea(areaName, items);
+    const reportedIds = new Set([
+      ...changedItems.map(item => item.id),
+      ...[...progress, ...issues, ...nextSteps].flatMap(item => item.sourceEvidenceIds),
+    ]);
+    const reportedItems = items.filter(item => reportedIds.has(item.id));
+    const printedName = printedNameOfFiledWorkArea(areaName, reportedItems.length ? reportedItems : items);
 
     return {
       id: slug(`understanding-${location}-${areaName}`),
@@ -1523,7 +1529,7 @@ export function printedReportWorkAreaName(
     : lineWords;
   const namingWords = authoredWords
     .replace(REPORT_LINE_DATES, ' ')
-    .replace(/\b\d{4}(?:[.,]\d+)?\s*(?:psi|psf|ksi|mpa|kpa|pa|mm|cm|m|km|inches|inch|in|feet|foot|ft|yards|yard|yd|lbs|lb|kg|tons|ton|sf|sq\.?\s*ft|sq\.?\s*m)\b/gi, ' ')
+    .replace(/\b\d{4}(?:[.,]\d+)?\s*(?:psi|psf|ksi|mpa|kpa|pa|mm|cm|m|km|inches|inch|feet|foot|ft|yards|yard|yd|lbs|lb|kg|tons|ton|sf|sq\.?\s*ft|sq\.?\s*m)\b/gi, ' ')
     .replace(/\s+/g, ' ').trim();
   // A generic project's actual name is still preferable to leftover note
   // prose when it has no recorded area or meaningful location number.

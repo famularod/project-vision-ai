@@ -90,3 +90,21 @@ it('3.30 actual mounted own report card and real Word output use the source proj
 it('same saved facts keep a stable modern source across row order, clock-neutral cloning and runtime advice',()=>{
  const w=world();const a=buildDAVEWebReportSource(w.snapshot,PROJECT).fingerprint;const clone=JSON.parse(JSON.stringify(w.snapshot));clone.scheduleItems.reverse();clone.projectUpdates.reverse();expect(buildDAVEWebReportSource(clone,PROJECT).fingerprint).toBe(a);expect(buildDAVEWebReportSource(w.snapshot,PROJECT).fingerprint).toBe(a);
 });
+
+it.each(['Inspect 2026','Unit 2026 punch list'])('an unrelated task with no saved area and no reported line cannot name the note: %s',taskName=>{
+ const w=world(undefined,'',taskName);w.tasks[0].locationName='';
+ for(const binding of [undefined,'deleted-task','task-year']){
+  w.updates[0].scheduleItemId=binding;
+  const report=buildDailyProjectUpdate(w.input);
+  expect(noteAreas(report,w.updates[0].notes).map(a=>a.title)).toEqual([PROJECT]);
+  expect(report.sourceEvidence.find(e=>e.id==='schedule-task-year')?.summary).toContain(taskName);
+ }
+});
+it.each([
+ ['Racking at 2321 in east driveway is complete.','2321 Birch Lane'],
+ ['Room 4000 slab is placed. Mix is 4000 psi.','4000 Birch Lane'],
+ ['A 4000 mm conduit run is installed.','Birch Lane'],
+ ['Pressure test reached 4000psi on 20.10.2026.','Birch Lane'],
+])('heading number context remains precise for %s',(text,expected)=>{
+ expect(printedReportWorkAreaName(PROJECT,'',text)).toBe(expected);
+});
