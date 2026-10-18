@@ -31,7 +31,7 @@ async function readyFailedAnswer(){
  await act(async()=>{phone.recorder.set({durationMillis:5000});});
  fireEvent.press(view.getByText('Stop & Continue'));
  await waitFor(()=>expect(transcribe).toHaveBeenCalledTimes(1));
- await view.findByText('Recording ready');
+ await view.findByText('Review this recording');
  await settle();
 }
 it('ancestor task editor closes: retained answer never becomes the next draft question answer',async()=>{

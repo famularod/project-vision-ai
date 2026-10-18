@@ -1313,15 +1313,17 @@ export function DAVEVoiceCaptureSheet({
     : recorderState.isRecording
       ? 'listening'
       : recordingUri
-        ? 'captured'
+        ? error ? 'attention' : 'captured'
         : 'ready';
   const captureStatus = captureLabel
     ? captureState === 'processing'
       ? `ECOS is processing: ${captureLabel}`
       : captureState === 'listening'
         ? `ECOS is listening for: ${captureLabel}`
-        : captureState === 'captured'
-          ? error ? `Answer needs attention for: ${captureLabel}` : `Answer recorded for: ${captureLabel}`
+        : captureState === 'attention'
+          ? `Answer needs attention for: ${captureLabel}`
+          : captureState === 'captured'
+          ? `Answer recorded for: ${captureLabel}`
           : `ECOS is ready for: ${captureLabel}`
     : null;
 
@@ -1503,13 +1505,15 @@ export function DAVEVoiceCaptureSheet({
               <Ionicons
                 name={captureState === 'processing'
                   ? 'hourglass-outline'
-                  : captureState === 'captured'
+                  : captureState === 'attention'
+                    ? 'alert-circle-outline'
+                    : captureState === 'captured'
                     ? 'checkmark-circle-outline'
                     : 'mic-outline'}
                 size={21}
                 color={captureState === 'listening'
                   ? colors.danger
-                  : captureState === 'processing'
+                  : captureState === 'processing' || captureState === 'attention'
                     ? colors.warning
                     : captureState === 'captured'
                       ? colors.success
