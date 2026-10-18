@@ -1466,6 +1466,10 @@ function buildDAVEWebProjectTruths(
     !selectedProject || normalized(project.name) === normalized(selectedProject),
   );
   if (projects.length === 0) return [];
+  // The archive column's UI projection is kept out of report facts, including
+  // the preserved Build 230 truth used by the 1.0 fingerprint. Archive
+  // visibility remains governed by snapshot.archivedDocumentIds below.
+  const reportDocuments = snapshot.referenceDocuments.map(({ archivedAt: _archiveView, ...document }) => document);
   const projectRecords = snapshot.projects.map(project => ({
     id: project.id,
     name: project.name,
@@ -1515,7 +1519,7 @@ function buildDAVEWebProjectTruths(
     knownScheduleItems: (knownScheduleItems ?? scheduleItems) as readonly ScheduleItem[],
     currentUpdate: null,
     // A document the cloud marks archived is not counted (owner answer Q44; review of D1, L10); with none, this is the list itself.
-    referenceDocuments: daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds) as unknown as ReferenceDocument[],
+    referenceDocuments: daveWebListedDocuments(reportDocuments, snapshot.archivedDocumentIds) as unknown as ReferenceDocument[],
   };
   const appScope = names.length === 1
     ? buildDailyReportAuthorityScope({ ...appScopeInput, selectedProjectName: names[0] })
@@ -1530,8 +1534,8 @@ function buildDAVEWebProjectTruths(
     ...(handedAsBefore ? { asBuiltBefore: { scheduleItems: snapshot.scheduleItems, knownScheduleItems: snapshot.knownScheduleItems } } : {}),
     // The web's Word report cites drawings from every document downloaded (the Reports page), so the fingerprint does (R8 item 2).
     // High item 3: a drawing piece only from the list's copy of its index (the phone's rule); the documents as before.
-    drawingDocuments: referenceDocumentsCitedAsListed([...snapshot.referenceDocuments] as ReferenceDocument[]),
-    knownScheduleDocuments: snapshot.referenceDocuments,
+    drawingDocuments: referenceDocumentsCitedAsListed(reportDocuments as ReferenceDocument[]),
+    knownScheduleDocuments: reportDocuments,
     referenceDocuments: withoutListedPageIndexes([...appScope.referenceDocuments]),
     now: snapshot.refreshedAt,
   });
