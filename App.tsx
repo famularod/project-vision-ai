@@ -5009,6 +5009,7 @@ function AppShell() {
   const [previewPhoto, setPreviewPhoto] =
     useState<UpdatePhoto | null>(null);
 
+  const documentUploadRequestEpochRef = useRef(0);
   const [documentUploadRequest, setDocumentUploadRequest] = useState<{
     asset: {
       uri: string;
@@ -7389,6 +7390,7 @@ useEffect(() => {
       updateId?: string | null;
     },
   ) {
+    documentUploadRequestEpochRef.current += 1;
     setDocumentUploadRequest({
       asset,
       selected: new Set([defaultProjectName]),
@@ -7441,11 +7443,19 @@ useEffect(() => {
   }
 
   function cancelDocumentProjectSelection() {
+    documentUploadRequestEpochRef.current += 1;
     setDocumentUploadRequest(null);
   }
 
   async function confirmDocumentProjectSelection() {
     if (!documentUploadRequest) return;
+    const request = documentUploadRequest;
+    const requestEpoch = documentUploadRequestEpochRef.current;
+    const requestIsCurrent = () => documentUploadRequestEpochRef.current === requestEpoch;
+    const reviewCopyKey = `review-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let unopenedReview: PIEScheduleImportBatch | null = null;
+    let unkeptCopy: ProjectDocument | null = null;
+    let cancelledDuplicate = false;
 
     const {
       asset,
@@ -7494,12 +7504,15 @@ useEffect(() => {
       let unreadSchedule: PIEScheduleImportBatch | null = null;
       if (category === 'Schedule' && !attachToDraft) {
         scheduleUploadIsCurrent = bindProjectDocumentUploadToAccount();
-        const batch = await prepareScheduleImportFromAsset(asset, selectedProjectNames);
+        const batch = await prepareScheduleImportFromAsset(asset, selectedProjectNames, reviewCopyKey);
+        unopenedReview = batch;
+        if (!requestIsCurrent() || !scheduleUploadIsCurrent()) return;
         if (!batch?.nothingRead) {
           if (batch) {
             setIncomingScheduleImportBatch(batch);
             setScheduleProjectFilter(null);
             setScreen('Schedule');
+            unopenedReview = null;
           }
           return;
         }
@@ -7509,6 +7522,7 @@ useEffect(() => {
       const keptCards: ProjectDocument[] = [];
       try {
         for (const projectName of selected) {
+          if (!requestIsCurrent() || (scheduleUploadIsCurrent && !scheduleUploadIsCurrent())) return;
           projectIndex += 1;
           const document = await createProjectDocumentFromAsset(asset, {
             projectName,
@@ -7517,6 +7531,8 @@ useEffect(() => {
             category,
             drawingMetadata,
           });
+          unkeptCopy = document;
+          if (!requestIsCurrent() || (scheduleUploadIsCurrent && !scheduleUploadIsCurrent())) return;
           const duplicate = duplicateProjectDocumentForAsset(
             projectDocuments, document.projectId, {
               name: document.name, mimeType: document.mimeType, size: document.sizeBytes,
@@ -7526,7 +7542,7 @@ useEffect(() => {
           // attempt's new non-duplicate identity; the catch checks the durable ref.
           if (!attachToDraft && !duplicate && !existingCardIds.has(document.id)) attemptCards.push({ document, projectName });
           if (unreadSchedule && duplicate) {
-            if (!scheduleUploadIsCurrent?.()) return;
+            if (!requestIsCurrent() || !scheduleUploadIsCurrent?.()) return;
             // 5.31: the duplicate question is a decision before the review,
             // not a saved card. Only the acknowledged durable copy can own it.
             const keepCopy = await new Promise<boolean>(resolve => Alert.alert(
@@ -7538,11 +7554,9 @@ useEffect(() => {
               ],
               { cancelable: false },
             ));
-            if (!scheduleUploadIsCurrent()) return;
+            if (!requestIsCurrent() || !scheduleUploadIsCurrent()) return;
             if (!keepCopy) {
-              await deleteOwnedProjectDocument(document).catch(() => undefined);
-              cancelScheduleImport(unreadSchedule);
-              if (uploadAfterReview.length) Alert.alert('Schedule review cancelled', 'Review Documents for any copies saved before cancellation. Remaining project copies were not added.');
+              cancelledDuplicate = true;
               return;
             }
             const keptDuplicate = { ...document, duplicateOf: duplicate.id };
@@ -7550,30 +7564,35 @@ useEffect(() => {
             await addProjectDocumentDurably(keptDuplicate);
             keptCards.push(keptDuplicate);
             uploadAfterReview.push(keptDuplicate.id);
+            unkeptCopy = null;
           } else if (unreadSchedule) {
             // 5.30: durable storage is required before saying saved. Waiting
             // for the upload is not: the review also works without a signal.
             await addProjectDocumentDurably(document);
             keptCards.push(document);
             uploadAfterReview.push(document.id);
+            unkeptCopy = null;
           } else {
             if (!duplicate) keptCards.push(document);
+            // This helper owns an ordinary/attach duplicate's detached choice.
+            unkeptCopy = null;
             await confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
           }
         }
       } catch (error) {
-        if (unreadSchedule) cancelScheduleImport(unreadSchedule); // no review says "saved"; its copy goes
         throw error;
       }
       if (unreadSchedule) {
-        if (!scheduleUploadIsCurrent?.()) return;
+        if (!requestIsCurrent() || !scheduleUploadIsCurrent?.()) return;
         // One project: its tasks saved from the review make this card current, as Import This Schedule does.
         if (selectedProjectNames.length === 1 && keptCards.length === 1) projectScheduleImportCardRef.current = { batchId: unreadSchedule.id, documentId: keptCards[0].id };
         setIncomingScheduleImportBatch({ ...unreadSchedule, message: `The PDF is saved in Documents. ${unreadSchedule.message}` });
         setScheduleProjectFilter(null);
         setScreen('Schedule');
+        unopenedReview = null;
       }
     } catch (error) {
+      if (!requestIsCurrent() || (scheduleUploadIsCurrent && !scheduleUploadIsCurrent())) return;
       const savedCopies = attemptCards.flatMap(attempt => {
         const made = attempt.document;
         const saved = projectDocumentsCurrentRef.current.find(current =>
@@ -7614,7 +7633,21 @@ useEffect(() => {
           : 'The selected document could not be copied into secure app storage.',
       );
     } finally {
-      setDocumentUploadRequest(null);
+      // Resource ownership outlives the UI/account check. Never abandon an
+      // unkept copy, and never dispose of a card already made durable.
+      const copy = unkeptCopy;
+      if (copy && !projectDocumentsCurrentRef.current.some(current =>
+        current.id === copy.id && current.ownedFileId === copy.ownedFileId)) {
+        await deleteOwnedProjectDocument(copy).catch(() => undefined);
+      }
+      // This review was never handed to the UI. Its per-attempt paths cannot
+      // collide with a newer request, and cleanup does not touch current mapping.
+      if (unopenedReview) await Promise.all(unopenedReview.documents.map(document =>
+        deleteStoredReferenceDocument(document.uri).catch(() => undefined)));
+      if (requestIsCurrent()) {
+        if (cancelledDuplicate && uploadAfterReview.length) Alert.alert('Schedule review cancelled', 'Review Documents for any copies saved before cancellation. Remaining project copies were not added.');
+        setDocumentUploadRequest(current => current === request ? null : current);
+      }
       // Keep the same sequential, silent background upload behavior as Retry.
       // This attempt's saved copies stay retryable even after a partial add.
       // Never start its deferred work in a different account's workspace.
@@ -12076,6 +12109,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       size?: number | null;
     },
     selectedProjectNames: readonly string[] = activeProjects.length ? activeProjects : projects,
+    reviewCopyKey?: string,
   ): Promise<PIEScheduleImportBatch | null> {
     const fileName = file.name?.trim() || 'Imported schedule';
     const mimeType = file.mimeType || '';
@@ -12186,7 +12220,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ? `${fileName}.pdf`
       : fileName;
     const targetUri =
-      `${directory}${sourceIdentity.documentId}-${sanitizeFilename(originalFileName)}`;
+      `${directory}${sourceIdentity.documentId}${reviewCopyKey ? `-${sanitizeFilename(reviewCopyKey)}` : ''}-${sanitizeFilename(originalFileName)}`;
     await FileSystem.deleteAsync(targetUri, { idempotent: true });
     await FileSystem.copyAsync({ from: file.uri, to: targetUri });
     const onlyProject = scopeProjects.length === 1 ? scopeProjects[0] : null;
