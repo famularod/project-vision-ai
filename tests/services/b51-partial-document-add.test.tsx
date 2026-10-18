@@ -179,7 +179,7 @@ function phone(options: Readonly<{ storageFails?: boolean; storageFailsAt?: numb
 
   const Alert = { alert: (title: string, message: string, buttons?: Array<{ text: string; onPress?: () => void }>) => { alerts.push({ title, message, buttons }); } };
   const shared: Record<string, unknown> = {
-    Alert, screen: 'ProjectDocuments',
+    Alert, documentUploadRequestEpochRef: { current: 0 }, screen: 'ProjectDocuments',
     // The projects
     activeProjects: [PROJECT,'Second Project','Third Project'], projects: [PROJECT,'Second Project','Third Project'],
     archivedProjectsCurrentRef: { current: [] }, deletedProjectNamesRef: { current: [] },

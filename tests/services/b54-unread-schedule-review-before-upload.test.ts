@@ -28,7 +28,7 @@ function device(options: { pendingDisk?: boolean; pendingUpload?: boolean; offli
   const current = { current: [...existing] };
   const reviewCard = { current: null as { batchId: string; documentId: string } | null };
   const deps: Record<string, unknown> = {
-    documentUploadRequest: null, setDocumentUploadRequest: () => undefined, projectDocumentsCurrentRef: current,
+    documentUploadRequestEpochRef: { current: 0 }, documentUploadRequest: null, setDocumentUploadRequest: () => undefined, projectDocumentsCurrentRef: current,
     projectDocuments: [...existing], referenceDocumentsCurrentRef: { current: [] },
     projectScheduleImportCardRef: reviewCard,
     bindProjectDocumentUploadToAccount: () => { const startedAs = owner; return () => owner === startedAs; },

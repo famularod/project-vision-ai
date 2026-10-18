@@ -482,3 +482,18 @@ it.each(['B54', 'B55'] as const)('%s same mounted request state: late duplicate 
 });
 
 
+
+function selectionActions(p:ReturnType<typeof phone>){return compile<{cancelDocumentProjectSelection:()=>void;promptDocumentProjectSelection:(asset:{uri:string;name:string},project:string)=>void}>(['cancelDocumentProjectSelection','promptDocumentProjectSelection'],{...p.shared,suggestProjectDocumentCategory:()=> 'Schedule',createECOSMobileDrawingControls:()=>({})});}
+it('B56 same-file overlapping requests keep the newer review URI, mapping and durable card when the older choice finishes',async()=>{
+ const p=await seed(),original=p.savedCards()[0];const old=p.addInDocuments(F1,'Schedule');await question(p);const oldQuestion=p.alerts.at(-1)!;const oldOwned=ownedFiles().find(uri=>uri!==original.localUri)!;const oldReview=reviewFiles()[0];
+ const actions=selectionActions(p);actions.cancelDocumentProjectSelection();actions.promptDocumentProjectSelection({uri:'file:///picker/again.pdf',name:F1.name},PROJECT);
+ const next=p.addInDocuments(F1,'Schedule');await waitFor(()=>expect(p.alerts.filter(a=>a.title==='Possible duplicate document')).toHaveLength(2));choose(p,'Upload Anyway');await next;await settle();
+ expect(p.opened).toHaveLength(1);const newerReview=p.opened[0].documents[0].uri;expect(newerReview).not.toBe(oldReview);const mapping={...p.projectScheduleImportCardRef.current};const kept=p.savedCards().find(card=>card.id!==original.id)!;
+ oldQuestion.buttons!.find(b=>b.text==='Cancel')!.onPress!();await old;await settle();expect(p.projectScheduleImportCardRef.current).toEqual(mapping);expect(mockDisk.get(newerReview)).toEqual(F1.bytes);expect(reviewFiles()).toEqual([newerReview]);expect(mockDisk.has(oldOwned)).toBe(false);expect(mockDisk.get(kept.localUri!)).toEqual(F1.bytes);expect(p.opened).toHaveLength(1);
+});
+it('B56 cancellation during the first durable save keeps that card retryable but starts no next-project copy or old review',async()=>{
+ const disk=barrier(),control={holdWrite:disk.promise};const p=phone(control);const work=p.addInDocuments(F1,'Schedule',[PROJECT,'Second Project']);await waitFor(()=>expect(ownedFiles()).toHaveLength(1));selectionActions(p).cancelDocumentProjectSelection();disk.release();await work;await settle();expect(p.savedCards()).toHaveLength(1);expect(ownedFiles()).toEqual([p.savedCards()[0].localUri]);expect(projectDocumentsAwaitingUpload(p.savedCards())).toHaveLength(1);expect(p.uploadAttempts).toEqual([p.savedCards()[0].id]);expect(reviewFiles()).toEqual([]);expect(p.opened).toEqual([]);expect(p.screens).toEqual([]);
+});
+it('B56 a readable batch that finishes after Close releases only its unopened review and never navigates',async()=>{
+ const service=barrier();schedule=async args=>{await service.promise;return SERVICE_READS_ONE_TASK(args)};const p=phone();const work=p.addInDocuments(F1,'Schedule');await waitFor(()=>expect(reviewFiles()).toHaveLength(1));selectionActions(p).cancelDocumentProjectSelection();service.release();await work;await settle();expect(p.savedCards()).toEqual([]);expect(reviewFiles()).toEqual([]);expect(p.opened).toEqual([]);expect(p.screens).toEqual([]);
+});

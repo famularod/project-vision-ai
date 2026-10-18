@@ -175,7 +175,7 @@ function phone(options: Readonly<{ storageFails?: boolean }> = {}) {
 
   const Alert = { alert: (title: string, message: string, buttons?: Array<{ text: string; onPress?: () => void }>) => { alerts.push({ title, message, buttons }); } };
   const shared: Record<string, unknown> = {
-    Alert, screen: 'ProjectDocuments',
+    Alert, documentUploadRequestEpochRef: { current: 0 }, screen: 'ProjectDocuments',
     // The projects
     activeProjects: [PROJECT], projects: [PROJECT],
     archivedProjectsCurrentRef: { current: [] }, deletedProjectNamesRef: { current: [] },
@@ -388,7 +388,7 @@ describe('Open item 5.26: a schedule PDF added without signal keeps its card', (
     expect(iPhone.alerts.map(alert => [alert.title, alert.message])).toEqual([
       ['Schedule review unavailable', 'Vitruvius could not save this document record. The selected file was not uploaded.'],
     ]);
-    expect(iPhone.deletedReferenceCopies).toEqual([expect.stringMatching(/^file:\/\/\/app\/Documents\/project-documents\/schedule-document-[a-f0-9]{64}-F1\.pdf$/)]);
+    expect(iPhone.deletedReferenceCopies).toEqual([expect.stringMatching(/^file:\/\/\/app\/Documents\/project-documents\/schedule-document-[a-f0-9]{64}-review-[0-9]+-[a-z0-9]+-F1\.pdf$/)]);
     expect([...mockDisk.keys()].filter(uri => uri.startsWith(REFERENCE_DIR))).toEqual([]);
   });
 
