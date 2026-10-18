@@ -33,7 +33,7 @@ export function daveVoiceFailureMessage(reason: unknown, retryLabel: string, kep
     // Kept in this sheet only: iOS closing the app loses it (A11 pass 6 L2).
     return `No signal. Your recording is kept while Vitruvius stays open — tap ${retryLabel} when you have signal.`;
   }
-  const message = reason instanceof Error ? reason.message : 'The recording could not be transcribed.';
+  const message = reason instanceof Error && reason.message.trim() ? reason.message : 'The recording could not be transcribed.';
   if (!keptOnDevice) return message;
   // Review N1 L4: the upload's own offline, connection and time-out messages
   // kept the recording on the device too and did not say so. Said before the

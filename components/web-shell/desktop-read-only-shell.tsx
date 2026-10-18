@@ -1,3 +1,4 @@
+import { recentProjectItemActivity } from '../../services/ProjectItemActivityPresentation';
 import { daveProjectTruthHasProjectKey } from '../../services/DAVEProjectTruth';
 import { Link, useLocalSearchParams, usePathname, useRouter } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -2621,7 +2622,7 @@ function TaskEditor({
       {task?.activity?.length ? (
         <View style={styles.fieldGroup}>
           <Text style={styles.fieldLabel}>Recent activity</Text>
-          {task.activity.slice(-3).reverse().map(entry => (
+          {recentProjectItemActivity(task.activity).map(entry => (
             <View key={entry.id} style={styles.activityEntry}>
               <Text style={styles.dataDetail}>{entry.message}</Text>
               <Text style={styles.dataMeta}>{entry.author} · {formatDateTime(entry.createdAt)}</Text>
@@ -3051,7 +3052,7 @@ function TaskDetailsPanel({
   onAddPhoto: (file: File | null) => void;
   onDelete: () => void;
 }) {
-  const latestActivity = task.activity?.[task.activity.length - 1] ?? null;
+  const latestActivity = recentProjectItemActivity(task.activity)[0] ?? null;
   return (
     <View style={styles.taskDetailsPanel}>
       <View style={styles.taskDetailsHeader}>
