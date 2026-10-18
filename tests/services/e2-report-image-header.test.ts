@@ -1,7 +1,7 @@
 /**
  * Review pass 1, L6 and L7: the Word report learns a picture's size from the
  * first bytes of its file (services/ReportImageHeader), so that a photo that
- * needs no work is never opened and a scan that is too large is refused
+ * has unambiguous metadata can stay unopened and a scan that is too large is refused
  * before the phone's image tool loads it.
  *
  * The reader is run on real files (tests/fixtures/report-image-header-samples:
@@ -12,6 +12,7 @@
 import { toByteArray } from 'base64-js';
 import {
   readReportImageHeaderSize,
+  readReportImageHeaderInfo,
   type ReportImageBytes,
 } from '../../services/ReportImageHeader';
 import { detectReportImageSignature, REPORT_IMAGE_SIGNATURE_BYTES } from '../../services/ReportWordImageFormat';
@@ -53,7 +54,9 @@ const exif = (orientation: number, extra: readonly number[] = []) => segment(0xe
   ...extra,
 ]);
 
-describe('the header reader agrees with Apple\'s decoder on real files', () => {
+const delegatedJpegs = new Set(['jpegOnItsSide', 'jpegOnItsOtherSide', 'jpegUpsideDown']);
+
+describe('the header reader uses unambiguous real headers and delegates uncertain metadata', () => {
   it.each(Object.entries(REPORT_IMAGE_HEADER_SAMPLES))('%s', (name, sample) => {
     const bytes = toByteArray(sample.base64);
     const { storedWidth, storedHeight, orientation } = sample.apple;
@@ -61,16 +64,19 @@ describe('the header reader agrees with Apple\'s decoder on real files', () => {
     const shown = onItsSide
       ? { width: storedHeight, height: storedWidth }
       : { width: storedWidth, height: storedHeight };
-    const expected = name === 'heic' || name === 'pngOnItsSide' ? null : shown;
+    const expected = name === 'heic' || name === 'pngOnItsSide' || delegatedJpegs.has(name) ? null : shown;
     expect(sizeOf(bytes)).toEqual(expected);
   });
 
-  it('a picture stored on its side is given as it is shown: 5 wide and 7 high, not 7 by 5', () => {
-    expect(sizeOf(toByteArray(REPORT_IMAGE_HEADER_SAMPLES.jpegOnItsSide.base64))).toEqual({ width: 5, height: 7 });
-    expect(sizeOf(toByteArray(REPORT_IMAGE_HEADER_SAMPLES.jpegOnItsOtherSide.base64))).toEqual({ width: 5, height: 7 });
+  it('multiple EXIF blocks retain the pixel budget and delegate upright shape; ordinary TIFF stays known', () => {
+    // These unchanged JPEGs prepend orientation EXIF to the encoder's own
+    // EXIF block. Their actual native and Word shapes are checked in B70.
+    for (const sample of [REPORT_IMAGE_HEADER_SAMPLES.jpegOnItsSide, REPORT_IMAGE_HEADER_SAMPLES.jpegOnItsOtherSide, REPORT_IMAGE_HEADER_SAMPLES.jpegUpsideDown]) {
+      const bytes = toByteArray(sample.base64);
+      expect(sizeOf(bytes)).toBeNull();
+      expect(readReportImageHeaderInfo('jpeg', fileOf(bytes).source)).toEqual({ width: 7, height: 5, displaySizeKnown: false });
+    }
     expect(sizeOf(toByteArray(REPORT_IMAGE_HEADER_SAMPLES.tiffOnItsSide.base64))).toEqual({ width: 5, height: 7 });
-    // Upside down is not on its side.
-    expect(sizeOf(toByteArray(REPORT_IMAGE_HEADER_SAMPLES.jpegUpsideDown.base64))).toEqual({ width: 7, height: 5 });
   });
 
   it('the types it does not read are left to the device: HEIC, and a PNG that says it is stored turned', () => {

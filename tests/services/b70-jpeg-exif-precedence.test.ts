@@ -1,6 +1,7 @@
 import { Image } from 'react-native';
 import JSZip from 'jszip';
 import fixtures from '../fixtures/b70-jpeg-exif-precedence.json';
+import { REPORT_IMAGE_HEADER_SAMPLES } from '../fixtures/report-image-header-samples';
 import { resolveNativeReportWordMedia } from '../../services/ReportWordMedia.native';
 import { buildReportWordBase64 } from '../../services/ReportWordDocument';
 import { readReportImageHeaderInfo } from '../../services/ReportImageHeader';
@@ -63,4 +64,31 @@ it.each(multiple)('huge multi-EXIF frames stay guarded before any platform decod
   expect(fakeMedia.deviceSizeAsked).toEqual([]);
   expect(fakeMedia.deviceOpened).toEqual([]);
   expect(result.unavailableMedia[0].reason).toMatch(/reports 20,000 x 20,000 pixels/);
+});
+
+const retained = [
+  { name: 'jpegOnItsSide', sample: REPORT_IMAGE_HEADER_SAMPLES.jpegOnItsSide, expected: { width: 5, height: 7 } },
+  { name: 'jpegOnItsOtherSide', sample: REPORT_IMAGE_HEADER_SAMPLES.jpegOnItsOtherSide, expected: { width: 5, height: 7 } },
+  { name: 'jpegUpsideDown', sample: REPORT_IMAGE_HEADER_SAMPLES.jpegUpsideDown, expected: { width: 7, height: 5 } },
+];
+it.each(retained)('unchanged retained real JPEG delegates while preserving native → DOCX shape and exact bytes: $name', async ({ sample, expected }) => {
+  const bytes = Uint8Array.from(Buffer.from(sample.base64, 'base64'));
+  fakeMedia.files.set(uri, bytes); // No COM registration or metadata rewrite.
+  // Substitute only the independently observed native decoder size response.
+  jest.spyOn(Image, 'getSize').mockImplementation(((asked: string, success: (w: number, h: number) => void) => {
+    fakeMedia.deviceSizeAsked.push(asked);
+    success(expected.width, expected.height);
+  }) as never);
+  const result = await resolveNativeReportWordMedia({ updates: [{ id: 'u', projectName: 'Synthetic', photos: [{ id: 'p', uri }] } as never], reportPhotoIds: ['p'], drawingReferences: [] });
+  expect(result.unavailableMedia).toEqual([]);
+  expect(result.media).toHaveLength(1);
+  expect(result.media[0].data).toEqual(bytes);
+  expect(Image.getSize).toHaveBeenCalledTimes(1);
+  expect(fakeMedia.deviceSizeAsked).toEqual([uri]);
+  expect(fakeMedia.deviceOpened).toEqual([]);
+  const zip = await JSZip.loadAsync(Buffer.from(await buildReportWordBase64({ title: 'Retained shape', body: 'Photo 1', generatedAt: '2026-10-18T12:00:00Z', media: result.media }), 'base64'));
+  const xml = await zip.file('word/document.xml')!.async('string');
+  const extent = /<wp:extent cx="(\d+)" cy="(\d+)"/.exec(xml)!;
+  expect([result.media[0].width, result.media[0].height, Math.round(Number(extent[1]) / Number(extent[2]) * 1e6)])
+    .toEqual([expected.width, expected.height, Math.round(expected.width / expected.height * 1e6)]);
 });
