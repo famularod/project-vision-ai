@@ -196,9 +196,10 @@ const update = (over: Record<string, unknown>) => ({ projectId: P1.id, projectNa
 const document = (over: Record<string, unknown>) => ({ projectId: P1.id, projectName: P1.name, projectNames: [P1.name], mimeType: 'application/pdf', notes: '', isCurrent: false, ...over });
 
 
+const webGoldens:Record<string,string>=require('../fixtures/b64-desktop-low-year-legacy.json');
 import {buildDAVELegacyReportSourceFingerprint} from '../../services/DAVEReportIntelligence';
 it.each(['0100','0202','0999','2000','2100','26','202','iso-0100','iso-0202','iso-0999','canonical-0202'])('B64 actual desktop authorized-row raw history for %s',async year=>{
  useClock(T0);const start=year==='canonical-0202'?'05/01/0202':year.startsWith('iso-')?year.slice(4)+'-05-01':`5/1/${year}`;const finish=year==='canonical-0202'?'05/04/0202':year.startsWith('iso-')?year.slice(4)+'-05-04':`5/4/${year}`;
  const rows=rowsOf(onThePhone({tasks:[task({id:'year-task',taskName:'Inspect canopy',locationName:'Court',startDate:'05/01/2026',finishDate:'05/04/2026',updatedAt:isoAt(-1)})]}),isoAt(-1),row=>{if(row.item_data){row.item_data.startDate=start;row.item_data.finishDate=finish;}});
- const snapshot=await computerSnapshot(rows);const truths=buildDAVEWebReportTruths(snapshot,P1.name);console.log('B64_WEB_RAW_HISTORY '+JSON.stringify({year,fingerprint:buildDAVELegacyReportSourceFingerprint(truths),shown:truths[0].schedule.map(t=>[t.startDate,t.finishDate])}));
+ const snapshot=await computerSnapshot(rows);const truths=buildDAVEWebReportTruths(snapshot,P1.name);console.log('B64_WEB_RAW_HISTORY '+JSON.stringify({year,fingerprint:buildDAVELegacyReportSourceFingerprint(truths),shown:truths[0].schedule.map(t=>[t.startDate,t.finishDate])}));expect(buildDAVELegacyReportSourceFingerprint(truths)).toBe(webGoldens[year]);
 });
