@@ -740,7 +740,6 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
     const notNow = () => {
       if (signOut?.here) return signOutWithoutRefresh();
       // Report this operation's server-requested wait without changing the retryable response auth-js needs.
-      signOut?.onServerWait?.();
       return askedToWait();
     };
     // Inside the wait the server asked for, only a sign-out's own refresh goes out, and only once.
@@ -760,6 +759,7 @@ export function createDAVEWebSignInRefreshGuard(options: Readonly<{
       response = await options.fetch(input, init);
     }
     if (grant === 'refresh_token' && response.status === 429) {
+      signOut?.onServerWait?.();
       const asked = Number(response.headers.get('retry-after')) * 1_000;
       refreshWaitsUntil = Date.now() + (asked > 0 ? Math.min(asked, REFRESH_WAIT_LIMIT_MS) : DAVE_WEB_REFRESH_WAIT_MS);
       return notNow();

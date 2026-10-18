@@ -367,6 +367,9 @@ export function createDAVEWebSupabaseGateway(
   let signInChanges = 0;
   /** The Sign Out of This Computer last made in this tab signed it out without the cloud confirming it. */
   let signedOutUnconfirmed = false;
+  // auth-js can return the identical failed-refresh error again without invoking fetch.
+  const globalWaitErrors = new WeakSet<object>();
+  let globalSignOut: { session: string; work: Promise<void> } | null = null;
 
   function invalidateAuthorization() {
     authorizationCache = null;
@@ -746,6 +749,13 @@ export function createDAVEWebSupabaseGateway(
      * sign-in page to say (`signedOutWithoutCloudConfirmation`).
      */
     async signOut(scope: DAVEWebSignOutScope = 'local'): Promise<void> {
+      const session = JSON.stringify(browserTabStoredSignIn());
+      if (scope === 'global' && globalSignOut) {
+        // A newly signed-in session must never inherit the preceding account's operation.
+        if (globalSignOut.session !== session) throw new DAVEWebSignOutNeedsConnectionError();
+        return globalSignOut.work;
+      }
+      const perform = async () => {
       signedOutUnconfirmed = false;
       if (!client) return;
       const ending = browserTabStoredSignIn();
@@ -758,7 +768,8 @@ export function createDAVEWebSupabaseGateway(
         const { error } = await (signInGuard?.signingOut
           ? signInGuard.signingOut('everywhere', askAuth, () => { serverAskedToWait = true; })
           : askAuth());
-        if (error && serverAskedToWait) throw new DAVEWebSignOutWaitError();
+        if (error && serverAskedToWait) globalWaitErrors.add(error);
+        if (error && globalWaitErrors.has(error)) throw new DAVEWebSignOutWaitError();
         if (error && isAuthRetryableFetchError(error)) throw new DAVEWebSignOutNeedsConnectionError();
         if (error) throw new Error('The desktop session could not be closed.');
       } else {
@@ -790,6 +801,12 @@ export function createDAVEWebSupabaseGateway(
       // And so does the note the Duplicate Tab guard keeps for it (review pass 1, web L2).
       if (ending) await signInGuard?.signInOver?.(ending.sessionId);
       signedOutUnconfirmed = !confirmedByCloud;
+      };
+      if (scope !== 'global') return perform();
+      const work = perform();
+      const mine = { session, work };
+      globalSignOut = mine;
+      try { await work; } finally { if (globalSignOut === mine) globalSignOut = null; }
     },
 
     /**
