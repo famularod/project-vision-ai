@@ -17,6 +17,7 @@
  */
 import {
   decryptCompleteBackupArchive,
+  backupFileSha256,
   type BackupSha256,
   type CompleteBackupArchiveDependencies,
   type CompleteBackupPlainAsset,
@@ -26,11 +27,16 @@ import {
   assertBackupAssetsFitParts,
   countBackupParts,
   createCompleteBackupParts,
-  isCompleteBackupPart,
+  hasBackupPartMarker,
+  parseCompleteBackupPart,
+  backupPartContext,
   validateBackupPartSet,
   CompleteBackupPartsError,
   type CompleteBackupAssetSource,
+  type BackupPartReadOptions,
+  type CompleteBackupPart,
 } from './CompleteBackupArchiveParts';
+import { backupPartContextKey, type BackupPartContext } from './BackupPartContext';
 import { assertBackupSerializedFits } from './BackupExportPolicy';
 import type { RestoredMediaLedger, RestoredMediaOutcome } from './RestoredMediaLedger';
 
@@ -306,6 +312,7 @@ export type OpenedBackup =
       kind: 'parts';
       state: unknown;
       partCount: number;
+      integrity: 'bound' | 'legacy_unbound';
       stageAssets: (stagingDirectory: string) => Promise<StagedBackupAssets>;
     }>;
 
@@ -325,105 +332,102 @@ function parseBackupFile(text: string): unknown {
  * one multi-part backup. Decrypts only the records (part 1) so the restore can
  * be previewed and confirmed before any file is written.
  */
+type SelectedBackupPart = Readonly<{
+  uri: string;
+  backupId: string;
+  partIndex: number;
+  partCount: number;
+  envelopeVersion: CompleteBackupPart['envelopeVersion'];
+  setNonce?: string;
+  context: BackupPartContext | null;
+  fileSha256: string;
+}>;
+
 export async function openSelectedBackup(
   uris: readonly string[],
   passphrase: string,
   io: BackupFileIO,
-  /** Restore takes minutes on the phone, like the export; the owner is told each step. */
   onProgress?: (message: string) => void,
+  options: BackupPartReadOptions = {},
 ): Promise<OpenedBackup> {
   if (uris.length === 0) {
     throw new CompleteBackupPartsError('no_parts', 'No backup was selected.');
   }
-
-  const headers: { uri: string; backupId: string; partIndex: number; partCount: number }[] = [];
-  let firstPart: unknown = null;
+  const headers: SelectedBackupPart[] = [];
+  let state: unknown = null;
+  // The option is copied into this operation; no global recovery/context authority.
+  const allowLegacyMultipart = options.allowLegacyMultipart === true;
   for (const [index, uri] of uris.entries()) {
     onProgress?.(`Checking backup file ${index + 1} of ${uris.length}. Keep Vitruvius open.`);
-    const parsed = parseBackupFile(await io.readText(uri));
-    if (!isCompleteBackupPart(parsed)) {
+    const text = await io.readText(uri);
+    const parsed = parseBackupFile(text);
+    if (!hasBackupPartMarker(parsed)) {
       if (uris.length === 1) {
         const decrypted = await decryptCompleteBackupArchive(parsed, passphrase, { sha256Hex: io.sha256Hex });
         return { kind: 'single', state: decrypted.state, decrypted };
       }
-      throw new CompleteBackupPartsError(
-        'part_unreadable',
-        'One of the selected files is not part of a multi-part Vitruvius backup. ' +
-          'To restore an older single-file backup, select only that file.',
-      );
+      throw new CompleteBackupPartsError('part_unreadable',
+        'One of the selected files is not part of a multi-part Vitruvius backup. To restore an older single-file backup, select only that file.');
     }
-    headers.push({
-      uri,
-      backupId: parsed.backupId,
-      partIndex: parsed.partIndex,
-      partCount: parsed.partCount,
+    const part = parseCompleteBackupPart(parsed, { allowLegacyMultipart });
+    const context = backupPartContext(part);
+    // Authenticate EVERY part before preview. Only state0 and small identities survive this iteration.
+    const decrypted = await decryptCompleteBackupArchive(part.archive, passphrase, {
+      sha256Hex: io.sha256Hex, stateOnly: true, ...(context ? { partContext: context } : {}),
     });
-    // Keep only the part that carries the records; the rest are re-read one
-    // at a time when their files are staged.
-    if (parsed.partIndex === 0) firstPart = parsed.archive;
+    if (part.partIndex === 0) state = decrypted.state;
+    headers.push(Object.freeze({ uri, backupId: part.backupId, partIndex: part.partIndex,
+      partCount: part.partCount, envelopeVersion: part.envelopeVersion,
+      ...(part.setNonce ? { setNonce: part.setNonce } : {}), context,
+      fileSha256: await backupFileSha256(text, io.sha256Hex) }));
   }
-
   validateBackupPartSet(headers);
-  const ordered = [...headers].sort((left, right) => left.partIndex - right.partIndex);
+  const ordered = Object.freeze([...headers].sort((left, right) => left.partIndex - right.partIndex));
   onProgress?.('Decrypting the backup records. Keep Vitruvius open.');
-  // Records only: this part's files are decrypted and verified when staged.
-  const { state } = await decryptCompleteBackupArchive(firstPart, passphrase, { sha256Hex: io.sha256Hex, stateOnly: true });
-
-  return {
-    kind: 'parts',
-    state,
-    partCount: ordered.length,
-    stageAssets: stagingDirectory => stageBackupPartAssets(ordered, passphrase, io, stagingDirectory, onProgress),
-  };
+  return Object.freeze({ kind: 'parts', state, partCount: ordered.length,
+    integrity: ordered[0].context ? 'bound' : 'legacy_unbound',
+    stageAssets: (stagingDirectory: string) => stageBackupPartAssets(ordered, passphrase, io, stagingDirectory, onProgress),
+  });
 }
 
 async function stageBackupPartAssets(
-  ordered: readonly Readonly<{ uri: string; backupId: string; partIndex: number }>[],
+  ordered: readonly SelectedBackupPart[],
   passphrase: string,
   io: BackupFileIO,
   stagingDirectory: string,
   onProgress?: (message: string) => void,
 ): Promise<StagedBackupAssets> {
   const staged = new Map<string, StagedBackupAsset>();
-  const cleanup = async () => {
-    await io.remove(stagingDirectory).catch(() => undefined);
-  };
-
+  const cleanup = async () => { await io.remove(stagingDirectory).catch(() => undefined); };
   try {
     await io.makeDirectory(stagingDirectory);
     for (const expected of ordered) {
       onProgress?.(`Restoring backup part ${expected.partIndex + 1} of ${ordered.length}. Each part can take a few minutes; keep Vitruvius open.`);
-      const parsed = parseBackupFile(await io.readText(expected.uri));
-      if (
-        !isCompleteBackupPart(parsed) ||
-        parsed.backupId !== expected.backupId ||
-        parsed.partIndex !== expected.partIndex
-      ) {
-        throw new CompleteBackupPartsError(
-          'part_changed',
-          'A backup part changed after it was selected. Nothing was restored.',
-        );
+      const text = await io.readText(expected.uri);
+      if (await backupFileSha256(text, io.sha256Hex) !== expected.fileSha256) {
+        throw new CompleteBackupPartsError('part_changed', 'A backup part changed after it was selected. Nothing was restored.');
       }
-      const decrypted = await decryptCompleteBackupArchive(parsed.archive, passphrase, { sha256Hex: io.sha256Hex });
+      const parsed = parseCompleteBackupPart(parseBackupFile(text), { allowLegacyMultipart: expected.context === null });
+      const context = backupPartContext(parsed);
+      if (parsed.backupId !== expected.backupId || parsed.partIndex !== expected.partIndex ||
+          parsed.partCount !== expected.partCount || parsed.envelopeVersion !== expected.envelopeVersion ||
+          (context ? backupPartContextKey(context) : null) !== (expected.context ? backupPartContextKey(expected.context) : null)) {
+        throw new CompleteBackupPartsError('part_changed', 'A backup part changed after it was selected. Nothing was restored.');
+      }
+      const decrypted = await decryptCompleteBackupArchive(parsed.archive, passphrase, {
+        sha256Hex: io.sha256Hex, ...(expected.context ? { partContext: expected.context } : {}),
+      });
       const names = new Map(decrypted.manifest.assets.map(asset => [asset.id, asset.relativePath]));
       let fileNumber = 0;
       for (const [id, bytes] of decrypted.assets) {
         if (staged.has(id)) {
-          throw new CompleteBackupPartsError(
-            'duplicate_asset',
-            'Two backup parts claim the same file. Nothing was restored.',
-          );
+          throw new CompleteBackupPartsError('duplicate_asset', 'Two backup parts claim the same file. Nothing was restored.');
         }
         const uri = `${stagingDirectory}${expected.partIndex}-${fileNumber}.bin`;
         fileNumber += 1;
         await io.writeBytes(uri, bytes);
-        staged.set(id, {
-          uri,
-          fileName: names.get(id) || 'restored-file.bin',
-          byteLength: bytes.byteLength,
-        });
+        staged.set(id, { uri, fileName: names.get(id) || 'restored-file.bin', byteLength: bytes.byteLength });
       }
-      // `decrypted` goes out of scope here; the next part starts from nothing.
     }
     return { assets: staged, cleanup };
   } catch (error) {

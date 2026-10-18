@@ -6,6 +6,7 @@ import {
   fromByteArray,
   toByteArray,
 } from 'base64-js';
+import { backupPartAssociatedData, backupPartContextKey, BOUND_COMPLETE_BACKUP_ARCHIVE_VERSION, parseBackupPartContext, type BackupPartContext } from './BackupPartContext';
 import {
   createCompleteAppBackupManifest,
   verifyCompleteAppBackupManifest,
@@ -36,7 +37,8 @@ export type CompleteBackupEncryptedAsset = Readonly<{
 }>;
 
 export type CompleteBackupArchive = Readonly<{
-  archiveVersion: typeof COMPLETE_BACKUP_ARCHIVE_VERSION;
+  archiveVersion: typeof COMPLETE_BACKUP_ARCHIVE_VERSION | typeof BOUND_COMPLETE_BACKUP_ARCHIVE_VERSION;
+  partContext?: BackupPartContext;
   encryption: Readonly<{
     algorithm: 'AES-256-GCM';
     kdf: 'PBKDF2-HMAC-SHA256';
@@ -92,10 +94,16 @@ export async function createCompleteBackupArchive(
     assets: readonly CompleteBackupPlainAsset[];
     passphrase: string;
     createdAt: string;
+    partContext?: BackupPartContext;
   }>,
   dependencies: CompleteBackupArchiveDependencies,
 ): Promise<CompleteBackupArchive> {
   const passphrase = requireBackupPassphrase(input.passphrase);
+  const partContext = input.partContext === undefined ? null : parseBackupPartContext(input.partContext);
+  if (input.partContext !== undefined && !partContext) {
+    throw new CompleteBackupArchiveError('invalid_archive', 'The backup part context is invalid.');
+  }
+  const associatedData = (domain: string) => utf8ToBytes(partContext ? backupPartAssociatedData(partContext, domain) : domain);
   const hashBytes = dependencies.sha256Hex ?? javaScriptSha256Hex;
   const salt = await dependencies.randomBytes(KDF_SALT_BYTES);
   assertRandomLength(salt, KDF_SALT_BYTES, 'backup salt');
@@ -105,7 +113,7 @@ export async function createCompleteBackupArchive(
     key,
     stateBytes,
     dependencies,
-    utf8ToBytes(COMPLETE_BACKUP_DOMAIN_ID),
+    associatedData(COMPLETE_BACKUP_DOMAIN_ID),
   );
   const encryptedAssets: CompleteBackupEncryptedAsset[] = [];
   const manifestAssets = [];
@@ -133,7 +141,7 @@ export async function createCompleteBackupArchive(
         key,
         asset.bytes,
         dependencies,
-        utf8ToBytes(`asset:${id}`),
+        associatedData(`asset:${id}`),
       ),
     }));
   }
@@ -154,7 +162,8 @@ export async function createCompleteBackupArchive(
     sha256Text: async value => sha256Hex(utf8ToBytes(value)),
   });
   const unsigned = {
-    archiveVersion: COMPLETE_BACKUP_ARCHIVE_VERSION,
+    archiveVersion: partContext ? BOUND_COMPLETE_BACKUP_ARCHIVE_VERSION : COMPLETE_BACKUP_ARCHIVE_VERSION,
+    ...(partContext ? { partContext } : {}),
     encryption: {
       algorithm: 'AES-256-GCM' as const,
       kdf: 'PBKDF2-HMAC-SHA256' as const,
@@ -184,13 +193,24 @@ export async function decryptCompleteBackupArchive(
      * minute (field test 28 Sep 2026). `assets` is then empty.
      */
     stateOnly?: boolean;
+    /** Required when opening a bound multipart archive; never inferred from the archive itself. */
+    partContext?: BackupPartContext;
   }> = {},
 ): Promise<DecryptedCompleteBackup> {
   const passphrase = requireBackupPassphrase(passphraseInput);
   const hashBytes = dependencies.sha256Hex ?? javaScriptSha256Hex;
   const archive = parseArchive(rawArchive);
+  const partContext = archive.archiveVersion === BOUND_COMPLETE_BACKUP_ARCHIVE_VERSION
+    ? parseBackupPartContext(archive.partContext) : null;
+  const expected = dependencies.partContext === undefined ? null : parseBackupPartContext(dependencies.partContext);
+  if ((partContext && (!expected || backupPartContextKey(partContext) !== backupPartContextKey(expected))) ||
+      (!partContext && dependencies.partContext !== undefined)) {
+    throw new CompleteBackupArchiveError('invalid_archive', 'Open every part of this multipart backup together; its authenticated context is required.');
+  }
+  const associatedData = (domain: string) => utf8ToBytes(partContext ? backupPartAssociatedData(partContext, domain) : domain);
   const unsigned = {
     archiveVersion: archive.archiveVersion,
+    ...(partContext ? { partContext } : {}),
     encryption: archive.encryption,
     manifest: archive.manifest,
     encryptedAssets: archive.encryptedAssets,
@@ -233,7 +253,7 @@ export async function decryptCompleteBackupArchive(
     const stateBytes = decryptBytes(
       key,
       stateDomain.payload as EncryptedBackupSection,
-      utf8ToBytes(COMPLETE_BACKUP_DOMAIN_ID),
+      associatedData(COMPLETE_BACKUP_DOMAIN_ID),
     );
     state = JSON.parse(bytesToUtf8(stateBytes));
   } catch {
@@ -269,7 +289,7 @@ export async function decryptCompleteBackupArchive(
       bytes = decryptBytes(
         key,
         encrypted,
-        utf8ToBytes(`asset:${asset.id}`),
+        associatedData(`asset:${asset.id}`),
       );
     } catch {
       throw new CompleteBackupArchiveError(
@@ -293,6 +313,10 @@ export async function decryptCompleteBackupArchive(
     assets,
     manifest: archive.manifest,
   });
+}
+
+export async function backupFileSha256(text: string, hashBytes: BackupSha256 = javaScriptSha256Hex): Promise<string> {
+  return hashBytes(utf8ToBytes(text));
 }
 
 export function requireBackupPassphrase(value: string): string {
@@ -370,7 +394,9 @@ function parseArchive(value: unknown): CompleteBackupArchive {
   }
   const candidate = value as Partial<CompleteBackupArchive>;
   if (
-    candidate.archiveVersion !== COMPLETE_BACKUP_ARCHIVE_VERSION ||
+    (candidate.archiveVersion !== COMPLETE_BACKUP_ARCHIVE_VERSION && candidate.archiveVersion !== BOUND_COMPLETE_BACKUP_ARCHIVE_VERSION) ||
+    (candidate.archiveVersion === COMPLETE_BACKUP_ARCHIVE_VERSION && Object.prototype.hasOwnProperty.call(candidate, 'partContext')) ||
+    (candidate.archiveVersion === BOUND_COMPLETE_BACKUP_ARCHIVE_VERSION && !parseBackupPartContext(candidate.partContext)) ||
     !candidate.encryption ||
     candidate.encryption.algorithm !== 'AES-256-GCM' ||
     candidate.encryption.kdf !== 'PBKDF2-HMAC-SHA256' ||

@@ -8,12 +8,10 @@
  * and the only export that completes is records-only, which carries no photos.
  * That leaves images with no local protection.
  *
- * This splits the assets across several parts, each one a complete, valid
- * archive in its own right produced by the proven createCompleteBackupArchive.
- * Nothing about the archive format changes; the parts are wrapped in a small
- * plaintext envelope naming which backup they belong to and how many there
- * are. Reuse is the point: the encryption path is the last place to introduce
- * a novel implementation.
+ * Each new part binds a fresh set nonce and its exact position/role into the
+ * archive's authenticated state and asset ciphertext. Old unbound multipart
+ * backups require explicitly authorized recovery; a standalone v1 archive
+ * remains supported as before.
  *
  * Assets are taken as SOURCES, not bytes. Splitting a list of already-loaded
  * buffers would bound each file's size while still holding every photo in
@@ -35,12 +33,15 @@ import {
   type CompleteBackupArchiveDependencies,
   type CompleteBackupPlainAsset,
 } from './CompleteBackupArchive';
+import { bytesToHex } from '@noble/hashes/utils';
+import { BACKUP_SET_NONCE_BYTES, BOUND_BACKUP_PART_ENVELOPE_VERSION, BOUND_COMPLETE_BACKUP_ARCHIVE_VERSION, backupPartContextKey, parseBackupPartContext, type BackupPartContext } from './BackupPartContext';
 import {
   MAX_DEVICE_BACKUP_BYTES,
   createBackupAssetBudget,
 } from './BackupExportPolicy';
 
-export const BACKUP_PART_ENVELOPE_VERSION = 1 as const;
+export const LEGACY_BACKUP_PART_ENVELOPE_VERSION = 1 as const;
+export const BACKUP_PART_ENVELOPE_VERSION = BOUND_BACKUP_PART_ENVELOPE_VERSION;
 
 /**
  * Leave room inside each part for the encrypted state, the manifest and JSON
@@ -66,7 +67,8 @@ export type CompleteBackupAssetSource = Readonly<{
 }>;
 
 export type CompleteBackupPart = Readonly<{
-  envelopeVersion: typeof BACKUP_PART_ENVELOPE_VERSION;
+  envelopeVersion: typeof LEGACY_BACKUP_PART_ENVELOPE_VERSION | typeof BACKUP_PART_ENVELOPE_VERSION;
+  setNonce?: string;
   backupId: string;
   partIndex: number;
   partCount: number;
@@ -202,6 +204,11 @@ export async function createCompleteBackupParts(
     input.partAssetBudgetBytes ?? DEFAULT_PART_ASSET_BUDGET_BYTES,
   );
 
+  const nonceBytes = await dependencies.randomBytes(BACKUP_SET_NONCE_BYTES);
+  if (!(nonceBytes instanceof Uint8Array) || nonceBytes.length !== BACKUP_SET_NONCE_BYTES) {
+    throw new CompleteBackupPartsError('invalid_context', 'The backup set nonce could not be generated.');
+  }
+  const setNonce = bytesToHex(nonceBytes);
   for (let index = 0; index < groups.length; index += 1) {
     onPartStart?.(index + 1, groups.length);
     const loaded: CompleteBackupPlainAsset[] = [];
@@ -235,10 +242,13 @@ export async function createCompleteBackupParts(
       assets: loaded,
       passphrase: input.passphrase,
       createdAt: input.createdAt,
+      partContext: { version: 1, setNonce, backupId: input.backupId, partIndex: index,
+        partCount: groups.length, role: index === 0 ? 'records_and_assets' : 'assets' },
     }, dependencies);
 
     await onPart(Object.freeze({
-      envelopeVersion: BACKUP_PART_ENVELOPE_VERSION,
+      envelopeVersion: BOUND_BACKUP_PART_ENVELOPE_VERSION,
+      setNonce,
       backupId: input.backupId,
       partIndex: index,
       partCount: groups.length,
@@ -250,27 +260,67 @@ export async function createCompleteBackupParts(
   return groups.length;
 }
 
+export const LEGACY_MULTIPART_RECOVERY_WARNING =
+  'This older multipart backup cannot verify that all selected files belong to the same backup. Files from different backups using the same passphrase could be combined. Recover only files you trust and saved together.';
+
+export type BackupPartReadOptions = Readonly<{ allowLegacyMultipart?: boolean }>;
+
+/** A malformed/new wrapper must never fall back to standalone legacy restore. */
+export function hasBackupPartMarker(value: unknown): boolean {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value) &&
+    ['envelopeVersion', 'backupId', 'partIndex', 'partCount', 'archive', 'setNonce', 'partContext']
+      .some(key => Object.prototype.hasOwnProperty.call(value, key)));
+}
+
+export function backupPartContext(part: CompleteBackupPart): BackupPartContext | null {
+  if (part.envelopeVersion !== BOUND_BACKUP_PART_ENVELOPE_VERSION) return null;
+  return parseBackupPartContext({ version: 1, setNonce: part.setNonce, backupId: part.backupId,
+    partIndex: part.partIndex, partCount: part.partCount, role: part.partIndex === 0 ? 'records_and_assets' : 'assets' });
+}
+
+export function parseCompleteBackupPart(value: unknown, options: BackupPartReadOptions = {}): CompleteBackupPart {
+  const p = value as Partial<CompleteBackupPart> | null;
+  if (!p || typeof p !== 'object' || Array.isArray(p) ||
+      (p.envelopeVersion !== LEGACY_BACKUP_PART_ENVELOPE_VERSION && p.envelopeVersion !== BACKUP_PART_ENVELOPE_VERSION) ||
+      typeof p.backupId !== 'string' || !p.backupId.trim() ||
+      !Number.isSafeInteger(p.partIndex) || !Number.isSafeInteger(p.partCount) ||
+      (p.partIndex as number) < 0 || (p.partCount as number) < 1 || (p.partIndex as number) >= (p.partCount as number) ||
+      !p.archive || typeof p.archive !== 'object') {
+    throw new CompleteBackupPartsError('part_unreadable', 'One of the selected files is not a Vitruvius backup part.');
+  }
+  const part = Object.freeze({ envelopeVersion: p.envelopeVersion, backupId: p.backupId,
+    partIndex: p.partIndex as number, partCount: p.partCount as number, archive: p.archive,
+    ...(p.envelopeVersion === BOUND_BACKUP_PART_ENVELOPE_VERSION ? { setNonce: p.setNonce } : {}) });
+  if (part.envelopeVersion === BOUND_BACKUP_PART_ENVELOPE_VERSION) {
+    const expected = backupPartContext(part), carried = parseBackupPartContext(part.archive.partContext);
+    if (!expected || part.archive.archiveVersion !== BOUND_COMPLETE_BACKUP_ARCHIVE_VERSION || !carried) {
+      throw new CompleteBackupPartsError('part_unreadable', 'The multipart backup authentication context is missing or unsupported.');
+    }
+    if (backupPartContextKey(expected) !== backupPartContextKey(carried)) {
+      throw new CompleteBackupPartsError('mixed_backups', 'These files come from different backups or their part headers were modified.');
+    }
+  } else {
+    if (part.archive.archiveVersion !== 1 || Object.prototype.hasOwnProperty.call(p, 'setNonce') ||
+        Object.prototype.hasOwnProperty.call(p, 'partContext') || Object.prototype.hasOwnProperty.call(part.archive, 'partContext')) {
+      throw new CompleteBackupPartsError('part_unreadable', 'This multipart backup version or context is unsupported.');
+    }
+    if (options.allowLegacyMultipart !== true) {
+      throw new CompleteBackupPartsError('legacy_multipart_unbound', LEGACY_MULTIPART_RECOVERY_WARNING);
+    }
+  }
+  return part;
+}
+
 export function isCompleteBackupPart(value: unknown): value is CompleteBackupPart {
-  const part = value as Partial<CompleteBackupPart> | null;
-  return Boolean(
-    part &&
-    typeof part === 'object' &&
-    part.envelopeVersion === BACKUP_PART_ENVELOPE_VERSION &&
-    typeof part.backupId === 'string' &&
-    part.backupId &&
-    Number.isSafeInteger(part.partIndex) &&
-    Number.isSafeInteger(part.partCount) &&
-    (part.partIndex as number) >= 0 &&
-    (part.partCount as number) >= 1 &&
-    (part.partIndex as number) < (part.partCount as number) &&
-    part.archive,
-  );
+  try { parseCompleteBackupPart(value, { allowLegacyMultipart: true }); return true; } catch { return false; }
 }
 
 export type BackupPartHeader = Readonly<{
   backupId: string;
   partIndex: number;
   partCount: number;
+  envelopeVersion?: CompleteBackupPart['envelopeVersion'];
+  setNonce?: string;
 }>;
 
 /**
@@ -283,7 +333,13 @@ export function validateBackupPartSet(parts: readonly BackupPartHeader[]): void 
   if (parts.length === 0) {
     throw new CompleteBackupPartsError('no_parts', 'No backup parts were selected.');
   }
-  if (new Set(parts.map(part => part.backupId)).size !== 1) {
+  if (parts.some(part => !Number.isSafeInteger(part.partCount) || !Number.isSafeInteger(part.partIndex) ||
+      part.partCount < 1 || part.partIndex < 0 || part.partIndex >= part.partCount)) {
+    throw new CompleteBackupPartsError('part_unreadable', 'The backup part count or index is invalid.');
+  }
+  if (new Set(parts.map(part => part.backupId)).size !== 1 ||
+      new Set(parts.map(part => part.envelopeVersion ?? 1)).size !== 1 ||
+      new Set(parts.map(part => part.setNonce ?? null)).size !== 1) {
     throw new CompleteBackupPartsError(
       'mixed_backups',
       'These files come from different backups. Select the parts of a single backup.',
@@ -306,14 +362,16 @@ export function validateBackupPartSet(parts: readonly BackupPartHeader[]): void 
   }
   if (seen.size !== partCount) {
     const missing: number[] = [];
-    for (let index = 0; index < partCount; index += 1) {
+    const missingCount = partCount - seen.size;
+    // At most selected-file count + ten iterations, never an unauthenticated count-sized loop.
+    for (let index = 0; index < partCount && missing.length < 10; index += 1) {
       if (!seen.has(index)) missing.push(index + 1);
     }
     throw new CompleteBackupPartsError(
       'incomplete_backup',
-      `This backup has ${partCount} parts and ${missing.length} ${
-        missing.length === 1 ? 'is' : 'are'
-      } missing (part ${missing.join(', ')}). Nothing was restored.`,
+      `This backup has ${partCount} parts and ${missingCount} ${
+        missingCount === 1 ? 'is' : 'are'
+      } missing (part ${missing.join(', ')}${missingCount > missing.length ? ', …' : ''}). Nothing was restored.`,
     );
   }
 }
@@ -326,22 +384,13 @@ export function validateBackupPartSet(parts: readonly BackupPartHeader[]): void 
 export async function readCompleteBackupParts(
   files: readonly unknown[],
   passphrase: string,
-  dependencies: Readonly<{ sha256Hex?: BackupSha256 }> = {},
-): Promise<{ state: unknown; assets: Map<string, Uint8Array> }> {
+  dependencies: Readonly<{ sha256Hex?: BackupSha256 }> & BackupPartReadOptions = {},
+): Promise<{ state: unknown; assets: Map<string, Uint8Array>; integrity: 'bound' | 'legacy_unbound' }> {
   if (files.length === 0) {
     throw new CompleteBackupPartsError('no_parts', 'No backup parts were selected.');
   }
 
-  const parts: CompleteBackupPart[] = [];
-  for (const file of files) {
-    if (!isCompleteBackupPart(file)) {
-      throw new CompleteBackupPartsError(
-        'part_unreadable',
-        'One of the selected files is not a Vitruvius backup part.',
-      );
-    }
-    parts.push(file);
-  }
+  const parts = files.map(file => parseCompleteBackupPart(file, dependencies));
 
   validateBackupPartSet(parts);
 
@@ -350,7 +399,9 @@ export async function readCompleteBackupParts(
   let state: unknown = null;
 
   for (const part of ordered) {
-    const decrypted = await decryptCompleteBackupArchive(part.archive, passphrase, dependencies);
+    const decrypted = await decryptCompleteBackupArchive(part.archive, passphrase, {
+      sha256Hex: dependencies.sha256Hex, ...(backupPartContext(part) ? { partContext: backupPartContext(part)! } : {}),
+    });
     if (part.partIndex === 0) state = decrypted.state;
     decrypted.assets.forEach((bytes, id) => {
       if (assets.has(id)) {
@@ -363,7 +414,7 @@ export async function readCompleteBackupParts(
     });
   }
 
-  return { state, assets };
+  return { state, assets, integrity: parts[0].envelopeVersion === BOUND_BACKUP_PART_ENVELOPE_VERSION ? 'bound' : 'legacy_unbound' };
 }
 
 /** The single-file ceiling this exists to work around. */

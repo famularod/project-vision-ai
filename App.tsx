@@ -447,7 +447,7 @@ import {
   createCompleteBackupArchive,
   COMPLETE_BACKUP_MINIMUM_PASSPHRASE_LENGTH,
 } from './services/CompleteBackupArchive';
-import { type CompleteBackupAssetSource } from './services/CompleteBackupArchiveParts';
+import { CompleteBackupPartsError, LEGACY_MULTIPART_RECOVERY_WARNING, type CompleteBackupAssetSource } from './services/CompleteBackupArchiveParts';
 import {
   decryptedBytesAssetProvider, exportBackupInParts, measureBackupAssetSource,
   materializeCompleteBackupState, multiPartBackupNotice, openSelectedBackup, stagedAssetProvider,
@@ -10914,7 +10914,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
     }
   }
 
-  async function applyRestoredData(data: RestoredAppData): Promise<RestoredMediaOutcome> {
+  async function applyRestoredData(data: RestoredAppData, legacyMultipartRecovery = false): Promise<RestoredMediaOutcome> {
     if (backupRestoreInFlightRef.current) return 'aborted';
     backupRestoreInFlightRef.current = true;
     if (savedUpdatesSaveTimer.current) {
@@ -10953,7 +10953,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
       setDraftSavedAt(restored.storedDraft?.savedAt || null); setSelectedWorkspaceProject(restored.activeProject);
       Alert.alert(
         'Device backup restored',
-        `${DEVICE_BACKUP_RESTORE_NOTICE} Included project data, photos, documents, and confirmed Core memories were decrypted, verified, and restored. Existing deletion records and queued deletions remain enforced.`,
+        legacyMultipartRecovery
+          ? `${DEVICE_BACKUP_RESTORE_NOTICE} Included data and files were decrypted and restored. ${LEGACY_MULTIPART_RECOVERY_WARNING} Existing deletion records and queued deletions remain enforced.`
+          : `${DEVICE_BACKUP_RESTORE_NOTICE} Included project data, photos, documents, and confirmed Core memories were decrypted, verified, and restored. Existing deletion records and queued deletions remain enforced.`,
       );
       return 'committed';
     } catch (error) {
@@ -11017,12 +11019,21 @@ Note: This update was opened through Outlook because PLZ email security may reje
         }
       }
 
-      const opened = await withBackupKeepAwake(() => openSelectedBackup(
-        result.assets.map(file => file.uri),
-        passphrase,
-        expoBackupFileIO,
-        onProgress,
-      ));
+      const selectedBackupUris = result.assets.map(file => file.uri);
+      let opened: Awaited<ReturnType<typeof openSelectedBackup>>;
+      try {
+        opened = await withBackupKeepAwake(() => openSelectedBackup(
+          selectedBackupUris, passphrase, expoBackupFileIO, onProgress,
+        ));
+      } catch (error) {
+        if (!(error instanceof CompleteBackupPartsError) || error.code !== 'legacy_multipart_unbound') throw error;
+        const recover = await askToContinue('Recover an older multipart backup?',
+          `${LEGACY_MULTIPART_RECOVERY_WARNING} This recovery cannot authenticate the file set.`, 'Recover older backup');
+        if (!recover) { onProgress?.('Restore cancelled. Nothing was changed.'); return; }
+        opened = await withBackupKeepAwake(() => openSelectedBackup(
+          selectedBackupUris, passphrase, expoBackupFileIO, onProgress, { allowLegacyMultipart: true },
+        ));
+      }
       const preflight = normalizeBackupData(opened.state, { archive: true });
 
       if (!preflight.ok) {
@@ -11038,7 +11049,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
 
       Alert.alert(
         'Restore this limited device backup?',
-        `${DEVICE_BACKUP_RESTORE_NOTICE} This replaces saved projects, updates, schedules, contacts, photos, documents, and the active draft on this device. Existing deletion records and queued deletions remain enforced.`,
+        `${DEVICE_BACKUP_RESTORE_NOTICE} ${opened.kind === 'parts' && opened.integrity === 'legacy_unbound' ? `${LEGACY_MULTIPART_RECOVERY_WARNING} ` : ''}This replaces saved projects, updates, schedules, contacts, photos, documents, and the active draft on this device. Existing deletion records and queued deletions remain enforced.`,
         [
           {
             text: 'Cancel',
@@ -11084,7 +11095,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
                     Alert.alert('Restore failed', normalized.message);
                     return;
                   }
-                  const outcome = await applyRestoredData(normalized.data);
+                  const outcome = await applyRestoredData(normalized.data, opened.kind === 'parts' && opened.integrity === 'legacy_unbound');
                   await materialized.settle(outcome);
                   onProgress?.(outcome === 'committed' ? 'Restore finished.' : 'Restore did not finish.');
                 } finally {
