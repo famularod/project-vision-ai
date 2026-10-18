@@ -203,7 +203,7 @@ describe('the web upload review asks about a task that was on an earlier schedul
     await chooseFile(screen, H());
 
     expect(screen.getByText('Paint in Lot was on an earlier schedule: the same task, or new work?')).toBeTruthy();
-    expect(screen.getByText('This task was on an earlier schedule and is not in your list now. If this file brings the same task back, its percent, notes and what you set on it come back with it. Nothing is carried unless you say it is the same task.')).toBeTruthy();
+    expect(screen.getByText('This task was on an earlier schedule and is not in your list now. If this file brings the same task back, its notes and what you set on it come back with it. Your own percent is kept unless this file states a higher percent. Nothing is carried unless you say it is the same task.')).toBeTruthy();
     expect(screen.getByText('Earlier Paint: 11/2–11/6 · 60% · “Primer on”')).toBeTruthy();
     expect(screen.getByLabelText(SAME).props.accessibilityState.checked).toBe(false);
     expect(screen.getByLabelText(NEW).props.accessibilityState.checked).toBe(true);

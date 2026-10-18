@@ -135,7 +135,8 @@ export function daveWebLinkCircleText(circle: DAVEWebLinkCircle, { inThisSchedul
     ? `“${predecessor}” is already set to start after “${task}”`
     : `“${predecessor}” already comes after “${task}” (through ${through.join(', ')})`;
   const where = inThisSchedule ? '' : ', on another device or in another browser tab';
-  return `Not saved. ${already}${where}. Making “${task}” start after “${predecessor}” as well would put them in a circle, and the schedule could not place either one. Untick “${predecessor}” and save again, or remove the other link first.`;
+  const otherLink = through.length === 0 ? 'the other link' : 'one of the existing links in that chain';
+  return `Not saved. ${already}${where}. Making “${task}” start after “${predecessor}” as well would put them in a circle, and the schedule could not place either one. Untick “${predecessor}” and save again, or remove ${otherLink} first.`;
 }
 
 export const DAVE_WEB_LINK_CHECK_FAILED_TEXT =
