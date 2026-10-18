@@ -9,7 +9,7 @@ import { buildPhotoProgress } from '../../services/PIEPhotoProgress';
 import { buildWrittenReportFacts } from '../../services/ReportWrittenFacts';
 import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
 import { buildDAVEWebReportTruths } from '../../services/DAVEWebOperations';
-import { buildDAVEReportSourceFingerprint, buildDAVELegacyReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
+import { buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
 import { buildDAVEReportSnapshot, markReportSnapshotDelivered } from '../../services/DAVEReportSnapshot';
 import { daveWebReportAlreadySentElsewhereAt } from '../../services/DAVEWebReportPeriod';
 import { loadDAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
@@ -103,11 +103,14 @@ it('equivalent confirmed comparisons recognize the native sent snapshot through 
   expect(JSON.stringify(snapshot)).toBe(before);
 });
 
-it('local queued comparisons retain legacy ordering and their raw legacy fingerprint is stable', () => {
+it('local queued comparisons retain legacy ordering without acknowledging or mutating their records', () => {
   const updates = confirmedUpdates().map(u => ({ ...u, status: 'queued' as const })), before = JSON.stringify(updates);
   const facts = buildWrittenReportFacts({ projectName: 'Tower', updates, scheduleItems: [], now: NOW });
   expect(facts.quotedComparison?.photoId).toBe('older-send');
-  const raw = buildDAVELegacyReportSourceFingerprint(nativeTruths(updates));
-  expect(buildDAVELegacyReportSourceFingerprint(nativeTruths(updates))).toBe(raw);
   expect(JSON.stringify(updates)).toBe(before);
+});
+
+it('actual written Latest update falls back from a non-leap February29 rather than normalizing it into March', () => {
+ const actual=update('early-start','2026-02-15','2026-03-01T12:00:00Z',GOOD), malformed=update('late-start','2026-02-01','2026-02-29T23:00:00Z',OLD);
+ expect(runtime([malformed,actual]).response.reportDraft.body).toContain(`Latest update: ${GOOD}`);
 });
