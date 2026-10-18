@@ -34,7 +34,7 @@ function device(options: { pendingDisk?: boolean; pendingUpload?: boolean; offli
     bindProjectDocumentUploadToAccount: () => { const startedAs = owner; return () => owner === startedAs; },
     validateECOSMobileDrawingControls: () => ({ valid: true }),
     authorityProjectId: (name: string) => `project:${name}`,
-    prepareScheduleImportFromAsset: async () => ({ id: 'review-1', nothingRead: true, message: 'No dated activities were read.' }),
+    prepareScheduleImportFromAsset: async () => ({ id: 'review-1', nothingRead: true, documents: [{ uri: 'file:///review/this-attempt.pdf' }], message: 'No dated activities were read.' }),
     createProjectDocumentFromAsset: async (asset: { name: string }, context: { projectName: string; category: string }) => ({
       id: `document-${++created}`, projectId: `project:${context.projectName}`, name: asset.name, category: context.category,
       ownedFileId: `owned-${created}`, localUri: `file:///owned/${created}.pdf`, status: 'local', mimeType: 'application/pdf', sizeBytes: 100,
@@ -59,6 +59,7 @@ function device(options: { pendingDisk?: boolean; pendingUpload?: boolean; offli
     setIncomingScheduleImportBatch: (batch: unknown) => { events.push('review'); reviews.push(batch); },
     setScheduleProjectFilter: () => undefined, setScreen: () => undefined,
     cancelScheduleImport: jest.fn(),
+    deleteStoredReferenceDocument: jest.fn(async () => undefined),
     Alert: { alert: (title: string, message: string, buttons?: Notice['buttons']) => { notices.push({ title, message, buttons }); events.push(`notice:${title}`); } },
   };
   const names = ['confirmDocumentProjectSelection', 'confirmAndAttachProjectDocument', 'saveProjectDocument', 'addProjectDocumentDurably', 'duplicateProjectDocumentForAsset'];
