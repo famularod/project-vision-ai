@@ -18,7 +18,8 @@ it.each(['daily', 'combined', 'executive'].flatMap(format => (['plain', 'progres
     const report = build(format, ordered);
     const expected = kind === 'plain' ? PLAIN : PROGRESS;
     expect(lines(report)).toContain(expected);
-    expect(report.body).toContain(expected);
+    if (format === 'executive') expect(report.body).not.toContain(expected);
+    else expect(report.body).toContain(expected);
     expect(lines(report).join(' ')).not.toMatch(/project area/i);
     expect(lines(report).length).toBeLessThanOrEqual(3);
   }
@@ -26,4 +27,8 @@ it.each(['daily', 'combined', 'executive'].flatMap(format => (['plain', 'progres
 it.each(['plain', 'progress'] as const)('newly recovered $s words cannot reuse a legacy sent record without an app text key', kind => {
   const report = build('daily', crowded(kind, 4));
   expect(reportWordingRequiresAppTextKey(report)).toBe(true);
+});
+
+it.each(['plain', 'progress'] as const)('unchanged raw executive wording retains legacy approval despite recovered $s area model', kind => {
+  expect(reportWordingRequiresAppTextKey(build('executive', crowded(kind, 4)))).toBe(false);
 });

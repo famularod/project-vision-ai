@@ -307,3 +307,12 @@ it('an unchanged unrelated progress-only legacy send retains its sent state', as
   legacy71(); await reopen71(updates);
   await screen.findByRole('button', { name: 'Share Report' }, SLOW);
 });
+
+it('unchanged executive output retains a legacy sent state when only unprinted area candidates recover', async () => {
+  phoneFormat = 'executive';
+  const updates = b71Updates();
+  await deviceSends('phone', updates, [], B71_AT);
+  expect((onCopyReport.mock.calls.at(-1)?.[0] as any).body).not.toContain(realNote);
+  legacy71(); await reopen71(updates);
+  await screen.findByRole('button', { name: 'Share Report' }, SLOW);
+});
