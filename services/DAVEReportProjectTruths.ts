@@ -151,6 +151,7 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
       ...buildWrittenReportFacts({
         projectName: project.name,
         updates: scope.updates,
+        cloudUpdateReceipts: input.cloudUpdateReceipts,
         scheduleItems: scope.scheduleItems,
         now: truth.generatedAt,
       }),
