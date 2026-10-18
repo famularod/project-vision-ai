@@ -805,6 +805,7 @@ function DesktopPageData({
       <Section title={`${documents.length} document${documents.length === 1 ? '' : 's'}`} detail="Upload, classify, version, and safely remove project documents from the shared record.">
         <DocumentManagementWorkspace
           documents={documents}
+          scopeProjects={selectedScopes}
           archivedDocuments={snapshot.referenceDocuments.filter(document =>
             snapshot.archivedDocumentIds?.includes(document.id) && daveWebArchiveScopeAllows(document, snapshot.projects, selectedScopes))}
           tasks={snapshot.scheduleItems}
@@ -3880,6 +3881,7 @@ type DocumentCoverageSummaryState = Readonly<{
 
 function DocumentManagementWorkspace({
   documents,
+  scopeProjects,
   archivedDocuments,
   tasks,
   knownTasks,
@@ -3890,6 +3892,8 @@ function DocumentManagementWorkspace({
   proofFocus,
 }: {
   documents: readonly DAVEWebReferenceDocument[];
+  /** The same parent-expanded scopes used to render active and archived documents. */
+  scopeProjects: readonly string[];
   archivedDocuments: readonly DAVEWebReferenceDocument[];
   tasks: readonly DAVEWebScheduleItem[];
   /** Every saved task and schedule, for what a lookahead's delete with its tasks puts back (review N2 W1). */
@@ -3906,7 +3910,11 @@ function DocumentManagementWorkspace({
   const [archivePending, setArchivePending] = useState<string | null>(null);
   const archiveOperationRef = useRef<object | null>(null);
   const archiveMountedRef = useRef(true);
-  const archiveContext = `${auth.userEmail ?? ''}\n${selectedProject ?? ''}`;
+  const archiveContext = JSON.stringify([
+    auth.userEmail, selectedProject,
+    scopeProjects.map(name => name.trim().toLowerCase()).sort(),
+    projectIdentities.map(project => JSON.stringify([project.id, project.name?.trim().toLowerCase()])).sort(),
+  ]);
   const archiveContextRef = useRef(archiveContext);
   archiveContextRef.current = archiveContext;
   useEffect(() => { archiveMountedRef.current = true; return () => { archiveMountedRef.current = false; }; }, []);
@@ -4626,7 +4634,7 @@ function DocumentManagementWorkspace({
     const current = [...documents, ...archivedDocuments].find(item => item.id === document.id);
     if (!current || current.cloudUpdatedAt !== document.cloudUpdatedAt ||
       (current.archivedAt ?? null) !== (document.archivedAt ?? null)) return;
-    if (!daveWebArchiveScopeAllows(current, projectIdentities, selectedProject ? [selectedProject] : [])) {
+    if (!daveWebArchiveScopeAllows(current, projectIdentities, scopeProjects)) {
       setNotice({ tone: 'danger', text: 'This document’s project identity needs review. Refresh Documents before trying again.' });
       return;
     }
@@ -5210,9 +5218,10 @@ function DocumentManagementWorkspace({
   );
 
   function openDeleteCandidate(document: DAVEWebReferenceDocument) {
+    if (!archiveMountedRef.current || archiveContextRef.current !== archiveContext || archiveOperationRef.current) return;
     setNotice(null);
     if (daveWebDocumentCanArchive(document)) {
-      if (!daveWebArchiveScopeAllows(document, projectIdentities, selectedProject ? [selectedProject] : [])) {
+      if (!daveWebArchiveScopeAllows(document, projectIdentities, scopeProjects)) {
         setNotice({ tone: 'danger', text: 'This document’s project identity needs review. Refresh Documents before trying again.' });
         return;
       }

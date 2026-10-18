@@ -1158,7 +1158,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
       const current = snapshotRef.current;
       if (!current) return;
       const latest = current.referenceDocuments.find(item => item.id === original.id);
-      if (!latest || latest.cloudUpdatedAt !== original.cloudUpdatedAt ||
+      if (!latest || !daveWebArchiveScopeAllows(latest, current.projects) || latest.cloudUpdatedAt !== original.cloudUpdatedAt ||
         (latest.archivedAt ?? null) !== (original.archivedAt ?? null)) {
         throw new Error('The document changed while this archive change was being checked. Refresh Documents to see its current state.');
       }
