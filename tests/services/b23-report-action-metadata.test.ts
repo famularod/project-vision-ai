@@ -11,12 +11,12 @@ describe('7.23 action metadata', () => {
     expect(reportFileTitleWithDate('Report', action, action)).toBe(`Report ${day}`);
     expect(reportFileTitleWithDate('Report', before, new Date(2026,9,19,12))).toBe('Report 2026-10-19');
   });
-  it.each(['2026-10-16','10/16/2026','16/10/2026','October 16, 2026','16 Oct 2026','Oct. 16 2026'])('preserves deliberate date %s', date => {
+  it.each(['2026-10-16','2026/10/16','2024/02/29','10/16/2026','16/10/2026','October 16, 2026','16 Oct 2026','Oct. 16 2026'])('preserves deliberate date %s', date => {
     const title = `Tower ${date}`;
     expect(reportSubjectWithDate(title,before,action)).toBe(title);
     expect(reportFileTitleWithDate(title,before,action)).not.toContain(day);
   });
-  it.each(['Project 2026','Version 1.2.2026','Project 2026-99-99','Tower 1234-10-16'])('does not treat identifiers or invalid dates as dates: %s', title => {
+  it.each(['Project 2026','Version 1.2.2026','Project 2026-99-99','Tower 1234-10-16','Tower 2026/02/29','Tower 2026/10-16'])('does not treat identifiers or invalid dates as dates: %s', title => {
     expect(reportSubjectWithDate(title,before,action)).toBe(`${title} — Oct 17, 2026`);
   });
   it.each(['.hidden','../a/b\\c\u0000\n','...','', '工程🏗️'.repeat(200)])('produces visible safe bounded Unicode Word basenames', title => {

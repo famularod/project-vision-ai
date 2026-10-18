@@ -25,6 +25,47 @@ const report={title:'.工程🏗️'.repeat(100),subject:'Tower',body:'Exact app
 afterEach(()=>jest.useRealTimers());
 beforeEach(()=>jest.useFakeTimers({now:new Date(2026,9,17,12),doNotFake:['nextTick','setImmediate','setTimeout']}));
 describe('7.23 actual report producers',()=>{
+  it('all four producers retain a deliberately supplied year-first slash date',async()=>{
+    const title='Tower 2026/10/16';
+    const manual={...report,title,subject:title};
+    const write=jest.fn(async(..._args:unknown[])=>undefined);
+    const nativeWord=producer('App.tsx','shareWordReport',{
+      Sharing:{isAvailableAsync:async()=>true,shareAsync:async()=>undefined},Alert:{alert:jest.fn()},
+      FileSystem:{cacheDirectory:'file:///cache/',writeAsStringAsync:write,deleteAsync:async()=>undefined,EncodingType:{Base64:'base64'}},
+      reportBodyCitesImages:()=>false,activeSavedUpdates:[],oneAtATime,
+      resolveNativeReportWordMedia:async()=>({media:[],unavailableMedia:[]}),reportFileTitleWithDate,
+      require:()=>({buildReportWordBase64:async()=> 'synthetic',summarizeReportWordUnavailableMedia:()=>''}),
+    });
+    expect(await nativeWord(manual,[],'Word')).toBe(true);
+    const uri=write.mock.calls[0][0] as string;
+    const decoded=execFileSync('/usr/bin/osascript',['-l','JavaScript','-e','ObjC.import("Foundation"); $.NSURL.URLWithString('+JSON.stringify(uri)+').path.js'],{encoding:'utf8'}).trim();
+    expect(path.basename(decoded)).toBe('Tower 2026 10 16.docx');
+    const compose=jest.fn(async()=>({status:'sent'}));
+    await producer('App.tsx','emailReport',{
+      MailComposer:{isAvailableAsync:async()=>true,composeAsync:compose},reportImageFiles:async()=>({photos:[],note:''}),
+      reportBodyCitesImages:()=>false,REPORT_EMAIL_IMAGE_LIMIT:10,reportSubjectWithDate,reportEmailRecipients:()=>[],mailComposerOutcome,
+    })(manual);
+    expect(compose).toHaveBeenCalledWith(expect.objectContaining({subject:title,body:report.body}));
+    const file='components/web-shell/desktop-read-only-shell.tsx';
+    const download=jest.fn();
+    await producer(file,'downloadWordReport',{
+      pending:false,REPORT_PERIOD_WAITING_LINE:'Not counted yet',setWordHeldBack:jest.fn(),setPending:jest.fn(),setNotice:jest.fn(),
+      snapshot:{projectUpdates:[],referenceDocuments:[],scheduleItems:[]},uniqueStrings:(v:unknown)=>v,
+      buildAutomaticReportDrawingReferences:()=>[],referenceDocumentsCitedAsListed:(v:unknown)=>v,selectedProjectNames:[],
+      resolveWebReportWordMedia:async()=>({media:[],unavailableMedia:[]}),auth:{getArtifactUrl:jest.fn()},
+      briefing:{wordTaskLines:[]},reportFileTitleWithDate,downloadBlob:download,
+      require:()=>({buildReportWordBlob:async()=>({synthetic:'blob'}),summarizeReportWordUnavailableMedia:()=>''}),
+    })({...manual,updateIds:[]});
+    expect(download.mock.calls[0][0]).toBe('Tower 2026 10 16.docx');
+    const open=jest.fn();
+    await producer(file,'prepareApprovedReportEmail',{
+      reportStatus:'approved',window:{open},draftSaysNotCounted:false,approvedPeriodMoved:false,
+      sendCheckStands:()=>true,reportAsShared:()=>({id:'approved'}),reportSubjectWithDate,
+      reportTitle:title,reportGeneratedAt:report.generatedAt,reportBody:report.body,
+      prepareDAVEWebReportEmailBody:(text:string)=>({text,shortened:false}),sentFromHereAt:null,setNotice:jest.fn(),setSendQuestion:jest.fn(),
+    })();
+    expect(open).toHaveBeenCalledWith(`mailto:?subject=${encodeURIComponent(title)}&body=${encodeURIComponent(report.body)}`,'_blank','noopener,noreferrer');
+  });
   it('native Word/Outlook share uses a visible bounded action-day file and exact body/title/task numbering',async()=>{
     const write=jest.fn(async(..._args: unknown[])=>undefined), share=jest.fn(async()=>undefined), build=jest.fn(async()=> 'fake base64');
     const fn=producer('App.tsx','shareWordReport',{
