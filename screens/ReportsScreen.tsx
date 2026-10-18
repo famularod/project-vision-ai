@@ -2258,8 +2258,17 @@ function ReportDocumentPreview({
   const [workAreasOpen, setWorkAreasOpen] = useState(true);
   const [writtenReportOpen, setWrittenReportOpen] = useState(false);
   const photosById = useMemo(() => reportPhotosById(updates), [updates]);
-  const workAreaCount = reportDraft.locationGroups.reduce((total, group) => total + group.workAreas.length, 0);
-  const photoCount = reportDraft.locationGroups.reduce(
+  // The writer keeps model advice for other report consumers, even when an
+  // area's printable bullets are empty. Preview only cards with visible content.
+  const visibleLocationGroups = reportDraft.locationGroups
+    .map(group => ({
+      ...group,
+      workAreas: group.workAreas.filter(area =>
+        area.imageReferences.length > 0 || area.bullets.some(bullet => Boolean(reportBulletText(bullet)))),
+    }))
+    .filter(group => group.workAreas.length > 0);
+  const workAreaCount = visibleLocationGroups.reduce((total, group) => total + group.workAreas.length, 0);
+  const photoCount = visibleLocationGroups.reduce(
     (total, group) => total + group.workAreas.reduce((areaTotal, area) => areaTotal + area.imageReferences.length, 0),
     0,
   );
@@ -2320,7 +2329,7 @@ function ReportDocumentPreview({
         ) : null}
       </View>
 
-      {reportFormat === 'project_manager' && reportDraft.locationGroups.length ? (
+      {reportFormat === 'project_manager' && visibleLocationGroups.length ? (
         <View style={styles.reportDisclosure}>
           <TouchableOpacity
             style={styles.reportDisclosureHeader}
@@ -2338,7 +2347,7 @@ function ReportDocumentPreview({
             <Ionicons name={workAreasOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.primary} />
           </TouchableOpacity>
 
-          {workAreasOpen ? reportDraft.locationGroups.map((group, groupIndex) => (
+          {workAreasOpen ? visibleLocationGroups.map((group, groupIndex) => (
             <View key={`${group.id}-${groupIndex}`} style={styles.reportDocumentSection}>
               <Text style={styles.reportDocumentLocationTitle}>
                 {group.title}
