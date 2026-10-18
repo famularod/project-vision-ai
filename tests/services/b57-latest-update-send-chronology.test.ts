@@ -142,7 +142,9 @@ it('changed authored-send ordering uses the existing app-text guard without rewr
   expect(after.body).toContain(`Latest update: ${b.notes}`);
   expect(reportTextKey(before)).not.toBe(reportTextKey(after));
   expect(buildDAVEReportSourceFingerprint(truths(original))).toBe(buildDAVEReportSourceFingerprint(truths(switched)));
-  expect(buildDAVELegacyReportSourceFingerprint(truths(original))).toBe(buildDAVELegacyReportSourceFingerprint(truths(switched)));
+  // Literal raw 1.0 golden values captured before the receiver/approval repair.
+  expect(buildDAVELegacyReportSourceFingerprint(truths(original))).toBe('dave-report-source/1.0:bc0fcab8');
+  expect(buildDAVELegacyReportSourceFingerprint(truths(switched))).toBe('dave-report-source/1.0:6d0c9e01');
   expect(reportWordingRequiresAppTextKey(before)).toBe(true);
 });
 
