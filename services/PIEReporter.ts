@@ -360,6 +360,8 @@ export type PIEReportDraft = {
   reviewFlags: string[];
   sourceEvidence: PIEReportSourceEvidence[];
   constructionUnderstanding: PIEConstructionUnderstanding;
+  /** Legacy sends without a text digest cannot prove equality after candidate selection restores words. */
+  candidateSelectionRequiresAppTextKey?: boolean;
   daveBriefing?: import('./DAVEReportIntelligence').DAVEReportBriefing | null;
   generatedAt: string;
 };
@@ -840,6 +842,7 @@ function isIncidentalReportEvidence(item: PIEReportSourceEvidence) {
 export function buildConstructionUnderstanding(
   input: PIEReportDraftInput,
   rawEvidence: PIEReportSourceEvidence[] = collectReportEvidence(input),
+  legacyCandidateCaps = false,
 ): PIEConstructionUnderstanding {
   // "2375 compliance project" and "2375 Compliance Project" are one project.
   const evidence = withCanonicalProjectNames(input, rawEvidence);
@@ -910,8 +913,11 @@ export function buildConstructionUnderstanding(
       .filter(item => isVerifiedConstructionProgressEvidence(item) || isPlainFieldNote(item) ||
         (item.id === 'runtime-what-changed' && item.preservesCapturedFor && /^Latest update:/i.test(item.summary)));
     const changed = changedItems
-      .map(item => cleanReportBulletText(item.summary, item.preservedCapturedForText))
-      .filter(Boolean);
+      .map(item => ({ summary: cleanReportBulletText(item.summary, item.preservedCapturedForText), authored: item.preservedCapturedForText }))
+      // Nonprinting candidates must not consume the four-note allowance.
+      // Use the same exact authored-span exception as final line selection.
+      .filter(item => item.summary && (legacyCandidateCaps || !shouldSuppressReportBullet(item.summary, item.authored)))
+      .map(item => item.summary);
 
     const reportedIds = new Set([
       ...changedItems.map(item => item.id),
@@ -1183,13 +1189,14 @@ function renumberWorkAreaImageReferences(
 
 export function buildProjectNarrative(
   understanding: PIEConstructionUnderstanding,
+  legacyCandidateCaps = false,
 ): PIEProjectNarrative {
   const locationGroups = understanding.locationGroups.map(group => ({
     id: group.id,
     title: group.title,
     workAreas: workAreasPrintedOncePerName(group.workAreas.map(area => {
       const actionItems = buildReportActionItems(area);
-      const bullets = buildReportBulletsFromUnderstanding(area, actionItems);
+      const bullets = buildReportBulletsFromUnderstanding(area, actionItems, legacyCandidateCaps);
       const risks = area.issues.map(issue => ({
         id: slug(`risk-${area.id}-${issue.summary}`),
         projectName: area.projectName,
@@ -1759,6 +1766,14 @@ function buildReport(
   });
   const constructionUnderstanding = buildConstructionUnderstanding(input, sourceEvidence);
   const narrative = buildProjectNarrative(constructionUnderstanding);
+  // A legacy send kept no digest of its words. Replay only the old candidate
+  // caps, using the same source authority, photo ownership and final selector.
+  // Require fresh approval only when the actual printed area wording changes.
+  const candidateSelectionRequiresAppTextKey = sourceEvidence.some(item =>
+    shouldSuppressReportBullet(cleanReportBulletText(item.summary, item.preservedCapturedForText), item.preservedCapturedForText),
+  ) && printedAreaWords(narrative) !== printedAreaWords(buildProjectNarrative(
+    buildConstructionUnderstanding(input, sourceEvidence, true), true,
+  ));
   const reviewFlags = [
     ...constructionUnderstanding.reviewFlags,
     ...reflectionReviewFlags(input.runtime),
@@ -1842,6 +1857,7 @@ function buildReport(
     reviewFlags,
     sourceEvidence,
     constructionUnderstanding,
+    ...(candidateSelectionRequiresAppTextKey ? { candidateSelectionRequiresAppTextKey: true } : {}),
     generatedAt: generatedAt.toISOString(),
   };
 }
@@ -1904,8 +1920,9 @@ function onlyFromTheSavedModel(sourceEvidenceIds: readonly string[]) {
 function buildReportBulletsFromUnderstanding(
   area: PIEWorkAreaUnderstanding,
   actionItems: PIEReportActionItem[],
+  legacyCandidateCaps = false,
 ): PIEReportBullet[] {
-  const { lines: chosen, uncited, madeFrom } = linesAsBuild231ChoseThem(area, actionItems);
+  const { lines: chosen, uncited, madeFrom } = linesAsBuild231ChoseThem(area, actionItems, legacyCandidateCaps);
   const progressKeys = new Set(area.progress.map(item => normalizeName(item.summary)));
   const printedKeys = new Set(chosen.map(bullet => normalizeName(bullet.text)));
   const filling = area.whatChanged
@@ -2037,6 +2054,7 @@ function photosCitedOnTheirOwnLines(
 function linesAsBuild231ChoseThem(
   area: PIEWorkAreaUnderstanding,
   actionItems: PIEReportActionItem[],
+  legacyCandidateCaps = false,
 ): Readonly<{
   lines: PIEReportBullet[];
   /** Open item 7.62: the photos no chosen line is the photo's own, to cite once the plain notes are in. */
@@ -2056,7 +2074,16 @@ function linesAsBuild231ChoseThem(
   const issues = area.issues.filter(issue => !onlyFromTheSavedModel(issue.sourceEvidenceIds));
   const nextSteps = actionItems.filter(item => !onlyFromTheSavedModel(item.sourceEvidenceIds));
 
-  progressLines.slice(0, 3).forEach((summary, index) => {
+  // Preserve the first matching authored span, exactly as preservesCapturedFor
+  // does, without repeatedly scanning every source while filtering candidates.
+  const authoredSpans = new Map<string, string>();
+  area.lineSources?.forEach(source => {
+    if (source.preservedCapturedForText && !authoredSpans.has(source.words)) authoredSpans.set(source.words, source.preservedCapturedForText);
+  });
+  const printableProgress = legacyCandidateCaps ? progressLines : progressLines.filter(summary =>
+    summary && !shouldSuppressReportBullet(summary, authoredSpans.get(lineWords(summary))),
+  );
+  printableProgress.slice(0, 3).forEach((summary, index) => {
     if (!summary || shouldSuppressReportBullet(summary, preservesCapturedFor(area, summary))) return;
     const id = slug(`bullet-${area.id}-progress-${index}`);
     const sourceIds = area.progress.filter(item => normalizeName(item.summary) === normalizeName(summary))
@@ -3159,9 +3186,16 @@ function shouldSuppressReportBullet(value: string, authoredCapturedForText?: str
   return /location was captured|gps was captured|captured for|project area|evidence was fused|runtime indicates|no image references included/i.test(machineWords);
 }
 
+/** Only written area words count; internal ids or unchanged hidden candidates do not. */
+function printedAreaWords(narrative: PIEProjectNarrative): string {
+  return JSON.stringify(narrative.locationGroups.map(group => [group.title, group.workAreas.map(area =>
+    [area.projectName, area.title, area.bullets.map(bullet => bullet.text)],
+  )]));
+}
+
 /** Legacy sends kept no app-text digest. These source words can now print differently under the same facts. */
-export function reportWordingRequiresAppTextKey(report: Pick<PIEReportDraft, 'sourceEvidence' | 'daveBriefing' | 'body'>): boolean {
-  return Boolean(report.daveBriefing?.dashboard.workAreas.some(area => /[^\u0000-\u007f]/.test(area.areaName))) || report.sourceEvidence.some(item =>
+export function reportWordingRequiresAppTextKey(report: Pick<PIEReportDraft, 'sourceEvidence' | 'daveBriefing' | 'body'> & Partial<Pick<PIEReportDraft, 'candidateSelectionRequiresAppTextKey'>>): boolean {
+  return Boolean(report.candidateSelectionRequiresAppTextKey) || Boolean(report.daveBriefing?.dashboard.workAreas.some(area => /[^\u0000-\u007f]/.test(area.areaName))) || report.sourceEvidence.some(item =>
     // Earlier writers removed substantive owner words from action text, even without a Please prefix.
     (isActionEvidence(item) && /\bowner\s*:?\s*[A-Z][A-Za-z]+(?:\s*\/\s*[A-Z][A-Za-z]+)?/i.test(item.actionRequired || item.summary)) ||
     (item.authoredPlainLatest && report.body.includes(item.summary)) ||
