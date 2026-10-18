@@ -1,3 +1,4 @@
+import { scheduleRowProjectNames } from './ScheduleDocumentLabels';
 import type { ReferenceDocument, ScheduleDependency, ScheduleItem, ScheduleLookaheadOverlay } from '../types';
 import { parseFlexibleDate } from '../utils/date';
 import {
@@ -1717,6 +1718,18 @@ export function scheduleImportAsksRole(batch: Pick<PIEScheduleImportBatch, 'kind
   return batch.kind === 'schedule_file' && batch.documents.some(document => document.category === 'Schedules');
 }
 
+/** A purpose-scoped view for a review's fully assigned rows. It never
+ * rewrites the incoming identity or the document later saved by approval.
+ */
+export function scheduleImportWithReviewedProjectScope<T extends Pick<PIEScheduleImportBatch, 'documents'> & Partial<Pick<PIEScheduleImportBatch, 'items'>>>(batch: T): T {
+  if (!batch.items?.length || batch.items.some(item => !item.projectName.trim() || item.projectName.trim() === 'Needs Project')) return batch;
+  // Match exactly the scope approval will save, including an explicit
+  // Microsoft Project root carried by the resolved building rows.
+  const names = scheduleRowProjectNames(batch.items);
+  return {...batch, documents: batch.documents.map(document => document.category === 'Schedules'
+    ? {...document, projectName: names.length === 1 ? names[0] : null, projectNames: names} : document)};
+}
+
 export type ScheduleImportRoleSuggestion = Readonly<{
   role: ScheduleImportRole;
   /** Plain words: "Suggested: … because …". */
@@ -1805,7 +1818,8 @@ export function suggestScheduleImportRole({
 }>): ScheduleImportRoleSuggestion {
   const file = batch.documents.find(document => document.category === 'Schedules');
   if (file && scheduleDocumentAddsToMaster(file)) {
-    const inUse = scheduleFileFullCopyInUse(file, documents);
+    const scoped = scheduleImportWithReviewedProjectScope(batch).documents.find(document => document.id === file.id)!;
+    const inUse = scheduleFileFullCopyInUse(scoped, documents);
     return { role: 'lookahead', reason: inUse === 'shown' ? SHOWN_AS_FULL_SCHEDULE : inUse === 'set_active' ? SAVED_SET_ACTIVE
       : inUse === 'other_shown' ? SAVED_UNDER_SOURCES : SAVED_AS_FULL_SCHEDULE, only: true };
   }
@@ -1893,13 +1907,35 @@ function scheduleFileFullCopyInUse(file: ReferenceDocument, documents: readonly 
  * refused too: Set Active shows it again (A8 pass 6 L1).
  */
 export function scheduleImportRoleRefusal(
-  batch: Pick<PIEScheduleImportBatch, 'documents'>,
+  batch: Pick<PIEScheduleImportBatch, 'documents'> & Partial<Pick<PIEScheduleImportBatch, 'items' | 'id'>>,
   role: ScheduleImportRole,
   /** The schedules saved now. */
   documents: readonly ReferenceDocument[] = [],
+  scheduleItems: readonly ScheduleItem[] = [],
 ): string | null {
-  const preset = batch.documents.find(document => document.category === 'Schedules' && scheduleDocumentAddsToMaster(document));
+  const scoped = scheduleImportWithReviewedProjectScope(batch);
+  const preset = scoped.documents.find(document => document.category === 'Schedules');
   if (!preset) return null;
+  // The label before review may cover every ticked project. Only the ready
+  // rows establish this save's scope; another scope is an intentional import.
+  const reviewedScope = batch.items?.length && batch.items.every(item => item.projectName.trim() && item.projectName.trim() !== 'Needs Project')
+    ? scopeOf(preset) : '';
+  const currentBatch = key(batch.id);
+  const importedLookaheadCopy = Boolean(preset.contentSha256 && reviewedScope) && documents.some(document => {
+    const savedBatch = key(document.importBatchId);
+    if (document.id === preset.id || (currentBatch && savedBatch === currentBatch)) return false;
+    if (document.contentSha256 !== preset.contentSha256 || scopeOf(document) !== reviewedScope || !scheduleDocumentAddsToMaster(document)) return false;
+    // A document-only upload is not an import. Match actual task provenance,
+    // as the initial file duplicate check does, without a filename guess.
+    return Boolean(savedBatch) || scheduleItems.some(item =>
+      Boolean(key(item.sourceDocumentId)) && key(item.sourceDocumentId) === key(document.id));
+  });
+  if (importedLookaheadCopy)
+    return 'This exact schedule has already been imported as a lookahead for these projects. Open its saved schedule source instead of importing it again.';
+  const confirmedFullCopy = Boolean(preset.contentSha256) && documents.some(document => document.id !== preset.id &&
+    document.contentSha256 === preset.contentSha256 && scopeOf(document) === scopeOf(preset) &&
+    scheduleDocumentIsScheduleLike(document) && !scheduleDocumentAddsToMaster(document));
+  if (!scheduleDocumentAddsToMaster(preset) && !confirmedFullCopy) return null;
   const inUse = scheduleFileFullCopyInUse(preset, documents);
   if (inUse === 'shown') {
     return 'This exact schedule is the full schedule shown now for these projects. Make your master current first, then import this as a lookahead.';
