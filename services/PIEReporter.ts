@@ -878,13 +878,19 @@ export function buildConstructionUnderstanding(
     // The area's progress LINES: the verified progress, and with it, in the
     // same order, his field notes of none of the three kinds (item 4 part B).
     // Only verified construction evidence still COUNTS as progress above.
-    const changed = items
+    const changedItems = items
       .filter(item => isVerifiedConstructionProgressEvidence(item) || isPlainFieldNote(item) ||
-        (item.id === 'runtime-what-changed' && item.preservesCapturedFor && /^Latest update:/i.test(item.summary)))
+        (item.id === 'runtime-what-changed' && item.preservesCapturedFor && /^Latest update:/i.test(item.summary)));
+    const changed = changedItems
       .map(item => cleanReportBulletText(item.summary, item.preservedCapturedForText))
       .filter(Boolean);
 
-    const printedName = printedNameOfFiledWorkArea(areaName, items);
+    const reportedIds = new Set([
+      ...changedItems.map(item => item.id),
+      ...[...progress, ...issues, ...nextSteps].flatMap(item => item.sourceEvidenceIds),
+    ]);
+    const reportedItems = items.filter(item => reportedIds.has(item.id));
+    const printedName = printedNameOfFiledWorkArea(areaName, reportedItems.length ? reportedItems : items);
 
     return {
       id: slug(`understanding-${location}-${areaName}`),
@@ -1256,7 +1262,11 @@ function printedWorkAreaName(area: PIEWorkAreaUnderstanding) {
  * own (a building in the task's name) names the area as before.
  */
 function printedNameOfFiledWorkArea(filedUnder: string, items: PIEReportSourceEvidence[]) {
-  const named = items.map(item =>
+  // Advice and a fused Latest recipe may mention another task. Recorded
+  // evidence owns this heading; those mentions still remain in the report.
+  const recorded = items.filter(item => item.source !== 'runtime');
+  const namingItems = recorded.length ? recorded : items.filter(item => item.id !== SAVED_MODEL_EVIDENCE_ID);
+  const named = namingItems.map(item =>
     printedReportWorkAreaName(item.projectName, item.areaName, item.workAreaNameFrom ?? item.summary));
   return named.length === 0 || named.includes(filedUnder) ? filedUnder : named[0] || filedUnder;
 }
@@ -1488,8 +1498,8 @@ const REPORT_MONTH_NAME =
   '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?';
 /** The dates a line can print: 10/08/2026, 2026-10-08, Oct 8, 2026, 8 Oct 2026, October 2026. */
 const REPORT_LINE_DATES = new RegExp([
-  '\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b',
-  '\\b\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}\\b',
+  '\\b\\d{1,2}[-/.]\\d{1,2}[-/.]\\d{2,4}\\b',
+  '\\b\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2}\\b',
   `\\b${REPORT_MONTH_NAME}\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}\\b`,
   `\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${REPORT_MONTH_NAME},?\\s+\\d{4}\\b`,
   `\\b${REPORT_MONTH_NAME},?\\s+\\d{4}\\b`,
@@ -1512,11 +1522,21 @@ export function printedReportWorkAreaName(
   areaName: string,
   lineWords = '',
 ) {
-  return cleanReportWorkAreaName(
-    projectName,
-    areaName,
-    lineWords.replace(REPORT_LINE_DATES, ' ').replace(/\s+/g, ' ').trim(),
-  );
+  // Only the Latest recipe's authored portion can name its work area. Its
+  // Schedule focus suffix describes a separate task, not the note's location.
+  const authoredWords = /^Latest (?:update|photo):/i.test(lineWords)
+    ? lineWords.replace(/\s+Schedule focus:.*$/i, '')
+    : lineWords;
+  const namingWords = authoredWords
+    .replace(REPORT_LINE_DATES, ' ')
+    .replace(/\b\d{4}(?:[.,]\d+)?\s*(?:psi|psf|ksi|mpa|kpa|pa|mm|cm|m|km|inches|inch|feet|foot|ft|yards|yard|yd|lbs|lb|kg|tons|ton|sf|sq\.?\s*ft|sq\.?\s*m)\b/gi, ' ')
+    .replace(/\s+/g, ' ').trim();
+  // A generic project's actual name is still preferable to leftover note
+  // prose when it has no recorded area or meaningful location number.
+  if (!areaName.trim() && /^project$/i.test(projectName.trim()) && !/\b\d{4}\b/.test(namingWords)) {
+    return projectName.trim();
+  }
+  return cleanReportWorkAreaName(projectName, areaName, namingWords);
 }
 
 export function cleanReportWorkAreaName(
