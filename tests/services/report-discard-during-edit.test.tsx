@@ -1,12 +1,4 @@
-// R4 item 4a, on the phone's Reports screen: an approval stands through a sync
-// that only reorders the saved tasks, and an approval made before the update
-// (under fingerprint version 1.0, kept on the device) is still this report's
-// approval after it. Synthetic data, the real Reports screen.
-//
-// R10 (the coordinator's decision on review pass 3, P3-2) reversed the second half: NO EARLIER-VERSION NAME EVER
-// STANDS. An approval made before the update is another report's approval, for the same facts too: the words this
-// build writes for them are not always the ones the build before sent. The two tests of that half say so now.
-
+// 7.45: mounted edit/discard lifecycle with synthetic saved field notes.
 const mockStorage = new Map<string, string>();
 jest.mock('@react-native-async-storage/async-storage', () => ({
   getItem: jest.fn(async (key: string) => mockStorage.get(key) ?? null),
@@ -37,25 +29,19 @@ import { buildRuntime } from '../../services/PIERuntime';
 import type { ProjectUpdate, ScheduleItem } from '../../types';
 
 jest.setTimeout(120_000);
-const SLOW = { timeout: 30_000 } as const;
 
-const draft = {
-  id: 'draft-1', reportType: 'daily_project_update', audience: 'owner',
-  title: 'Tower update', subject: 'Tower update', body: '', openingLine: '', closingLine: '',
-  executiveSummary: [], sections: [], locationGroups: [], actionItems: [], imageReferences: [],
-  risks: [], decisionsNeeded: [], confidence: 'high', reportReadiness: 'high',
-  needsReview: false, reviewFlags: [], sourceEvidence: [], constructionUnderstanding: {},
-  generatedAt: '2026-09-30T12:00:00.000Z',
-};
 const task = (id: string, taskName: string, finishDate: string, percentComplete = 40) => ({
   id, projectName: 'Tower', locationName: 'Level 2', taskName,
   startDate: '2026-09-01', finishDate, milestone: '', owner: 'Dana', contractor: 'Acme',
   percentComplete, priority: 'Medium', status: 'In Progress', notes: '', createdAt: '2026-09-01T12:00:00.000Z',
 }) as unknown as ScheduleItem;
 const SAVED = [task('pour', 'Pour slab', '2027-06-30'), task('frame', 'Frame walls', '2027-03-31'), task('roof', 'Roofing', '2027-06-30'), task('dig', 'Excavate', '2026-12-15')];
-/** The same rows as a download leaves them: in another order. */
-const REORDERED = [SAVED[2], SAVED[0], SAVED[3], SAVED[1]];
 const onCopyReport = jest.fn(async () => 'completed' as const);
+const onEmailReport = jest.fn(async () => 'completed' as const);
+const onTextReport = jest.fn(async () => 'completed' as const);
+const onOutlookReport = jest.fn(async () => 'unknown' as const);
+const onDownloadWordReport = jest.fn(async () => 'unknown' as const);
+const shares = [onCopyReport, onEmailReport, onTextReport, onOutlookReport, onDownloadWordReport];
 let notes: ProjectUpdate[] = [];
 const screenFor = (scheduleItems: ScheduleItem[]) => (
   <ReportsScreen
@@ -72,10 +58,10 @@ const screenFor = (scheduleItems: ScheduleItem[]) => (
     knownScheduleItems={scheduleItems}
     onSavedUpdates={() => undefined}
     onCopyReport={onCopyReport}
-    onEmailReport={async () => 'completed'}
-    onTextReport={async () => 'completed'}
-    onDownloadWordReport={async () => 'unknown'}
-    onOutlookReport={async () => 'unknown'}
+    onEmailReport={onEmailReport}
+    onTextReport={onTextReport}
+    onDownloadWordReport={onDownloadWordReport}
+    onOutlookReport={onOutlookReport}
   />
 );
 const settled = async () => {
@@ -87,13 +73,7 @@ beforeEach(() => {
   mockStorage.clear();
   forgetAllReportSessionState();
   onCopyReport.mockClear();
-  mockAuthority = {
-    state: 'ready',
-    policy: { reportGenerationAllowed: true, layer4DecisionCreationAllowed: false },
-    reportDraft: draft,
-    runtime: { response: { reportDraft: draft } },
-    executiveJudgmentRecord: null,
-  };
+
 });
 
 
@@ -131,6 +111,34 @@ it('7.45: discards stale manual text on the mounted screen after a saved field n
   expect(current).not.toContain('My manual report words.');
   expect(current).toContain('north gate inspection');
   expect(notes).toEqual([freshNote]);
-  expect(onCopyReport).not.toHaveBeenCalled();
+  for (const share of shares) expect(share).not.toHaveBeenCalled();
+  expect(screen.getAllByRole('button', { name: /^Mark reviewed:/ }).length).toBeGreaterThan(0);
+  expect(screen.getByRole('button', { name: 'Approve Report' }).props.accessibilityState.disabled).toBe(true);
   view.unmount();
+});
+
+it.each(['', 'Same facts, my own wording'])('discard cancels a %p edit without altering saved facts or approval', async text => {
+  publishNotes([freshNote]);
+  const view = render(screenFor(SAVED));
+  await settled();
+  fireEvent.press(screen.getByRole('button', { name: 'Edit Report' }));
+  const original = screen.getByPlaceholderText('Report body').props.value;
+  expect(screen.queryByRole('button', { name: 'Discard report edits' })).toBeNull();
+  fireEvent.changeText(screen.getByPlaceholderText('Report body'), text);
+  fireEvent.press(screen.getByRole('button', { name: 'Discard report edits' }));
+  expect(screen.queryByPlaceholderText('Report body')).toBeNull();
+  expect(screen.queryByRole('button', { name: 'Share Report' })).toBeNull();
+  fireEvent.press(screen.getByRole('button', { name: 'Edit Report' }));
+  expect(screen.getByPlaceholderText('Report body').props.value).toBe(original);
+  expect(screen.queryByRole('button', { name: 'Discard report edits' })).toBeNull();
+  expect(notes).toEqual([freshNote]);
+  for (const share of shares) expect(share).not.toHaveBeenCalled();
+  view.unmount();
+  // Canceled edits are also cleared from the session restore path.
+  const remounted = render(screenFor(SAVED));
+  await settled();
+  fireEvent.press(screen.getByRole('button', { name: 'Edit Report' }));
+  expect(screen.getByPlaceholderText('Report body').props.value).toBe(original);
+  expect(screen.queryByRole('button', { name: 'Discard report edits' })).toBeNull();
+  remounted.unmount();
 });
