@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
 import { useState } from 'react';
-import { AccessibilityInfo, Alert, AppState, Platform, type PlatformIOSStatic } from 'react-native';
+import { AccessibilityInfo, Alert, AppState, Platform, ScrollView, type PlatformIOSStatic } from 'react-native';
 
 import { DAVEVoiceCaptureSheet } from '../../components/DAVEVoiceCaptureSheet';
 import { NativeWorkspaceOwnerContext } from '../../components/native-workspace-owner';
@@ -218,4 +218,15 @@ it('4.90 announces changed no-sound guidance once, including the first deliberat
  await taps('Retry Answer');expect(announce).toHaveBeenCalledWith(howToSendAnyway('Retry Answer'));expect(serviceCalls()).toBe(0);
  const count=announce.mock.calls.length;await settle(300);expect(announce).toHaveBeenCalledTimes(count);
  }finally{announce.mockRestore();}
+});
+
+it('4.90 reveals Retry at its measured content position after long guidance without invoking it',async()=>{
+ const scroll=jest.spyOn(ScrollView.prototype,'scrollTo').mockImplementation(()=>undefined);
+ try{await putUp(SHEETS[5]);await recordsNothingAndStops();
+ const retry=screen.getByText('Retry Answer');const button=retry.parent!;const actions=button.parent!;
+ expect(typeof actions.props.onLayout).toBe('function');fireEvent(actions,'layout',{nativeEvent:{layout:{x:0,y:1100,width:320,height:112}}});
+ await waitFor(()=>expect(scroll).toHaveBeenCalledWith({y:1100,animated:false}));expect(serviceCalls()).toBe(0);
+ await taps('Retry Answer');expect(screen.getByText(howToSendAnyway('Retry Answer'))).toBeTruthy();expect(serviceCalls()).toBe(0);
+ const count=scroll.mock.calls.length;await settle(250);expect(scroll).toHaveBeenCalledTimes(count);
+ }finally{scroll.mockRestore();}
 });

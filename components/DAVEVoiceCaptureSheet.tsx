@@ -231,10 +231,13 @@ export function DAVEVoiceCaptureSheet({
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryY, setRetryY] = useState<number | null>(null);
   useEffect(() => {
     // iOS does not announce live-region text changes. Announce a new failure
     // once; recorder ticks and unrelated rerenders must not repeat it.
-    if (visible && error && Platform.OS === 'ios') AccessibilityInfo.announceForAccessibility(error);
+    if (!visible || !error || Platform.OS !== 'ios') return;
+    const timer = setTimeout(() => AccessibilityInfo.announceForAccessibility(error), 0);
+    return () => clearTimeout(timer);
   }, [visible, error]);
   const [notice, setNotice] = useState<string | null>(null);
   const [taskPickerOpen, setTaskPickerOpen] = useState(false);
@@ -1338,6 +1341,7 @@ export function DAVEVoiceCaptureSheet({
     <Modal visible={visible} animationType="slide" transparent onRequestClose={() => confirmDiscardThen(cancel, onCancel)}>
       <View style={[styles.backdrop, usesTabletSheet && styles.backdropTablet]}>
         <KeyboardAvoidingModalCard
+          scrollTarget={visible && error && recordingUri && retryY !== null ? { key: error, y: retryY } : null}
           containerStyle={[
             styles.sheetContainer,
             usesTabletSheet && styles.sheetContainerTablet,
@@ -1563,6 +1567,7 @@ export function DAVEVoiceCaptureSheet({
           {notice && !error ? <Text style={styles.notice} accessibilityLiveRegion="polite">{notice}</Text> : null}
           {error ? <Text style={styles.error} accessibilityLiveRegion={Platform.OS === 'android' ? 'polite' : undefined}>{error}</Text> : null}
 
+          <View onLayout={event => setRetryY(event.nativeEvent.layout.y)}>
           {recorderState.isRecording ? (
             <TouchableOpacity style={styles.stopButton} onPress={() => { void stopRecording(); }} accessibilityRole="button">
               <Ionicons name="stop" size={21} color="#FFF" />
@@ -1590,6 +1595,8 @@ export function DAVEVoiceCaptureSheet({
               <Text style={styles.primaryText}>Start Recording</Text>
             </TouchableOpacity>
           )}
+
+          </View>
 
           {!recorderState.isRecording ? (
             <TouchableOpacity style={styles.typeButton} disabled={isTranscribing || !projectName} onPress={() => confirmDiscardThen(typeInstead, onTypeInstead)} accessibilityRole="button">
