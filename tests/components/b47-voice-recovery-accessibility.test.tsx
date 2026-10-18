@@ -230,3 +230,27 @@ it('4.90 reveals Retry at its measured content position after long guidance with
  const count=scroll.mock.calls.length;await settle(250);expect(scroll).toHaveBeenCalledTimes(count);
  }finally{scroll.mockRestore();}
 });
+
+import {readKeptVoiceRecording} from '../../services/KeptVoiceRecording';
+async function seedKept(extra:Record<string,unknown>={}){
+ const uri='file:///cache/Audio/retained-original.m4a';phone.files.add(uri);phone.contents.set(uri,'original retained audio');
+ return keepVoiceRecording('owner-a','talk',{uri,durationMs:6000,projectId:CANOPY.id,projectName:CANOPY.name,state:'no-signal',...extra});
+}
+it.each([undefined,false,'true'])('4.80 legacy or invalid marker %p never guesses silence or replaces service guidance',async marker=>{
+ await seedKept({sentDespiteNoSound:marker});theServiceAnswers(()=>new Error(NOT_UNDERSTOOD));await putUp();
+ expect(await screen.findByText(NOT_UNDERSTOOD)).toBeTruthy();expect(screen.queryByText(NOTHING_FOUND)).toBeNull();expect(keptFiles()).toHaveLength(1);
+});
+it('4.80 restored override preserves actionable non-speech failures, its audio and account/project scope',async()=>{
+ const uri=await seedKept({sentDespiteNoSound:true});
+ expect(await readKeptVoiceRecording('owner-b','talk',CANOPY.name)).toBeNull();expect(await readKeptVoiceRecording('owner-a','talk',HARBOR.name)).toBeNull();
+ expect((await readKeptVoiceRecording('owner-a','talk',CANOPY.name))?.sentDespiteNoSound).toBe(true);
+ const failure='Your sign-in could not be verified for voice transcription. Sign in again, then retry.';
+ theServiceAnswers(()=>new Error(failure));await putUp();expect(await screen.findByText(failure)).toBeTruthy();expect(whatIsIn(uri)).toBe('original retained audio');expect(keptFiles()).toContain(uri);expect(called.words).not.toHaveBeenCalled();
+});
+it('4.90 does not announce hidden sheets or repeat a stable failure on recorder ticks',async()=>{
+ const announce=jest.spyOn(AccessibilityInfo,'announceForAccessibility').mockImplementation(()=>undefined);
+ try{await putUp(SHEETS[5]);await recordsNothingAndStops();await waitFor(()=>expect(announce).toHaveBeenCalledWith(NO_SOUND));const count=announce.mock.calls.length;
+ await act(async()=>{says({durationMillis:7000});});await settle(100);expect(announce).toHaveBeenCalledTimes(count);
+ await act(async()=>controls.hide());await settle(100);expect(announce).toHaveBeenCalledTimes(count);
+ }finally{announce.mockRestore();}
+});
