@@ -462,6 +462,36 @@ describe('3. an unfinished update resumed after the app was closed says why it h
     return tree;
   }
 
+  it.each(['denied', 'precise-off'] as const)('4.38: fresh %s reason stays true after Settings grant while Add Photos stays open', async kind => {
+    mockLocation.granted = kind !== 'denied';
+    mockLocation.precise = kind !== 'precise-off';
+    const tree = await launch();
+    await startUpdateForLot9(tree);
+    await waitFor(() => expect(tree.getByText(kind === 'denied' ? DENIED_WHEN_STARTED : PRECISE_OFF_WHEN_STARTED)).toBeTruthy(), COLD);
+    mockLocation.granted = true;
+    mockLocation.precise = true;
+    await press(tree, tree.getByText('Continue Without Photos'));
+    expect(tree.getByText(kind === 'denied' ? DENIED_WHEN_STARTED : PRECISE_OFF_WHEN_STARTED)).toBeTruthy();
+    await waitFor(async () => {
+      const kept = JSON.parse((await AsyncStorage.getItem('projectPhotoUpdate.activeDraft.v2'))!);
+      expect(kept.draft.gpsLatitude ?? null).toBeNull();
+      expect(kept.draft.gpsLongitude ?? null).toBeNull();
+    }, COLD);
+    tree.unmount();
+  });
+
+  it('4.39: resumed task location is not described as another schedule area', async () => {
+    await AsyncStorage.setItem('projectPhotoUpdate.scheduleItems.v1', JSON.stringify([
+      task('task-lot9', 'Grade pad', 'Lot 9', 'North Pad'),
+    ]));
+    await AsyncStorage.setItem('projectPhotoUpdate.activeDraft.v2', storedDraft({ selectedAreaName: 'Roof staging', areaStatus: 'confirmed' }));
+    const tree = await reopenAndResume();
+    expect(tree.getByText('Roof staging')).toBeTruthy();
+    expect(tree.getByText('Why: This is the location named on this update.')).toBeTruthy();
+    expect(tree.queryByText('Why: The imported schedule identifies this as the most urgent area.')).toBeNull();
+    tree.unmount();
+  });
+
   it('location not allowed: the resumed update still says so', async () => {
     mockLocation.granted = false;
     const first = await launch();
