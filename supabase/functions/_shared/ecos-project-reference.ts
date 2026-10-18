@@ -573,7 +573,8 @@ function nameWordsAround(name: string, at: RegExpExecArray, before: string, afte
   const afterWords = /^[\s,-]+[a-z0-9]/i.test(after) ? wordsIn(after) : [];
   // The last 64 characters are enough to test the end and keep the match linear.
   const beforeWords = /[a-z0-9][\s#:.-]*$/i.test(before.slice(-64)) ? wordsIn(before).reverse() : [];
-  const nameAfter = withStreetLetter(wordsIn(name.slice(at.index + at[0].length)));
+  const printedNameAfterNumber = name.slice(at.index + at[0].length);
+  const nameAfter = withStreetLetter(wordsIn(printedNameAfterNumber), printedNameAfterNumber);
   const nameBefore = wordsIn(name.slice(0, at.index)).reverse();
   const following = wordsInCommon(nameAfter, afterWords, true);
   const preceding = wordsInCommon(nameBefore, beforeWords);
@@ -594,9 +595,13 @@ function wordsIn(text: string): string[] {
  * "a" straight after the number and before a street word is the letter;
  * "2375 a new roof" keeps its article.
  */
-function withStreetLetter(nameWordsAfterNumber: string[]) {
+function withStreetLetter(nameWordsAfterNumber: string[], printedNameAfterNumber: string) {
   const [first, next] = nameWordsAfterNumber;
-  return first === 'a' && next && ECOS_STREET_LETTER_WORDS.has(next.toLowerCase())
+  // The general matcher uses ASCII words. A finite suffix must also be a
+  // complete printed token: Straße must not become USPS STRA plus "e".
+  const printedWords = printedNameAfterNumber.match(/[\p{L}\p{N}\p{M}]+/gu) ?? [];
+  return first === 'a' && next && printedWords[0] === first && printedWords[1]?.toLowerCase() === next.toLowerCase()
+    && ECOS_STREET_LETTER_WORDS.has(next.toLowerCase())
     ? ['A', ...nameWordsAfterNumber.slice(1)]
     : nameWordsAfterNumber;
 }
