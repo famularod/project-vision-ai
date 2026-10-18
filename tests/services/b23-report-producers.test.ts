@@ -1,3 +1,4 @@
+import { fieldUpdatesNewestFirst } from '../../services/PIEEvidenceFusion';
 /** Executes the actual producer closures from the source AST with synthetic IO.
  * No app/provider mount, account access or live file/network IO. */
 import fs from 'fs';
@@ -50,7 +51,7 @@ describe('7.23 actual report producers',()=>{
     const download=jest.fn();
     await producer(file,'downloadWordReport',{
       pending:false,REPORT_PERIOD_WAITING_LINE:'Not counted yet',setWordHeldBack:jest.fn(),setPending:jest.fn(),setNotice:jest.fn(),
-      snapshot:{projectUpdates:[],referenceDocuments:[],scheduleItems:[]},uniqueStrings:(v:unknown)=>v,
+      snapshot:{projectUpdates:[],referenceDocuments:[],scheduleItems:[]},fieldUpdatesNewestFirst,uniqueStrings:(v:unknown)=>v,
       buildAutomaticReportDrawingReferences:()=>[],referenceDocumentsCitedAsListed:(v:unknown)=>v,selectedProjectNames:[],
       resolveWebReportWordMedia:async()=>({media:[],unavailableMedia:[]}),auth:{getArtifactUrl:jest.fn()},
       briefing:{wordTaskLines:[]},reportFileTitleWithDate,downloadBlob:download,
@@ -111,7 +112,7 @@ describe('7.23 actual report producers',()=>{
     const download=jest.fn(),build=jest.fn(async()=>({synthetic:'blob'}));
     const fn=producer('components/web-shell/desktop-read-only-shell.tsx','downloadWordReport',{
       pending:false,REPORT_PERIOD_WAITING_LINE:'Not counted yet',setWordHeldBack:jest.fn(),setPending:jest.fn(),setNotice:jest.fn(),
-      snapshot:{projectUpdates:[],referenceDocuments:[],scheduleItems:[]},uniqueStrings:(v:unknown)=>v,
+      snapshot:{projectUpdates:[],referenceDocuments:[],scheduleItems:[]},fieldUpdatesNewestFirst,uniqueStrings:(v:unknown)=>v,
       buildAutomaticReportDrawingReferences:()=>[],referenceDocumentsCitedAsListed:(v:unknown)=>v,selectedProjectNames:[],
       resolveWebReportWordMedia:async()=>({media:[],unavailableMedia:[]}),auth:{getArtifactUrl:jest.fn()},
       briefing:{wordTaskLines:report.daveBriefing.wordTaskLines},reportFileTitleWithDate,downloadBlob:download,

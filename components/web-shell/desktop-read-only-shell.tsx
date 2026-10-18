@@ -1,3 +1,4 @@
+import { fieldUpdatesNewestFirst } from '../../services/PIEEvidenceFusion';
 import { recentProjectItemActivity } from '../../services/ProjectItemActivityPresentation';
 import { daveProjectTruthHasProjectKey } from '../../services/DAVEProjectTruth';
 import { Link, useLocalSearchParams, usePathname, useRouter } from 'expo-router';
@@ -6367,9 +6368,11 @@ function ReportWorkspace({
     setNotice(null);
     try {
       const sourceIds = new Set(updateIds);
-      const sourceUpdates = snapshot.projectUpdates
+      // Match the written report/native Image numbers, never the cloud row upload order.
+      // Keep each update's authored photo order and the exact saved source ID selection.
+      const sourceUpdates = fieldUpdatesNewestFirst(snapshot.projectUpdates
         .filter(update => sourceIds.has(update.id) || sourceIds.has(update.updateData.id))
-        .map(update => update.updateData);
+        .map(update => update.updateData));
       const reportPhotoIds = uniqueStrings(
         sourceUpdates.flatMap(update => update.photos.map(photo => photo.id)),
       );
