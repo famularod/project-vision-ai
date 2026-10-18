@@ -77,9 +77,9 @@ describe('L8: what a resumed update says about its GPS', () => {
 });
 
 // Guards: these already hold.
-describe('L8 guards: an update just started says it as it is, as before', () => {
+describe('4.38: fresh captures use the same historical wording', () => {
   it.each([
-    ['denied', 'Location permission denied. Choose Project Area manually.'],
+    ['denied', 'Location was not allowed when this update was started, so it has no GPS. Choose Project Area manually.'],
     ['failed', 'GPS could not be captured. Choose Project Area manually.'],
     ['precise-off', PRECISE_LOCATION_OFF_DRAFT_MESSAGE],
     ['capturing', 'Capturing GPS...'],
@@ -88,7 +88,7 @@ describe('L8 guards: an update just started says it as it is, as before', () => 
     expect(shownFor({ draftId: 'draft-1', generation: 0, kind })).toBe(sentence);
   });
 
-  it('the Precise Location sentence for an update just started still begins "Precise Location is off."', () => {
-    expect(PRECISE_LOCATION_OFF_DRAFT_MESSAGE.startsWith('Precise Location is off. Vitruvius only gets an approximate location')).toBe(true);
+  it('the Precise Location sentence for a fresh update describes the capture', () => {
+    expect(PRECISE_LOCATION_OFF_DRAFT_MESSAGE.startsWith('Precise Location was off when this update was started. Vitruvius only got an approximate location')).toBe(true);
   });
 });

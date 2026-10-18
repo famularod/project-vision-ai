@@ -217,7 +217,7 @@ describe('what Add Photos says about the area', () => {
     expect(view.reason).toBe('This is your current confirmed selection.');
     expect(draftAreaPresentation({
       selectedArea: null, selectedAreaName: 'Building 3', areaSuggestion: null, hasScheduleRecommendation: true,
-    }).reason).toBe('The imported schedule identifies this as the most urgent area.');
+    }).reason).toBe('This is the location named on this update.');
     const corrected = draftAreaPresentation({
       ...base, selectedArea: lot, areaSuggestion: suggestion, correctionPenalty: 40,
     });
@@ -1092,9 +1092,9 @@ describe('the Add Photos location notice', () => {
 
   it('explains capturing, denied, failed and Precise Location off', () => {
     expect(text({ kind: 'capturing' })).toBe('Capturing GPS...');
-    expect(text({ kind: 'denied' })).toBe('Location permission denied. Choose Project Area manually.');
+    expect(text({ kind: 'denied' })).toBe('Location was not allowed when this update was started, so it has no GPS. Choose Project Area manually.');
     expect(text({ kind: 'failed' })).toBe('GPS could not be captured. Choose Project Area manually.');
-    expect(text({ kind: 'precise-off' })).toContain('Precise Location is off');
+    expect(text({ kind: 'precise-off' })).toContain('Precise Location was off when this update was started');
     expect(text({ kind: 'precise-off' })).not.toContain('try again');
     expect(view({}).locationNotice).toBeNull();
   });
