@@ -212,7 +212,7 @@ it('7.56 RED same account report restores picked recipients after full mounted r
 
 it('recipient restoration disables Email and Text until saved picks finish loading',async()=>{
  mockLocal().set('@vitruvius/owner-storage-sandbox/metadata/v1',JSON.stringify({version:1,activeOwnerId:'owner-1'}));
- const read=AsyncStorage.getItem;let release!:(value:string|null)=>void;const spy=jest.spyOn(AsyncStorage,'getItem').mockImplementation(async key=>key.startsWith('@vitruvius/report-recipient-selection/')?new Promise<string|null>(r=>release=r):read(key));
+ const read=async(key:string)=>mockLocal().get(key)??null;let release!:(value:string|null)=>void;const spy=jest.spyOn(AsyncStorage,'getItem').mockImplementation(async key=>key.startsWith('@vitruvius/report-recipient-selection/')?new Promise<string|null>(r=>release=r):read(key));
  try{setClock('2026-10-05T17:00:00.000Z');current=render(reportsScreen());await approveAndOpenShare();expect(screen.getByText('Loading saved recipients…')).toBeTruthy();fireEvent.press(screen.getByRole('button',{name:'Email Report'}));fireEvent.press(screen.getByRole('button',{name:'Text Report'}));expect(onEmailReport).not.toHaveBeenCalled();expect(onTextReport).not.toHaveBeenCalled();
  await act(async()=>release(JSON.stringify([{key:'dummy',name:'Saved dummy',email:'saved@example.test',phone:'+15550199'}])));await screen.findByText('Saved dummy · saved@example.test · +15550199',{},SLOW);await send('Email Report');expect(reportEmailRecipients(handed(onEmailReport))).toEqual(['saved@example.test']);
  }finally{spy.mockRestore()}
