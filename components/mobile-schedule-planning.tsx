@@ -136,7 +136,7 @@ function MobileScheduleTimeline({
               ) : (
                 <View style={styles.needsDateRow}>
                   <Ionicons name="calendar-outline" size={16} color={colors.warning} />
-                  <Text style={styles.needsDateText}>{row.startDate || row.finishDate ? 'Check dates: outside the timeline range' : 'Dates needed'}</Text>
+                  <Text style={styles.needsDateText}>{row.outsideSupportedYears ? 'Check dates: outside the timeline range' : row.finishDate ? 'Start date needed' : 'Dates needed'}</Text>
                 </View>
               )}
             </Pressable>

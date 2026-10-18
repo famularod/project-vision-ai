@@ -198,9 +198,9 @@ describe('L3: the web upload review flags a date outside 2000 through 2100', () 
     ]));
     const flags = screen.getAllByText(/^Check this date: /).map(node => String(node.props.children));
     expect(flags).toHaveLength(2);
-    // The import writes a year below 1000 back with three digits; the review names the date as it now holds it.
+    // The import preserves the explicit four-digit year; the review names that same date.
     expect(flags).toEqual([
-      'Check this date: the start date 05/01/202 is outside 2000 to 2100.',
+      'Check this date: the start date 05/01/0202 is outside 2000 to 2100.',
       'Check this date: the finish date 12/31/9999 is outside 2000 to 2100.',
     ]);
   });
@@ -212,7 +212,7 @@ describe('L3: the web upload review flags a date outside 2000 through 2100', () 
     await pressUpload(screen);
     expect(mockAuth.uploadDocument).toHaveBeenCalledTimes(1);
     const [uploaded] = mockAuth.uploadDocument.mock.calls[0][0].scheduleItems;
-    expect([uploaded.startDate, uploaded.finishDate]).toEqual(['05/01/202', '05/04/202']);
+    expect([uploaded.startDate, uploaded.finishDate]).toEqual(['05/01/0202', '05/04/0202']);
   });
 
   it('a row he excludes takes its flag with it', async () => {
