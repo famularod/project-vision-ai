@@ -201,6 +201,7 @@ import { buildPIECoreIntelligence } from '../../services/PIECoreIntelligence';
 import { formatDAVEWebReport } from '../../services/DAVEWebOperations';
 import { buildReportWordBase64 } from '../../services/ReportWordDocument';
 import JSZip from 'jszip';
+import { reportWordPhotoDescription } from '../../services/ReportWordMediaDescription';
 const rawTask = task({ id:'legacy-task',taskName:'Install canopy',locationName:'Canopy',startDate:'10/01/2026',finishDate:'10/20/2026',notes:'Confirm canopy bolts',createdAt:isoAt(-14),updatedAt:isoAt(-2),status:'In Progress',percentComplete:40 });
 const validVerificationInput={status:'pm_verified',reportedAt:isoAt(-4),reportedBy:'Dana',priorScheduleStatus:'In Progress',priorPercentComplete:40,verifiedAt:isoAt(-3),verifiedBy:'Dana',verificationNote:'Canopy accepted',evidence:[{id:'inspection',kind:'pm_confirmation',sourceName:'Dana',sourceRecordId:'legacy-task',summary:'Canopy accepted',recordedAt:isoAt(-3)}]};
 const validVerification=normalizeScheduleItem({...rawTask,completionVerification:validVerificationInput} as never).completionVerification;
@@ -210,8 +211,10 @@ function differences(a:any,b:any,path='$'):any[]{
  if(a&&b&&typeof a==='object'&&typeof b==='object')return [...new Set([...Object.keys(a),...Object.keys(b)])].flatMap(k=>differences(a[k],b[k],path+'.'+k));
  return [{path,phone:a??null,desktop:b??null}];
 }
-async function word(body:string,taskLines:any[]){
- const zip=await JSZip.loadAsync(Buffer.from(await buildReportWordBase64({title:'Synthetic report',body,generatedAt:isoAt(0),taskLines,media:[]}),'base64'));
+async function word(body:string,taskLines:any[],updates:any[]=[]){
+ const png=Uint8Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9WlL6iQAAAAASUVORK5CYII=','base64'));
+ const media=updates.flatMap(u=>(u.photos??[]).map((p:any)=>({...reportWordPhotoDescription(p,u),id:p.id,kind:'photo' as const,data:png,mimeType:'image/png',width:1,height:1})));
+ const zip=await JSZip.loadAsync(Buffer.from(await buildReportWordBase64({title:'Synthetic report',body,generatedAt:isoAt(0),taskLines,media}),'base64'));
  return [...(await zip.file('word/document.xml')!.async('string')).matchAll(/<w:t(?: [^>]*)?>([^<]*)<\/w:t>/g)].map(m=>m[1]);
 }
 async function observe(rows:Rows,format:Format){
@@ -223,8 +226,15 @@ async function observe(rows:Rows,format:Format){
  const core=buildPIECoreIntelligence({runtimeContext:{projectName:P1.name,projectNames:[P1.name],reportType:'daily_project_update',updates:held.updates,scheduleItems:held.tasks,knownScheduleItems:held.tasks,currentUpdate:null,projectAreas:[],contacts:{contacts:[]},referenceDocuments:[],surface:'reports'},reportType:'daily_project_update',reportProjectNames:[P1.name],organizationId:'local-unverified-anonymous',projectId:'synthetic-project'} as never);
  const written=enhanceDAVEReportDraft(core.reportDraft as never,pb,format);
  const webBody=formatDAVEWebReport(db,format);
- const pw=await word(written.body,[...pb.wordTaskLines]),dw=await word(webBody,[...db.wordTaskLines]);
- const result={format,phoneFingerprint:p.fingerprint,desktopFingerprint:d.fingerprint,recognizesPhoneSend:p.fingerprint===d.fingerprint,held:held.tasks[0],loaded:snapshot.scheduleItems[0],recipeDiff:differences(daveReportSourceParts(phone,sent,format),daveReportSourceParts(desktop,sent,format)),briefingDiff:differences(pb,db),actualWordDiff:differences(pw,dw),phoneRuntimeBody:written.body,desktopBody:webBody};
+ const pw=await word(written.body,[...pb.wordTaskLines],held.updates),dw=await word(webBody,[...db.wordTaskLines],held.updates);
+ const nativeRows={...rows,scheduleItems:rows.scheduleItems.map(row=>({...row,item_data:normalizeScheduleItem(row.item_data)}))};
+ const nativeSnapshot=await computerSnapshot(nativeRows);
+ const nativeTruth=buildDAVEWebReportTruths(nativeSnapshot,P1.name);
+ const nativePeriod=buildDAVEReportSourceOnPeriod(nativeTruth,sent,format);
+ const nativeBriefing=buildDAVEWebReportDraft(nativeSnapshot,P1.name,{previousSnapshot:nativePeriod.countedFrom,waitingForOtherDevice:false});
+ const nativeBody=formatDAVEWebReport(nativeBriefing,format);
+ const nativeWord=await word(nativeBody,[...nativeBriefing.wordTaskLines],held.updates);
+ const result={desktopRawVsNativeWordDiff:differences(nativeWord,dw),desktopRawVsNativeBodyDiff:differences(nativeBody,webBody),phoneWord:pw,desktopWord:dw,format,phoneFingerprint:p.fingerprint,desktopFingerprint:d.fingerprint,recognizesPhoneSend:p.fingerprint===d.fingerprint,held:held.tasks[0],loaded:snapshot.scheduleItems[0],recipeDiff:differences(daveReportSourceParts(phone,sent,format),daveReportSourceParts(desktop,sent,format)),briefingDiff:differences(pb,db),actualWordDiff:differences(pw,dw),phoneRuntimeBody:written.body,desktopBody:webBody};
  console.log('B63_DIAGNOSTIC '+JSON.stringify(result));
  return result;
 }
@@ -251,7 +261,7 @@ describe('B63 original 7.81 same raw authorized row',()=>{
 });
 
 it.each(['project_manager','executive'] as const)('B63 %s genuine current photo description invalidates',async format=>{
- const base=rowsFor();const make=(caption:string)=>({...base,projectUpdates:rowsOf(onThePhone({updates:[update({id:'photo-update',date:isoAt(-1),notes:'Canopy inspected',scheduleItemId:'legacy-task',scheduleTaskName:'Install canopy',selectedAreaName:'Canopy',photos:[{id:'synthetic-photo',uri:'file:///synthetic/canopy.png',caption,category:'Progress',fileName:'canopy.png',mimeType:'image/png'}]})]})).projectUpdates});
+ const base=rowsFor();const make=(caption:string)=>({...base,projectUpdates:rowsOf(onThePhone({updates:[update({id:'photo-update',date:isoAt(-1),notes:'Canopy inspected',scheduleItemId:'legacy-task',scheduleTaskName:'Install canopy',selectedAreaName:'Canopy',photos:[{id:'synthetic-photo',uri:'file:///synthetic/canopy.png',caption,category:'Progress',fileName:'canopy.png',mimeType:'image/png',cloudStoragePath:'synthetic/canopy.png'}]})]})).projectUpdates});
  const before=await observe(make('Bolts inspected'),format),after=await observe(make('Bolts require adjustment'),format);
  expect(after.phoneFingerprint).not.toBe(before.phoneFingerprint);
  expect(after.desktopFingerprint).not.toBe(before.desktopFingerprint);

@@ -342,10 +342,19 @@ describe('B63 original 7.81 actual desktop sent receipt',()=>{
     const raw=OCT15.map(t=>t.id==='noarea'?{...t,...(shape==='blank-project'?{projectName:'',scheduleProjectName:NAME,finishDate:'10/20/2026'}:{completionVerification:{status:'pm_verified',reportedAt:'2026-10-14T12:00:00.000Z',verifiedBy:'Dana'}})}:t) as ScheduleItem[];
     const normalized=raw.map(t=>nativeSchedule(t));
     await thePhoneSendsAtNineSeventeen(normalized);
-    const web=await computer(UPDATES,raw,'2026-10-15T16:19:00.000Z');
+    const web=await computer(UPDATES,raw,'2026-10-15T16:19:00.000Z',{executive:format==='executive'});
     console.log('B63_RECEIPT '+JSON.stringify({format,shape,web}));
     expect(web.alreadySent).toBe(true);
    });
   }
  }
+});
+
+it.each(['project_manager','executive'] as const)('B63 %s ordinary writer rows actual receipt control',async format=>{
+ phoneFormat=format;
+ const normalized=OCT15.map(t=>nativeSchedule(t));
+ await thePhoneSendsAtNineSeventeen(normalized);
+ const web=await computer(UPDATES,normalized,'2026-10-15T16:19:00.000Z',{executive:format==='executive'});
+ console.log('B63_RECEIPT_CONTROL '+JSON.stringify({format,web}));
+ expect(web.alreadySent).toBe(true);
 });
