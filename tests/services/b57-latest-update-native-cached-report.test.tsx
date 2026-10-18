@@ -133,8 +133,8 @@ const appDraft = (updates: ProjectUpdate[], items: ScheduleItem[]) => {
     reportType: 'daily_project_update' as never, reportProjectNames: [NAME],
     organizationId: 'local-unverified-anonymous', projectId: 'project-x',
   } as never);
-  const real = core.reportDraft as unknown as { openingLine: string; closingLine: string; locationGroups: unknown[]; sourceEvidence: unknown[]; usesSendChronology?: boolean };
-  return { ...stub, openingLine: real.openingLine, closingLine: real.closingLine, locationGroups: real.locationGroups, sourceEvidence: real.sourceEvidence, usesSendChronology: real.usesSendChronology };
+  const real = core.reportDraft as unknown as { openingLine: string; closingLine: string; locationGroups: unknown[]; sourceEvidence: unknown[] };
+  return { ...stub, openingLine: real.openingLine, closingLine: real.closingLine, locationGroups: real.locationGroups, sourceEvidence: real.sourceEvidence };
 };
 const authority = (updates: ProjectUpdate[], items: ScheduleItem[]) => {
   const draft = appDraft(updates, items);
@@ -282,16 +282,10 @@ const asBuild232SavedThem = () => {
 };
 
 
-// Historical mode renders the actual report producer from the preserved B54 production archive.
-// The runner supplies an owned immutable snapshot; other runs use legacy date-only inputs.
-const historicalAuthority = (updates: ProjectUpdate[], items: ScheduleItem[]) => {
- if (!process.env.B57_HISTORICAL_SOURCE) return authority(updates.map(u => ({ ...u, workflowTimestamps: undefined })), items);
- const historical = require(`${process.env.B57_HISTORICAL_SOURCE}/services/PIECoreIntelligence`);
- const core = historical.buildPIECoreIntelligence({runtimeContext:{projectName:NAME,projectNames:[NAME],reportType:'daily_project_update',updates,scheduleItems:items,knownScheduleItems:items,currentUpdate:null,projectAreas:[],contacts:{contacts:[]},referenceDocuments:[],surface:'reports'},reportType:'daily_project_update',reportProjectNames:[NAME],organizationId:'local-unverified-anonymous',projectId:'project-x'});
- const real=core.reportDraft;
- const draft={...stub,openingLine:real.openingLine,closingLine:real.closingLine,locationGroups:real.locationGroups,sourceEvidence:real.sourceEvidence};
- return {state:'ready',policy:{reportGenerationAllowed:true,layer4DecisionCreationAllowed:false},reportDraft:draft,runtime:{response:{reportDraft:draft}},executiveJudgmentRecord:null};
-};
+// Ordinary standalone regression uses the producer's legacy day-only input contract.
+// The retained red-native diagnostic separately executed the exact B54 archive.
+const historicalAuthority = (updates: ProjectUpdate[], items: ScheduleItem[]) =>
+ authority(updates.map(u => ({ ...u, workflowTimestamps: undefined })), items);
 describe('7.38 actual cached native report projection',()=>{
  it.each(['legacy','modern'])('%s cached send preserves same source facts and checks the newly ordered report words',async mode=>{
   NAME='Tower';W=world();

@@ -151,9 +151,11 @@ it('changed authored-send ordering changes app text while preserving the actual 
 });
 
 it('App relative send labels use local midnight for Z and offset timestamps and preserve legacy day-only fallback', () => {
-  expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe('America/Los_Angeles');
   jest.setSystemTime(new Date('2026-10-18T07:30:00Z'));
-  const label = appFunction('relativeUpdateDateLabel', { formatDisplayDate: (v: string) => v });
+  class PacificDate extends Date {
+    toDateString() { return new Intl.DateTimeFormat('en-US', { timeZone: 'America/Los_Angeles', year: 'numeric', month: '2-digit', day: '2-digit' }).format(this); }
+  }
+  const label = appFunction('relativeUpdateDateLabel', { Date: PacificDate, formatDisplayDate: (v: string) => v });
   expect(label('2026-10-18T07:01:00Z')).toBe('today');
   expect(label('2026-10-18T00:01:00-07:00')).toBe('today');
   expect(label('2026-10-18T06:59:00Z')).toBe('yesterday');
@@ -161,4 +163,9 @@ it('App relative send labels use local midnight for Z and offset timestamps and 
   // Existing date-only display semantics stay unchanged here (7.66 is separate).
   expect(label('2026-10-18')).toBe('yesterday');
   expect(label('not-a-date')).toBe('not-a-date');
+});
+
+it.each(['2026-10-18', '0', 'not-a-timestamp'])('a malformed tap %j retains the valid legacy day', sendTappedAt => {
+ const a=morning(), b={...midday(),date:'2026-10-15',workflowTimestamps:{sendTappedAt}};
+ expect(fieldUpdatesNewestFirst([b,a]).map(u=>u.id)).toEqual([a.id,b.id]);
 });

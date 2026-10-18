@@ -1,4 +1,4 @@
-import { fieldUpdateChronologyDate, type FieldUpdateChronology } from './FieldUpdateChronology';
+import { fieldUpdateChronologyDate, type FieldUpdateChronology, type FieldUpdateChronologyContext } from './FieldUpdateChronology';
 import type {
   ProjectArea,
   ProjectUpdate,
@@ -1710,10 +1710,10 @@ function whatChangedSummary(fusedEvidence: PIEFusedEvidence) {
  * Completion times are deliberately ignored: failed/background attempts stamp them too.
  * The input list is never reordered in place.
  */
-export function fieldUpdatesNewestFirst<T extends FieldUpdateChronology & { id: string }>(updates: readonly T[]): T[] {
+export function fieldUpdatesNewestFirst<T extends FieldUpdateChronology & { id: string }>(updates: readonly T[], context: FieldUpdateChronologyContext = {}): T[] {
   return updates
     .map((update, index) => {
-      const moment = Date.parse(fieldUpdateChronologyDate(update) || '');
+      const moment = Date.parse(fieldUpdateChronologyDate(update, context) || '');
       return { update, index, moment: Number.isFinite(moment) ? moment : null };
     })
     .sort((left, right) => {

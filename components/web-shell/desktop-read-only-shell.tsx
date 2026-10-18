@@ -6372,7 +6372,7 @@ function ReportWorkspace({
       // Keep each update's authored photo order and the exact saved source ID selection.
       const sourceUpdates = fieldUpdatesNewestFirst(snapshot.projectUpdates
         .filter(update => sourceIds.has(update.id) || sourceIds.has(update.updateData.id))
-        .map(update => update.updateData));
+        .map(update => update.updateData), { cloudReceipts: true });
       const reportPhotoIds = uniqueStrings(
         sourceUpdates.flatMap(update => update.photos.map(photo => photo.id)),
       );

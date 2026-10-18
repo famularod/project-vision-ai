@@ -19,6 +19,8 @@ export type DAVEReportProjectTruthsInput = {
   /** The owner's projects: a task's or an update's project is read against them. */
   projectRecords: readonly ProjectRecord[];
   updates: readonly ProjectUpdate[];
+  /** The desktop supplies only downloaded cloud rows; their serialized status may still say queued. */
+  cloudUpdateReceipts?: boolean;
   /** The tasks shown. */
   scheduleItems: readonly ScheduleItem[];
   /**
@@ -124,7 +126,7 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
     // Classify equal-caption evidence in the same saved-update order the report
     // writer uses. Cloud row arrival order must not choose a different duplicate
     // winner (and therefore a different report identity) on another device.
-    const orderedUpdates = fieldUpdatesNewestFirst(scope.updates);
+    const orderedUpdates = fieldUpdatesNewestFirst(scope.updates, { cloudReceipts: input.cloudUpdateReceipts });
     const sameOrder = orderedUpdates.every((update, index) => update === scope.updates[index]);
     const truth = truthOf({ ...scope, updates: orderedUpdates });
     // R8 item 2 (the coordinator's decision on review pass 2, P2-2): the drawings the report cites for this
