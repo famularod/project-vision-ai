@@ -47,7 +47,7 @@ describe('R5 item 6a: where they are used', () => {
   it('the phone: the Mail subject and the Word file it shares (also the file attached for Outlook)', () => {
     const app = source('App.tsx');
     expect(app).toContain('subject: reportSubjectWithDate(report.subject || report.title, report.generatedAt),');
-    expect(app).toContain("reportFileTitleWithDate(report.title || 'Vitruvius Project Report', report.generatedAt)}.docx`;");
+    expect(app).toContain("encodeURIComponent(reportFileTitleWithDate(report.title || 'Vitruvius Project Report', report.generatedAt))}.docx`;");
     // The title alone is no longer the subject or the file name.
     expect(app).not.toContain('subject: report.subject || report.title,');
     expect(app).not.toContain("sanitizeFilename(report.title || 'Vitruvius Project Report')");

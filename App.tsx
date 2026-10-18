@@ -10362,8 +10362,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
       reportPhotoIds,
       drawingReferences: readableDrawingReferences,
     });
+    // Encode only the basename: the Expo directory is already a file URI.
+    // Raw #/percent escapes would otherwise change Foundation URL.path.
     const fileUri =
-      `${directory}${reportFileTitleWithDate(report.title || 'Vitruvius Project Report', report.generatedAt)}.docx`;
+      `${directory}${encodeURIComponent(reportFileTitleWithDate(report.title || 'Vitruvius Project Report', report.generatedAt))}.docx`;
 
     try {
       const {

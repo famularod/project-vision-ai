@@ -37,7 +37,7 @@ describe('7.23 action metadata', () => {
   it('both real Word producers use the report-specific basename directly, preserving body inputs', () => {
     const app=fs.readFileSync(path.resolve(__dirname,'../../App.tsx'),'utf8');
     const web=fs.readFileSync(path.resolve(__dirname,'../../components/web-shell/desktop-read-only-shell.tsx'),'utf8');
-    expect(app).toContain("${directory}${reportFileTitleWithDate(report.title || 'Vitruvius Project Report', report.generatedAt)}.docx");
+    expect(app).toContain("${directory}${encodeURIComponent(reportFileTitleWithDate(report.title || 'Vitruvius Project Report', report.generatedAt))}.docx");
     expect(web).toContain('downloadBlob(`${reportFileTitleWithDate(title, generatedAt)}.docx`, blob)');
     expect(app).toContain('body: report.body,');
     expect(web).toContain('taskLines: briefing.wordTaskLines ?? [],');

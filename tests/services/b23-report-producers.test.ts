@@ -37,8 +37,8 @@ describe('7.23 actual report producers',()=>{
     expect(await fn(report,[],'Outlook')).toBe(true);
     const filename=write.mock.calls[0][0] as unknown as string;
     expect(filename).toMatch(/2026-10-17\.docx$/);
-    expect(filename.slice('file:///cache/'.length)).not.toMatch(/^\./);
-    expect(Buffer.byteLength(filename.slice('file:///cache/'.length))).toBeLessThanOrEqual(240);
+    expect(decodeURIComponent(filename.slice('file:///cache/'.length))).not.toMatch(/^\./);
+    expect(Buffer.byteLength(decodeURIComponent(filename.slice('file:///cache/'.length)))).toBeLessThanOrEqual(240);
     expect(build).toHaveBeenCalledWith(expect.objectContaining({title:report.title,body:report.body,generatedAt:report.generatedAt,taskLines:report.daveBriefing.wordTaskLines}));
     expect(share).toHaveBeenCalledWith(filename,expect.objectContaining({dialogTitle:'Outlook'}));
   });
