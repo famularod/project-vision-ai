@@ -6,7 +6,7 @@ import {
 } from './dave-project-schedule-rollup';
 import type { ReferenceDocument, ScheduleItem } from '../types';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
-import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
+import { scheduleProgressIsManagers, scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import {
   buildDAVEReportSnapshot,
   compareDAVEReportSnapshots,
@@ -652,7 +652,7 @@ export function buildDAVEReportBriefing({
    * report's fingerprint. Without them, Completed Work's dates read as
    * before.
    */
-  scheduleItems?: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>[];
+  scheduleItems?: readonly (ReportTaskConfirmation & Pick<ScheduleItem, 'id'>)[];
 }): DAVEReportBriefing {
   return briefingOf({
     truths,
@@ -985,16 +985,19 @@ function completedWorkLines(truths: readonly DAVEProjectTruth[], lastUpdatedAt: 
 }
 
 /**
- * When the manager confirmed a task's progress, or a master's file completed it: what Completed Work's "Last updated"
+ * When the manager confirmed a task's progress, or a schedule file completed it: what Completed Work's "Last updated"
  * reads beside the task's activity (A6 pass 14 L4, R5 item 3). The report truth carries it for each completed task
  * (completedWorkConfirmedAt), so the fingerprint reads it as the briefing does (HIGH item 1c).
  */
-export function reportTaskConfirmedAt(item: Pick<ScheduleItem, 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>): string | null {
-  return latestDate([scheduleProgressJudgedAt(item as ScheduleItem), completedByMasterAt(item)]);
+type ReportTaskConfirmation = Pick<ScheduleItem, 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'> &
+  Partial<Pick<ScheduleItem, 'lookaheadOverlay' | 'percentComplete' | 'progressSource' | 'progressConfirmedBy' | 'completionVerification'>>;
+
+export function reportTaskConfirmedAt(item: ReportTaskConfirmation): string | null {
+  return latestDate([scheduleProgressJudgedAt(item as ScheduleItem), completedByMasterAt(item), completedByLookaheadAt(item)]);
 }
 
 function completedTaskLastUpdatedAt(
-  scheduleItems: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>[] | undefined,
+  scheduleItems: readonly (ReportTaskConfirmation & Pick<ScheduleItem, 'id'>)[] | undefined,
 ): CompletedTaskLastUpdatedAt {
   if (!scheduleItems) return task => latestDate([task.latestActivityAt, task.updatedAt]);
   const confirmedAt = new Map(scheduleItems.map(item => [item.id, reportTaskConfirmedAt(item)]));
@@ -1005,6 +1008,33 @@ function completedTaskLastUpdatedAt(
 function completedByMasterAt(item: Pick<ScheduleItem, 'fileProgressPeak'>): string | null {
   const peak = item.fileProgressPeak;
   return peak && boundedPercent(peak.percentComplete) >= 100 && typeof peak.statedAt === 'string' ? peak.statedAt : null;
+}
+
+/** Read the existing lookahead provenance without writing a manager confirmation.
+ * Repeating 100%, or a later file with no percent, does not complete it again.
+ * Missing history keeps the existing fallback rather than inventing a date.
+ */
+function completedByLookaheadAt(item: ReportTaskConfirmation): string | null {
+  if (item.percentComplete !== 100 || scheduleProgressIsManagers(item as ScheduleItem)) return null;
+  const overlay = item.lookaheadOverlay;
+  if (!overlay || !Array.isArray(overlay.lookaheads)) return null;
+  let percent: number | null = Number.isFinite(overlay.masterPercentComplete) ? boundedPercent(overlay.masterPercentComplete) : null;
+  let completedAt: string | null = null;
+  for (const entry of overlay.lookaheads) {
+    if (entry.percentComplete === null) continue;
+    if (typeof entry.percentComplete !== 'number' || !Number.isFinite(entry.percentComplete)) {
+      // Old entries did not record whether they changed progress. A later 100%
+      // may repeat their completion; only a known transition proves its date.
+      percent = null;
+      completedAt = null;
+      continue;
+    }
+    const next = boundedPercent(entry.percentComplete);
+    if (next < 100) completedAt = null;
+    else if (percent !== null && percent < 100) completedAt = latestDate([entry.approvedAt || entry.importedAt]);
+    percent = next;
+  }
+  return percent === 100 ? completedAt : null;
 }
 
 function reportCompletedTaskFact(
