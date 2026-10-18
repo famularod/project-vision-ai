@@ -136,14 +136,12 @@ export function bringBackScheduleProgressDrafts(account: string, previous?: stri
 export function forgetScheduleProgressDrafts(account?: string | null) {
   const whose = account || progressAccountHeard;
   fenceProgressDraftCallbacks(whose);
-  let changed = progressAccountHeard !== null;
   progressAccountHeard = null;
   [...drafts].forEach(([key, draft]) => {
     if (draft.account !== null && draft.account !== whose) return;
     drafts.delete(key);
-    changed = true;
   });
-  if (changed) notify();
+  notify();
 }
 
 /**

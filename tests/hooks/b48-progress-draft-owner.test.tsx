@@ -137,6 +137,17 @@ it('an empty unknown fallback is fenced at sign-out and its new callback remains
   expect(hook.result.current[0].percentComplete).toBe(80);
   hook.unmount();
 });
+it.each([undefined, first])('a mounted empty draft receives a usable new callback after deliberate discard (owner=%s)', owner => {
+  const hook = row(owner);
+  const old = hook.result.current[1];
+  noteSignOutAskedHere(owner || first);
+  act(() => settleUnsavedDraftsOnAccountChange('SIGNED_OUT', undefined, null));
+  act(() => old(() => ({ status: 'Complete', percentComplete: 100 })));
+  expect(hook.result.current[0]).toEqual(saved);
+  act(() => hook.result.current[1](() => ({ status: 'In Progress', percentComplete: 80 })));
+  expect(hook.result.current[0].percentComplete).toBe(80);
+  hook.unmount();
+});
 it('a named fallback callback from before an unasked sign-out stays fenced when its account returns', () => {
   act(() => settleUnsavedDraftsOnAccountChange('SIGNED_IN', null, first));
   const hook = row();
