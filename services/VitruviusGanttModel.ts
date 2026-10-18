@@ -5,6 +5,13 @@ import { buildVitruviusScheduleHierarchy } from './VitruviusScheduleWorkspace';
 
 export type VitruviusGanttZoom = 'day' | 'week' | 'month';
 
+/** Pixel coordinates in the full timeline; only column materialization is windowed. */
+export type VitruviusGanttColumnWindow = Readonly<{
+  left: number;
+  width: number;
+  overscan?: number;
+}>;
+
 /**
  * The project a row is grouped and labelled under. 'scheduleRoot' (the
  * default; the phone's Timeline and Lookahead): the schedule's root, the task's
@@ -66,6 +73,7 @@ export type VitruviusGanttModel = Readonly<{
   todayLeft: number | null;
   columns: readonly VitruviusGanttColumn[];
   rows: readonly VitruviusGanttRow[];
+  columnWindow?: VitruviusGanttColumnWindow;
 }>;
 
 export function buildVitruviusGanttModel({
@@ -74,6 +82,7 @@ export function buildVitruviusGanttModel({
   today = new Date(),
   projectTimeZone,
   groupBy = 'scheduleRoot',
+  columnWindow,
 }: {
   items: readonly ScheduleItem[];
   zoom: VitruviusGanttZoom;
@@ -81,6 +90,8 @@ export function buildVitruviusGanttModel({
   /** Defaults to the first task's project zone, then the app default. */
   projectTimeZone?: string | null;
   groupBy?: VitruviusScheduleGrouping;
+  /** Omit to retain the existing full-column model for other consumers. */
+  columnWindow?: VitruviusGanttColumnWindow;
 }): VitruviusGanttModel {
   const hierarchyRows = projectScheduleRows(items, groupBy);
   const datesById = derivedScheduleDates(items);
@@ -99,6 +110,7 @@ export function buildVitruviusGanttModel({
   const totalDays = Math.max(1, calendarDayDifference(rangeStartDate, rangeFinishDate) + 1);
   const dayWidth = ganttDayWidth(zoom);
   const timelineWidth = totalDays * dayWidth;
+  const visibleWindow = columnWindow ? normalizedColumnWindow(columnWindow, timelineWidth) : undefined;
   const rows = hierarchyRows.map(row => {
     const dates = datesById.get(row.item.id);
     const start = dates?.start || null;
@@ -156,9 +168,10 @@ export function buildVitruviusGanttModel({
       ? todayOffset * dayWidth + dayWidth / 2
       : null,
     columns: Object.freeze(
-      buildColumns(rangeStartDate, rangeFinishDate, zoom, dayWidth),
+      buildColumns(rangeStartDate, rangeFinishDate, zoom, dayWidth, visibleWindow),
     ),
     rows: Object.freeze(rows),
+    ...(visibleWindow ? { columnWindow: visibleWindow } : {}),
   });
 }
 
@@ -314,15 +327,29 @@ function derivedScheduleDates(items: readonly ScheduleItem[]) {
   return result;
 }
 
+function normalizedColumnWindow(window: VitruviusGanttColumnWindow, timelineWidth: number) {
+  const width = Math.min(timelineWidth, Number.isFinite(window.width) && window.width > 0 ? window.width : 1024);
+  const left = Math.max(0, Math.min(timelineWidth - width, Number.isFinite(window.left) ? window.left : 0));
+  const overscan = Number.isFinite(window.overscan) && window.overscan! >= 0 ? window.overscan! : 256;
+  return Object.freeze({ left, width, overscan });
+}
+
 function buildColumns(
   rangeStart: Date,
   rangeFinish: Date,
   zoom: VitruviusGanttZoom,
   dayWidth: number,
+  window?: VitruviusGanttColumnWindow,
 ) {
   const columns: VitruviusGanttColumn[] = [];
-  let cursor = new Date(rangeStart.getTime());
-  while (cursor.getTime() <= rangeFinish.getTime()) {
+  const firstPixel = window ? Math.max(0, window.left - (window.overscan || 0)) : 0;
+  const lastPixel = window ? window.left + window.width + (window.overscan || 0) : Infinity;
+  // Jump to the first visible calendar unit. Never build the intervening years
+  // and then filter them: a valid 2062 task must cost only the viewport's columns.
+  let cursor = window
+    ? startOfZoomRange(addUtcDays(rangeStart, Math.floor(firstPixel / dayWidth)), zoom)
+    : new Date(rangeStart.getTime());
+  while (cursor.getTime() <= rangeFinish.getTime() && calendarDayDifference(rangeStart, cursor) * dayWidth < lastPixel) {
     const columnStart = new Date(cursor.getTime());
     const naturalEnd = zoom === 'day'
       ? columnStart

@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { createElement, useMemo, useState } from 'react';
+import { createElement, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -989,11 +989,26 @@ function GanttWorkspace({
   const [showCriticalPath, setShowCriticalPath] = useState(true);
   const [showBaselines, setShowBaselines] = useState(true);
   const [showImpactPreview, setShowImpactPreview] = useState(false);
+  const [viewport, setViewport] = useState({ left: 0, width: 1024 });
+  const timelineScroll = useRef<ScrollView>(null);
+  const previousGeometry = useRef<{ rangeStart: string; dayWidth: number } | null>(null);
   const model = useMemo(
     // By building, as the Builder groups (A5 pass 13); the phone keeps the root.
-    () => buildVitruviusGanttModel({ items: tasks, zoom, groupBy: 'appProject' }),
-    [tasks, zoom],
+    () => buildVitruviusGanttModel({ items: tasks, zoom, groupBy: 'appProject', columnWindow: viewport }),
+    [tasks, zoom, viewport],
   );
+  useEffect(() => {
+    const previous = previousGeometry.current;
+    previousGeometry.current = { rangeStart: model.rangeStart, dayWidth: model.dayWidth };
+    // Preserve the calendar day at the left edge through zoom/range changes,
+    // then clamp after a resize or a shorter schedule replaces this one.
+    const requested = previous
+      ? ((Date.parse(previous.rangeStart) - Date.parse(model.rangeStart)) / 86400000 + viewport.left / previous.dayWidth) * model.dayWidth
+      : viewport.left;
+    const left = Math.max(0, Math.min(Math.max(0, model.timelineWidth - viewport.width), requested));
+    timelineScroll.current?.scrollTo({ x: left, animated: false });
+    setViewport(current => left === current.left ? current : { ...current, left });
+  }, [model.rangeStart, model.dayWidth, model.timelineWidth, viewport.width]);
   const analytics = useMemo(
     () => analyzeVitruviusListedSchedule(tasks, shownTasks),
     [tasks, shownTasks],
@@ -1013,6 +1028,11 @@ function GanttWorkspace({
           <Text style={styles.ganttRange}>
             {shortDate(model.rangeStart)} – {shortDate(model.rangeFinish)}
           </Text>
+          {model.columns.length > 0 ? (
+            <Text style={styles.ganttRange}>
+              Viewing {model.columns[0].startDate} – {model.columns[model.columns.length - 1].endDate}
+            </Text>
+          ) : null}
         </View>
         <View style={styles.zoomToggle}>
           {(['day', 'week', 'month'] as VitruviusGanttZoom[]).map(option => (
@@ -1136,8 +1156,10 @@ function GanttWorkspace({
                       <Text style={styles.ganttCriticalLabel}>CRITICAL</Text>
                     ) : null}
                   </View>
-                  <Text style={styles.ganttDateText} numberOfLines={1}>
-                    {row.startDate && row.finishDate
+                  <Text style={styles.ganttDateText} numberOfLines={row.outsideSupportedYears ? 3 : 1}>
+                    {row.outsideSupportedYears
+                      ? `Date check\n${row.item.startDate || '—'}\n${row.item.finishDate || '—'}`
+                      : row.startDate && row.finishDate
                       ? `${shortDate(row.startDate)} – ${shortDate(row.finishDate)}`
                       : 'Set dates'}
                   </Text>
@@ -1147,16 +1169,31 @@ function GanttWorkspace({
           </View>
 
           <ScrollView
+            ref={timelineScroll}
+            testID="gantt-timeline-scroll"
             horizontal
             showsHorizontalScrollIndicator
             style={styles.ganttTimelineScroll}
             contentContainerStyle={{ width: model.timelineWidth }}
+            scrollEventThrottle={16}
+            onLayout={event => {
+              const width = event.nativeEvent.layout.width;
+              if (Number.isFinite(width) && width > 0) {
+                setViewport(current => width === current.width ? current : { ...current, width });
+              }
+            }}
+            onScroll={event => {
+              const x = event.nativeEvent.contentOffset.x;
+              const left = Math.max(0, Math.min(Math.max(0, model.timelineWidth - viewport.width), Number.isFinite(x) ? x : 0));
+              setViewport(current => left === current.left ? current : { ...current, left });
+            }}
           >
             <View style={{ width: model.timelineWidth }}>
               <View style={styles.ganttTimelineHeader}>
                 {model.columns.map(column => (
                   <View
                     key={column.key}
+                    testID={`gantt-column-header:${column.key}`}
                     style={[
                       styles.ganttColumnHeader,
                       { left: column.left, width: column.width },
@@ -1172,6 +1209,7 @@ function GanttWorkspace({
                 {model.columns.map(column => (
                   <View
                     key={`grid:${column.key}`}
+                    testID={`gantt-grid-column:${column.key}`}
                     style={[
                       styles.ganttGridColumn,
                       { left: column.left, width: column.width },
@@ -1213,6 +1251,7 @@ function GanttWorkspace({
                     {row.left !== null && row.width !== null ? (
                       row.milestone ? (
                         <View
+                          testID={`gantt-milestone:${row.item.id}`}
                           style={[
                             styles.ganttMilestone,
                             { left: row.left, top: 19 },
@@ -1220,6 +1259,7 @@ function GanttWorkspace({
                         />
                       ) : (
                         <View
+                          testID={`gantt-bar:${row.item.id}`}
                           style={[
                             styles.ganttBar,
                             row.summary && styles.ganttSummaryBar,
@@ -1232,6 +1272,7 @@ function GanttWorkspace({
                         >
                           {!row.summary && row.progressWidth !== null ? (
                             <View
+                              testID={`gantt-progress:${row.item.id}`}
                               style={[
                                 styles.ganttProgressBar,
                                 { width: row.progressWidth },
@@ -1241,7 +1282,11 @@ function GanttWorkspace({
                         </View>
                       )
                     ) : (
-                      <Text style={styles.ganttMissingDate}>Set dates to place this item</Text>
+                      <Text style={styles.ganttMissingDate}>
+                        {row.outsideSupportedYears
+                          ? `Date check: ${row.item.startDate || row.startDate || '—'} – ${row.item.finishDate || row.finishDate || '—'} is outside 2000 to 2100. Open this item to review its dates.`
+                          : 'Set dates to place this item'}
+                      </Text>
                     )}
                   </View>
                 ))}
