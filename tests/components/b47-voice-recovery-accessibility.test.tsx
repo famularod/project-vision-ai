@@ -254,3 +254,19 @@ it('4.90 does not announce hidden sheets or repeat a stable failure on recorder 
  await act(async()=>controls.hide());await settle(100);expect(announce).toHaveBeenCalledTimes(count);
  }finally{announce.mockRestore();}
 });
+
+import {KeyboardAvoidingModalCard} from '../../components/KeyboardAvoidingModalCard';
+import {Text} from 'react-native';
+it('4.90 scrolls the real card to a measured target once per guidance/position and leaves ordinary cards alone',async()=>{
+ const scroll=jest.spyOn(ScrollView.prototype,'scrollTo').mockImplementation(()=>undefined);
+ try{view=render(<KeyboardAvoidingModalCard frameStyle={{maxHeight:522}}><Text>ordinary</Text></KeyboardAvoidingModalCard>);expect(scroll).not.toHaveBeenCalled();
+ view.rerender(<KeyboardAvoidingModalCard frameStyle={{maxHeight:522}} scrollTarget={{key:'guidance',y:1100}}><Text>Retry Answer</Text></KeyboardAvoidingModalCard>);
+ expect(scroll).toHaveBeenCalledWith({y:1100,animated:false});const count=scroll.mock.calls.length;
+ view.rerender(<KeyboardAvoidingModalCard frameStyle={{maxHeight:522}} scrollTarget={{key:'guidance',y:1100}}><Text>Retry Answer</Text></KeyboardAvoidingModalCard>);expect(scroll).toHaveBeenCalledTimes(count);
+ view.rerender(<KeyboardAvoidingModalCard frameStyle={{maxHeight:522}} scrollTarget={{key:'longer guidance',y:1250}}><Text>Retry Answer</Text></KeyboardAvoidingModalCard>);expect(scroll).toHaveBeenLastCalledWith({y:1250,animated:false});
+ }finally{scroll.mockRestore();}
+});
+it('4.80 a restored explicit override names the current iPad while retaining its original audio',async()=>{
+ const isPad=jest.spyOn(Platform as PlatformIOSStatic,'isPad','get').mockReturnValue(true);
+ try{const uri=await seedKept({sentDespiteNoSound:true});theServiceAnswers(()=>new Error(NOT_UNDERSTOOD));await putUp();expect(await screen.findByText(NOTHING_FOUND_IPAD)).toBeTruthy();expect(whatIsIn(uri)).toBe('original retained audio');}finally{isPad.mockRestore();}
+});

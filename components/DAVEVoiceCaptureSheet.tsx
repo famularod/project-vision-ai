@@ -1568,34 +1568,33 @@ export function DAVEVoiceCaptureSheet({
           {error ? <Text style={styles.error} accessibilityLiveRegion={Platform.OS === 'android' ? 'polite' : undefined}>{error}</Text> : null}
 
           <View testID="voice-recording-actions" onLayout={event => setRetryY(event.nativeEvent.layout.y)}>
-          {recorderState.isRecording ? (
-            <TouchableOpacity style={styles.stopButton} onPress={() => { void stopRecording(); }} accessibilityRole="button">
-              <Ionicons name="stop" size={21} color="#FFF" />
-              <Text style={styles.primaryText}>{autoSubmitOnStop ? 'Stop & Continue' : 'Stop Recording'}</Text>
-            </TouchableOpacity>
-          ) : recordingUri ? (
-            <>
-              <TouchableOpacity style={styles.continueButton} disabled={isTranscribing || startIsWaiting} onPress={() => { void transcribe(); }} accessibilityRole="button">
-                <Ionicons name="sparkles-outline" size={20} color="#FFF" />
-                <Text style={styles.primaryText}>{isTranscribing ? 'Preparing…' : continueLabel}</Text>
+            {recorderState.isRecording ? (
+              <TouchableOpacity style={styles.stopButton} onPress={() => { void stopRecording(); }} accessibilityRole="button">
+                <Ionicons name="stop" size={21} color="#FFF" />
+                <Text style={styles.primaryText}>{autoSubmitOnStop ? 'Stop & Continue' : 'Stop Recording'}</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.secondaryButton} disabled={isTranscribing} onPress={() => { void startRecording(); }} accessibilityRole="button">
-                <Ionicons name="refresh" size={19} color={colors.primary} />
-                <Text style={styles.secondaryText}>Record Again</Text>
+            ) : recordingUri ? (
+              <>
+                <TouchableOpacity style={styles.continueButton} disabled={isTranscribing || startIsWaiting} onPress={() => { void transcribe(); }} accessibilityRole="button">
+                  <Ionicons name="sparkles-outline" size={20} color="#FFF" />
+                  <Text style={styles.primaryText}>{isTranscribing ? 'Preparing…' : continueLabel}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.secondaryButton} disabled={isTranscribing} onPress={() => { void startRecording(); }} accessibilityRole="button">
+                  <Ionicons name="refresh" size={19} color={colors.primary} />
+                  <Text style={styles.secondaryText}>Record Again</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <TouchableOpacity
+                style={[styles.recordButton, !projectName && styles.buttonDisabled]}
+                onPress={() => { void startRecording(); }}
+                accessibilityRole="button"
+                disabled={!projectName}
+              >
+                <Ionicons name="mic" size={23} color="#FFF" />
+                <Text style={styles.primaryText}>Start Recording</Text>
               </TouchableOpacity>
-            </>
-          ) : (
-            <TouchableOpacity
-              style={[styles.recordButton, !projectName && styles.buttonDisabled]}
-              onPress={() => { void startRecording(); }}
-              accessibilityRole="button"
-              disabled={!projectName}
-            >
-              <Ionicons name="mic" size={23} color="#FFF" />
-              <Text style={styles.primaryText}>Start Recording</Text>
-            </TouchableOpacity>
-          )}
-
+            )}
           </View>
 
           {!recorderState.isRecording ? (
