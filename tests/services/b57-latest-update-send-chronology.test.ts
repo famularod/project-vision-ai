@@ -8,8 +8,14 @@ import fs from 'fs';
 import path from 'path';
 import ts from 'typescript';
 import { buildFusedEvidence, fieldUpdatesNewestFirst } from '../../services/PIEEvidenceFusion';
-import { buildDailyProjectUpdate, buildCombinedProjectUpdate } from '../../services/PIEReporter';
+import { buildDailyProjectUpdate, buildCombinedProjectUpdate, reportWordingRequiresAppTextKey } from '../../services/PIEReporter';
 import { buildRuntime } from '../../services/PIERuntime';
+import { loadDAVEWebReadOnlySnapshot } from '../../services/DAVEWebReadOnlyRepository';
+import { daveWebSupabaseGateway } from '../../services/DAVEWebSupabaseClient';
+import { buildDAVEReportProjectTruths } from '../../services/DAVEReportProjectTruths';
+import { buildDAVELegacyReportSourceFingerprint, buildDAVEReportSourceFingerprint } from '../../services/DAVEReportIntelligence';
+import { reportTextKey } from '../../services/DAVEReportSnapshot';
+jest.mock('../../services/DAVEWebSupabaseClient', () => ({ daveWebSupabaseGateway: { loadAuthorizedRows: jest.fn() } }));
 import type { ProjectUpdate } from '../../types';
 
 const NOW = '2026-10-17T23:00:00Z';
@@ -51,7 +57,7 @@ it('a draft started yesterday and sent today beats one started and sent in betwe
 
 it('combined reports use the same send order without changing project ownership', () => {
   const a = morning(), b = { ...midday(), projectName: 'Other', scheduleProjectName: 'Other' };
-  const f = buildFusedEvidence({ projectNames: ['Tower', 'Other'], updates: [b, a], scheduleItems: [], knownScheduleItems: [], now: new Date(NOW) });
+  const f = buildFusedEvidence({ projectName: 'Tower', projectNames: ['Tower', 'Other'], updates: [b, a], scheduleItems: [], knownScheduleItems: [], now: new Date(NOW) });
   const draft = buildCombinedProjectUpdate({ selectedProjectNames: ['Tower', 'Other'], savedUpdates: [b, a], scheduleItems: [],
     runtime: { fusedEvidence: f, intelligentSummary: f.intelligentSummary } } as never);
   expect(draft.body).toContain(`Latest update: ${a.notes}`);
@@ -75,7 +81,7 @@ it('uses legacy date/id order with missing or malformed send taps and stays dete
 it('report latest-photo selection follows the newest sent update rather than the later-started draft', () => {
   const a = morning(), b = midday();
   for (const row of [a, b]) row.photos = [{ id: `photo-${row.id}`, uri: `file:///synthetic-${row.id}.jpg`, caption: row.id === a.id ? 'Morning draft photo' : 'Midday draft photo',
-    category: 'Progress', actionRequired: '', actionOwner: '', actionDueDate: '', actionStatus: 'Open', selectedAreaName: 'Roof' }] as ProjectUpdate['photos'];
+    category: 'Update', actionRequired: '', actionOwner: '', actionDueDate: '', actionStatus: 'Open', selectedAreaName: 'Roof' }] as ProjectUpdate['photos'];
   expect(fusion([b, a]).intelligentSummary.whatChanged).toContain('Latest photo: Morning draft photo');
 });
 
@@ -110,4 +116,45 @@ it.each(['draft', 'queued', 'failed', 'ready_to_send'] as const)('an unsent %s r
   const a = morning(), b = { ...midday(), date: '2026-10-15', status, workflowTimestamps: { sendTappedAt: '2026-10-18T23:00:00Z' } };
   expect(fusion([b, a]).intelligentSummary.whatChanged).toContain(`Latest update: ${a.notes}`);
   expect(fieldUpdatesNewestFirst([b, a]).map(u => u.id)).toEqual([a.id, b.id]);
+});
+
+it('the actual desktop receiver treats a loaded queued-verbatim cloud row as the same acknowledged send', async () => {
+  const a = morning(), b = midday();
+  const rows = [b, a].map(u => ({ id: u.id, project_name: 'Tower', update_data: { ...u, status: 'queued' }, created_at: NOW, updated_at: NOW }));
+  jest.mocked(daveWebSupabaseGateway.loadAuthorizedRows).mockResolvedValue({ projects: [{ id: 'tower', name: 'Tower', archived: false }],
+    scheduleItems: [], projectUpdates: rows, referenceDocuments: [], syncTombstones: [] } as never);
+  const before = JSON.stringify(rows);
+  const snapshot = await loadDAVEWebReadOnlySnapshot();
+  const received = snapshot.projectUpdates.map(row => row.updateData);
+  expect(fusion(received).intelligentSummary.whatChanged).toContain(`Latest update: ${a.notes}`);
+  expect(fieldUpdatesNewestFirst(received).map(u => u.id)).toEqual([a.id, b.id]);
+  expect(report(received).body).toBe(report([b, a]).body);
+  expect(JSON.stringify(rows)).toBe(before);
+});
+
+it('changed authored-send ordering uses the existing app-text guard without rewriting raw report facts', () => {
+  const a = { ...morning(), notes: 'Roof membrane was installed.' }, b = { ...midday(), notes: 'Roof flashing was installed.' };
+  const original = [a, b], switched = [{ ...a, workflowTimestamps: { sendTappedAt: '2026-10-17T17:00:00Z' } }, b];
+  const truths = (updates: ProjectUpdate[]) => buildDAVEReportProjectTruths({ projects: [{ name: 'Tower', projectId: 'report:tower' }], projectRecords: [{ name: 'Tower' }],
+    updates, scheduleItems: [], knownScheduleItems: [], knownScheduleDocuments: [], projectAreas: [], referenceDocuments: [], now: NOW } as never);
+  const before = report(original), after = report(switched);
+  expect(before.body).toContain(`Latest update: ${a.notes}`);
+  expect(after.body).toContain(`Latest update: ${b.notes}`);
+  expect(reportTextKey(before)).not.toBe(reportTextKey(after));
+  expect(buildDAVEReportSourceFingerprint(truths(original))).toBe(buildDAVEReportSourceFingerprint(truths(switched)));
+  expect(buildDAVELegacyReportSourceFingerprint(truths(original))).toBe(buildDAVELegacyReportSourceFingerprint(truths(switched)));
+  expect(reportWordingRequiresAppTextKey(before)).toBe(true);
+});
+
+it('App relative send labels use local midnight for Z and offset timestamps and preserve legacy day-only fallback', () => {
+  expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe('America/Los_Angeles');
+  jest.setSystemTime(new Date('2026-10-18T07:30:00Z'));
+  const label = appFunction('relativeUpdateDateLabel', { formatDisplayDate: (v: string) => v });
+  expect(label('2026-10-18T07:01:00Z')).toBe('today');
+  expect(label('2026-10-18T00:01:00-07:00')).toBe('today');
+  expect(label('2026-10-18T06:59:00Z')).toBe('yesterday');
+  expect(label('2026-10-17T23:59:00-07:00')).toBe('yesterday');
+  // Existing date-only display semantics stay unchanged here (7.66 is separate).
+  expect(label('2026-10-18')).toBe('yesterday');
+  expect(label('not-a-date')).toBe('not-a-date');
 });
