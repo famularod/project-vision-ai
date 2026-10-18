@@ -153,3 +153,14 @@ it('independent concurrent global callers each retain wait classification',async
  const outcomes=await whileTimePasses(Promise.all([t.gateway!.signOut('global').catch(e=>e),t.gateway!.signOut('global').catch(e=>e)]));
  expect(outcomes.value.map(e=>e.name)).toEqual(['DAVEWebSignOutWaitError','DAVEWebSignOutWaitError']);expect(tabHoldsSignIn(t.storage)).toBe(true);
 });
+
+it('local signout remains bounded while a global logout never answers', async () => {
+ const tab = await signedInTab(); server.logout = 'never-answers';
+ void tab.gateway!.signOut('global').catch(() => undefined);
+ await withoutTimePassing(() => server.logoutsAsked > 0);
+ let finished = false;
+ void tab.gateway!.signOut('local').then(() => { finished = true; });
+ for (let i=0; i<10 && !finished; i++) { await jest.advanceTimersByTimeAsync(1000); await withoutTimePassing(() => finished); }
+ expect(finished).toBe(true);
+ expectSignedOutOfThisComputer(tab);
+});
