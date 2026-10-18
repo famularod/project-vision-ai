@@ -1,6 +1,6 @@
-/** 7.67: older empty project-key residual. Synthetic two-device ReportsScreen rig
- * adapted from r232b-761. No network. Keep modern exact appTextKey recognition;
- * legacy sends under names the existing truth key cannot represent need approval.
+/** 4.83: production Core / PIEReporter drafts rendered by the actual ReportsScreen.
+ * Synthetic local records; storage and cloud transport are memory-only.
+ * The preview filters empty cards; report data and the DAVE overview stay intact.
  */
 const mockDevices = new Map<string, Map<string, string>>();
 let mockDevice = 'phone';
@@ -48,7 +48,7 @@ jest.mock('@react-native-community/datetimepicker', () => {
 });
 jest.mock('expo-file-system/legacy', () => ({ documentDirectory: null }));
 
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
+import { render, screen } from '@testing-library/react-native';
 import { ReportsScreen } from '../../screens/ReportsScreen';
 import { buildPIECoreIntelligence } from '../../services/PIECoreIntelligence';
 import { forgetAllReportSessionState } from '../../services/ReportSessionState';
@@ -56,9 +56,7 @@ import { recordScheduleCloudPull, registerScheduleCloudPullRequest } from '../..
 import type { ProjectUpdate, ScheduleItem } from '../../types';
 
 jest.setTimeout(240_000);
-const SLOW = { timeout: 40_000 } as const;
-
-
+const SLOW = { timeout: 5_000 } as const;
 
 let stopAppDownloads: () => void = () => undefined;
 beforeEach(() => {
@@ -66,7 +64,7 @@ beforeEach(() => {
 });
 
 /** The project's name, set by each test before its records are made. */
-let NAME = 'Башня Север';
+let NAME = 'Synthetic Project';
 const task = (id: string, taskName: string, area: string, percent: number, finish: string, owner = 'Dana') => ({
   id, projectName: NAME, scheduleProjectName: NAME, locationName: area, taskName,
   startDate: '09/01/2026', finishDate: finish, milestone: '', owner, contractor: 'Acme',
@@ -153,25 +151,41 @@ test('writer advice-only area does not render an empty Reports work-area card', 
   expect(JSON.stringify(draft)).toBe(before);
 });
 
-test.each(['note', 'task', 'photo'] as const)('writer %s evidence stays visible beside the advice-only area', async kind => {
+test.each(['note', 'waiting task', 'future task', 'photo', 'photo only'] as const)('writer %s retains its evidence with consistent visible-card counts', async kind => {
   NAME = `Synthetic ${kind} Area`;
-  const item = task('task', 'Frame walls', 'North Wing', 20, '12/31/2026');
-  const updates = kind === 'task' ? [] : [update('note', item, '2026-10-16',
+  const item = { ...task('task', 'Frame walls', 'North Wing', 20, '12/31/2026'),
+    ...(kind === 'waiting task' ? { status: 'Waiting' } : {}) };
+  const isTask = kind === 'waiting task' || kind === 'future task';
+  const hasPhoto = kind === 'photo' || kind === 'photo only';
+  const updates = isTask ? [] : [update('note', item, '2026-10-16',
     kind === 'note' ? 'Neighbors asked about weekend hours.' : '',
-    kind === 'photo' ? [photo('photo', 'North Wing', '')] : [])];
-  const items = kind === 'task' ? [item] : [];
+    hasPhoto ? [photo('photo', 'North Wing', '')] : [])];
+  const items = isTask ? [item] : [];
   mockAuthority = authority(updates, items);
   const draft = mockAuthority.reportDraft as ReturnType<typeof appDraft>;
   const areas = draft.locationGroups.flatMap(group => group.workAreas);
   expect(areas.some(area => area.bullets.length === 0 && area.imageReferences.length === 0)).toBe(true);
   expect(areas.find(area => area.title === 'North Wing')).toBeDefined();
+  // Older drafts can hold photo references with no printed bullet. Keep those cards.
+  if (kind === 'photo only') areas.find(area => area.title === 'North Wing')!.bullets = [];
   const before = JSON.stringify(draft);
   render(reportsScreen(updates, items));
-  await screen.findByRole('button', { name: 'North Wing work area' }, SLOW);
+  await screen.findByRole('button', { name: 'Full written report' }, SLOW);
+  if (kind === 'future task') {
+    // The writer makes no printable bullets for this future task. Its empty card
+    // also goes, while its actual task details and DAVE area progress remain.
+    expect(screen.queryByRole('button', { name: 'North Wing work area' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Work Areas and Photos' })).toBeNull();
+    expect(screen.getByText('North Wing')).toBeTruthy();
+    expect(screen.getByText(/Frame walls \(North Wing\): In Progress; 20% complete/)).toBeTruthy();
+    expect(JSON.stringify(draft)).toBe(before);
+    return;
+  }
+  expect(screen.getByRole('button', { name: 'North Wing work area' })).toBeTruthy();
   expect(screen.getByRole('button', { name: 'Work Areas and Photos' })).toBeTruthy();
-  expect(screen.getByText(`1 area · ${kind === 'photo' ? 1 : 0} photo${kind === 'photo' ? '' : 's'}`)).toBeTruthy();
+  expect(screen.getByText(`1 area · ${hasPhoto ? 1 : 0} photo${hasPhoto ? '' : 's'}`)).toBeTruthy();
   expect(screen.queryByText('0 updates · 0 photos')).toBeNull();
   if (kind === 'note') expect(screen.getByText('Neighbors asked about weekend hours.', { exact: false })).toBeTruthy();
-  if (kind === 'photo') expect(screen.getByText('Image 1', { exact: false })).toBeTruthy();
+  if (hasPhoto) expect(screen.getByLabelText('Photo 1 from North Wing')).toBeTruthy();
   expect(JSON.stringify(draft)).toBe(before);
 });
