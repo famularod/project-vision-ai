@@ -202,9 +202,15 @@ it.each(LOW)('actual native file pick, review approval, App normalization and du
  const raw=await AsyncStorage.getItem('projectPhotoUpdate.scheduleItems.v1');expect(raw).not.toBeNull();const reloaded=JSON.parse(raw!).map(nativeNormalizeScheduleItem);store.unmount();
  expect(batch!.items.map(i=>[i.startDate,i.finishDate])).toEqual([[`05/01/${year}`,`05/04/${year}`]]);expect(reloaded.map((i:ScheduleItem)=>[i.startDate,i.finishDate])).toEqual([[`05/01/${year}`,`05/04/${year}`]]);
 });
-it.each(LOW)('actual ISO CSV and MS Project file routes preserve %s',year=>{
+it.each([...LOW,'2000','2100','2026'])('actual ISO CSV and MS Project file routes preserve %s',year=>{
  const iso=normalizeScheduleImport({contents:`Task,Project,Area,Start,Finish,Owner\nCanopy,${QUAY},Lot,${year}-05-01,${year}-05-04,Dana`,sourceName:'iso.csv',mimeType:'text/csv',now:new Date('2026-10-17T12:00:00Z')});
  const ms=normalizeMicrosoftProjectPdfRows({contents:['ID\tTask Name\tIndent\tDuration\tStart\tFinish\tPercent Complete\tWBS',`1\t${QUAY.toUpperCase()}\t0\t3 days\tMon 5/1/${year}\tThu 5/4/${year}\t0%\t1`,`2\tINSTALL CANOPY\t1\t3 days\tMon 5/1/${year}\tThu 5/4/${year}\t0%\t1.1`].join('\n'),sourceName:'schedule.pdf',now:new Date('2026-10-17T12:00:00Z')});
  console.log('B64_IMPORT '+JSON.stringify({year,iso:iso.items.map(i=>[i.startDate,i.finishDate]),ms:ms.map(i=>[i.startDate,i.finishDate])}));
  expect(iso.items.map(i=>[i.startDate,i.finishDate])).toEqual([[`05/01/${year}`,`05/04/${year}`]]);expect(ms.map(i=>[i.startDate,i.finishDate])).toEqual([[`05/01/${year}`,`05/04/${year}`]]);
+});
+
+it('existing two-digit import behavior and arbitrary three-digit date strings keep their reader policy',()=>{
+ const result=normalizeScheduleImport({contents:`Task,Project,Area,Start,Finish,Owner\nCanopy,${QUAY},Lot,5/1/26,5/4/26,Dana`,sourceName:'two-digit.csv',mimeType:'text/csv',now:new Date('2026-10-17T12:00:00Z')});
+ expect(result.items.map(i=>[i.startDate,i.finishDate])).toEqual([['05/01/2026','05/04/2026']]);
+ expect(nativeNormalizeScheduleItem({id:'old-three',taskName:'Old date',projectName:QUAY,startDate:'05/01/202',finishDate:'05/04/202'}).startDate).toBe('05/01/202');
 });

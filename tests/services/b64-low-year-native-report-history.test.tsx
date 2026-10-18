@@ -332,10 +332,11 @@ import { normalizeScheduleItem as nativeSchedule } from '../../App';
 
 import * as ReportTruths from '../../services/DAVEReportProjectTruths';
 import {buildDAVELegacyReportSourceFingerprint} from '../../services/DAVEReportIntelligence';
-const historyCases=['0100','0202','0999','2000','2100','26','202'] as const;
+const nativeGoldens:Record<string,string[]>=require('../fixtures/b64-native-low-year-legacy.json');
+const historyCases=['0100','0202','0999','2000','2100','26','202','iso-0100','iso-0202','iso-0999'] as const;
 it.each(historyCases)('B64 actual native normalization and ReportsScreen raw history for %s',async year=>{
- setClock(SENT_AT);const input=task('year-case','Inspect canopy','Court',40,`5/4/${year}`);input.startDate=`5/1/${year}`;const normalized=nativeSchedule(input);mockAuthority=authority([], [normalized]);
+ setClock(SENT_AT);const input=task('year-case','Inspect canopy','Court',40,`5/4/${year}`);input.startDate=`5/1/${year}`;if(year.startsWith('iso-')){input.startDate=year.slice(4)+'-05-01';input.finishDate=year.slice(4)+'-05-04';}const normalized=nativeSchedule(input);mockAuthority=authority([], [normalized]);
  const original=ReportTruths.buildDAVEReportProjectTruths;const calls:Array<{source:string;input:unknown}>=[];
  const spy=jest.spyOn(ReportTruths,'buildDAVEReportProjectTruths').mockImplementation(i=>{const result=original(i);calls.push({source:buildDAVELegacyReportSourceFingerprint(result),input:i});return result;});
- current=render(reportsScreen([], [normalized]));await desktopSettle();expect(calls.length).toBeGreaterThan(0);console.log('B64_NATIVE_RAW_HISTORY '+JSON.stringify({year,normalized:[normalized.startDate,normalized.finishDate],fingerprints:[...new Set(calls.map(c=>c.source))]}));spy.mockRestore();
+ current=render(reportsScreen([], [normalized]));await desktopSettle();expect(calls.length).toBeGreaterThan(0);console.log('B64_NATIVE_RAW_HISTORY '+JSON.stringify({year,normalized:[normalized.startDate,normalized.finishDate],fingerprints:[...new Set(calls.map(c=>c.source))]}));if(nativeGoldens[year])expect([...new Set(calls.map(c=>c.source))]).toEqual(nativeGoldens[year]);spy.mockRestore();
 });
