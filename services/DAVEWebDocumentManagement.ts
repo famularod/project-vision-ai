@@ -65,3 +65,8 @@ function timestamp(value: string | null | undefined) {
   const parsed = Date.parse(value || '');
   return Number.isNaN(parsed) ? 0 : parsed;
 }
+
+/** Same compliance categories archived rather than deleted on the native Documents screen. */
+export function daveWebDocumentCanArchive(document: Pick<DAVEWebReferenceDocument, 'category'>): boolean {
+  return ['Permit Card', 'Compliance', 'Contract', 'Inspection', 'Safety'].includes(document.category);
+}

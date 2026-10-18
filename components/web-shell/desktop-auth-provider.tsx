@@ -107,6 +107,7 @@ type DesktopAuthContextValue = Readonly<{
     mimeType: string,
     bytes: ArrayBuffer,
   ) => Promise<void>;
+  setDocumentArchived: (document: DAVEWebReferenceDocument, archived: boolean) => Promise<void>;
   deleteDocument: (document: DAVEWebReferenceDocument, deleteLinkedTasks: boolean) => Promise<void>;
   /** Resolves with the line naming the tasks a full schedule's upload turned High, or null (open item 2.38). */
   uploadDocument: (
@@ -1139,6 +1140,37 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     await refreshSnapshotInBackground(collections);
   }, [announceMutation, refreshSnapshotInBackground]);
 
+  const archiveInFlightRef = useRef(false);
+  const setDocumentArchived = useCallback(async (document: DAVEWebReferenceDocument, archived: boolean) => {
+    if (archiveInFlightRef.current) throw new Error('Another archive change is still being checked. Wait, then try again.');
+    const owner = maintenanceOwnerRef.current;
+    const originalSnapshot = snapshotRef.current;
+    const original = originalSnapshot?.referenceDocuments.find(item => item.id === document.id);
+    if (!owner || !original || original.cloudUpdatedAt !== document.cloudUpdatedAt ||
+      (original.archivedAt ?? null) !== (document.archivedAt ?? null)) {
+      throw new Error('Documents changed. Refresh and review this document before trying again.');
+    }
+    archiveInFlightRef.current = true;
+    try {
+      const archivedAt = await daveWebSupabaseGateway.setAuthorizedDocumentArchived(original, archived, owner);
+      if (!mountedRef.current || maintenanceOwnerRef.current !== owner) return;
+      const current = snapshotRef.current;
+      if (!current) return;
+      const ids = new Set(current.archivedDocumentIds ?? []);
+      if (archived) ids.add(original.id); else ids.delete(original.id);
+      const next = Object.freeze({ ...current, archivedDocumentIds: Object.freeze([...ids]),
+        referenceDocuments: Object.freeze(current.referenceDocuments.map(item => item.id === original.id
+          ? { ...item, archivedAt } : item)),
+      });
+      snapshotRef.current = next;
+      setSnapshot(next);
+      announceMutation(['reference_documents']);
+      await refreshSnapshotInBackground(['reference_documents']);
+    } finally {
+      archiveInFlightRef.current = false;
+    }
+  }, [announceMutation, refreshSnapshotInBackground]);
+
   const deleteDocument = useCallback(async (
     document: DAVEWebReferenceDocument,
     deleteLinkedTasks: boolean,
@@ -1403,6 +1435,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
     deleteTask,
     uploadTaskPhoto,
     deleteDocument,
+    setDocumentArchived,
     uploadDocument,
     linkDocument,
     setCurrentSchedule,
@@ -1424,6 +1457,7 @@ export function DesktopAuthProvider({ children }: { children: ReactNode }) {
   }), [
     createTask,
     deleteDocument,
+    setDocumentArchived,
     deleteTask,
     freshness,
     getArtifactUrl,

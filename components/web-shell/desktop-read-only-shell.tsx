@@ -46,6 +46,7 @@ import {
 import { loadDAVEWebReadOnlySnapshot, type DAVEWebReadOnlySnapshot, type DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 import {
   daveWebDocumentDeletionIsProtected,
+  daveWebDocumentCanArchive,
   daveWebDocumentInEffect,
   daveWebListedDocuments,
   groupDAVEWebDocuments,
@@ -803,6 +804,8 @@ function DesktopPageData({
       <Section title={`${documents.length} document${documents.length === 1 ? '' : 's'}`} detail="Upload, classify, version, and safely remove project documents from the shared record.">
         <DocumentManagementWorkspace
           documents={documents}
+          archivedDocuments={snapshot.referenceDocuments.filter(document =>
+            snapshot.archivedDocumentIds?.includes(document.id) && documentMatchesProjectScope(document, selectedScopes))}
           tasks={snapshot.scheduleItems}
           knownTasks={snapshot.knownScheduleItems}
           scheduleDocuments={snapshot.referenceDocuments}
@@ -3876,6 +3879,7 @@ type DocumentCoverageSummaryState = Readonly<{
 
 function DocumentManagementWorkspace({
   documents,
+  archivedDocuments,
   tasks,
   knownTasks,
   scheduleDocuments,
@@ -3885,6 +3889,7 @@ function DocumentManagementWorkspace({
   proofFocus,
 }: {
   documents: readonly DAVEWebReferenceDocument[];
+  archivedDocuments: readonly DAVEWebReferenceDocument[];
   tasks: readonly DAVEWebScheduleItem[];
   /** Every saved task and schedule, for what a lookahead's delete with its tasks puts back (review N2 W1). */
   knownTasks?: readonly ScheduleItem[];
@@ -3895,6 +3900,16 @@ function DocumentManagementWorkspace({
   proofFocus: ECOSDesktopDocumentProofFocus | null;
 }) {
   const auth = useDesktopAuth();
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archiveQuestion, setArchiveQuestion] = useState<DAVEWebReferenceDocument | null>(null);
+  const [archivePending, setArchivePending] = useState<string | null>(null);
+  const archiveOperationRef = useRef<object | null>(null);
+  const archiveMountedRef = useRef(true);
+  const archiveContext = `${auth.userEmail ?? ''}\n${selectedProject ?? ''}`;
+  const archiveContextRef = useRef(archiveContext);
+  archiveContextRef.current = archiveContext;
+  useEffect(() => { archiveMountedRef.current = true; return () => { archiveMountedRef.current = false; }; }, []);
+  useEffect(() => { setArchiveQuestion(null); setArchivePending(null); archiveOperationRef.current = null; }, [archiveContext]);
   const router = useRouter();
   const { width, height } = useWindowDimensions();
   const compactWorkspace = width < 1120;
@@ -4605,6 +4620,31 @@ function DocumentManagementWorkspace({
     }
   }
 
+  async function changeDocumentArchive(document: DAVEWebReferenceDocument, archived: boolean) {
+    if (!archiveMountedRef.current || archiveContextRef.current !== archiveContext || archiveOperationRef.current) return;
+    const current = [...documents, ...archivedDocuments].find(item => item.id === document.id);
+    if (!current || current.cloudUpdatedAt !== document.cloudUpdatedAt ||
+      (current.archivedAt ?? null) !== (document.archivedAt ?? null)) return;
+    if (archived && (!daveWebDocumentCanArchive(current) || daveWebDocumentDeletionIsProtected(current))) return;
+    const operation = {};
+    archiveOperationRef.current = operation;
+    setArchivePending(archived ? 'Archiving…' : 'Restoring…');
+    setNotice(null);
+    const stillHere = () => archiveMountedRef.current && archiveContextRef.current === archiveContext && archiveOperationRef.current === operation;
+    try {
+      await auth.setDocumentArchived(current, archived);
+      if (!stillHere()) return;
+      setArchiveQuestion(null);
+      setNotice({ tone: 'good', text: `“${document.name}” is ${archived ? 'archived' : 'restored'}.` });
+    } catch (error) {
+      if (!stillHere()) return;
+      setNotice({ tone: 'danger', text: error instanceof Error && error.message.trim()
+        ? error.message : 'The archive change could not be confirmed. Refresh Documents and try again.' });
+    } finally {
+      if (stillHere()) { archiveOperationRef.current = null; setArchivePending(null); }
+    }
+  }
+
   async function confirmDelete(deleteLinkedTasks: boolean) {
     if (!deleteCandidate || protectedCurrentDocument || deleting) return;
     setDeleting(true);
@@ -4635,6 +4675,30 @@ function DocumentManagementWorkspace({
 
   return (
     <>
+      <View style={styles.editorCard}>
+        <Pressable accessibilityRole="button" accessibilityState={{ expanded: archiveOpen }} onPress={() => setArchiveOpen(value => !value)}>
+          <Text style={styles.editorTitle}>Archived ({archivedDocuments.length})</Text>
+        </Pressable>
+        {archiveOpen ? <>
+          <Text style={styles.sectionDetail}>Hidden from Documents; kept in the cloud. Restore brings a document back. Files, tasks and sent field updates are kept.</Text>
+          {archivedDocuments.length === 0 ? <Text style={styles.dataMeta}>No archived documents in this project.</Text> : null}
+          {archivedDocuments.map(document => <View key={document.id} style={styles.dataCard}>
+            <Text style={styles.dataTitle}>{document.name}</Text>
+            <Text style={styles.dataMeta}>{documentProjectLabel(document)} · {document.category}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Restore ${document.name}`} disabled={Boolean(archivePending)}
+              onPress={() => { void changeDocumentArchive(document, false); }} style={styles.secondaryButton}>
+              <Text style={styles.secondaryButtonText}>Restore</Text>
+            </Pressable>
+          </View>)}
+        </> : null}
+        {archivePending ? <Text accessibilityRole="alert">{archivePending}</Text> : null}
+      </View>
+      {archiveQuestion ? <View style={styles.deleteConfirm} accessibilityRole="alert">
+        <Text style={styles.deleteConfirmTitle}>Archive “{archiveQuestion.name}”?</Text>
+        <Text style={styles.dataDetail}>Hide this compliance document from Documents on signed-in devices. Keep its file, tasks and sent field updates. You can restore it from Archived. A connection is required; this computer does not queue this change.</Text>
+        <Pressable accessibilityRole="button" disabled={Boolean(archivePending)} onPress={() => setArchiveQuestion(null)}><Text>Cancel archive</Text></Pressable>
+        <Pressable accessibilityRole="button" disabled={Boolean(archivePending)} onPress={() => { void changeDocumentArchive(archiveQuestion, true); }}><Text>Confirm archive</Text></Pressable>
+      </View> : null}
       <WorkspaceSummary metrics={[
         { icon: 'checkmark-circle-outline', label: 'Current Schedule', value: groups.currentSchedule.length, tone: groups.currentSchedule.length ? 'success' : 'warning' },
         { icon: 'time-outline', label: 'Prior Versions', value: groups.priorScheduleVersions.length, tone: 'neutral' },
@@ -5142,6 +5206,10 @@ function DocumentManagementWorkspace({
 
   function openDeleteCandidate(document: DAVEWebReferenceDocument) {
     setNotice(null);
+    if (daveWebDocumentCanArchive(document)) {
+      if (!daveWebDocumentDeletionIsProtected(document)) setArchiveQuestion(document);
+      return;
+    }
     setDeleteCandidateId(document.id);
   }
 }
@@ -5266,9 +5334,9 @@ function DocumentList({
                 style={({ pressed }) => [styles.deleteTextButton, pressed && styles.buttonPressed]}
                 onPress={() => onDelete(document)}
                 accessibilityRole="button"
-                accessibilityLabel={`Delete ${document.name}`}
+                accessibilityLabel={`${daveWebDocumentCanArchive(document) ? 'Archive' : 'Delete'} ${document.name}`}
               >
-                <Text style={styles.deleteText}>Delete</Text>
+                <Text style={styles.deleteText}>{daveWebDocumentCanArchive(document) ? 'Archive' : 'Delete'}</Text>
               </Pressable>
             </View>
           ) : null}
@@ -5532,8 +5600,9 @@ function DocumentDetailsPanel({
             style={({ pressed }) => [styles.deleteTextButton, pressed && styles.buttonPressed]}
             onPress={() => onDelete(document)}
             accessibilityRole="button"
+            accessibilityLabel={`${daveWebDocumentCanArchive(document) ? 'Archive' : 'Delete'} ${document.name}`}
           >
-            <Text style={styles.deleteText}>Delete</Text>
+            <Text style={styles.deleteText}>{daveWebDocumentCanArchive(document) ? 'Archive' : 'Delete'}</Text>
           </Pressable>
         ) : null}
       </View>

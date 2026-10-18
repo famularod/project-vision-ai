@@ -3,8 +3,8 @@ jest.mock('@react-native-async-storage/async-storage',()=>({getItem:jest.fn(),se
 const stamp='2026-10-17T12:00:00Z';
 const doc:any={id:'doc-original',name:'Permit',category:'Permit Card',projectId:'alpha',projectName:'Alpha',projectNames:['Alpha'],cloudUpdatedAt:stamp,archivedAt:null,isCurrent:false,linkedScheduleItems:[]};
 function fixture(){
- let owner='owner-A';let read:any={id:doc.id,owner_id:owner,updated_at:stamp,archived_at:null,document_data:{...doc}};let response:any={data:[{id:doc.id,archived_at:'2026-10-17T13:00:00Z'}],error:null};
- const writes:any[]=[];const filters:any[]=[];const make=()=>{let writing=false;const q:any={};for(const key of ['select','eq','is','abortSignal'])q[key]=jest.fn((...args:any[])=>{filters.push([key,...args]);return q});q.update=jest.fn((patch:any)=>{writing=true;writes.push(patch);return q});q.maybeSingle=jest.fn(async()=>({data:read,error:null}));q.then=(resolve:any,reject:any)=>Promise.resolve(response).then(resolve,reject);return q;};
+ let owner='owner-A';let read:any={id:doc.id,owner_id:owner,updated_at:stamp,archived_at:null,document_data:{...doc}};let response:any=null;
+ const writes:any[]=[];const filters:any[]=[];const make=()=>{let writing=false;const q:any={};for(const key of ['select','eq','is','abortSignal'])q[key]=jest.fn((...args:any[])=>{filters.push([key,...args]);return q});q.update=jest.fn((patch:any)=>{writing=true;writes.push(patch);return q});q.maybeSingle=jest.fn(async()=>({data:read,error:null}));q.then=(resolve:any,reject:any)=>Promise.resolve(response??{data:[{id:doc.id,archived_at:writes[writes.length-1]?.archived_at}],error:null}).then(resolve,reject);return q;};
  const client:any={auth:{getUser:jest.fn(async()=>({data:{user:{id:owner}},error:null})),getSession:jest.fn(async()=>({data:{session:null},error:null})),onAuthStateChange:jest.fn(()=>({data:{subscription:{unsubscribe:jest.fn()}}}))},rpc:jest.fn(async()=>({data:true,error:null})),from:jest.fn(make)};
  const gateway=createDAVEWebSupabaseGateway(client) as any;
  return {gateway,client,writes,filters,setOwner:(x:string)=>owner=x,setRead:(x:any)=>read=x,setResponse:(x:any)=>response=x};
