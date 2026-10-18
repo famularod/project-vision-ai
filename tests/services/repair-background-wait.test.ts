@@ -156,3 +156,37 @@ it('own background refresh429 then immediate first global signout explains actua
  console.log('BACKGROUND_WAIT',JSON.stringify({error:result.value.name,refreshes:server.refreshesAsked,retained:tabHoldsSignIn(t.storage)}));
  expect(result.value.name).toBe('DAVEWebSignOutWaitError');expect(tabHoldsSignIn(t.storage)).toBe(true);
 });
+
+it.each(['dropped', 503] as const)('cached background429 then fresh %s is unavailable and recovers', async failure => {
+ const t = await signedInTab(); browser.hourlyTokenRunsOut(t.storage); server.refresh = 'too-many-requests';
+ const checked = await whileTimePasses(t.gateway!.getSessionStatus().catch(e => e));
+ expect(checked.value.message).toBe('The desktop session could not be checked.');
+ expect((await whileTimePasses(t.gateway!.signOut('global').catch(e => e))).value.name).toBe('DAVEWebSignOutWaitError');
+ await jest.advanceTimersByTimeAsync(180000); server.refresh = failure;
+ expect((await whileTimePasses(t.gateway!.signOut('global').catch(e => e))).value).toBeInstanceOf(DAVEWebSignOutNeedsConnectionError);
+ expect(server.refreshesAsked).toBe(2); expect(tabHoldsSignIn(t.storage)).toBe(true);
+ await jest.advanceTimersByTimeAsync(180000); server.refresh = 'ok';
+ await whileTimePasses(t.gateway!.signOut('global')); expectSignedOutOfThisComputer(t);
+});
+it.each(['owner-1', 'visitor-1'])('cached429 provenance does not follow a new %s sign-in or token', async user => {
+ const t = await signedInTab(); browser.hourlyTokenRunsOut(t.storage); server.refresh = 'too-many-requests';
+ const failed = await whileTimePasses(t.client.auth.getSession());
+ expect(failed.value.error).not.toBeNull();
+ expect(t.guard.serverRequestedWait!(failed.value.error!)).toBe(true);
+ expect((await t.gateway!.signIn(TAB_ACCOUNTS[user].email, TAB_TEST_PASSWORD)).ok).toBe(true);
+ expect(t.guard.serverRequestedWait!(failed.value.error!)).toBe(false);
+ browser.hourlyTokenRunsOut(t.storage); server.refresh = 503;
+ expect((await whileTimePasses(t.gateway!.signOut('global').catch(e => e))).value).toBeInstanceOf(DAVEWebSignOutNeedsConnectionError);
+ expect(tabHoldsSignIn(t.storage)).toBe(true);
+});
+it('actual automatic refresh429 supplies cached first-signout provenance', async () => {
+ const t = await signedInTab(); browser.hourlyTokenRunsOut(t.storage); server.refresh = 'too-many-requests';
+ await t.client.auth.startAutoRefresh();
+ try {
+   await jest.advanceTimersByTimeAsync(45000);
+   await withoutTimePassing(() => server.refreshesAsked > 0);
+   expect(server.refreshesAsked).toBe(1);
+   expect((await whileTimePasses(t.gateway!.signOut('global').catch(e => e))).value.name).toBe('DAVEWebSignOutWaitError');
+   expect(server.refreshesAsked).toBe(1); expect(tabHoldsSignIn(t.storage)).toBe(true);
+ } finally { await t.client.auth.stopAutoRefresh(); }
+});
