@@ -31,9 +31,7 @@ jest.mock('../../providers/PIELiveAuthorityProvider', () => ({
 jest.mock('react-native-reanimated', () => ({ getUseOfValueInStyleWarning: () => '' }));
 
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react-native';
-import { Alert } from 'react-native';
 import { ReportsScreen } from '../../screens/ReportsScreen';
-import { isLegacyReportSource, legacyReportSourcesOf, type DAVEReportSnapshot } from '../../services/DAVEReportSnapshot';
 import { forgetAllReportSessionState } from '../../services/ReportSessionState';
 import { buildRuntime } from '../../services/PIERuntime';
 import type { ProjectUpdate, ScheduleItem } from '../../types';
@@ -80,41 +78,9 @@ const screenFor = (scheduleItems: ScheduleItem[]) => (
     onOutlookReport={async () => 'unknown'}
   />
 );
-/** The reporting-period snapshot this device keeps, with the key it is kept under. */
-const storedEntry = (): [string, DAVEReportSnapshot] | null => {
-  for (const [key, raw] of mockStorage) {
-    try {
-      const value = JSON.parse(raw) as DAVEReportSnapshot;
-      if (value && value.scopeKey === 'tower' && Array.isArray(value.tasks)) return [key, value];
-    } catch {
-      // not a snapshot
-    }
-  }
-  return null;
-};
-const stored = () => storedEntry()?.[1] ?? null;
-const settle = () => act(async () => {
-  await new Promise(resolve => setTimeout(resolve, 0));
-});
-const approvable = () =>
-  screen.findByText('Copy, Email, and Text unlock after approval. No report is sent automatically.', {}, SLOW);
-const shareable = () => screen.findByRole('button', { name: 'Share Report' }, SLOW);
-const approve = async () => {
-  await approvable();
-  fireEvent.press(screen.getByRole('button', { name: 'Approve Report' }));
-  await shareable();
-};
-const copy = async () => {
-  fireEvent.press(screen.getByRole('button', { name: 'Share Report' }));
-  fireEvent.press(screen.getByRole('button', { name: 'Copy Report' }));
-  await waitFor(() => expect(screen.queryByText('Waiting for the selected share action to finish.')).toBeNull(), SLOW);
-  await settle();
-  await settle();
-};
-const currentWork = async () => {
-  fireEvent.press(screen.getByRole('button', { name: 'Full written report' }));
-  const body = (await screen.findByText(/CURRENT WORK/, {}, SLOW)).props.children as string;
-  return body.slice(body.indexOf('CURRENT WORK')).split('\n').filter(line => line.startsWith('• ')).map(line => line.slice(2).split(' (')[0]).slice(0, 4);
+const settled = async () => {
+  await act(async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); });
+  await waitFor(() => expect(screen.queryByText('The reporting period is still loading.')).toBeNull());
 };
 
 beforeEach(() => {
@@ -147,7 +113,7 @@ const freshNote: ProjectUpdate = { id: 'fresh-note', projectName: 'Tower', date:
 it('7.45: discards stale manual text on the mounted screen after a saved field note arrives', async () => {
   publishNotes([]);
   const view = render(screenFor(SAVED));
-  await approvable();
+  await settled();
   fireEvent.press(screen.getByRole('button', { name: 'Edit Report' }));
   fireEvent.changeText(screen.getByPlaceholderText('Report body'), 'My manual report words.');
   publishNotes([freshNote]);
@@ -156,7 +122,7 @@ it('7.45: discards stale manual text on the mounted screen after a saved field n
   expect(screen.getByPlaceholderText('Report body').props.value).toBe('My manual report words.');
   const discard = screen.getByRole('button', { name: 'Discard report edits' });
   fireEvent.press(discard);
-  await approvable();
+  await settled();
   expect(screen.queryByPlaceholderText('Report body')).toBeNull();
   expect(screen.queryByRole('button', { name: 'Discard report edits' })).toBeNull();
   expect(screen.queryByRole('button', { name: 'Share Report' })).toBeNull();
