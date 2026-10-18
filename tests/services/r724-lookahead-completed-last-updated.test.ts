@@ -144,6 +144,15 @@ describe('7.24: lookahead completion date beside an older note', () => {
     expect(completed(state)).toEqual(['Paint (Lot): Complete; 100% complete. Last updated Sep 9, 2026.']);
   });
 
+  it('an unknown older progress entry prevents inventing a later completion from a repeated 100', () => {
+    let state = approve(seed(), L, [paint('100')]);
+    state.items = state.items.map(item => ({ ...item, lookaheadOverlay: item.lookaheadOverlay ? {
+      ...item.lookaheadOverlay, lookaheads: item.lookaheadOverlay.lookaheads.map(({ percentComplete: _percent, ...entry }) => entry),
+    } : item.lookaheadOverlay }));
+    state = approve(state, L2, [paint('100')]);
+    expect(completed(state)).toEqual(['Paint (Lot): Complete; 100% complete. Last updated Sep 9, 2026.']);
+  });
+
   it('a lookahead deletion does not leave a fake completed line', () => {
     const state = approve(seed(), L, [paint('100')]);
     const items = scheduleItemsAfterLookaheadDeleted(state.items, L, '2026-10-02T12:00:00.000Z', [F]);
