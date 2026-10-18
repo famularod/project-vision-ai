@@ -32,14 +32,14 @@ export function scheduleLineAsWritten(item: ScheduleItem): DAVEWrittenScheduleLi
       : classifyDAVEBlocker(`${item.status || ''} ${summary}`) === 'blocked';
   return {
     problem: isRiskText(summary) ? cleanReportBulletText(summary) : null,
-    nextStep: isNextStep ? { action: actionFrom(actionRequired || summary), owner: owner || ownerFromText(summary) } : null,
+    nextStep: isNextStep ? { action: actionFrom(actionRequired || scheduleSummaryLine(item, false)), owner: owner || ownerFromText(summary) } : null,
   };
 }
 
 const ACTION_LANGUAGE =
   /\b(please|need|needs|confirm|review|move|verify|provide|approve|assign|resolve|coordinate|schedule|complete|required|follow up|follow-up)\b/i;
 
-function scheduleSummaryLine(item: ScheduleItem) {
+function scheduleSummaryLine(item: ScheduleItem, includeOwner = true) {
   const scheduleNote = reportScheduleNote(item.notes);
   const parts = [
     cleanReportBulletText(item.taskName),
@@ -47,7 +47,7 @@ function scheduleSummaryLine(item: ScheduleItem) {
       ? `due ${item.finishDate}`
       : null,
     item.status ? `status ${item.status}` : null,
-    item.owner || item.contractor ? `owner ${item.owner || item.contractor}` : null,
+    includeOwner && (item.owner || item.contractor) ? `owner ${item.owner || item.contractor}` : null,
     scheduleNote || null,
   ].filter(Boolean);
 
@@ -80,8 +80,8 @@ function actionFrom(action: string) {
   return cleanReportBulletText(
     action
       .replace(/^next step:\s*/i, '')
+      .replace(/^please\s+([a-z]+)(?=\b)/i, (_prefix, word: string) => /^[a-z]+$/.test(word) ? word.charAt(0).toUpperCase() + word.slice(1) : word)
       .replace(/^please\s+/i, '')
-      .replace(/\bowner\s*:?\s*[A-Z][A-Za-z]+(?:\s*\/\s*[A-Z][A-Za-z]+)?/i, '')
       .trim(),
   );
 }

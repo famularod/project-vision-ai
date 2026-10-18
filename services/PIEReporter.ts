@@ -213,6 +213,8 @@ export type PIEConstructionUnderstanding = {
 };
 
 export type PIEReportSourceEvidence = {
+  /** Schedule action words composed without its generated structured owner field (7.51). */
+  scheduleActionSummary?: string;
   /** A Latest quote matched to the newest selected saved plain field note (4.81). */
   authoredPlainLatest?: boolean;
   /** Authored field words, including the fused Latest update sentence; never machine boilerplate. */
@@ -651,6 +653,7 @@ export function collectReportEvidence(
         projectName: scheduleProjectName,
         areaName: scheduleAreaName,
         summary: scheduleSummaryLine(item),
+        scheduleActionSummary: scheduleSummaryLine(item, false),
         confidence: item.projectName && item.taskName ? 'medium' : 'low',
         owner: item.owner || item.contractor || null,
         actionRequired: scheduleActionLine(item),
@@ -2076,14 +2079,13 @@ function isActionEvidence(item: PIEReportSourceEvidence) {
 }
 
 function actionFromEvidence(item: PIEReportSourceEvidence) {
-  const action = item.actionRequired || item.summary;
+  const action = item.actionRequired || item.scheduleActionSummary || item.summary;
   const formatted = action
     .replace(/^next step:\s*/i, '')
     .replace(/^please\s+([a-z]+)(?=\b)/i, (_prefix, word: string) => /^[a-z]+$/.test(word) ? word.charAt(0).toUpperCase() + word.slice(1) : word)
     .replace(/^please\s+/i, '')
-    .replace(/\bowner\s*:?\s*[A-Z][A-Za-z]+(?:\s*\/\s*[A-Z][A-Za-z]+)?/i, '')
     .trim();
-  // Ordinary action formatting can remove Please / owner from an authored note. Protect its resulting words,
+  // Ordinary action formatting can remove the Please prefix from an authored note. Protect its resulting words,
   // while keeping the existing cleanup order for every unauthored action.
   return cleanReportBulletText(formatted,
     item.preservedCapturedForText && action.includes(item.preservedCapturedForText) ? formatted : undefined);
@@ -2926,7 +2928,7 @@ function photoToEvidence(
   };
 }
 
-function scheduleSummaryLine(item: ScheduleItem) {
+function scheduleSummaryLine(item: ScheduleItem, includeOwner = true) {
   const scheduleNote = reportScheduleNote(item.notes);
   const parts = [
     cleanReportBulletText(item.taskName),
@@ -2934,7 +2936,7 @@ function scheduleSummaryLine(item: ScheduleItem) {
       ? `due ${item.finishDate}`
       : null,
     item.status ? `status ${item.status}` : null,
-    item.owner || item.contractor ? `owner ${item.owner || item.contractor}` : null,
+    includeOwner && (item.owner || item.contractor) ? `owner ${item.owner || item.contractor}` : null,
     scheduleNote || null,
   ].filter(Boolean);
 
@@ -3079,6 +3081,8 @@ function shouldSuppressReportBullet(value: string, authoredCapturedForText?: str
 /** Legacy sends kept no app-text digest. These source words can now print differently under the same facts. */
 export function reportWordingRequiresAppTextKey(report: Pick<PIEReportDraft, 'sourceEvidence' | 'daveBriefing' | 'body'>): boolean {
   return Boolean(report.daveBriefing?.dashboard.workAreas.some(area => /[^\u0000-\u007f]/.test(area.areaName))) || report.sourceEvidence.some(item =>
+    // Earlier writers removed substantive owner words from action text, even without a Please prefix.
+    (isActionEvidence(item) && /\bowner\s*:?\s*[A-Z][A-Za-z]+(?:\s*\/\s*[A-Z][A-Za-z]+)?/i.test(item.actionRequired || item.summary)) ||
     (item.authoredPlainLatest && report.body.includes(item.summary)) ||
     (item.preservesCapturedFor && /captured\s+for/i.test(item.summary)) ||
     /^please\s+[a-z]+\b/i.test((item.actionRequired || item.summary).replace(/^next step:\s*/i, '')),
