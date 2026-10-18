@@ -7,7 +7,9 @@
  * on the lookahead's. Two Pour slabs, 10/01 (his 40%) and 10/15 (his 70%);
  * lookahead L1 moves the second to 10/11; L2 lists neither, so it shows
  * 10/15 again; L3 lists 10/15 and 10/06. The phone asked nothing and the
- * 10/06 row was saved as a third Pour slab.
+ * 10/06 row was saved as a third Pour slab. Accepted issue 2.17 now asks
+ * changed duplicate groups even from shown rows; the unasked merge default
+ * remains a control below, rather than the review policy.
  *
  * The phone's review now asks from the rows the approval pairs on
  * (scheduleImportReviewPairingQuestions), showing each task as David sees
@@ -165,8 +167,11 @@ describe('Review N2 G1: the phone\'s import review asks from the rows the approv
     expect(dates(saved(onL2, secondId))).toBe('10/11/2026-10/15/2026');
   });
 
-  it('asked from the tasks as shown, as the phone did, L3 raises no question; unasked, the approval saves a third Pour slab', () => {
-    expect(scheduleImportPairingQuestions({ existing: shown(onL2), imported: l3Rows, overlay: true })).toEqual([]);
+  it('changed duplicates now ask even from shown tasks; the unasked merge default still saves a third Pour slab', () => {
+    const questions = scheduleImportPairingQuestions({ existing: shown(onL2), imported: l3Rows, overlay: true });
+    expect(questions).toHaveLength(1);
+    expect(questions[0].title).toBe('2 tasks named Pour slab in Lot — confirm which is which');
+    expect(questions[0].guess).toEqual({ [l3Rows[0].id]: secondId, [l3Rows[1].id]: firstId });
     expect(pours(approveAnswered(onL2, L3, L3_LINES))).toEqual([
       '10/01/2026-10/05/2026 40% first pour', '10/06/2026-10/10/2026 0%', '10/15/2026-10/19/2026 70% second pour',
     ]);
@@ -212,8 +217,11 @@ describe('Review N2 G1: what the tasks as shown leave unsettled is still asked',
   });
   const reviewed = () => scheduleImportReviewPairingQuestions({ saved: onL2.items, documents: onL2.documents, importBatchId: L3.importBatchId!, imported: [row1008], overlay: true });
 
-  it('the saved rows alone raise no question, and unasked the approval moves the second task (his 70%) to 10/08', () => {
-    expect(asApprovalAlone()).toEqual([]);
+  it('changed duplicate membership now asks from saved rows; unasked the default still moves the second task with his 70%', () => {
+    const questions = asApprovalAlone();
+    expect(questions).toHaveLength(1);
+    expect(questions[0].title).toBe('2 tasks named Pour slab in Lot — confirm which is which');
+    expect(questions[0].guess).toEqual({ [row1008.id]: secondId });
     expect(pours(approveAnswered(onL2, L3, ONE))).toEqual(['10/01/2026-10/05/2026 40% first pour', '10/08/2026-10/12/2026 70% second pour']);
   });
 
@@ -286,10 +294,14 @@ describe('Review N2 G1: the review on the phone', () => {
     expect(view.getByText('Confirm which Pour slab is which in Lot before saving.')).toBeTruthy();
   });
 
-  it('given only the tasks as shown (as before this fix), it shows no check', async () => {
+  it('given only shown tasks, changed duplicates still show the identity check and gate approval', async () => {
     const view = renderReview(undefined);
-    await view.findByText('Accept All (2)');
-    expect(view.queryByText(TITLE)).toBeNull();
+    expect(await view.findByText(TITLE)).toBeTruthy();
+    expect(view.getByText('Saved Pour slab 1: 10/1–10/5 · 40% · “first pour”')).toBeTruthy();
+    expect(view.getByText('Saved Pour slab 2: 10/15–10/19 · 70% · “second pour”')).toBeTruthy();
+    await act(async () => { fireEvent.press(view.getByText('Accept All (2)')); await Promise.resolve(); });
+    expect(view.onApprove).not.toHaveBeenCalled();
+    expect(view.getByText('Confirm which Pour slab is which in Lot before saving.')).toBeTruthy();
   });
 
   it('App.tsx gives the review every saved task, on the line that gives it the tasks shown', () => {
