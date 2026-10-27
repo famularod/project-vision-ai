@@ -323,13 +323,13 @@ function Field({
 const styles = StyleSheet.create({
   help: {
     color: colors.mutedText,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 23,
   },
   sectionLabel: {
     color: colors.text,
-    fontSize: 15,
-    fontWeight: '900',
+    fontSize: 16,
+    fontWeight: '600',
     paddingTop: spacing.lg,
     paddingBottom: spacing.sm,
   },
@@ -344,14 +344,14 @@ const styles = StyleSheet.create({
   drawingTitle: {
     color: colors.text,
     fontSize: 17,
-    fontWeight: '900',
+    fontWeight: '600',
     paddingBottom: spacing.xs,
   },
   field: { paddingTop: spacing.md },
   fieldLabel: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '900',
+    fontSize: 16,
+    fontWeight: '600',
     paddingBottom: spacing.xs,
   },
   input: {
@@ -361,14 +361,14 @@ const styles = StyleSheet.create({
     borderRadius: radius.md,
     backgroundColor: colors.surface,
     color: colors.text,
-    fontSize: 16,
+    fontSize: 17,
     paddingHorizontal: spacing.md,
   },
   validationText: {
     color: colors.danger,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '600',
     paddingTop: spacing.md,
   },
   versionCard: { paddingTop: spacing.sm },
@@ -403,8 +403,8 @@ const styles = StyleSheet.create({
   },
   categoryText: {
     color: colors.mutedText,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
   categoryTextSelected: {
     color: colors.primary,
@@ -429,8 +429,8 @@ const styles = StyleSheet.create({
   projectName: {
     flex: 1,
     color: colors.text,
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 17,
+    fontWeight: '600',
   },
   confirmButton: {
     minHeight: 54,
@@ -449,9 +449,9 @@ const styles = StyleSheet.create({
   confirmText: {
     flexShrink: 1,
     color: colors.surface,
-    fontSize: 15,
-    lineHeight: 20,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
     textAlign: 'center',
   },
   pressed: {

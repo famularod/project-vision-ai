@@ -2,8 +2,8 @@ import { fireEvent, render } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
 
 import {
-  VITRUVIUS_BRAND_DARK_BLUE,
-  VITRUVIUS_BRAND_SOFT_BLUE,
+  VITRUVIUS_BRAND_MARK_INK,
+  VITRUVIUS_BRAND_MARK_FILL,
   VitruviusBrandLockup,
 } from '../../components/vitruvius-brand-lockup';
 
@@ -18,13 +18,13 @@ describe('VitruviusBrandLockup', () => {
 
     const monogram = screen.getByText('V');
     expect(StyleSheet.flatten(monogram.props.style).color).toBe(
-      VITRUVIUS_BRAND_DARK_BLUE,
+      VITRUVIUS_BRAND_MARK_INK,
     );
     expect(
       StyleSheet.flatten(
         screen.getByTestId('brand-lockup-mark').props.style,
       ).backgroundColor,
-    ).toBe(VITRUVIUS_BRAND_SOFT_BLUE);
+    ).toBe(VITRUVIUS_BRAND_MARK_FILL);
   });
 
   it('can render the mark alone in a compact rail', () => {

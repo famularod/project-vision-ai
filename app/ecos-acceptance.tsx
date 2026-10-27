@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Platform, StyleSheet, Text, View } from 'react-native';
 import { useLocalSearchParams } from 'expo-router';
 import { daveWebSupabaseGateway } from '../services/DAVEWebSupabaseClient';
+import { displayFontFamily } from '../theme/typography';
 
 type AuthorizationState = 'authorizing' | 'complete' | 'unavailable' | 'failed';
 
@@ -63,42 +64,43 @@ export default function ECOSAcceptanceAuthorizationPage() {
 const styles = StyleSheet.create({
   page: {
     alignItems: 'center',
-    backgroundColor: '#eef5ff',
+    backgroundColor: '#F3F1EC',
     flex: 1,
     justifyContent: 'center',
     padding: 24,
   },
   card: {
     backgroundColor: '#ffffff',
-    borderColor: '#bfd5f4',
-    borderRadius: 24,
+    borderColor: '#DDD9D2',
+    borderRadius: 12,
     borderWidth: 1,
     maxWidth: 620,
     padding: 32,
     width: '100%',
   },
   eyebrow: {
-    color: '#087cf0',
-    fontSize: 13,
-    fontWeight: '800',
+    color: '#1F3A2E',
+    fontSize: 15,
+    fontWeight: '600',
     letterSpacing: 1.5,
   },
   title: {
-    color: '#151924',
-    fontSize: 30,
-    fontWeight: '800',
+    color: '#1A1A18',
+    fontSize: 34,
+    fontFamily: displayFontFamily,
+    fontWeight: '400',
     marginTop: 12,
   },
   message: {
-    color: '#526176',
+    color: '#3A3935',
     fontSize: 17,
     lineHeight: 26,
     marginTop: 18,
   },
   status: {
     color: '#b42318',
-    fontSize: 15,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
     marginTop: 22,
   },
   statusComplete: {

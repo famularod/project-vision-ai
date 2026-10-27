@@ -141,8 +141,8 @@ function today() {
 const styles = StyleSheet.create({
   label: {
     color: colors.text,
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     marginBottom: spacing.xs,
     marginTop: spacing.md,
   },
@@ -166,8 +166,8 @@ const styles = StyleSheet.create({
   value: {
     flex: 1,
     color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 17,
+    fontWeight: '600',
   },
   placeholder: {
     color: colors.mutedText,
@@ -190,7 +190,7 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(15, 23, 42, 0.42)',
+    backgroundColor: 'rgba(26, 26, 24, 0.42)',
     padding: spacing.lg,
   },
   calendarCard: {
@@ -203,7 +203,7 @@ const styles = StyleSheet.create({
   calendarTitle: {
     color: colors.text,
     fontSize: 19,
-    fontWeight: '900',
+    fontWeight: '600',
     marginBottom: spacing.sm,
   },
   actions: {
@@ -224,12 +224,12 @@ const styles = StyleSheet.create({
   },
   cancelText: {
     color: colors.primary,
-    fontSize: 15,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
   },
   applyText: {
     color: colors.surface,
-    fontSize: 15,
-    fontWeight: '900',
+    fontSize: 16,
+    fontWeight: '600',
   },
 });

@@ -174,6 +174,7 @@ import {
 
 import { useListedSharedDocuments } from '../hooks/use-listed-shared-documents';
 import { referenceDocumentsCitedAsListed, withoutListedPageIndexes } from '../services/ECOSDocumentIndexPersistence';
+import { displayFontFamily } from '../theme/typography';
 
 const EMPTY_REVIEW_IDS: readonly string[] = Object.freeze([]);
 
@@ -3680,17 +3681,17 @@ const styles = StyleSheet.create({
 
   experienceEyebrow: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 15,
-    fontWeight: '900',
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
 
   experienceState: {
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 21,
-    fontWeight: '900',
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '600',
     textTransform: 'capitalize',
     marginTop: spacing.xxs,
   },
@@ -3699,13 +3700,13 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 18,
     lineHeight: 24,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   experienceReason: {
     ...typography.body,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 23,
   },
 
   beforeShareDetails: {
@@ -3769,16 +3770,16 @@ const styles = StyleSheet.create({
 
   preparedItemText: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '800',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   preparedItemDetail: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '600',
     marginTop: 2,
   },
 
@@ -3795,9 +3796,9 @@ const styles = StyleSheet.create({
 
   advancedToggleText: {
     color: colors.primary,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reporterCard: {
@@ -3845,9 +3846,9 @@ const styles = StyleSheet.create({
 
   decisionChipText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '900',
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '600',
     textTransform: 'capitalize',
   },
 
@@ -3857,9 +3858,9 @@ const styles = StyleSheet.create({
 
   decisionHelperText: {
     color: colors.mutedText,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   decisionInput: {
@@ -3869,8 +3870,8 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.surface,
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 23,
     fontWeight: '600',
     padding: spacing.sm,
     textAlignVertical: 'top',
@@ -3915,8 +3916,8 @@ const styles = StyleSheet.create({
 
   reporterHelp: {
     ...typography.body,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 21,
     marginTop: spacing.xxs,
   },
 
@@ -3933,9 +3934,9 @@ const styles = StyleSheet.create({
 
   generateReportText: {
     color: '#FFFFFF',
-    fontSize: 15,
-    lineHeight: 19,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportPreview: {
@@ -3958,16 +3959,16 @@ const styles = StyleSheet.create({
 
   reportOptionsTitle: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   reportOptionsSummary: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportOptionsPanel: {
@@ -4000,23 +4001,23 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 20,
     lineHeight: 26,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   reportDocumentType: {
     color: colors.primary,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '900',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
 
   reportDocumentMeta: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportDocumentRule: {
@@ -4038,9 +4039,9 @@ const styles = StyleSheet.create({
   reportEditNoticeText: {
     flex: 1,
     color: colors.text,
-    fontSize: 11,
-    lineHeight: 16,
-    fontWeight: '700',
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '600',
   },
 
   reportConditionBanner: {
@@ -4067,9 +4068,9 @@ const styles = StyleSheet.create({
 
   reportConditionEyebrow: {
     color: colors.mutedText,
-    fontSize: 10,
-    lineHeight: 14,
-    fontWeight: '900',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
     letterSpacing: 0.5,
   },
 
@@ -4077,28 +4078,28 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 18,
     lineHeight: 23,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   reportConditionText: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 20,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 23,
+    fontWeight: '600',
   },
 
   reportConditionSchedule: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '800',
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '600',
     borderTopWidth: 1,
     borderTopColor: colors.border,
     paddingTop: spacing.xs,
   },
 
   reportChartSection: {
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
@@ -4107,7 +4108,7 @@ const styles = StyleSheet.create({
   },
 
   reportPeriodSection: {
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
@@ -4132,7 +4133,7 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 18,
     lineHeight: 23,
-    fontWeight: '900',
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
 
@@ -4146,9 +4147,9 @@ const styles = StyleSheet.create({
 
   reportDeltaLabel: {
     color: colors.mutedText,
-    fontSize: 10,
-    lineHeight: 14,
-    fontWeight: '800',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
   },
 
   reportChangeList: {
@@ -4164,9 +4165,9 @@ const styles = StyleSheet.create({
   reportChangeText: {
     flex: 1,
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportProjectPositionSection: {
@@ -4178,7 +4179,7 @@ const styles = StyleSheet.create({
   },
 
   reportProjectPositionCard: {
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
@@ -4196,24 +4197,24 @@ const styles = StyleSheet.create({
   reportProjectPositionTitle: {
     flex: 1,
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   reportProjectPositionPercent: {
     color: colors.primary,
-    fontSize: 16,
-    lineHeight: 20,
-    fontWeight: '900',
+    fontSize: 17,
+    lineHeight: 21,
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
 
   reportProjectPositionText: {
     color: colors.text,
-    fontSize: 11,
-    lineHeight: 16,
-    fontWeight: '700',
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '600',
   },
 
   reportProjectDateRow: {
@@ -4235,15 +4236,15 @@ const styles = StyleSheet.create({
     color: colors.mutedText,
     fontSize: 9,
     lineHeight: 13,
-    fontWeight: '900',
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
 
   reportDateFactValue: {
     color: colors.text,
-    fontSize: 11,
-    lineHeight: 16,
-    fontWeight: '900',
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '600',
   },
 
   reportDateFactAlert: {
@@ -4259,7 +4260,7 @@ const styles = StyleSheet.create({
   },
 
   reportManagementCard: {
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     borderLeftWidth: 4,
@@ -4283,16 +4284,16 @@ const styles = StyleSheet.create({
 
   reportManagementTask: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   reportManagementContext: {
     color: colors.mutedText,
-    fontSize: 10,
-    lineHeight: 14,
-    fontWeight: '700',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
   },
 
   reportDuePill: {
@@ -4306,7 +4307,7 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 9,
     lineHeight: 13,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   reportManagementFactRow: {
@@ -4317,23 +4318,23 @@ const styles = StyleSheet.create({
     color: colors.primary,
     fontSize: 9,
     lineHeight: 13,
-    fontWeight: '900',
+    fontWeight: '600',
     textTransform: 'uppercase',
     letterSpacing: 0.4,
   },
 
   reportManagementText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportManagementOwner: {
     color: colors.mutedText,
-    fontSize: 10,
-    lineHeight: 15,
-    fontWeight: '900',
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '600',
   },
 
   reportMilestoneSection: {
@@ -4383,23 +4384,23 @@ const styles = StyleSheet.create({
 
   reportMilestoneTitle: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '900',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportMilestoneMeta: {
     color: colors.mutedText,
     fontSize: 9,
     lineHeight: 13,
-    fontWeight: '700',
+    fontWeight: '600',
   },
 
   reportMilestoneState: {
     color: colors.text,
     fontSize: 9,
     lineHeight: 13,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   reportControlSection: {
@@ -4424,7 +4425,7 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 17,
     lineHeight: 22,
-    fontWeight: '900',
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
 
@@ -4432,7 +4433,7 @@ const styles = StyleSheet.create({
     color: colors.mutedText,
     fontSize: 9,
     lineHeight: 13,
-    fontWeight: '800',
+    fontWeight: '600',
   },
 
   reportProgressHeader: {
@@ -4449,9 +4450,9 @@ const styles = StyleSheet.create({
 
   reportProgressHelper: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '800',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
   },
 
   reportStatusChart: {
@@ -4486,17 +4487,17 @@ const styles = StyleSheet.create({
 
   reportLegendText: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '800',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
 
   reportChartEmpty: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportMetricRow: {
@@ -4530,17 +4531,18 @@ const styles = StyleSheet.create({
 
   reportMetricValue: {
     color: colors.text,
-    fontSize: 22,
-    lineHeight: 26,
-    fontWeight: '900',
+    fontSize: 25,
+    fontFamily: displayFontFamily,
+    lineHeight: 30,
+    fontWeight: '400',
     fontVariant: ['tabular-nums'],
   },
 
   reportMetricLabel: {
     color: colors.mutedText,
-    fontSize: 10,
-    lineHeight: 13,
-    fontWeight: '900',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '600',
     textAlign: 'center',
     textTransform: 'uppercase',
   },
@@ -4573,20 +4575,20 @@ const styles = StyleSheet.create({
 
   reportSummaryTitle: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportSummaryText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportProgressSection: {
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
@@ -4612,16 +4614,16 @@ const styles = StyleSheet.create({
   reportAreaProgressTitle: {
     flex: 1,
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportAreaProgressValue: {
     color: colors.primary,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
 
@@ -4640,9 +4642,9 @@ const styles = StyleSheet.create({
 
   reportAreaProgressMeta: {
     color: colors.mutedText,
-    fontSize: 10,
-    lineHeight: 14,
-    fontWeight: '700',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
 
@@ -4655,8 +4657,8 @@ const styles = StyleSheet.create({
 
   reportDocumentIntro: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 21,
+    fontSize: 16,
+    lineHeight: 24,
     fontWeight: '600',
   },
 
@@ -4666,16 +4668,16 @@ const styles = StyleSheet.create({
 
   reportDocumentSectionTitle: {
     color: colors.text,
-    fontSize: 15,
-    lineHeight: 20,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportDocumentLocationTitle: {
     color: colors.primary,
-    fontSize: 15,
-    lineHeight: 20,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportDocumentArea: {
@@ -4703,16 +4705,16 @@ const styles = StyleSheet.create({
 
   reportAreaMeta: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '700',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
   },
 
   reportDocumentAreaTitle: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   reportDocumentBulletList: {
@@ -4728,9 +4730,9 @@ const styles = StyleSheet.create({
   reportDocumentBulletMarker: {
     width: 14,
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 23,
+    fontWeight: '600',
   },
 
   reportInsightMarker: {
@@ -4757,19 +4759,19 @@ const styles = StyleSheet.create({
   reportDocumentBulletText: {
     flex: 1,
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 20,
+    fontSize: 15,
+    lineHeight: 23,
     fontWeight: '600',
   },
 
   reportDocumentBulletLabel: {
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   reportDocumentClosing: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 20,
+    fontSize: 15,
+    lineHeight: 23,
     fontWeight: '600',
     marginTop: spacing.xs,
   },
@@ -4804,16 +4806,16 @@ const styles = StyleSheet.create({
 
   reportDisclosureTitle: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   reportDisclosureSummary: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '700',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
   },
 
   reportDisclosureContent: {
@@ -4823,17 +4825,17 @@ const styles = StyleSheet.create({
 
   reportSupportingLabel: {
     color: colors.mutedText,
-    fontSize: 10,
-    lineHeight: 14,
-    fontWeight: '900',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
     letterSpacing: 0.4,
   },
 
   reportEvidenceLine: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportReasoningToggle: {
@@ -4849,15 +4851,15 @@ const styles = StyleSheet.create({
 
   reportReasoningToggleText: {
     color: colors.primary,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportReasoningText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 18,
+    fontSize: 14,
+    lineHeight: 21,
     fontWeight: '600',
     backgroundColor: colors.surfaceMuted,
     borderRadius: 8,
@@ -4892,9 +4894,9 @@ const styles = StyleSheet.create({
 
   reportEvidenceReferenceText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   segmentRow: {
@@ -4904,9 +4906,9 @@ const styles = StyleSheet.create({
 
   reportOptionLabel: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: '900',
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
 
@@ -4929,9 +4931,9 @@ const styles = StyleSheet.create({
 
   reportTypeText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '900',
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '600',
     textAlign: 'center',
   },
 
@@ -4964,20 +4966,20 @@ const styles = StyleSheet.create({
   reportProjectOptionText: {
     flex: 1,
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportProjectOptionTextSelected: {
     color: colors.primary,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   reportProjectSelectionHelper: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
   },
 
   reportStatusRow: {
@@ -4998,17 +5000,17 @@ const styles = StyleSheet.create({
 
   reportStatusLabel: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: '900',
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
 
   reportStatusValue: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
     textTransform: 'capitalize',
   },
 
@@ -5033,42 +5035,42 @@ const styles = StyleSheet.create({
   },
   reviewAcknowledgeText: {
     color: colors.primary,
-    fontWeight: '700',
-    fontSize: 15,
+    fontWeight: '600',
+    fontSize: 16,
   },
   reviewFlagText: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reviewFlagHelper: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportPreviewLabel: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '900',
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
 
   reportTitleText: {
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 22,
-    fontWeight: '900',
+    fontSize: 17,
+    lineHeight: 23,
+    fontWeight: '600',
   },
 
   reportBodyText: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 20,
+    fontSize: 15,
+    lineHeight: 23,
     fontWeight: '600',
   },
 
@@ -5078,9 +5080,9 @@ const styles = StyleSheet.create({
 
   reportListText: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   reportSourcePanel: {
@@ -5117,9 +5119,9 @@ const styles = StyleSheet.create({
 
   reportMediaAvailabilityText: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 16,
-    fontWeight: '700',
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '600',
     marginTop: 2,
   },
 
@@ -5132,16 +5134,16 @@ const styles = StyleSheet.create({
 
   managementActionTitle: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   managementActionMeta: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   expandActionButton: {
@@ -5159,9 +5161,9 @@ const styles = StyleSheet.create({
 
   expandActionText: {
     color: colors.primary,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportActionRow: {
@@ -5222,9 +5224,9 @@ const styles = StyleSheet.create({
 
   reportWordDownloadHint: {
     color: colors.mutedText,
-    fontSize: 11,
-    fontWeight: '700',
-    lineHeight: 15,
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 18,
     marginTop: 2,
   },
 
@@ -5261,16 +5263,16 @@ const styles = StyleSheet.create({
 
   reportActionTextPrimary: {
     color: '#FFFFFF',
-    fontSize: 13,
-    lineHeight: 17,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportActionText: {
     color: colors.primary,
-    fontSize: 13,
-    lineHeight: 17,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportActionTextDisabled: {
@@ -5279,35 +5281,35 @@ const styles = StyleSheet.create({
 
   approvalBoundaryText: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   communicationErrorText: {
     color: colors.danger,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '800',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportPeriodNoticeText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '800',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportPeriodCheckNote: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
     fontWeight: '600',
   },
 
   primaryReviewButton: {
     minHeight: 76,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.primary,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
@@ -5334,14 +5336,14 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 19,
     lineHeight: 24,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   primaryReviewSubtitle: {
-    color: '#EAF4FF',
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
+    color: '#F3F1EC',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
     marginTop: spacing.xxs,
   },
 
@@ -5371,7 +5373,7 @@ const styles = StyleSheet.create({
   iconBadge: {
     width: 48,
     height: 48,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
@@ -5402,8 +5404,8 @@ const styles = StyleSheet.create({
 
   cardDescription: {
     ...typography.body,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 23,
   },
 
   comingSoonPill: {
@@ -5415,8 +5417,8 @@ const styles = StyleSheet.create({
 
   comingSoonText: {
     color: colors.warning,
-    fontSize: 12,
-    lineHeight: 15,
-    fontWeight: '900',
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '600',
   },
 });

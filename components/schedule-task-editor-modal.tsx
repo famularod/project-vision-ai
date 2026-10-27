@@ -41,6 +41,7 @@ import {
 } from './dave-task-fill-assistant';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 import { NativeDateField } from './native-date-field';
+import { displayFontFamily } from '../theme/typography';
 
 const PRIORITIES: SchedulePriority[] = ['Low', 'Medium', 'High'];
 const STATUSES: ScheduleStatus[] = ['Not Started', 'In Progress', 'Waiting', 'Complete'];
@@ -474,11 +475,11 @@ function appDateFromToday(days: number) {
 
 const styles = StyleSheet.create({
   safeArea: { backgroundColor: colors.background, flex: 1 }, keyboard: { flex: 1 }, scroll: { flex: 1 }, content: { alignSelf: 'center', maxWidth: 840, padding: 16, width: '100%' },
-  panel: { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 12, borderWidth: 1, padding: 16 },
-  header: { alignItems: 'center', flexDirection: 'row', gap: 12, justifyContent: 'space-between' }, flex: { flex: 1 }, title: { color: colors.text, fontSize: 22, fontWeight: '800' }, help: { color: colors.mutedText, fontSize: 13, lineHeight: 18, marginTop: 4 },
-  label: { color: colors.text, fontSize: 15, fontWeight: '700', marginBottom: 6, marginTop: 14 },
-  input: { backgroundColor: colors.surfaceMuted, borderColor: colors.border, borderRadius: 10, borderWidth: 1, color: colors.text, fontSize: 16, minHeight: 48, paddingHorizontal: 12, paddingVertical: 10 }, notes: { minHeight: 112, textAlignVertical: 'top' },
+  panel: { backgroundColor: colors.surface, borderColor: colors.border, borderRadius: 8, borderWidth: 1, padding: 16 },
+  header: { alignItems: 'center', flexDirection: 'row', gap: 12, justifyContent: 'space-between' }, flex: { flex: 1 }, title: { color: colors.text, fontSize: 25, fontFamily: displayFontFamily, fontWeight: '400' }, help: { color: colors.mutedText, fontSize: 15, lineHeight: 21, marginTop: 4 },
+  label: { color: colors.text, fontSize: 16, fontWeight: '600', marginBottom: 6, marginTop: 14 },
+  input: { backgroundColor: colors.surfaceMuted, borderColor: colors.border, borderRadius: 10, borderWidth: 1, color: colors.text, fontSize: 17, minHeight: 48, paddingHorizontal: 12, paddingVertical: 10 }, notes: { minHeight: 112, textAlignVertical: 'top' },
   twoColumns: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 }, dateColumn: { flexBasis: 260, flexGrow: 1, minWidth: 0 }, choiceRow: { alignItems: 'center', flexDirection: 'row', gap: 8 }, iconButton: { alignItems: 'center', backgroundColor: colors.surfaceMuted, borderColor: colors.border, borderRadius: 10, borderWidth: 1, justifyContent: 'center', minHeight: 48, minWidth: 48 },
-  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }, chip: { alignItems: 'center', backgroundColor: colors.surfaceMuted, borderColor: colors.border, borderRadius: 999, borderWidth: 1, justifyContent: 'center', minHeight: 44, minWidth: 44, paddingHorizontal: 11, paddingVertical: 8 }, chipActive: { backgroundColor: colors.primary, borderColor: colors.primary }, chipText: { color: colors.text, fontSize: 13, fontWeight: '700' }, chipTextActive: { color: '#FFFFFF' },
-  saveButton: { alignItems: 'center', backgroundColor: colors.primary, borderRadius: 12, flexDirection: 'row', gap: 8, justifyContent: 'center', marginTop: 18, minHeight: 52, paddingHorizontal: 18 }, saveText: { color: '#FFFFFF', fontSize: 17, fontWeight: '800' },
+  chips: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }, chip: { alignItems: 'center', backgroundColor: colors.surfaceMuted, borderColor: colors.border, borderRadius: 999, borderWidth: 1, justifyContent: 'center', minHeight: 44, minWidth: 44, paddingHorizontal: 11, paddingVertical: 8 }, chipActive: { backgroundColor: colors.primary, borderColor: colors.primary }, chipText: { color: colors.text, fontSize: 15, fontWeight: '600' }, chipTextActive: { color: '#FFFFFF' },
+  saveButton: { alignItems: 'center', backgroundColor: colors.primary, borderRadius: 8, flexDirection: 'row', gap: 8, justifyContent: 'center', marginTop: 18, minHeight: 52, paddingHorizontal: 18 }, saveText: { color: '#FFFFFF', fontSize: 17, fontWeight: '600' },
 });

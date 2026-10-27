@@ -18,6 +18,7 @@ import type {
   DAVEProjectDailyBriefItem,
 } from '../services/DAVEDailyBrief';
 import { colors } from '../theme';
+import { displayFontFamily } from '../theme/typography';
 
 export function DAVEProjectStatusLoadingScreen({
   contentStyle,
@@ -33,7 +34,7 @@ export function DAVEProjectStatusLoadingScreen({
   return (
     <View style={styles.page}>
       <LinearGradient
-        colors={['#E4E9FA', '#EEEBFB', 'rgba(245,245,247,0)']}
+        colors={['#F3F1EC', '#EEEBFB', 'rgba(251,250,248,0)']}
         locations={[0, 0.4, 1]}
         style={styles.gradient}
       />
@@ -226,12 +227,12 @@ const styles = StyleSheet.create({
     paddingTop: 18,
   },
   greetingCopy: { flex: 1 },
-  greeting: { color: colors.text, fontSize: 26, fontWeight: '700' },
-  date: { color: colors.mutedText, fontSize: 13, marginTop: 2 },
+  greeting: { color: colors.text, fontSize: 30, fontFamily: displayFontFamily, fontWeight: '400' },
+  date: { color: colors.mutedText, fontSize: 15, marginTop: 2 },
   settingsButton: {
     alignItems: 'center',
     backgroundColor: 'rgba(255,255,255,0.72)',
-    borderColor: 'rgba(32,83,158,0.18)',
+    borderColor: 'rgba(31,58,46,0.18)',
     borderRadius: 22,
     borderWidth: 1,
     justifyContent: 'center',
@@ -247,34 +248,34 @@ const styles = StyleSheet.create({
     padding: 16,
   },
   loadingTitleRow: { alignItems: 'center', flexDirection: 'row', gap: 8, marginBottom: 10 },
-  loadingTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
-  loadingText: { color: colors.mutedText, fontSize: 14, fontWeight: '500', lineHeight: 20 },
+  loadingTitle: { color: colors.text, fontSize: 18, fontWeight: '600' },
+  loadingText: { color: colors.mutedText, fontSize: 16, fontWeight: '500', lineHeight: 23 },
   taskHeader: { alignItems: 'center', flexDirection: 'row', gap: 12 },
   taskHeaderCopy: { flex: 1 },
-  taskEyebrow: { color: colors.primary, fontSize: 12, fontWeight: '900', letterSpacing: 1.1 },
-  taskTitle: { color: colors.text, fontSize: 18, fontWeight: '700' },
+  taskEyebrow: { color: colors.primary, fontSize: 14, fontWeight: '600', letterSpacing: 1.1 },
+  taskTitle: { color: colors.text, fontSize: 18, fontWeight: '600' },
   healthPill: { borderRadius: 999, paddingHorizontal: 12, paddingVertical: 7 },
-  healthText: { fontSize: 12, fontWeight: '900' },
-  progressValue: { color: colors.text, fontSize: 25, fontWeight: '900' },
+  healthText: { fontSize: 14, fontWeight: '600' },
+  progressValue: { color: colors.text, fontSize: 29, fontFamily: displayFontFamily, fontWeight: '400' },
   progressTrack: { backgroundColor: colors.border, borderRadius: 999, height: 8, overflow: 'hidden' },
   progressFill: { backgroundColor: colors.primary, borderRadius: 999, height: '100%' },
-  scheduleStatus: { color: colors.text, fontSize: 14, fontWeight: '800' },
-  operationalReason: { color: colors.text, fontSize: 14, fontWeight: '700', lineHeight: 20 },
-  reason: { color: colors.mutedText, fontSize: 14, fontWeight: '600', lineHeight: 20 },
+  scheduleStatus: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  operationalReason: { color: colors.text, fontSize: 16, fontWeight: '600', lineHeight: 23 },
+  reason: { color: colors.mutedText, fontSize: 16, fontWeight: '600', lineHeight: 23 },
   verificationNotice: {
     alignItems: 'flex-start',
     backgroundColor: colors.warningSoft,
-    borderRadius: 12,
+    borderRadius: 8,
     flexDirection: 'row',
     gap: 10,
     padding: 12,
   },
   verificationCopy: { flex: 1, minWidth: 0 },
-  verificationTitle: { color: colors.warning, fontSize: 13, fontWeight: '900', marginBottom: 2 },
-  verificationLabel: { color: colors.warning, fontSize: 12, fontWeight: '800', marginBottom: 5 },
-  sectionLabel: { color: colors.text, fontSize: 13, fontWeight: '700', textTransform: 'uppercase' },
-  detailText: { color: colors.mutedText, fontSize: 13, fontWeight: '700', lineHeight: 19, marginTop: 7 },
-  briefSubtext: { color: colors.mutedText, fontSize: 13, fontWeight: '500', marginTop: 4 },
+  verificationTitle: { color: colors.warning, fontSize: 15, fontWeight: '600', marginBottom: 2 },
+  verificationLabel: { color: colors.warning, fontSize: 14, fontWeight: '600', marginBottom: 5 },
+  sectionLabel: { color: colors.text, fontSize: 15, fontWeight: '600', textTransform: 'uppercase' },
+  detailText: { color: colors.mutedText, fontSize: 15, fontWeight: '600', lineHeight: 22, marginTop: 7 },
+  briefSubtext: { color: colors.mutedText, fontSize: 15, fontWeight: '500', marginTop: 4 },
   dailyBriefSection: {
     alignSelf: 'stretch',
     flexGrow: 1,

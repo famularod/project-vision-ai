@@ -8,6 +8,7 @@ import {
 } from '../../services/ECOSDocumentOnboarding';
 import { colors, spacing } from '../../theme';
 import { desktopSurfaces } from './desktop-surface-palette';
+import { displayFontFamily } from '../../theme/typography';
 
 export type DesktopDocumentPreparationProgress = Readonly<{
   running: boolean;
@@ -174,7 +175,7 @@ const styles = StyleSheet.create({
   card: {
     borderWidth: 1,
     borderColor: desktopSurfaces.borderStrong,
-    borderRadius: 16,
+    borderRadius: 10,
     backgroundColor: desktopSurfaces.cardBlue,
     padding: spacing.lg,
     gap: spacing.md,
@@ -187,13 +188,13 @@ const styles = StyleSheet.create({
     gap: spacing.lg,
   },
   headingCopy: { flexGrow: 1, flexShrink: 1, flexBasis: 480, gap: spacing.xs },
-  title: { color: desktopSurfaces.text, fontSize: 20, fontWeight: '900' },
-  headline: { color: desktopSurfaces.text, fontSize: 15, fontWeight: '800' },
-  detail: { color: desktopSurfaces.textMuted, fontSize: 14, lineHeight: 20 },
+  title: { color: desktopSurfaces.text, fontSize: 20, fontWeight: '600' },
+  headline: { color: desktopSurfaces.text, fontSize: 16, fontWeight: '600' },
+  detail: { color: desktopSurfaces.textMuted, fontSize: 16, lineHeight: 23 },
   actions: { alignItems: 'flex-end', gap: spacing.xs },
   primaryButton: {
     minHeight: 48,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: desktopSurfaces.accent,
     paddingHorizontal: spacing.lg,
     flexDirection: 'row',
@@ -201,9 +202,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: spacing.sm,
   },
-  primaryButtonText: { color: desktopSurfaces.onAccent, fontSize: 15, fontWeight: '900' },
+  primaryButtonText: { color: desktopSurfaces.onAccent, fontSize: 16, fontWeight: '600' },
   textButton: { minHeight: 36, justifyContent: 'center', paddingHorizontal: spacing.sm },
-  textButtonLabel: { color: desktopSurfaces.accent, fontSize: 13, fontWeight: '800' },
+  textButtonLabel: { color: desktopSurfaces.accent, fontSize: 15, fontWeight: '600' },
   statusList: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   statusItem: {
     flexGrow: 1,
@@ -211,7 +212,7 @@ const styles = StyleSheet.create({
     flexBasis: 220,
     minWidth: 210,
     borderWidth: 1,
-    borderRadius: 12,
+    borderRadius: 8,
     padding: spacing.md,
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -221,21 +222,21 @@ const styles = StyleSheet.create({
   statusReady: { borderColor: colors.success, backgroundColor: colors.successSoft },
   statusReview: { borderColor: colors.warning, backgroundColor: colors.warningSoft },
   statusUnavailable: { borderColor: colors.border, backgroundColor: desktopSurfaces.card },
-  statusCount: { color: desktopSurfaces.text, fontSize: 22, fontWeight: '900', minWidth: 28 },
+  statusCount: { color: desktopSurfaces.text, fontSize: 25, fontFamily: displayFontFamily, fontWeight: '400', minWidth: 28 },
   statusCopy: { flexGrow: 1, flexShrink: 1, gap: 2 },
-  statusLabel: { color: desktopSurfaces.text, fontSize: 14, fontWeight: '900' },
-  statusMessage: { color: desktopSurfaces.textMuted, fontSize: 12, lineHeight: 17 },
+  statusLabel: { color: desktopSurfaces.text, fontSize: 16, fontWeight: '600' },
+  statusMessage: { color: desktopSurfaces.textMuted, fontSize: 14, lineHeight: 20 },
   progressCard: {
     borderWidth: 1,
     borderColor: desktopSurfaces.borderStrong,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: desktopSurfaces.card,
     padding: spacing.md,
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
   },
-  progressTitle: { color: desktopSurfaces.text, fontSize: 14, fontWeight: '900' },
+  progressTitle: { color: desktopSurfaces.text, fontSize: 16, fontWeight: '600' },
   secondaryActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   secondaryButton: {
     minHeight: 44,
@@ -249,7 +250,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: spacing.xs,
   },
-  secondaryButtonText: { color: desktopSurfaces.accent, fontSize: 13, fontWeight: '900' },
+  secondaryButtonText: { color: desktopSurfaces.accent, fontSize: 15, fontWeight: '600' },
   pressed: { opacity: 0.72 },
   disabled: { opacity: 0.45 },
 });

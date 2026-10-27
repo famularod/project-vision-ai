@@ -4,7 +4,7 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
 const HOLD_DURATION_MS = 3000;
 const HOLD_TICK_MS = 50;
-const DANGER = '#FF3B30';
+const DANGER = '#9E2A22';
 
 export function HoldToDeleteButton({
   label,
@@ -81,5 +81,5 @@ const styles = StyleSheet.create({
     position: 'absolute', left: 0, top: 0, bottom: 0,
     backgroundColor: DANGER, opacity: 0.25,
   },
-  text: { color: DANGER, fontSize: 16, fontWeight: '700' },
+  text: { color: DANGER, fontSize: 17, fontWeight: '600' },
 });

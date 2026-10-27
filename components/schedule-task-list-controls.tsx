@@ -4,6 +4,7 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { colors, radius, spacing } from '../theme';
 import { PROJECT_ITEM_TYPES, type ProjectItemType } from '../types';
 import { afterTextInputBlur } from './after-text-input-blur';
+import { displayFontFamily } from '../theme/typography';
 
 export type ScheduleTaskFilter =
   | 'Attention'
@@ -319,21 +320,22 @@ const styles = StyleSheet.create({
   },
   title: {
     color: colors.text,
-    fontSize: 28,
-    lineHeight: 34,
-    fontWeight: '800',
+    fontSize: 32,
+    fontFamily: displayFontFamily,
+    lineHeight: 39,
+    fontWeight: '400',
   },
   subtitle: {
     color: colors.mutedText,
-    fontSize: 15,
-    lineHeight: 21,
+    fontSize: 16,
+    lineHeight: 22,
     fontWeight: '500',
     paddingTop: 7,
   },
   scope: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
     paddingTop: spacing.sm,
   },
   addButton: {
@@ -350,8 +352,8 @@ const styles = StyleSheet.create({
   },
   addButtonText: {
     color: colors.surface,
-    fontSize: 16,
-    fontWeight: '900',
+    fontSize: 17,
+    fontWeight: '600',
   },
   workspaceTabs: {
     flexDirection: 'row',
@@ -377,8 +379,8 @@ const styles = StyleSheet.create({
   },
   workspaceTabText: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '900',
+    fontSize: 15,
+    fontWeight: '600',
   },
   workspaceTabTextActive: {
     color: colors.surface,
@@ -409,14 +411,15 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primarySoft,
   },
   metricValue: {
-    fontSize: 24,
-    fontWeight: '900',
+    fontSize: 28,
+    fontFamily: displayFontFamily,
+    fontWeight: '400',
     fontVariant: ['tabular-nums'],
   },
   metricLabel: {
     color: colors.mutedText,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
   viewTabs: {
     flexDirection: 'row',
@@ -428,8 +431,8 @@ const styles = StyleSheet.create({
   },
   itemTypeFilterLabel: {
     color: colors.mutedText,
-    fontSize: 12,
-    fontWeight: '900',
+    fontSize: 14,
+    fontWeight: '600',
     textTransform: 'uppercase',
     letterSpacing: 0.7,
     marginBottom: spacing.xs,
@@ -454,8 +457,8 @@ const styles = StyleSheet.create({
   },
   itemTypeFilterText: {
     color: colors.mutedText,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
   itemTypeFilterTextSelected: {
     color: colors.primary,
@@ -480,17 +483,17 @@ const styles = StyleSheet.create({
   viewTabText: {
     flexShrink: 1,
     color: colors.mutedText,
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '600',
   },
   viewTabTextActive: {
     color: colors.primary,
   },
   viewTabCount: {
     color: colors.mutedText,
-    fontSize: 14,
-    fontWeight: '900',
+    fontSize: 16,
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
   pressed: {

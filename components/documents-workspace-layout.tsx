@@ -178,20 +178,20 @@ const styles = StyleSheet.create({
   },
   documentTitle: {
     color: colors.text,
-    fontSize: 15,
-    lineHeight: 20,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
   documentMeta: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
     textTransform: 'capitalize',
   },
   documentNote: {
     color: colors.tertiaryText,
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: 14,
+    lineHeight: 19,
   },
   inspectorColumn: {
     flex: 1,
@@ -205,8 +205,8 @@ const styles = StyleSheet.create({
   },
   inspectorEyebrow: {
     color: colors.tertiaryText,
-    fontSize: 11,
-    fontWeight: '900',
+    fontSize: 13,
+    fontWeight: '600',
     letterSpacing: 1.2,
   },
   inspectorToolbar: {

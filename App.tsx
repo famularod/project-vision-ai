@@ -14631,7 +14631,7 @@ function HomeScreen({
   return (
     <View style={styles.overviewPageWrap}>
       <LinearGradient
-        colors={['#E4E9FA', '#EEEBFB', 'rgba(245,245,247,0)']}
+        colors={['#F3F1EC', '#EEEBFB', 'rgba(251,250,248,0)']}
         locations={[0, 0.4, 1]}
         style={styles.overviewPageGradient}
       />

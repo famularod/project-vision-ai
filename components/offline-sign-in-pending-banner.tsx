@@ -39,7 +39,7 @@ const styles = StyleSheet.create({
   },
   title: {
     ...typography.body,
-    fontWeight: '800',
+    fontWeight: '600',
     color: colors.text,
   },
   message: {
