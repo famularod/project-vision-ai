@@ -257,8 +257,8 @@ describe('Vitruvius web workspace design contract', () => {
     expect(shell).toContain('selected: selectedAreaKey === areaKey,');
     expect(shell).toContain('taskProjectGroup');
     expect(shell).toContain('taskAreaContent');
-    expect(shell).toContain("taskProjectGroup: { borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted");
-    expect(shell).toContain("taskGroup: { borderRadius: 13, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card");
+    expect(shell).toContain("taskProjectGroup: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted");
+    expect(shell).toContain("taskGroup: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card");
     expect(shell).toContain('backgroundColor: desktopSurfaces.selected');
   });
 });
