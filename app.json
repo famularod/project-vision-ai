@@ -76,7 +76,9 @@
       [
         "expo-font",
         {
-          "fonts": ["./assets/fonts/InstrumentSerif-Regular.ttf"]
+          "fonts": [
+            "./assets/fonts/InstrumentSerif-Regular.ttf"
+          ]
         }
       ],
       "expo-mail-composer",
