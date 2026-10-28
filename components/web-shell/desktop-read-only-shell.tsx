@@ -7979,13 +7979,17 @@ function DesktopNavigationLink({
   return (
     <Link href={href} asChild>
       <Pressable
-        style={({ pressed }) => [compact ? styles.topNavigationLink : styles.navigationLink, active && styles.navigationLinkActive, pressed && styles.buttonPressed]}
+        style={compact ? styles.topNavigationLinkPressable : styles.navigationLinkPressable}
         accessibilityRole="link"
         accessibilityState={{ selected: active }}
         accessibilityLabel={!compact && badgeCount !== undefined
           ? `${item.label}, ${badgeCount} document${badgeCount === 1 ? '' : 's'}`
           : item.label}
       >
+        {({ pressed }) => (
+        // Layout lives on this inner View: on web, Link asChild does not apply
+        // the Pressable's style function, which stacked the icon over the label.
+        <View style={[compact ? styles.topNavigationLink : styles.navigationLink, active && styles.navigationLinkActive, pressed && styles.buttonPressed]}>
         <View style={compact ? styles.topNavigationIconWrap : styles.navigationIconWrap}>
           <Ionicons
             name={item.icon}
@@ -8007,6 +8011,8 @@ function DesktopNavigationLink({
             {badgeCount > 99 ? '99+' : String(badgeCount)}
           </Text>
         ) : null}
+        </View>
+        )}
       </Pressable>
     </Link>
   );
@@ -8400,8 +8406,10 @@ const styles = StyleSheet.create({
   navigationSection: { gap: 2 },
   navigationSectionBottom: { marginTop: 'auto' },
   navigationSectionLabel: { color: desktopSurfaces.sidebarMuted, fontSize: 13, lineHeight: 17, fontWeight: '500', letterSpacing: 1.2, textTransform: 'uppercase', paddingHorizontal: spacing.md, paddingBottom: spacing.xs },
-  navigationCountText: { marginLeft: 'auto', color: desktopSurfaces.sidebarMuted, fontSize: 14, lineHeight: 20, fontWeight: '500' },
+  navigationCountText: { marginLeft: -spacing.xs, color: desktopSurfaces.sidebarMuted, fontSize: 14, lineHeight: 20, fontWeight: '500' },
   navigationLink: { minHeight: 42, borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: spacing.md, justifyContent: 'flex-start', paddingHorizontal: spacing.md },
+  topNavigationLinkPressable: { flexGrow: 1, flexBasis: 132, minWidth: 0 },
+  navigationLinkPressable: { alignSelf: 'stretch' },
   topNavigationLink: { flexGrow: 1, flexBasis: 132, minWidth: 0, minHeight: 44, borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: spacing.xs, justifyContent: 'center', paddingHorizontal: spacing.sm },
   navigationLinkActive: { backgroundColor: desktopSurfaces.selected },
   navigationLabel: { color: desktopSurfaces.sidebarMuted, fontSize: 16, lineHeight: 23, fontWeight: '600' },
