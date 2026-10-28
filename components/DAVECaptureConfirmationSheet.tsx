@@ -24,6 +24,7 @@ import {
   buildMemoryConfirmation,
 } from '../services/DAVEConversationLanguage';
 import { colors, spacing } from '../theme';
+import { displayFontFamily } from '../theme/typography';
 
 type EditableField = keyof DAVECaptureMemoryFields;
 
@@ -321,23 +322,23 @@ function friendlyConfidence(value: string): string {
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(16,24,40,0.35)', justifyContent: 'flex-end' },
+  backdrop: { flex: 1, backgroundColor: 'rgba(26,26,24,0.35)', justifyContent: 'flex-end' },
   sheet: { maxHeight: '94%', backgroundColor: colors.background, borderTopLeftRadius: 24, borderTopRightRadius: 24, overflow: 'hidden' },
   handle: { width: 40, height: 5, borderRadius: 3, backgroundColor: colors.border, alignSelf: 'center', marginTop: 9 },
   header: { flexDirection: 'row', padding: spacing.lg, paddingBottom: spacing.md, gap: spacing.sm }, main: { flex: 1 },
-  title: { color: colors.text, fontSize: 25, fontWeight: '800' }, subtitle: { color: colors.mutedText, fontSize: 14, lineHeight: 20, marginTop: 3 },
+  title: { color: colors.text, fontSize: 29, fontFamily: displayFontFamily, fontWeight: '400' }, subtitle: { color: colors.mutedText, fontSize: 16, lineHeight: 23, marginTop: 3 },
   closeButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.surfaceMuted, alignItems: 'center', justifyContent: 'center' },
   scrollContent: { paddingHorizontal: spacing.lg, paddingBottom: 36 },
-  card: { backgroundColor: colors.surface, borderRadius: 16, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.md, shadowColor: '#17213A', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 8 },
-  cardTitle: { color: colors.text, fontSize: 17, fontWeight: '800', marginBottom: spacing.sm }, summary: { color: colors.text, fontSize: 16, lineHeight: 23, fontWeight: '600' },
-  sourceLabel: { color: colors.mutedText, fontSize: 12, fontWeight: '800', marginTop: spacing.md, marginBottom: 4, textTransform: 'uppercase' }, transcript: { color: colors.text, fontSize: 14, lineHeight: 20 },
+  card: { backgroundColor: colors.surface, borderRadius: 10, borderWidth: 1, borderColor: colors.border, padding: spacing.md, marginBottom: spacing.md, shadowColor: '#1A1A18', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 8 },
+  cardTitle: { color: colors.text, fontSize: 17, fontWeight: '600', marginBottom: spacing.sm }, summary: { color: colors.text, fontSize: 17, lineHeight: 24, fontWeight: '600' },
+  sourceLabel: { color: colors.mutedText, fontSize: 14, fontWeight: '600', marginTop: spacing.md, marginBottom: 4, textTransform: 'uppercase' }, transcript: { color: colors.text, fontSize: 16, lineHeight: 23 },
   recommendation: { paddingBottom: spacing.md, marginBottom: spacing.md, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border },
-  recommendationValue: { color: colors.text, fontSize: 16, fontWeight: '700', marginTop: 3 }, detail: { color: colors.mutedText, fontSize: 13, lineHeight: 18, marginTop: 3 },
-  confirmButton: { minHeight: 44, borderRadius: 10, backgroundColor: colors.primarySoft, justifyContent: 'center', alignItems: 'center', marginTop: spacing.sm }, confirmText: { color: colors.primary, fontWeight: '800' }, confirmedText: { color: colors.success, fontSize: 13, fontWeight: '800', marginTop: 5 },
-  options: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: spacing.sm }, option: { minHeight: 38, borderRadius: 19, borderWidth: 1, borderColor: colors.border, justifyContent: 'center', paddingHorizontal: 12 }, optionText: { color: colors.primary, fontSize: 13, fontWeight: '700' },
-  guidance: { color: colors.text, fontSize: 14, lineHeight: 20 }, field: { marginBottom: spacing.sm }, label: { color: colors.text, fontSize: 13, fontWeight: '800' },
-  input: { minHeight: 46, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, color: colors.text, fontSize: 15, paddingHorizontal: 12, paddingVertical: 10, marginTop: 5 }, multiline: { minHeight: 88, textAlignVertical: 'top' },
-  limitation: { color: colors.mutedText, fontSize: 13, lineHeight: 19, marginTop: 4 }, error: { color: colors.danger, fontSize: 14, fontWeight: '700', marginBottom: spacing.sm },
-  saveButton: { minHeight: 54, borderRadius: 12, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' }, saveText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
-  cancelButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center' }, cancelText: { color: colors.primary, fontSize: 15, fontWeight: '800' },
+  recommendationValue: { color: colors.text, fontSize: 17, fontWeight: '600', marginTop: 3 }, detail: { color: colors.mutedText, fontSize: 15, lineHeight: 21, marginTop: 3 },
+  confirmButton: { minHeight: 44, borderRadius: 10, backgroundColor: colors.primarySoft, justifyContent: 'center', alignItems: 'center', marginTop: spacing.sm }, confirmText: { color: colors.primary, fontWeight: '600' }, confirmedText: { color: colors.success, fontSize: 15, fontWeight: '600', marginTop: 5 },
+  options: { flexDirection: 'row', flexWrap: 'wrap', gap: 7, marginTop: spacing.sm }, option: { minHeight: 38, borderRadius: 19, borderWidth: 1, borderColor: colors.border, justifyContent: 'center', paddingHorizontal: 12 }, optionText: { color: colors.primary, fontSize: 15, fontWeight: '600' },
+  guidance: { color: colors.text, fontSize: 16, lineHeight: 23 }, field: { marginBottom: spacing.sm }, label: { color: colors.text, fontSize: 15, fontWeight: '600' },
+  input: { minHeight: 46, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, color: colors.text, fontSize: 16, paddingHorizontal: 12, paddingVertical: 10, marginTop: 5 }, multiline: { minHeight: 88, textAlignVertical: 'top' },
+  limitation: { color: colors.mutedText, fontSize: 15, lineHeight: 22, marginTop: 4 }, error: { color: colors.danger, fontSize: 16, fontWeight: '600', marginBottom: spacing.sm },
+  saveButton: { minHeight: 54, borderRadius: 8, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center' }, saveText: { color: '#FFF', fontSize: 17, fontWeight: '600' },
+  cancelButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center' }, cancelText: { color: colors.primary, fontSize: 16, fontWeight: '600' },
 });

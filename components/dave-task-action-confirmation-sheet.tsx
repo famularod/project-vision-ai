@@ -3,6 +3,7 @@ import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import type { DAVETaskUpdateCommand } from '../services/DAVETaskConversation';
 import { colors, spacing } from '../theme';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
+import { displayFontFamily } from '../theme/typography';
 
 export type DAVETaskActionCandidate = {
   id: string;
@@ -109,27 +110,27 @@ export function DAVETaskActionConfirmationSheet({
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(16,24,40,0.35)', justifyContent: 'flex-end' },
+  backdrop: { flex: 1, backgroundColor: 'rgba(26,26,24,0.35)', justifyContent: 'flex-end' },
   sheet: { maxHeight: '88%', backgroundColor: colors.background, borderTopLeftRadius: 24, borderTopRightRadius: 24 },
   content: { paddingHorizontal: spacing.lg, paddingBottom: 36 },
   handle: { width: 40, height: 5, borderRadius: 3, backgroundColor: colors.border, alignSelf: 'center', marginTop: 9 },
   header: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingTop: spacing.md, paddingBottom: spacing.lg },
   main: { flex: 1 },
-  title: { color: colors.text, fontSize: 25, fontWeight: '800' },
-  subtitle: { color: colors.mutedText, fontSize: 14, marginTop: 3 },
+  title: { color: colors.text, fontSize: 29, fontFamily: displayFontFamily, fontWeight: '400' },
+  subtitle: { color: colors.mutedText, fontSize: 16, marginTop: 3 },
   closeButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.surfaceMuted, alignItems: 'center', justifyContent: 'center' },
-  sectionLabel: { color: colors.text, fontSize: 13, fontWeight: '800', textTransform: 'uppercase' },
-  help: { color: colors.mutedText, fontSize: 14, lineHeight: 20, marginTop: spacing.xs },
+  sectionLabel: { color: colors.text, fontSize: 15, fontWeight: '600', textTransform: 'uppercase' },
+  help: { color: colors.mutedText, fontSize: 16, lineHeight: 23, marginTop: spacing.xs },
   candidateList: { gap: spacing.sm, marginTop: spacing.md },
-  candidate: { minHeight: 72, padding: spacing.md, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  candidate: { minHeight: 72, padding: spacing.md, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   candidateSelected: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
-  taskName: { color: colors.text, fontSize: 16, fontWeight: '800' },
-  taskDetail: { color: colors.mutedText, fontSize: 13, marginTop: 4 },
-  proposedChange: { backgroundColor: colors.primarySoft, borderRadius: 14, padding: spacing.md, marginTop: spacing.lg },
-  changeText: { color: colors.text, fontSize: 17, lineHeight: 24, fontWeight: '800', marginTop: spacing.xs },
-  primaryButton: { minHeight: 54, borderRadius: 14, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
+  taskName: { color: colors.text, fontSize: 17, fontWeight: '600' },
+  taskDetail: { color: colors.mutedText, fontSize: 15, marginTop: 4 },
+  proposedChange: { backgroundColor: colors.primarySoft, borderRadius: 10, padding: spacing.md, marginTop: spacing.lg },
+  changeText: { color: colors.text, fontSize: 17, lineHeight: 24, fontWeight: '600', marginTop: spacing.xs },
+  primaryButton: { minHeight: 54, borderRadius: 10, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
   primaryButtonDisabled: { opacity: 0.45 },
-  primaryText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
+  primaryText: { color: '#FFF', fontSize: 17, fontWeight: '600' },
   secondaryButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center' },
-  secondaryText: { color: colors.primary, fontSize: 15, fontWeight: '800' },
+  secondaryText: { color: colors.primary, fontSize: 16, fontWeight: '600' },
 });

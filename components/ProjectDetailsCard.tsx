@@ -1,6 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useState } from 'react';
 import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { displayFontFamily } from '../theme/typography';
 
 export type IconName = keyof typeof Ionicons.glyphMap;
 
@@ -165,21 +166,21 @@ export const ACTION_STATUSES: ActionStatus[] = [
 ];
 
 export const colors = {
-  bg: '#F5F5F7',
+  bg: '#FBFAF8',
   card: '#FFFFFF',
-  fill: '#F2F2F7',
-  text: '#1D1D1F',
-  muted: '#6E6E73',
-  tertiaryText: '#9A9AA0',
-  line: '#E5E5EA',
-  primary: '#007AFF',
-  primarySoft: '#EAF4FF',
-  success: '#34C759',
+  fill: '#F3F1EC',
+  text: '#1A1A18',
+  muted: '#66645E',
+  tertiaryText: '#8A877F',
+  line: '#E7E4DE',
+  primary: '#1F3A2E',
+  primarySoft: '#F3F1EC',
+  success: '#1F5E3F',
   successSoft: '#EAF8EE',
-  warning: '#FF9500',
+  warning: '#8A5A00',
   warningSoft: '#FFF4E5',
   dangerSoft: '#FFECEC',
-  danger: '#FF3B30',
+  danger: '#9E2A22',
 };
 
 export function parseDueDate(value: string) {
@@ -617,15 +618,16 @@ export const styles = StyleSheet.create({
 
   title: {
     color: colors.text,
-    fontSize: 31,
-    fontWeight: '800',
-    lineHeight: 37,
+    fontSize: 36,
+    fontFamily: displayFontFamily,
+    fontWeight: '400',
+    lineHeight: 43,
   },
 
   subtitle: {
     color: colors.muted,
-    fontSize: 15,
-    lineHeight: 21,
+    fontSize: 16,
+    lineHeight: 22,
     marginTop: 7,
     fontWeight: '500',
   },
@@ -636,8 +638,8 @@ export const styles = StyleSheet.create({
 
   sectionLabel: {
     color: colors.text,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '600',
     marginTop: 10,
     marginBottom: 10,
     textTransform: 'uppercase',
@@ -667,8 +669,8 @@ export const styles = StyleSheet.create({
 
   countPillText: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   countPillTextDanger: {
@@ -677,8 +679,8 @@ export const styles = StyleSheet.create({
 
   mutedNote: {
     color: colors.muted,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 23,
     fontWeight: '600',
     marginBottom: 16,
   },
@@ -704,9 +706,9 @@ export const styles = StyleSheet.create({
 
   endpointStatusText: {
     color: colors.warning,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '800',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
     flex: 1,
   },
 
@@ -722,9 +724,9 @@ export const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 10,
     paddingVertical: 10,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
     marginTop: 8,
     marginBottom: 12,
   },
@@ -773,16 +775,16 @@ export const styles = StyleSheet.create({
 
   primaryButtonText: {
     color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 17,
+    fontWeight: '600',
     textAlign: 'center',
     flexShrink: 1,
   },
 
   secondaryButtonText: {
     color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 17,
+    fontWeight: '600',
     textAlign: 'center',
     flexShrink: 1,
   },
@@ -799,14 +801,14 @@ export const styles = StyleSheet.create({
   panelTitle: {
     color: colors.text,
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: '600',
     marginBottom: 10,
   },
 
   bodyText: {
     color: colors.muted,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 23,
     fontWeight: '500',
   },
 
@@ -828,9 +830,9 @@ export const styles = StyleSheet.create({
 
   locationDetailText: {
     color: colors.muted,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '600',
     marginTop: 7,
   },
 
@@ -863,8 +865,8 @@ export const styles = StyleSheet.create({
 
   areaChipText: {
     color: colors.text,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   areaChipTextSelected: {
@@ -884,8 +886,8 @@ export const styles = StyleSheet.create({
 
   draftSavedText: {
     color: '#248A3D',
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 14,
+    fontWeight: '600',
     flex: 1,
   },
 
@@ -913,16 +915,16 @@ export const styles = StyleSheet.create({
 
   captureContextLabel: {
     color: colors.muted,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
     marginBottom: 4,
     textTransform: 'uppercase',
   },
 
   captureContextValue: {
     color: colors.text,
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 17,
+    fontWeight: '600',
   },
 
   rowMain: {
@@ -940,7 +942,7 @@ export const styles = StyleSheet.create({
 
   rowSub: {
     color: colors.muted,
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '500',
     marginTop: 4,
   },
@@ -960,7 +962,7 @@ export const styles = StyleSheet.create({
   miniStatValue: {
     color: colors.primary,
     fontSize: 20,
-    fontWeight: '800',
+    fontWeight: '600',
   },
 
   miniStatValueDanger: {
@@ -969,8 +971,8 @@ export const styles = StyleSheet.create({
 
   miniStatLabel: {
     color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
+    fontSize: 13,
+    fontWeight: '600',
     marginTop: 2,
   },
 
@@ -986,8 +988,8 @@ export const styles = StyleSheet.create({
 
   smallActionText: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   smallActionDanger: {
@@ -996,8 +998,8 @@ export const styles = StyleSheet.create({
 
   smallActionDangerText: {
     color: colors.danger,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   addProjectCard: {
@@ -1066,8 +1068,8 @@ export const styles = StyleSheet.create({
 
   deliveryChoiceText: {
     color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
     maxWidth: 230,
   },
 
@@ -1077,14 +1079,14 @@ export const styles = StyleSheet.create({
 
   projectName: {
     color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 17,
+    fontWeight: '600',
   },
 
   contactSelectText: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   contactSelectTextSelected: {
@@ -1105,15 +1107,15 @@ export const styles = StyleSheet.create({
 
   contactSummaryText: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     flex: 1,
   },
 
   contactSummaryAction: {
     color: colors.primary,
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
   },
 
   inlineLink: {
@@ -1127,8 +1129,8 @@ export const styles = StyleSheet.create({
 
   inlineLinkText: {
     color: colors.primary,
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
   },
 
   progressPanel: {
@@ -1155,13 +1157,14 @@ export const styles = StyleSheet.create({
 
   progressNumber: {
     color: colors.primary,
-    fontSize: 28,
-    fontWeight: '800',
+    fontSize: 32,
+    fontFamily: displayFontFamily,
+    fontWeight: '400',
   },
 
   progressText: {
     color: colors.muted,
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '600',
     marginTop: 2,
   },
@@ -1178,7 +1181,7 @@ export const styles = StyleSheet.create({
   emptyTitle: {
     color: colors.text,
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: '600',
     marginBottom: 6,
   },
 
@@ -1212,7 +1215,7 @@ export const styles = StyleSheet.create({
   photoTitle: {
     color: colors.text,
     fontSize: 17,
-    fontWeight: '700',
+    fontWeight: '600',
   },
 
   categoryGrid: {
@@ -1238,8 +1241,8 @@ export const styles = StyleSheet.create({
 
   categoryText: {
     color: colors.primary,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
 
   categoryTextActive: {
@@ -1261,7 +1264,7 @@ export const styles = StyleSheet.create({
   actionPanel: {
     backgroundColor: colors.primarySoft,
     borderWidth: 1,
-    borderColor: '#CFE6FF',
+    borderColor: '#F3F1EC',
     borderRadius: 10,
     padding: 12,
     marginBottom: 12,
@@ -1276,8 +1279,8 @@ export const styles = StyleSheet.create({
 
   actionPanelTitle: {
     color: colors.text,
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 17,
+    fontWeight: '600',
   },
 
   statusGrid: {
@@ -1302,8 +1305,8 @@ export const styles = StyleSheet.create({
 
   statusButtonText: {
     color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
 
   statusButtonTextActive: {
@@ -1312,8 +1315,8 @@ export const styles = StyleSheet.create({
 
   dateHelpError: {
     color: colors.danger,
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 14,
+    fontWeight: '600',
     marginTop: -7,
     marginBottom: 10,
   },
@@ -1343,8 +1346,8 @@ export const styles = StyleSheet.create({
 
   photoControlText: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   photoControlTextDisabled: {
@@ -1362,8 +1365,8 @@ export const styles = StyleSheet.create({
 
   label: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     marginBottom: 8,
   },
 
@@ -1374,7 +1377,7 @@ export const styles = StyleSheet.create({
     borderColor: colors.line,
     borderRadius: 8,
     color: colors.text,
-    fontSize: 15,
+    fontSize: 16,
     paddingHorizontal: 12,
     paddingVertical: 10,
     marginBottom: 12,
@@ -1396,16 +1399,16 @@ export const styles = StyleSheet.create({
 
   previewLabel: {
     color: colors.muted,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '600',
     marginBottom: 7,
   },
 
   subjectText: {
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 22,
-    fontWeight: '700',
+    fontSize: 17,
+    lineHeight: 23,
+    fontWeight: '600',
   },
 
   divider: {
@@ -1416,8 +1419,8 @@ export const styles = StyleSheet.create({
 
   previewBody: {
     color: colors.text,
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: 16,
+    lineHeight: 23,
     fontWeight: '500',
   },
 
@@ -1436,8 +1439,8 @@ export const styles = StyleSheet.create({
 
   sectionLabelNoMargin: {
     color: colors.text,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
 
@@ -1456,7 +1459,7 @@ export const styles = StyleSheet.create({
   addLocationInlineButton: {
     width: 52,
     height: 52,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1464,7 +1467,7 @@ export const styles = StyleSheet.create({
 
   areaListCard: {
     backgroundColor: colors.card,
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.line,
     overflow: 'hidden',
@@ -1516,8 +1519,8 @@ export const styles = StyleSheet.create({
 
   areaListRadius: {
     color: colors.muted,
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     minWidth: 58,
     textAlign: 'right',
   },
@@ -1579,14 +1582,14 @@ export const styles = StyleSheet.create({
 
   radiusEditUnit: {
     color: colors.muted,
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 17,
+    fontWeight: '600',
     marginBottom: 12,
   },
 
   locationSummaryCard: {
     backgroundColor: colors.fill,
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.line,
     padding: 12,
@@ -1600,7 +1603,7 @@ export const styles = StyleSheet.create({
     marginTop: 14,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#CFE6FF',
+    borderColor: '#F3F1EC',
   },
 
   checklistRow: {
@@ -1615,7 +1618,7 @@ export const styles = StyleSheet.create({
   dashboardMetricCard: {
     width: '48%',
     backgroundColor: colors.fill,
-    borderRadius: 11,
+    borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 12,
     minHeight: 86,
@@ -1637,8 +1640,9 @@ export const styles = StyleSheet.create({
 
   dashboardMetricValue: {
     color: colors.primary,
-    fontSize: 24,
-    fontWeight: '900',
+    fontSize: 28,
+    fontFamily: displayFontFamily,
+    fontWeight: '400',
   },
 
   dashboardMetricValueDanger: {
@@ -1647,13 +1651,13 @@ export const styles = StyleSheet.create({
 
   dashboardMetricLabel: {
     color: colors.muted,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
 
   projectFinderPanel: {
     backgroundColor: colors.card,
-    borderRadius: 14,
+    borderRadius: 10,
     padding: 14,
     marginBottom: 14,
     borderColor: colors.line,
@@ -1676,7 +1680,7 @@ export const styles = StyleSheet.create({
   projectSearchInput: {
     flex: 1,
     color: colors.text,
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '600',
     paddingVertical: 8,
   },
@@ -1704,8 +1708,8 @@ export const styles = StyleSheet.create({
 
   projectFilterText: {
     color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
 
   projectFilterTextSelected: {
@@ -1719,7 +1723,7 @@ export const styles = StyleSheet.create({
 
   projectFinderRow: {
     backgroundColor: colors.card,
-    borderRadius: 12,
+    borderRadius: 8,
     padding: 14,
     marginBottom: 12,
     borderWidth: 1,
@@ -1747,7 +1751,7 @@ export const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 20,
     lineHeight: 25,
-    fontWeight: '900',
+    fontWeight: '600',
     flexShrink: 1,
   },
 
@@ -1774,9 +1778,9 @@ export const styles = StyleSheet.create({
 
   projectHealthText: {
     color: colors.muted,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   projectHealthTextDanger: {
@@ -1808,17 +1812,17 @@ export const styles = StyleSheet.create({
 
   projectSignalLabel: {
     color: colors.muted,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '900',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
 
   projectSignalValue: {
     color: colors.text,
-    fontSize: 15,
-    lineHeight: 20,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
     marginTop: 2,
   },
 
@@ -1828,9 +1832,9 @@ export const styles = StyleSheet.create({
 
   projectMilestoneText: {
     color: colors.muted,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '700',
+    fontSize: 16,
+    lineHeight: 23,
+    fontWeight: '600',
   },
 
   projectLocationPanel: {
@@ -1846,9 +1850,9 @@ export const styles = StyleSheet.create({
 
   projectLocationText: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '800',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   compactStatsRow: {
@@ -1864,8 +1868,8 @@ export const styles = StyleSheet.create({
     borderRadius: 999,
     paddingVertical: 4,
     paddingHorizontal: 7,
-    fontSize: 11,
-    fontWeight: '800',
+    fontSize: 13,
+    fontWeight: '600',
   },
 
   compactStatDanger: {
@@ -1875,9 +1879,9 @@ export const styles = StyleSheet.create({
 
   captureMissionPanel: {
     backgroundColor: colors.primarySoft,
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: '#CFE7FF',
+    borderColor: '#F3F1EC',
     padding: 14,
     gap: 9,
     marginBottom: 12,
@@ -1891,16 +1895,16 @@ export const styles = StyleSheet.create({
 
   captureMissionTitle: {
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 21,
-    fontWeight: '900',
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   captureMissionText: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '800',
+    fontSize: 16,
+    lineHeight: 23,
+    fontWeight: '600',
   },
 
   captureMissionList: {
@@ -1909,9 +1913,9 @@ export const styles = StyleSheet.create({
 
   captureMissionItem: {
     color: colors.muted,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   projectFinderActions: {
@@ -1934,7 +1938,7 @@ export const styles = StyleSheet.create({
   projectPrimaryAction: {
     flex: 1,
     minHeight: 52,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1943,16 +1947,16 @@ export const styles = StyleSheet.create({
 
   projectPrimaryActionText: {
     color: '#FFFFFF',
-    fontSize: 16,
-    lineHeight: 21,
-    fontWeight: '900',
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '600',
     textAlign: 'center',
   },
 
   projectSecondaryAction: {
     width: 74,
     minHeight: 52,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.fill,
     borderWidth: 1,
     borderColor: colors.primarySoft,
@@ -1965,15 +1969,15 @@ export const styles = StyleSheet.create({
 
   projectSecondaryActionText: {
     color: colors.primary,
-    fontSize: 13,
-    lineHeight: 17,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   projectOverflowButton: {
     width: 78,
     minHeight: 52,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1984,9 +1988,9 @@ export const styles = StyleSheet.create({
 
   projectOverflowButtonText: {
     color: colors.primary,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   dashboardGrid: {
@@ -2023,8 +2027,8 @@ export const styles = StyleSheet.create({
 
   compactInlineActionText: {
     color: colors.primary,
-    fontSize: 11,
-    fontWeight: '800',
+    fontSize: 13,
+    fontWeight: '600',
   },
 
   scheduleMetaRow: {
@@ -2043,14 +2047,14 @@ export const styles = StyleSheet.create({
 
   statusPillText: {
     color: colors.primary,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
 
   percentText: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '900',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   progressTrack: {
@@ -2091,13 +2095,13 @@ export const styles = StyleSheet.create({
   photoModalTitle: {
     color: '#FFFFFF',
     fontSize: 18,
-    fontWeight: '800',
+    fontWeight: '600',
   },
 
   photoModalCaption: {
-    color: '#D1D1D6',
-    fontSize: 13,
-    lineHeight: 18,
+    color: '#DDD9D2',
+    fontSize: 15,
+    lineHeight: 21,
     marginTop: 3,
   },
 
@@ -2125,7 +2129,7 @@ export const styles = StyleSheet.create({
 
   photoModalBottomCloseButton: {
     minHeight: 54,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: 'rgba(255,255,255,0.18)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.28)',
@@ -2137,7 +2141,7 @@ export const styles = StyleSheet.create({
 
   photoModalBottomCloseText: {
     color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 17,
+    fontWeight: '600',
   },
 });

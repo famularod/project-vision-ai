@@ -163,7 +163,7 @@ const styles = StyleSheet.create({
   },
   compactBrandHeader: {
     backgroundColor: '#FFFFFF',
-    borderBottomColor: '#D5E2F0',
+    borderBottomColor: '#DDD9D2',
     borderBottomWidth: 1,
     paddingHorizontal: 18,
     paddingTop: 8,

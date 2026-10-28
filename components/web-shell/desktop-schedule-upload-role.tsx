@@ -66,15 +66,15 @@ export function DesktopScheduleUploadRole({
 }
 
 const styles = StyleSheet.create({
-  card: { borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.md, gap: spacing.sm },
-  title: { color: desktopSurfaces.text, fontSize: 16, lineHeight: 22, fontWeight: '900' },
-  choice: { minHeight: 64, borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.input, padding: spacing.sm, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  card: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.md, gap: spacing.sm },
+  title: { color: desktopSurfaces.text, fontSize: 17, lineHeight: 23, fontWeight: '600' },
+  choice: { minHeight: 64, borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.input, padding: spacing.sm, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
   choiceSelected: { borderColor: desktopSurfaces.accent, borderWidth: 2, backgroundColor: desktopSurfaces.selected },
   dimmed: { opacity: 0.6 },
   mark: { color: desktopSurfaces.textMuted, fontSize: 18, lineHeight: 22 },
   markSelected: { color: desktopSurfaces.accent },
   choiceText: { flex: 1, minWidth: 0, gap: 2 },
-  choiceTitle: { color: desktopSurfaces.text, fontSize: 15, lineHeight: 21, fontWeight: '800' },
-  choiceDetail: { color: desktopSurfaces.textMuted, fontSize: 14, lineHeight: 20 },
-  suggestion: { color: desktopSurfaces.textMuted, fontSize: 13, lineHeight: 19 },
+  choiceTitle: { color: desktopSurfaces.text, fontSize: 16, lineHeight: 22, fontWeight: '600' },
+  choiceDetail: { color: desktopSurfaces.textMuted, fontSize: 16, lineHeight: 23 },
+  suggestion: { color: desktopSurfaces.textMuted, fontSize: 15, lineHeight: 22 },
 });

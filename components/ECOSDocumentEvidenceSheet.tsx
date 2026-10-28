@@ -17,6 +17,7 @@ import type { ECOSDocumentEvidenceImageBounds } from '../hooks/use-ecos-document
 import type { ReferenceDocument } from '../types';
 import { referenceDocumentOpenMode } from '../services/ReferenceDocumentOpenAccess';
 import { colors, spacing } from '../theme';
+import { displayFontFamily } from '../theme/typography';
 
 export function ECOSDocumentEvidenceSheet({
   visible,
@@ -160,30 +161,30 @@ export function ECOSDocumentEvidenceSheet({
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(16,24,40,0.4)', justifyContent: 'flex-end' },
+  backdrop: { flex: 1, backgroundColor: 'rgba(26,26,24,0.4)', justifyContent: 'flex-end' },
   sheet: { maxHeight: '92%', backgroundColor: colors.background, borderTopLeftRadius: 24, borderTopRightRadius: 24 },
   handle: { width: 40, height: 5, borderRadius: 3, backgroundColor: colors.border, alignSelf: 'center', marginTop: 9 },
   header: { padding: spacing.lg, paddingBottom: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   main: { flex: 1 },
-  eyebrow: { color: colors.primary, fontSize: 11, fontWeight: '900', letterSpacing: 1 },
-  title: { color: colors.text, fontSize: 24, fontWeight: '800', marginTop: 3 },
-  subtitle: { color: colors.mutedText, fontSize: 13, marginTop: 4 },
+  eyebrow: { color: colors.primary, fontSize: 13, fontWeight: '600', letterSpacing: 1 },
+  title: { color: colors.text, fontSize: 28, fontFamily: displayFontFamily, fontWeight: '400', marginTop: 3 },
+  subtitle: { color: colors.mutedText, fontSize: 15, marginTop: 4 },
   closeButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.surfaceMuted, alignItems: 'center', justifyContent: 'center' },
   content: { paddingHorizontal: spacing.lg, paddingBottom: 38, gap: spacing.md },
-  loadingCard: { minHeight: 110, borderRadius: 16, backgroundColor: colors.surfaceMuted, alignItems: 'center', justifyContent: 'center', gap: spacing.sm },
-  loadingText: { color: colors.mutedText, fontSize: 14, fontWeight: '700' },
-  imageCard: { minHeight: 220, maxHeight: 430, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: '#FFF', overflow: 'hidden' },
+  loadingCard: { minHeight: 110, borderRadius: 10, backgroundColor: colors.surfaceMuted, alignItems: 'center', justifyContent: 'center', gap: spacing.sm },
+  loadingText: { color: colors.mutedText, fontSize: 16, fontWeight: '600' },
+  imageCard: { minHeight: 220, maxHeight: 430, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: '#FFF', overflow: 'hidden' },
   image: { width: '100%', height: 360 },
   protectedImage: { ...StyleSheet.absoluteFill, width: '100%', height: '100%' },
   highlight: { position: 'absolute', borderWidth: 3, borderColor: '#D92D20', backgroundColor: 'rgba(217,45,32,0.14)', borderRadius: 3 },
-  excerptCard: { borderRadius: 16, backgroundColor: colors.surfaceMuted, padding: spacing.md },
-  label: { color: colors.text, fontSize: 12, fontWeight: '900', textTransform: 'uppercase', marginBottom: spacing.xs },
-  excerpt: { color: colors.text, fontSize: 16, lineHeight: 24, fontWeight: '700' },
-  assuranceCard: { flexDirection: 'row', gap: spacing.sm, borderRadius: 14, backgroundColor: colors.primarySoft, padding: spacing.md },
-  assuranceText: { flex: 1, color: colors.text, fontSize: 13, lineHeight: 19 },
-  error: { color: colors.danger, fontSize: 13, lineHeight: 19, fontWeight: '700' },
-  primaryButton: { minHeight: 54, borderRadius: 14, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: spacing.sm },
-  primaryText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
-  unavailableCard: { flexDirection: 'row', gap: spacing.sm, borderRadius: 14, backgroundColor: colors.surfaceMuted, padding: spacing.md },
-  unavailableText: { flex: 1, color: colors.mutedText, fontSize: 13, lineHeight: 19, fontWeight: '700' },
+  excerptCard: { borderRadius: 10, backgroundColor: colors.surfaceMuted, padding: spacing.md },
+  label: { color: colors.text, fontSize: 14, fontWeight: '600', textTransform: 'uppercase', marginBottom: spacing.xs },
+  excerpt: { color: colors.text, fontSize: 17, lineHeight: 26, fontWeight: '600' },
+  assuranceCard: { flexDirection: 'row', gap: spacing.sm, borderRadius: 10, backgroundColor: colors.primarySoft, padding: spacing.md },
+  assuranceText: { flex: 1, color: colors.text, fontSize: 15, lineHeight: 22 },
+  error: { color: colors.danger, fontSize: 15, lineHeight: 22, fontWeight: '600' },
+  primaryButton: { minHeight: 54, borderRadius: 10, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: spacing.sm },
+  primaryText: { color: '#FFF', fontSize: 17, fontWeight: '600' },
+  unavailableCard: { flexDirection: 'row', gap: spacing.sm, borderRadius: 10, backgroundColor: colors.surfaceMuted, padding: spacing.md },
+  unavailableText: { flex: 1, color: colors.mutedText, fontSize: 15, lineHeight: 22, fontWeight: '600' },
 });

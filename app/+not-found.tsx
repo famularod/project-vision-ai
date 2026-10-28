@@ -1,5 +1,6 @@
 import { Link } from 'expo-router';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { displayFontFamily } from '../theme/typography';
 
 export default function NotFoundRoute() {
   return (
@@ -16,9 +17,9 @@ export default function NotFoundRoute() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F3F5F9', padding: 32, gap: 14 },
-  title: { color: '#171A21', fontSize: 32, fontWeight: '900' },
-  detail: { color: '#666D79', fontSize: 16, lineHeight: 24, textAlign: 'center' },
-  button: { minHeight: 48, borderRadius: 12, backgroundColor: '#087EF5', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 },
-  buttonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '900' },
+  root: { flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#F3F1EC', padding: 32, gap: 14 },
+  title: { color: '#1A1A18', fontSize: 37, fontFamily: displayFontFamily, fontWeight: '400' },
+  detail: { color: '#66645E', fontSize: 17, lineHeight: 26, textAlign: 'center' },
+  button: { minHeight: 48, borderRadius: 8, backgroundColor: '#1F3A2E', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20 },
+  buttonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '600' },
 });

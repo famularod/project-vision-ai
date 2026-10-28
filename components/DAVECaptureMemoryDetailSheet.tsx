@@ -14,6 +14,7 @@ import type {
   DAVEConfirmedCaptureMemory,
 } from '../services/DAVECaptureMemory';
 import { colors, spacing } from '../theme';
+import { displayFontFamily } from '../theme/typography';
 
 const FIELD_LABELS: ReadonlyArray<readonly [keyof DAVECaptureMemoryFields, string]> = [
   ['peopleOrCompany', 'Person or company'],
@@ -185,7 +186,7 @@ function friendlyField(value: string) {
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(16,24,40,0.35)',
+    backgroundColor: 'rgba(26,26,24,0.35)',
     justifyContent: 'flex-end',
   },
   sheet: {
@@ -210,8 +211,8 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   main: { flex: 1 },
-  title: { color: colors.text, fontSize: 25, fontWeight: '800' },
-  subtitle: { color: colors.mutedText, fontSize: 14, marginTop: 3 },
+  title: { color: colors.text, fontSize: 29, fontFamily: displayFontFamily, fontWeight: '400' },
+  subtitle: { color: colors.mutedText, fontSize: 16, marginTop: 3 },
   closeButton: {
     width: 44,
     height: 44,
@@ -223,23 +224,23 @@ const styles = StyleSheet.create({
   content: { paddingHorizontal: spacing.lg, paddingBottom: 36 },
   card: {
     backgroundColor: colors.surface,
-    borderRadius: 16,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: colors.border,
     padding: spacing.md,
     marginBottom: spacing.md,
   },
-  cardTitle: { color: colors.text, fontSize: 17, fontWeight: '800', marginBottom: spacing.sm },
+  cardTitle: { color: colors.text, fontSize: 17, fontWeight: '600', marginBottom: spacing.sm },
   field: { marginBottom: spacing.sm },
-  label: { color: colors.mutedText, fontSize: 12, fontWeight: '800', textTransform: 'uppercase' },
-  value: { color: colors.text, fontSize: 16, lineHeight: 22, marginTop: 3 },
-  detail: { color: colors.mutedText, fontSize: 14, lineHeight: 20, marginTop: 4 },
-  source: { color: colors.text, fontSize: 15, lineHeight: 22 },
-  limitation: { color: colors.mutedText, fontSize: 13, lineHeight: 19, marginTop: spacing.md },
-  error: { color: colors.danger, fontSize: 14, fontWeight: '700', marginBottom: spacing.sm },
+  label: { color: colors.mutedText, fontSize: 14, fontWeight: '600', textTransform: 'uppercase' },
+  value: { color: colors.text, fontSize: 17, lineHeight: 23, marginTop: 3 },
+  detail: { color: colors.mutedText, fontSize: 16, lineHeight: 23, marginTop: 4 },
+  source: { color: colors.text, fontSize: 16, lineHeight: 23 },
+  limitation: { color: colors.mutedText, fontSize: 15, lineHeight: 22, marginTop: spacing.md },
+  error: { color: colors.danger, fontSize: 16, fontWeight: '600', marginBottom: spacing.sm },
   deleteButton: {
     minHeight: 50,
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.danger,
     flexDirection: 'row',
@@ -247,5 +248,5 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: spacing.sm,
   },
-  deleteText: { color: colors.danger, fontSize: 15, fontWeight: '800' },
+  deleteText: { color: colors.danger, fontSize: 16, fontWeight: '600' },
 });

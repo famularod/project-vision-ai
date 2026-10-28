@@ -1991,7 +1991,7 @@ const styles = StyleSheet.create({
   conflictCard: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 14,
+    borderRadius: 10,
     backgroundColor: colors.surfaceMuted,
     padding: spacing.md,
     marginBottom: spacing.md,
@@ -2000,9 +2000,9 @@ const styles = StyleSheet.create({
 
   conflictTitle: {
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 21,
-    fontWeight: '800',
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   conflictActions: {
@@ -2015,7 +2015,7 @@ const styles = StyleSheet.create({
   settingsIcon: {
     width: 38,
     height: 38,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
@@ -2027,15 +2027,15 @@ const styles = StyleSheet.create({
 
   settingsRowTitle: {
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 20,
-    fontWeight: '800',
+    fontSize: 17,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   settingsRowDetail: {
     color: colors.mutedText,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 21,
     marginTop: 2,
   },
 
@@ -2045,12 +2045,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.sm,
     backgroundColor: colors.surface,
-    borderRadius: 16,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: colors.border,
     padding: spacing.md,
     marginBottom: spacing.lg,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
@@ -2078,7 +2078,7 @@ const styles = StyleSheet.create({
     flexBasis: '47%',
     minHeight: 56,
     minWidth: 142,
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surfaceMuted,
@@ -2101,9 +2101,9 @@ const styles = StyleSheet.create({
 
   adminActionButtonText: {
     color: colors.primary,
-    fontSize: 15,
-    lineHeight: 19,
-    fontWeight: '800',
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '600',
     textAlign: 'center',
     flexShrink: 1,
   },
@@ -2170,8 +2170,8 @@ const styles = StyleSheet.create({
 
   modalLabel: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     marginBottom: spacing.xs,
   },
 
@@ -2180,9 +2180,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceMuted,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 12,
+    borderRadius: 8,
     color: colors.text,
-    fontSize: 15,
+    fontSize: 16,
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.sm,
     marginBottom: spacing.sm,
@@ -2190,8 +2190,8 @@ const styles = StyleSheet.create({
 
   modalErrorText: {
     color: colors.danger,
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 14,
+    fontWeight: '600',
     marginBottom: spacing.sm,
   },
 });

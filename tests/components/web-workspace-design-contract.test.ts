@@ -230,15 +230,15 @@ describe('Vitruvius web workspace design contract', () => {
     expect(shell).toContain('return buildECOSDocumentReadiness(document).label');
   });
 
-  it('uses the Option A Cool Blueprint surface hierarchy', () => {
-    expect(surfaces).toContain("canvas: '#F4F8FD'");
-    expect(surfaces).toContain("sidebar: '#FFFFFF'");
-    expect(surfaces).toContain("section: '#EEF5FC'");
+  it('uses the Atelier surface hierarchy', () => {
+    expect(surfaces).toContain("canvas: '#FBFAF8'");
+    expect(surfaces).toContain("sidebar: '#FBFAF8'");
+    expect(surfaces).toContain("section: '#F6F4F0'");
     expect(surfaces).toContain("card: '#FFFFFF'");
-    expect(surfaces).toContain("borderStrong: '#B8CDE3'");
-    expect(surfaces).toContain("accent: '#087EF5'");
-    expect(surfaces).toContain("hero: '#087EF5'");
-    expect(surfaces).toContain("dataHeader: '#194A91'");
+    expect(surfaces).toContain("borderStrong: '#DDD9D2'");
+    expect(surfaces).toContain("accent: '#1F3A2E'");
+    expect(surfaces).toContain("hero: '#1F3A2E'");
+    expect(surfaces).toContain("dataHeader: '#1A1A18'");
     expect(shell).toContain('backgroundColor: desktopSurfaces.canvas');
     expect(shell).toContain('backgroundColor: desktopSurfaces.sidebar');
     expect(shell).toContain('backgroundColor: desktopSurfaces.section');
@@ -260,8 +260,8 @@ describe('Vitruvius web workspace design contract', () => {
     expect(shell).toContain('selected: selectedAreaKey === areaKey,');
     expect(shell).toContain('taskProjectGroup');
     expect(shell).toContain('taskAreaContent');
-    expect(shell).toContain("taskProjectGroup: { borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted");
-    expect(shell).toContain("taskGroup: { borderRadius: 13, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card");
+    expect(shell).toContain("taskProjectGroup: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted");
+    expect(shell).toContain("taskGroup: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card");
     expect(shell).toContain('backgroundColor: desktopSurfaces.selected');
   });
 });

@@ -81,13 +81,13 @@ const styles = StyleSheet.create({
   },
   title: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
   },
   detail: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
     fontWeight: '600',
   },
   row: {
@@ -98,8 +98,8 @@ const styles = StyleSheet.create({
   name: {
     flex: 1,
     color: colors.text,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '600',
   },
   remove: {
     minHeight: 44,
@@ -118,13 +118,13 @@ const styles = StyleSheet.create({
   },
   addText: {
     color: colors.primary,
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
   },
   message: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '800',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 });

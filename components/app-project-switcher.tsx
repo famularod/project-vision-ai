@@ -94,8 +94,8 @@ const styles = StyleSheet.create({
   },
   eyebrow: {
     color: colors.tertiaryText,
-    fontSize: 10,
-    fontWeight: '900',
+    fontSize: 12,
+    fontWeight: '600',
     letterSpacing: 1.2,
     paddingHorizontal: spacing.sm,
     paddingBottom: spacing.xs,
@@ -134,11 +134,11 @@ const styles = StyleSheet.create({
   optionText: {
     flex: 1,
     color: colors.mutedText,
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 14,
+    fontWeight: '600',
   },
   optionTextSelected: {
     color: colors.primary,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 });

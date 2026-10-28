@@ -4,11 +4,13 @@ This policy defines automated guardrails and the physical-device review still re
 
 ## Theme
 
-Vitruvius currently ships one deliberate light theme. New screens must use the shared theme tokens instead of introducing isolated colors. Dark appearance is not supported until every core screen has an approved dark palette and device evidence.
+Vitruvius currently ships one deliberate light theme, Atelier (2026-10-27): warm white ground, near-black ink, fine warm-gray rules and one deep green for actions. New screens must use the shared theme tokens instead of introducing isolated colors. Dark appearance is not supported until every core screen has an approved dark palette and device evidence.
 
 ## Text and controls
 
-- Use system fonts and preserve React Native font scaling so Dynamic Type can enlarge project information.
+- Use system fonts for all reading text and preserve React Native font scaling so Dynamic Type can enlarge project information.
+- The one exception is the Atelier display face, Instrument Serif (`displayFontFamily` in `theme/typography.ts`, bundled at `assets/fonts/`, SIL Open Font License). Use it only for page titles, key numbers and the wordmark, never for body text, answers or controls. It has a single regular weight, so pair it with `fontWeight: '400'`.
+- Weights stay at 400, 500 and 600. Heavier weights read as loud and were removed in the Atelier redesign (2026-10-27).
 - Core controls need meaningful accessibility labels and a usable touch target.
 - Truncation may shorten secondary metadata, but it must not hide the task, project, action, or status needed to make a decision.
 

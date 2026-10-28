@@ -4,6 +4,7 @@ import type { DAVEAskAnswer, DAVEAskEvidence } from '../services/DAVEAsk';
 import { ecosDocumentProofClaimFromEvidence } from '../services/ECOSDocumentProofAuthority';
 import { colors, spacing } from '../theme';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
+import { displayFontFamily } from '../theme/typography';
 
 export const UNCHECKED_DOCUMENT_SOURCE_LABEL = 'Document match – not checked by Ask ECOS';
 
@@ -119,29 +120,29 @@ export function DAVEConversationAnswerSheet({
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(16,24,40,0.35)', justifyContent: 'flex-end' },
+  backdrop: { flex: 1, backgroundColor: 'rgba(26,26,24,0.35)', justifyContent: 'flex-end' },
   sheet: { maxHeight: '88%', backgroundColor: colors.background, borderTopLeftRadius: 24, borderTopRightRadius: 24 },
   content: { paddingHorizontal: spacing.lg, paddingBottom: 36 },
   handle: { width: 40, height: 5, borderRadius: 3, backgroundColor: colors.border, alignSelf: 'center', marginTop: 9 },
   header: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingTop: spacing.md, paddingBottom: spacing.lg },
   main: { flex: 1 },
-  title: { color: colors.text, fontSize: 25, fontWeight: '800' },
-  subtitle: { color: colors.mutedText, fontSize: 14, marginTop: 3 },
+  title: { color: colors.text, fontSize: 29, fontFamily: displayFontFamily, fontWeight: '400' },
+  subtitle: { color: colors.mutedText, fontSize: 16, marginTop: 3 },
   closeButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.surfaceMuted, alignItems: 'center', justifyContent: 'center' },
-  question: { color: colors.mutedText, fontSize: 15, fontWeight: '700', marginBottom: spacing.md },
-  answer: { color: colors.text, fontSize: 18, lineHeight: 27, fontWeight: '700' },
-  confidence: { color: colors.mutedText, fontSize: 13, marginTop: spacing.sm, textTransform: 'capitalize' },
-  nextAction: { backgroundColor: colors.primarySoft, borderRadius: 14, padding: spacing.md, marginTop: spacing.lg },
-  limitations: { backgroundColor: colors.surfaceMuted, borderRadius: 14, padding: spacing.md, marginTop: spacing.md },
-  label: { color: colors.text, fontSize: 13, fontWeight: '800', textTransform: 'uppercase', marginBottom: spacing.xs },
-  detail: { color: colors.text, fontSize: 14, lineHeight: 20, marginTop: 3 },
+  question: { color: colors.mutedText, fontSize: 16, fontWeight: '600', marginBottom: spacing.md },
+  answer: { color: colors.text, fontSize: 18, lineHeight: 27, fontWeight: '600' },
+  confidence: { color: colors.mutedText, fontSize: 15, marginTop: spacing.sm, textTransform: 'capitalize' },
+  nextAction: { backgroundColor: colors.primarySoft, borderRadius: 10, padding: spacing.md, marginTop: spacing.lg },
+  limitations: { backgroundColor: colors.surfaceMuted, borderRadius: 10, padding: spacing.md, marginTop: spacing.md },
+  label: { color: colors.text, fontSize: 15, fontWeight: '600', textTransform: 'uppercase', marginBottom: spacing.xs },
+  detail: { color: colors.text, fontSize: 16, lineHeight: 23, marginTop: 3 },
   evidenceList: { marginTop: spacing.lg, gap: spacing.xs },
-  evidenceButton: { minHeight: 52, borderRadius: 12, borderWidth: 1, borderColor: colors.border, padding: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  evidenceSummary: { color: colors.text, fontSize: 14, lineHeight: 19, fontWeight: '700' },
-  evidenceExcerpt: { color: colors.text, fontSize: 13, lineHeight: 18, marginTop: 4 },
-  evidenceType: { color: colors.mutedText, fontSize: 12, marginTop: 2, textTransform: 'capitalize' },
-  primaryButton: { minHeight: 54, borderRadius: 14, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
-  primaryText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
+  evidenceButton: { minHeight: 52, borderRadius: 8, borderWidth: 1, borderColor: colors.border, padding: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  evidenceSummary: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: '600' },
+  evidenceExcerpt: { color: colors.text, fontSize: 15, lineHeight: 21, marginTop: 4 },
+  evidenceType: { color: colors.mutedText, fontSize: 14, marginTop: 2, textTransform: 'capitalize' },
+  primaryButton: { minHeight: 54, borderRadius: 10, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg },
+  primaryText: { color: '#FFF', fontSize: 17, fontWeight: '600' },
   secondaryButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center' },
-  secondaryText: { color: colors.primary, fontSize: 15, fontWeight: '800' },
+  secondaryText: { color: colors.primary, fontSize: 16, fontWeight: '600' },
 });

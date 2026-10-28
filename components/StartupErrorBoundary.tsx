@@ -9,6 +9,7 @@ import {
   logStartupDiagnostic,
   startupErrorMessage,
 } from '../services/StartupDiagnostics';
+import { displayFontFamily } from '../theme/typography';
 
 type StartupErrorBoundaryProps = {
   children: ReactNode;
@@ -94,32 +95,33 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     padding: 24,
-    backgroundColor: '#F2F2F7',
+    backgroundColor: '#F3F1EC',
   },
   title: {
-    color: '#1D1D1F',
-    fontSize: 22,
-    lineHeight: 28,
-    fontWeight: '800',
+    color: '#1A1A18',
+    fontSize: 25,
+    fontFamily: displayFontFamily,
+    lineHeight: 32,
+    fontWeight: '400',
     marginBottom: 10,
   },
   body: {
-    color: '#6E6E73',
-    fontSize: 16,
-    lineHeight: 23,
+    color: '#66645E',
+    fontSize: 17,
+    lineHeight: 24,
     marginBottom: 18,
   },
   button: {
     minHeight: 48,
-    borderRadius: 12,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#007AFF',
+    backgroundColor: '#1F3A2E',
   },
   buttonText: {
     color: '#FFFFFF',
-    fontSize: 16,
-    lineHeight: 22,
-    fontWeight: '800',
+    fontSize: 17,
+    lineHeight: 23,
+    fontWeight: '600',
   },
 });

@@ -224,7 +224,7 @@ export function DesktopReportMarkSent({
             onChange: (event: { target: { value: string } }) => setPicked(event.target.value),
             'aria-label': 'When the report was sent',
             'data-testid': 'report-mark-sent-time',
-            style: { fontSize: 15, padding: 8, borderRadius: 8, border: `1px solid ${desktopSurfaces.border}` },
+            style: { fontSize: 16, padding: 8, borderRadius: 8, border: `1px solid ${desktopSurfaces.border}` },
           })}
           <Text style={styles.detail}>{`Any time from ${factsAsOf}, when this report's project facts were current.`}</Text>
         </>
@@ -257,15 +257,15 @@ export function DesktopReportMarkSent({
 const styles = StyleSheet.create({
   panel: {
     gap: spacing.xs,
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surfaceMuted,
     padding: spacing.sm,
   },
-  title: { color: colors.text, fontSize: 15, fontWeight: '800' },
-  detail: { color: colors.mutedText, fontSize: 13, lineHeight: 18 },
-  message: { color: colors.text, fontSize: 13, lineHeight: 18, fontWeight: '700' },
+  title: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  detail: { color: colors.mutedText, fontSize: 15, lineHeight: 21 },
+  message: { color: colors.text, fontSize: 15, lineHeight: 21, fontWeight: '600' },
   actions: { flexDirection: 'row', gap: spacing.xs, flexWrap: 'wrap' },
   choice: {
     minHeight: 40,
@@ -278,7 +278,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
   },
   choiceActive: { borderColor: colors.primary, backgroundColor: colors.primarySoft },
-  choiceText: { color: colors.text, fontSize: 14, fontWeight: '700' },
+  choiceText: { color: colors.text, fontSize: 16, fontWeight: '600' },
   primaryButton: {
     minHeight: 40,
     paddingHorizontal: spacing.md,
@@ -287,7 +287,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: colors.primary,
   },
-  primaryText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
+  primaryText: { color: '#FFFFFF', fontSize: 16, fontWeight: '600' },
   secondaryButton: {
     minHeight: 40,
     paddingHorizontal: spacing.md,
@@ -298,7 +298,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.surface,
   },
-  secondaryText: { color: colors.primary, fontSize: 14, fontWeight: '800' },
+  secondaryText: { color: colors.primary, fontSize: 16, fontWeight: '600' },
   disabled: { opacity: 0.5 },
   pressed: { opacity: 0.7 },
 });

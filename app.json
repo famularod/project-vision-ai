@@ -73,7 +73,14 @@
           "enableBackgroundRecording": false
         }
       ],
-      "expo-font",
+      [
+        "expo-font",
+        {
+          "fonts": [
+            "./assets/fonts/InstrumentSerif-Regular.ttf"
+          ]
+        }
+      ],
       "expo-mail-composer",
       "expo-secure-store",
       "expo-sharing",

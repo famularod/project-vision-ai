@@ -135,8 +135,8 @@ const styles = StyleSheet.create({
   },
   tabText: {
     color: colors.mutedText,
-    fontSize: 10,
-    fontWeight: '700',
+    fontSize: 12,
+    fontWeight: '600',
   },
   tabTextActive: {
     color: colors.primary,
@@ -160,7 +160,7 @@ const styles = StyleSheet.create({
   },
   talkText: {
     color: colors.primary,
-    fontSize: 10,
-    fontWeight: '800',
+    fontSize: 12,
+    fontWeight: '600',
   },
 });

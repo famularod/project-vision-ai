@@ -12,6 +12,7 @@ import {
 
 import { PRODUCT_BRAND } from '../product-brand';
 import { isSupabaseConfigured, signIn } from '../services/SupabaseService';
+import { displayFontFamily } from '../theme/typography';
 
 /**
  * Shown by the native root whenever nobody is signed in. Work is only ever
@@ -143,37 +144,37 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
-    backgroundColor: '#F5F7FA',
+    backgroundColor: '#F3F1EC',
   },
   card: {
     width: '100%',
     maxWidth: 440,
     padding: 24,
-    borderRadius: 16,
+    borderRadius: 10,
     backgroundColor: '#FFFFFF',
   },
-  title: { fontSize: 24, lineHeight: 30, fontWeight: '700', color: '#101828' },
-  body: { marginTop: 10, fontSize: 16, lineHeight: 23, color: '#475467' },
-  label: { marginTop: 18, marginBottom: 6, fontSize: 15, fontWeight: '600', color: '#344054' },
+  title: { fontSize: 28, fontFamily: displayFontFamily, lineHeight: 35, fontWeight: '400', color: '#1A1A18' },
+  body: { marginTop: 10, fontSize: 17, lineHeight: 24, color: '#3A3935' },
+  label: { marginTop: 18, marginBottom: 6, fontSize: 16, fontWeight: '600', color: '#3A3935' },
   input: {
     minHeight: 48,
     paddingHorizontal: 14,
     borderRadius: 10,
     borderWidth: 1,
-    borderColor: '#98A2B3',
+    borderColor: '#8A877F',
     fontSize: 17,
-    color: '#101828',
+    color: '#1A1A18',
     backgroundColor: '#FFFFFF',
   },
-  error: { marginTop: 14, fontSize: 15, lineHeight: 21, color: '#B42318' },
+  error: { marginTop: 14, fontSize: 16, lineHeight: 22, color: '#B42318' },
   button: {
     marginTop: 22,
     minHeight: 50,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 12,
-    backgroundColor: '#0B5CAD',
+    borderRadius: 8,
+    backgroundColor: '#1F3A2E',
   },
   buttonDisabled: { opacity: 0.55 },
-  buttonText: { fontSize: 17, fontWeight: '700', color: '#FFFFFF' },
+  buttonText: { fontSize: 17, fontWeight: '600', color: '#FFFFFF' },
 });

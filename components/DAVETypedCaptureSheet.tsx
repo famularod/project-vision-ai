@@ -10,6 +10,7 @@ import {
 } from 'react-native';
 import { colors, spacing } from '../theme';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
+import { displayFontFamily } from '../theme/typography';
 
 export function DAVETypedCaptureSheet({
   visible,
@@ -148,7 +149,7 @@ export function DAVETypedCaptureSheet({
 const styles = StyleSheet.create({
   backdrop: {
     flex: 1,
-    backgroundColor: 'rgba(16,24,40,0.35)',
+    backgroundColor: 'rgba(26,26,24,0.35)',
     justifyContent: 'flex-end',
   },
   sheet: {
@@ -177,8 +178,8 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.lg,
   },
   main: { flex: 1 },
-  title: { color: colors.text, fontSize: 25, fontWeight: '800' },
-  subtitle: { color: colors.mutedText, fontSize: 14, marginTop: 3 },
+  title: { color: colors.text, fontSize: 29, fontFamily: displayFontFamily, fontWeight: '400' },
+  subtitle: { color: colors.mutedText, fontSize: 16, marginTop: 3 },
   closeButton: {
     width: 44,
     height: 44,
@@ -191,7 +192,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     backgroundColor: colors.primarySoft,
     borderColor: colors.primary,
-    borderRadius: 14,
+    borderRadius: 10,
     borderWidth: 1,
     flexDirection: 'row',
     gap: spacing.sm,
@@ -207,42 +208,42 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     width: 40,
   },
-  operationLabel: { color: colors.text, fontSize: 16, fontWeight: '800' },
-  operationGuidance: { color: colors.mutedText, fontSize: 13, lineHeight: 18, marginTop: 2 },
-  prompt: { color: colors.text, fontSize: 18, fontWeight: '800' },
+  operationLabel: { color: colors.text, fontSize: 17, fontWeight: '600' },
+  operationGuidance: { color: colors.mutedText, fontSize: 15, lineHeight: 21, marginTop: 2 },
+  prompt: { color: colors.text, fontSize: 18, fontWeight: '600' },
   guidance: {
     color: colors.mutedText,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 23,
     marginTop: 5,
   },
   input: {
     minHeight: 150,
-    borderRadius: 14,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 23,
+    fontSize: 17,
+    lineHeight: 24,
     padding: spacing.md,
     marginTop: spacing.md,
   },
   error: {
     color: colors.danger,
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     marginTop: spacing.sm,
   },
   continueButton: {
     minHeight: 54,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: spacing.lg,
   },
-  continueText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
+  continueText: { color: '#FFF', fontSize: 17, fontWeight: '600' },
   cancelButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center' },
-  cancelText: { color: colors.primary, fontSize: 15, fontWeight: '800' },
+  cancelText: { color: colors.primary, fontSize: 16, fontWeight: '600' },
 });

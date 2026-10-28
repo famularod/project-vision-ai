@@ -119,9 +119,9 @@ const styles = StyleSheet.create({
 
   eyebrow: {
     color: colors.primary,
-    fontSize: 13,
-    lineHeight: 17,
-    fontWeight: '800',
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '600',
     marginBottom: spacing.xs,
   },
 
