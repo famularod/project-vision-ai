@@ -4,13 +4,15 @@ import type {
   ReferenceDocument,
   ScheduleItem,
 } from '../types';
-import { buildDAVEProjectTruth, daveProjectTruthInStableOrder, type DAVEProjectTruth } from './DAVEProjectTruth';
+import { buildDAVEProjectTruth, daveProjectTruthInStableOrder, daveProjectTruthAsBuilt, daveProjectTruthCountsOtherUpdatesThanBefore, type DAVEProjectTruth } from './DAVEProjectTruth';
 import type { ProjectRecord } from './ProjectCoverPhotoService';
 import { buildDailyReportAuthorityScope } from './ReportAuthorityScope';
 import { buildAutomaticReportDrawingReferences } from './ReportDrawingReferences';
 import { buildWrittenReportFacts } from './ReportWrittenFacts';
 import { reportTaskConfirmedAt } from './DAVEReportIntelligence';
+import { projectScheduleItemsForReport } from './ReportScheduleProjection';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
+import { fieldUpdatesNewestFirst, scheduleTasksInReportOrder } from './PIEEvidenceFusion';
 
 export type DAVEReportProjectTruthsInput = {
   /** The report's projects in the order shown, each with the id its Project Truth carries. */
@@ -18,6 +20,8 @@ export type DAVEReportProjectTruthsInput = {
   /** The owner's projects: a task's or an update's project is read against them. */
   projectRecords: readonly ProjectRecord[];
   updates: readonly ProjectUpdate[];
+  /** The desktop supplies only downloaded cloud rows; their serialized status may still say queued. */
+  cloudUpdateReceipts?: boolean;
   /** The tasks shown. */
   scheduleItems: readonly ScheduleItem[];
   /**
@@ -81,6 +85,28 @@ export type DAVEReportProjectTruthsInput = {
  * for a name.
  */
 export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput): DAVEProjectTruth[] {
+  const scheduleItems = projectScheduleItemsForReport(input.scheduleItems);
+  const knownScheduleItems = input.knownScheduleItems && projectScheduleItemsForReport(input.knownScheduleItems);
+  if (scheduleItems === input.scheduleItems && knownScheduleItems === input.knownScheduleItems) {
+    return buildReportTruthsFromInput(input);
+  }
+  // One moment for the modern reading and the original input's frozen history.
+  const now = input.now ?? new Date().toISOString();
+  const original = buildReportTruthsFromInput({ ...input, now });
+  const modern = buildReportTruthsFromInput({ ...input, scheduleItems, knownScheduleItems, now });
+  return modern.map((truth, index) => daveProjectTruthInStableOrder(
+    // A fresh view: the stable-order helper deliberately keeps an already-associated history.
+    { ...truth },
+    daveProjectTruthAsBuilt(original[index]),
+    daveProjectTruthCountsOtherUpdatesThanBefore(truth),
+    truth.drawingCitations,
+    truth.writtenReportFacts,
+    truth.completedWorkConfirmedAt,
+  ));
+}
+
+/** The B62 recipe, also used verbatim for each original input's historical truth. */
+function buildReportTruthsFromInput(input: DAVEReportProjectTruthsInput): DAVEProjectTruth[] {
   const known = input.knownScheduleItems;
   return input.projects.map(project => {
     const scopeInput = {
@@ -120,7 +146,18 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
     const scope = known ? buildDailyReportAuthorityScope({ ...scopeInput, knownScheduleItems: known }) : scopeAsBefore;
     const sameUpdates = scope.updates.length === scopeAsBefore.updates.length &&
       scope.updates.every((update, index) => update === scopeAsBefore.updates[index]);
-    const truth = truthOf(scope);
+    // Classify equal-caption evidence in the same saved-update order the report
+    // writer uses. Cloud row arrival order must not choose a different duplicate
+    // winner (and therefore a different report identity) on another device.
+    const orderedUpdates = fieldUpdatesNewestFirst(scope.updates, { cloudReceipts: input.cloudUpdateReceipts });
+    const sameOrder = orderedUpdates.every((update, index) => update === scope.updates[index]);
+    // Resolve duplicate-evidence survivors and equal task-name matches before
+    // building modern report facts. Sorting the finished truth cannot undo an
+    // arrival-order choice already recorded in a photo's task or disposition.
+    // Keep the original input separately below for the frozen raw 1.0 projection.
+    const orderedTasks = scheduleTasksInReportOrder(scope.scheduleItems);
+    const sameTaskOrder = orderedTasks.every((task, index) => task === scope.scheduleItems[index]);
+    const truth = truthOf({ ...scope, updates: orderedUpdates, scheduleItems: orderedTasks });
     // R8 item 2 (the coordinator's decision on review pass 2, P2-2): the drawings the report cites for this
     // project's work areas, worked out as the Reports screen and the Word report work them out, so that the
     // fingerprint holds exactly what the report prints and saves of a drawing.
@@ -135,7 +172,7 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
     const before = input.asBuiltBefore;
     const builtBefore = before
       ? truthOf(buildDailyReportAuthorityScope({ ...scopeInput, scheduleItems: before.scheduleItems }), before.knownScheduleItems ?? known)
-      : sameUpdates ? truth : truthOf(scopeAsBefore);
+      : sameUpdates && sameOrder && sameTaskOrder ? truth : truthOf(scopeAsBefore);
     // HIGH item 1 (F2 to F6b): what the phone's written report prints of this project's own updates and tasks that
     // the truth does not hold, read by the writer's own rules at the truth's own moment, so that the fingerprint
     // holds it on the phone and on the desktop alike.
@@ -143,6 +180,7 @@ export function buildDAVEReportProjectTruths(input: DAVEReportProjectTruthsInput
       ...buildWrittenReportFacts({
         projectName: project.name,
         updates: scope.updates,
+        cloudUpdateReceipts: input.cloudUpdateReceipts,
         scheduleItems: scope.scheduleItems,
         now: truth.generatedAt,
       }),

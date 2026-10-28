@@ -102,8 +102,8 @@ const noticeStyles = StyleSheet.create({
     borderRadius: 8,
     backgroundColor: colors.warningSoft,
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: 14,
+    lineHeight: 19,
     fontWeight: '600',
   },
 });

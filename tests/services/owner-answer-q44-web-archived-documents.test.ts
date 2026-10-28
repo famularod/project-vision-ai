@@ -104,11 +104,12 @@ describe('the web\'s Documents list and the archived mark (owner answer Q44)', (
     expect(names).toEqual(['Site contract']);
     expect(snapshot.archivedDocumentIds).toEqual(['Grading permit']);
     expect(daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds)).toHaveLength(1);
-    // It is hidden, not gone: the snapshot still holds the document, and the document carries no mark of its
-    // own, so nothing the web saves can write one into the record.
+    // It is hidden, not gone. Desktop Archive/Restore retains the seen cloud mark as a view projection
+    // for its conditional write; ordinary metadata saves strip that projection (gateway contract test).
     const kept = snapshot.referenceDocuments.find(document => document.id === 'Grading permit');
     expect(kept).toBeTruthy();
-    expect(Object.keys(kept!).filter(key => /archiv/i.test(key))).toEqual([]);
+    expect(kept!.archivedAt).toBe(AT);
+    expect(Object.keys(kept!).filter(key => /archiv/i.test(key))).toEqual(['archivedAt']);
   });
 
   it('restored on the phone or the iPad: listed again at the next read', async () => {

@@ -105,6 +105,6 @@ describe('Vitruvius schedule workspace model', () => {
     expect(nextScheduleSortOrder(phase.id, [phase, child])).toBe(20);
     expect(nextScheduleWbsCode(phase.id, [phase, child])).toBe('2.2');
     expect(nextScheduleSortOrder(null, [phase, child])).toBe(10);
-    expect(nextScheduleWbsCode(null, [phase, child])).toBe('2');
+    expect(nextScheduleWbsCode(null, [phase, child])).toBe('3'); // The root phase already owns 2 (7.66).
   });
 });

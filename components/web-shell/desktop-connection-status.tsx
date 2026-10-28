@@ -67,14 +67,14 @@ const styles = StyleSheet.create({
   dot_connected: { backgroundColor: colors.success },
   dot_reconnecting: { backgroundColor: colors.warning },
   dot_stale: { backgroundColor: colors.danger },
-  badgeText: { fontSize: 12, lineHeight: 16, fontWeight: '900' },
+  badgeText: { fontSize: 14, lineHeight: 19, fontWeight: '600' },
   badgeText_connected: { color: '#217342' },
   badgeText_reconnecting: { color: '#8A5200' },
   badgeText_stale: { color: '#A32828' },
   lastSuccess: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 15,
+    fontSize: 13,
+    lineHeight: 18,
     textAlign: 'right',
   },
 });

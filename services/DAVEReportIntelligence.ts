@@ -1,3 +1,4 @@
+import { reportProjectNameOrder } from './ReportProjectOrder';
 import { daveProjectTruthAsBuilt, daveProjectTruthCountsOtherUpdatesThanBefore, type DAVEProjectTruth } from './DAVEProjectTruth';
 import type { PIEReportDraft } from './PIEReporter';
 import {
@@ -6,7 +7,7 @@ import {
 } from './dave-project-schedule-rollup';
 import type { ReferenceDocument, ScheduleItem } from '../types';
 import { scheduleProgressIsComplete } from './ScheduleProgressInvariant';
-import { scheduleProgressJudgedAt } from './ScheduleProgressSource';
+import { scheduleProgressIsManagers, scheduleProgressJudgedAt } from './ScheduleProgressSource';
 import {
   buildDAVEReportSnapshot,
   compareDAVEReportSnapshots,
@@ -136,6 +137,7 @@ export type DAVEReportDashboardMetrics = Readonly<{
 }>;
 
 export type DAVEReportBriefing = Readonly<{
+  wordTaskLines?: readonly import('./ReportWordDocument').ReportWordTaskLine[];
   version: typeof DAVE_REPORT_INTELLIGENCE_VERSION;
   generatedAt: string;
   scopeLabel: string;
@@ -398,6 +400,18 @@ export function buildDAVELegacyReportSourceFingerprint(
   const truthFingerprints = truths
     .map(daveProjectTruthAsBuilt)
     .map(truth => ({
+      ...truth,
+      intelligence: {
+        ...truth.intelligence,
+        // The desktop's archive UI projection was introduced after Build
+        // 230. Historical 1.0 fingerprints retain that build's document facts.
+        referenceDocuments: truth.intelligence.referenceDocuments.map(document => {
+          const { archivedAt: _archiveView, ...saved } = document as typeof document & { archivedAt?: unknown };
+          return saved;
+        }),
+      },
+    }))
+    .map(truth => ({
       projectName: normalized(truth.projectName),
       fingerprint: stableHash(stableStringify(canonicalizeReportSourceValue(
         withoutVolatileReportSourceFields(truth),
@@ -651,7 +665,7 @@ export function buildDAVEReportBriefing({
    * report's fingerprint. Without them, Completed Work's dates read as
    * before.
    */
-  scheduleItems?: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>[];
+  scheduleItems?: readonly (ReportTaskConfirmation & Pick<ScheduleItem, 'id'>)[];
 }): DAVEReportBriefing {
   return briefingOf({
     truths,
@@ -660,6 +674,7 @@ export function buildDAVEReportBriefing({
     readAsEarlierVersionReport,
     waitingForOtherDevice,
     lastUpdatedAt: completedTaskLastUpdatedAt(scheduleItems),
+    wordIdentityItems: scheduleItems as readonly ScheduleItem[] | undefined,
   });
 }
 
@@ -671,6 +686,7 @@ function briefingOf({
   readAsEarlierVersionReport = false,
   waitingForOtherDevice = false,
   lastUpdatedAt,
+  wordIdentityItems,
 }: {
   truths: readonly DAVEProjectTruth[];
   selectedProjectNames?: readonly string[];
@@ -678,11 +694,12 @@ function briefingOf({
   readAsEarlierVersionReport?: boolean;
   waitingForOtherDevice?: boolean;
   lastUpdatedAt: CompletedTaskLastUpdatedAt;
+  wordIdentityItems?: readonly ScheduleItem[];
 }): DAVEReportBriefing {
   // HIGH item 1e (the coordinator's decision on review pass 3's case B and A6 pass 6 #6): a combined report prints its
   // projects by name, as its fingerprint works them out (1c), not in the order they were ticked: the same text, in the
   // same order, under the same value, on every device and in every body written from this briefing.
-  const truths = [...ticked].sort((left, right) => normalized(left.projectName).localeCompare(normalized(right.projectName)));
+  const truths = [...ticked].sort((left, right) => reportProjectNameOrder(left.projectName, right.projectName));
   const projectNames = unique(
     (selectedProjectNames?.length ? selectedProjectNames : truths.map(truth => truth.projectName))
       .map(clean)
@@ -816,6 +833,25 @@ function briefingOf({
     milestones,
     completedWork,
     currentWork,
+    wordTaskLines: !wordIdentityItems ? [] : truths.flatMap(truth => truth.schedule.flatMap(task => {
+      const section = scheduleProgressIsComplete(task) ? 'COMPLETED WORK' as const : 'CURRENT WORK' as const;
+      const line = scheduleProgressIsComplete(task)
+        ? reportCompletedTaskFact(truth.projectName, task, truths.length > 1, lastUpdatedAt)
+        : reportTaskFact(truth.projectName, task, truths.length > 1);
+      const visible = section === 'COMPLETED WORK' ? completedWork : currentWork;
+      // IDs and exact names must each identify one current row in the complete scope.
+      const all = truths.flatMap(t => t.schedule.map(row => ({ project: t.projectName, row })));
+      const sameId = all.filter(other => other.row.taskId === task.taskId);
+      const sameName = all.filter(other => other.project === truth.projectName && other.row.taskName === task.taskName);
+      const original = wordIdentityItems?.filter(item => item.id === task.taskId) ?? [];
+      const originalMatches = original.length === 1 && original[0].taskName === task.taskName &&
+        (original[0].projectName || original[0].scheduleProjectName) === truth.projectName && original[0].locationName === task.areaName;
+      const uniqueProject = truths.filter(other => other.projectName === truth.projectName).length === 1 &&
+        (!truth.projectId || truths.filter(other => other.projectId === truth.projectId).length === 1);
+      return uniqueProject && originalMatches && visible.includes(line) && task.areaName && sameId.length === 1 && sameName.length === 1
+        ? [{ section, line, taskId: task.taskId, taskName: task.taskName, projectName: truth.projectName, projectId: original[0].projectId, areaName: task.areaName }]
+        : [];
+    })),
     whatChanged: unique([
       ...recentChanges.map(change => change.summary),
       ...truths.flatMap(truth =>
@@ -962,16 +998,19 @@ function completedWorkLines(truths: readonly DAVEProjectTruth[], lastUpdatedAt: 
 }
 
 /**
- * When the manager confirmed a task's progress, or a master's file completed it: what Completed Work's "Last updated"
+ * When the manager confirmed a task's progress, or a schedule file completed it: what Completed Work's "Last updated"
  * reads beside the task's activity (A6 pass 14 L4, R5 item 3). The report truth carries it for each completed task
  * (completedWorkConfirmedAt), so the fingerprint reads it as the briefing does (HIGH item 1c).
  */
-export function reportTaskConfirmedAt(item: Pick<ScheduleItem, 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>): string | null {
-  return latestDate([scheduleProgressJudgedAt(item as ScheduleItem), completedByMasterAt(item)]);
+type ReportTaskConfirmation = Pick<ScheduleItem, 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'> &
+  Partial<Pick<ScheduleItem, 'lookaheadOverlay' | 'percentComplete' | 'progressSource' | 'progressConfirmedBy' | 'completionVerification'>>;
+
+export function reportTaskConfirmedAt(item: ReportTaskConfirmation): string | null {
+  return latestDate([scheduleProgressJudgedAt(item as ScheduleItem), completedByMasterAt(item), completedByLookaheadAt(item)]);
 }
 
 function completedTaskLastUpdatedAt(
-  scheduleItems: readonly Pick<ScheduleItem, 'id' | 'progressConfirmedAt' | 'progressJudgment' | 'fileProgressPeak'>[] | undefined,
+  scheduleItems: readonly (ReportTaskConfirmation & Pick<ScheduleItem, 'id'>)[] | undefined,
 ): CompletedTaskLastUpdatedAt {
   if (!scheduleItems) return task => latestDate([task.latestActivityAt, task.updatedAt]);
   const confirmedAt = new Map(scheduleItems.map(item => [item.id, reportTaskConfirmedAt(item)]));
@@ -982,6 +1021,33 @@ function completedTaskLastUpdatedAt(
 function completedByMasterAt(item: Pick<ScheduleItem, 'fileProgressPeak'>): string | null {
   const peak = item.fileProgressPeak;
   return peak && boundedPercent(peak.percentComplete) >= 100 && typeof peak.statedAt === 'string' ? peak.statedAt : null;
+}
+
+/** Read the existing lookahead provenance without writing a manager confirmation.
+ * Repeating 100%, or a later file with no percent, does not complete it again.
+ * Missing history keeps the existing fallback rather than inventing a date.
+ */
+function completedByLookaheadAt(item: ReportTaskConfirmation): string | null {
+  if (item.percentComplete !== 100 || scheduleProgressIsManagers(item as ScheduleItem)) return null;
+  const overlay = item.lookaheadOverlay;
+  if (!overlay || !Array.isArray(overlay.lookaheads)) return null;
+  let percent: number | null = Number.isFinite(overlay.masterPercentComplete) ? boundedPercent(overlay.masterPercentComplete) : null;
+  let completedAt: string | null = null;
+  for (const entry of overlay.lookaheads) {
+    if (entry.percentComplete === null) continue;
+    if (typeof entry.percentComplete !== 'number' || !Number.isFinite(entry.percentComplete)) {
+      // Old entries did not record whether they changed progress. A later 100%
+      // may repeat their completion; only a known transition proves its date.
+      percent = null;
+      completedAt = null;
+      continue;
+    }
+    const next = boundedPercent(entry.percentComplete);
+    if (next < 100) completedAt = null;
+    else if (percent !== null && percent < 100) completedAt = latestDate([entry.approvedAt || entry.importedAt]);
+    percent = next;
+  }
+  return percent === 100 ? completedAt : null;
 }
 
 function reportCompletedTaskFact(
@@ -1090,7 +1156,9 @@ function buildDashboardMetrics({
   const areaMap = new Map<string, typeof tasks>();
   for (const task of tasks) {
     const areaName = clean(task.areaName) || 'Unassigned area';
-    const key = `${normalized(task.projectName)}|${normalized(areaName)}`;
+    const key = /[^\u0000-\u007f]/.test(areaName)
+      ? JSON.stringify([normalized(task.projectName), areaName.normalize('NFC').toLowerCase()])
+      : `${normalized(task.projectName)}|${normalized(areaName)}`;
     areaMap.set(key, [...(areaMap.get(key) || []), { ...task, areaName }]);
   }
   const workAreas = Array.from(areaMap.entries()).map(([key, areaTasks]) => {

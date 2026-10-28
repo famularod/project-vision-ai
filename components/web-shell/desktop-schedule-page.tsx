@@ -1,5 +1,5 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { createElement, useMemo, useState } from 'react';
+import { createElement, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -27,6 +27,7 @@ import { daveWebLinkCircleRefusal } from '../../services/DAVEWebTaskLinkCircle';
 import {
   buildVitruviusGanttModel,
   parseVitruviusScheduleDate,
+  vitruviusGanttColumnsInWindow,
   type VitruviusGanttZoom,
 } from '../../services/VitruviusGanttModel';
 import {
@@ -67,6 +68,7 @@ import type { ScheduleItem, ScheduleStatus } from '../../types';
 import { colors, spacing } from '../../theme';
 import { useDesktopAuth } from './desktop-auth-provider';
 import { desktopSurfaces } from './desktop-surface-palette';
+import { displayFontFamily } from '../../theme/typography';
 
 type ScheduleEditorKind = 'task' | 'phase' | 'milestone';
 type ScheduleBuilderConflict = Readonly<{
@@ -82,6 +84,8 @@ type ScheduleEditorState = Readonly<{
   projectName: string;
   locationName: string;
   wbsCode: string;
+  /** A typed code stays his choice; only generated defaults are allocated again at Save (7.66). */
+  wbsCodeWasEdited?: boolean;
   parentItemId: string;
   startDate: string;
   finishDate: string;
@@ -243,7 +247,7 @@ export function DesktopSchedulePage({
   }, [editingTask, editor, scheduleTasks, linkTarget]);
 
   const openNew = (kind: ScheduleEditorKind, parentItemId: string | null = null) => {
-    const projectTasks = tasks.filter(task => inProject(task, defaultProject));
+    const projectTasks = scheduleTasks.filter(task => inProject(task, defaultProject));
     setEditingTask(null);
     setConflict(null);
     setEditor({
@@ -330,7 +334,14 @@ export function DesktopSchedulePage({
       const limitProblem = scheduleEditorLimitProblem(form, opened);
       if (limitProblem) return { ok: false, message: limitProblem };
     }
-    const projectTasks = tasks.filter(task => inProject(task, form.projectName));
+    const projectTasks = scheduleTasks.filter(task => inProject(task, form.projectName));
+    // Refresh a generated default at Save: another task may have arrived while this form stayed open.
+    const wbsCode = !opened && !form.wbsCodeWasEdited
+      ? nextScheduleWbsCode(form.parentItemId || null, projectTasks)
+      : form.wbsCode;
+    if (!opened && wbsCode.trim() && projectTasks.some(task => task.wbsCode?.trim() === wbsCode.trim())) {
+      return { ok: false, message: `WBS ${wbsCode.trim()} is already used in this project. Enter an unused WBS code.` };
+    }
     // A new item's cloud project is looked up by its project's name among
     // the open projects, as on the Tasks page. It had been copied from
     // another task of the project: with no task yet nothing could be added,
@@ -389,7 +400,7 @@ export function DesktopSchedulePage({
         notes: form.notes,
         nextAction: opened?.nextAction || '',
         activityMessage: '',
-        wbsCode: form.wbsCode,
+        wbsCode,
         parentItemId: form.parentItemId,
         sortOrder: opened?.sortOrder ??
           nextScheduleSortOrder(form.parentItemId || null, projectTasks),
@@ -980,21 +991,152 @@ function GanttWorkspace({
   const [showCriticalPath, setShowCriticalPath] = useState(true);
   const [showBaselines, setShowBaselines] = useState(true);
   const [showImpactPreview, setShowImpactPreview] = useState(false);
+  const [viewport, setViewport] = useState({ left: 0, width: 1024 });
+  const timelineScroll = useRef<ScrollView>(null);
+  const previousGeometry = useRef<{ rangeStart: string; dayWidth: number } | null>(null);
   const model = useMemo(
     // By building, as the Builder groups (A5 pass 13); the phone keeps the root.
-    () => buildVitruviusGanttModel({ items: tasks, zoom, groupBy: 'appProject' }),
+    () => buildVitruviusGanttModel({ items: tasks, zoom, groupBy: 'appProject', columnWindow: { left: 0, width: 1, overscan: 0 } }),
     [tasks, zoom],
   );
+  // Scrolling changes only bounded columns, never the hierarchy or task geometry.
+  const columns = useMemo(() => vitruviusGanttColumnsInWindow(model, viewport), [model, viewport]);
+  useEffect(() => {
+    const previous = previousGeometry.current;
+    previousGeometry.current = { rangeStart: model.rangeStart, dayWidth: model.dayWidth };
+    // Preserve the calendar day at the left edge through zoom/range changes,
+    // then clamp after a resize or a shorter schedule replaces this one.
+    const requested = previous
+      ? ((Date.parse(previous.rangeStart) - Date.parse(model.rangeStart)) / 86400000 + viewport.left / previous.dayWidth) * model.dayWidth
+      : viewport.left;
+    const left = Math.max(0, Math.min(Math.max(0, model.timelineWidth - viewport.width), requested));
+    timelineScroll.current?.scrollTo({ x: left, animated: false });
+    setViewport(current => left === current.left ? current : { ...current, left });
+  }, [model.rangeStart, model.dayWidth, model.timelineWidth, viewport.width]);
   const analytics = useMemo(
     () => analyzeVitruviusListedSchedule(tasks, shownTasks),
     [tasks, shownTasks],
   );
   const criticalIds = analytics.criticalPath.criticalItemIds;
-  const lateBaselineCount = analytics.baselineVariance.filter(
+  const lateBaselineCount = useMemo(() => analytics.baselineVariance.filter(
     variance => variance.status === 'late',
-  ).length;
+  ).length, [analytics.baselineVariance]);
+  const baselineCount = useMemo(() => analytics.baselineVariance.filter(
+    variance => variance.status !== 'no_baseline',
+  ).length, [analytics.baselineVariance]);
   const rowHeight = 58;
   const timelineHeight = Math.max(180, model.rows.length * rowHeight);
+
+  const activityRows = useMemo(() => model.rows.map((row, index) => {
+    const previousProject = model.rows[index - 1]?.projectName;
+    return (
+      <Pressable
+        key={row.item.id}
+        style={[
+          styles.ganttActivityRow,
+          index % 2 === 1 && styles.ganttRowAlternate,
+          row.summary && styles.ganttSummaryRow,
+        ]}
+        onPress={() => onOpenItem(row.item)}
+        accessibilityRole="button"
+        accessibilityLabel={`Open timeline item ${row.item.taskName}`}
+      >
+        <View style={[styles.ganttActivityCopy, { paddingLeft: row.depth * 18 }]}>
+          {row.projectName !== previousProject ? (
+            <Text style={styles.ganttProjectLabel} numberOfLines={1}>
+              {row.projectName}
+            </Text>
+          ) : null}
+          <Text
+            style={[styles.ganttItemName, row.summary && styles.ganttSummaryName]}
+            numberOfLines={1}
+          >
+            {row.item.wbsCode ? `${row.item.wbsCode}  ` : ''}{row.item.taskName}
+          </Text>
+          {showCriticalPath && criticalIds.has(row.item.id) ? (
+            <Text style={styles.ganttCriticalLabel}>CRITICAL</Text>
+          ) : null}
+        </View>
+        <Text style={styles.ganttDateText} numberOfLines={row.outsideSupportedYears ? 3 : 1}>
+          {row.outsideSupportedYears
+            ? `Date check\n${row.item.startDate || '—'}\n${row.item.finishDate || '—'}`
+            : row.startDate && row.finishDate
+            ? `${shortDate(row.startDate)} – ${shortDate(row.finishDate)}`
+            : 'Set dates'}
+        </Text>
+      </Pressable>
+    );
+  }), [model.rows, showCriticalPath, criticalIds, onOpenItem]);
+  const timelineRows = useMemo(() => model.rows.map((row, index) => (
+    <View
+      key={row.item.id}
+      style={[
+        styles.ganttTimelineRow,
+        {
+          top: index * rowHeight,
+          width: model.timelineWidth,
+          height: rowHeight,
+        },
+        index % 2 === 1 && styles.ganttTimelineRowAlternate,
+      ]}
+    >
+      {showBaselines &&
+      row.baselineLeft !== null &&
+      row.baselineWidth !== null ? (
+        <View
+          testID={`gantt-baseline:${row.item.id}`}
+          style={[
+            styles.ganttBaselineBar,
+            {
+              left: row.baselineLeft,
+              width: row.baselineWidth,
+              top: 38,
+            },
+          ]}
+        />
+      ) : null}
+      {row.left !== null && row.width !== null ? (
+        row.milestone ? (
+          <View
+            testID={`gantt-milestone:${row.item.id}`}
+            style={[
+              styles.ganttMilestone,
+              { left: row.left, top: 19 },
+            ]}
+          />
+        ) : (
+          <View
+            testID={`gantt-bar:${row.item.id}`}
+            style={[
+              styles.ganttBar,
+              row.summary && styles.ganttSummaryBar,
+              row.item.status === 'Complete' && styles.ganttCompleteBar,
+              showCriticalPath &&
+              criticalIds.has(row.item.id) &&
+              styles.ganttCriticalBar,
+              { left: row.left, width: row.width, top: row.summary ? 18 : 16 },
+            ]}
+          >
+            {!row.summary && row.progressWidth !== null ? (
+              <View
+                testID={`gantt-progress:${row.item.id}`}
+                style={[
+                  styles.ganttProgressBar,
+                  { width: row.progressWidth },
+                ]}
+              />
+            ) : null}
+          </View>
+        )
+      ) : (
+        <Text style={styles.ganttMissingDate}>
+          {row.outsideSupportedYears
+            ? `Date check: ${row.item.startDate || row.startDate || '—'} – ${row.item.finishDate || row.finishDate || '—'} is outside 2000 to 2100. Open this item to review its dates.`
+            : 'Set dates to place this item'}
+        </Text>
+      )}
+    </View>
+  )), [model.rows, model.timelineWidth, showBaselines, showCriticalPath, criticalIds]);
 
   return (
     <View style={styles.ganttSurface}>
@@ -1004,6 +1146,11 @@ function GanttWorkspace({
           <Text style={styles.ganttRange}>
             {shortDate(model.rangeStart)} – {shortDate(model.rangeFinish)}
           </Text>
+          {columns.length > 0 ? (
+            <Text style={styles.ganttRange}>
+              Viewing {columns[0].startDate} – {columns[columns.length - 1].endDate}
+            </Text>
+          ) : null}
         </View>
         <View style={styles.zoomToggle}>
           {(['day', 'week', 'month'] as VitruviusGanttZoom[]).map(option => (
@@ -1034,9 +1181,7 @@ function GanttWorkspace({
           disabled={!analytics.criticalPath.available}
         />
         <ScheduleControl
-          label={`Baselines (${analytics.baselineVariance.filter(
-            variance => variance.status !== 'no_baseline',
-          ).length})`}
+          label={`Baselines (${baselineCount})`}
           selected={showBaselines}
           onPress={() => setShowBaselines(value => !value)}
         />
@@ -1097,57 +1242,35 @@ function GanttWorkspace({
               <Text style={styles.ganttHeaderText}>ACTIVITY</Text>
               <Text style={styles.ganttHeaderText}>DATES</Text>
             </View>
-            {model.rows.map((row, index) => {
-              const previousProject = model.rows[index - 1]?.projectName;
-              return (
-                <Pressable
-                  key={row.item.id}
-                  style={[
-                    styles.ganttActivityRow,
-                    index % 2 === 1 && styles.ganttRowAlternate,
-                    row.summary && styles.ganttSummaryRow,
-                  ]}
-                  onPress={() => onOpenItem(row.item)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Open timeline item ${row.item.taskName}`}
-                >
-                  <View style={[styles.ganttActivityCopy, { paddingLeft: row.depth * 18 }]}>
-                    {row.projectName !== previousProject ? (
-                      <Text style={styles.ganttProjectLabel} numberOfLines={1}>
-                        {row.projectName}
-                      </Text>
-                    ) : null}
-                    <Text
-                      style={[styles.ganttItemName, row.summary && styles.ganttSummaryName]}
-                      numberOfLines={1}
-                    >
-                      {row.item.wbsCode ? `${row.item.wbsCode}  ` : ''}{row.item.taskName}
-                    </Text>
-                    {showCriticalPath && criticalIds.has(row.item.id) ? (
-                      <Text style={styles.ganttCriticalLabel}>CRITICAL</Text>
-                    ) : null}
-                  </View>
-                  <Text style={styles.ganttDateText} numberOfLines={1}>
-                    {row.startDate && row.finishDate
-                      ? `${shortDate(row.startDate)} – ${shortDate(row.finishDate)}`
-                      : 'Set dates'}
-                  </Text>
-                </Pressable>
-              );
-            })}
+            {activityRows}
           </View>
 
           <ScrollView
+            ref={timelineScroll}
+            testID="gantt-timeline-scroll"
             horizontal
             showsHorizontalScrollIndicator
             style={styles.ganttTimelineScroll}
             contentContainerStyle={{ width: model.timelineWidth }}
+            scrollEventThrottle={16}
+            onLayout={event => {
+              const width = event.nativeEvent.layout.width;
+              if (Number.isFinite(width) && width > 0) {
+                setViewport(current => width === current.width ? current : { ...current, width });
+              }
+            }}
+            onScroll={event => {
+              const x = event.nativeEvent.contentOffset.x;
+              const left = Math.max(0, Math.min(Math.max(0, model.timelineWidth - viewport.width), Number.isFinite(x) ? x : 0));
+              setViewport(current => left === current.left ? current : { ...current, left });
+            }}
           >
             <View style={{ width: model.timelineWidth }}>
               <View style={styles.ganttTimelineHeader}>
-                {model.columns.map(column => (
+                {columns.map(column => (
                   <View
                     key={column.key}
+                    testID={`gantt-column-header:${column.key}`}
                     style={[
                       styles.ganttColumnHeader,
                       { left: column.left, width: column.width },
@@ -1160,9 +1283,10 @@ function GanttWorkspace({
                 ))}
               </View>
               <View style={[styles.ganttTimelineCanvas, { height: timelineHeight }]}>
-                {model.columns.map(column => (
+                {columns.map(column => (
                   <View
                     key={`grid:${column.key}`}
+                    testID={`gantt-grid-column:${column.key}`}
                     style={[
                       styles.ganttGridColumn,
                       { left: column.left, width: column.width },
@@ -1174,68 +1298,7 @@ function GanttWorkspace({
                     <Text style={styles.ganttTodayLabel}>TODAY</Text>
                   </View>
                 ) : null}
-                {model.rows.map((row, index) => (
-                  <View
-                    key={row.item.id}
-                    style={[
-                      styles.ganttTimelineRow,
-                      {
-                        top: index * rowHeight,
-                        width: model.timelineWidth,
-                        height: rowHeight,
-                      },
-                      index % 2 === 1 && styles.ganttTimelineRowAlternate,
-                    ]}
-                  >
-                    {showBaselines &&
-                    row.baselineLeft !== null &&
-                    row.baselineWidth !== null ? (
-                      <View
-                        style={[
-                          styles.ganttBaselineBar,
-                          {
-                            left: row.baselineLeft,
-                            width: row.baselineWidth,
-                            top: 38,
-                          },
-                        ]}
-                      />
-                    ) : null}
-                    {row.left !== null && row.width !== null ? (
-                      row.milestone ? (
-                        <View
-                          style={[
-                            styles.ganttMilestone,
-                            { left: row.left, top: 19 },
-                          ]}
-                        />
-                      ) : (
-                        <View
-                          style={[
-                            styles.ganttBar,
-                            row.summary && styles.ganttSummaryBar,
-                            row.item.status === 'Complete' && styles.ganttCompleteBar,
-                            showCriticalPath &&
-                            criticalIds.has(row.item.id) &&
-                            styles.ganttCriticalBar,
-                            { left: row.left, width: row.width, top: row.summary ? 18 : 16 },
-                          ]}
-                        >
-                          {!row.summary && row.progressWidth !== null ? (
-                            <View
-                              style={[
-                                styles.ganttProgressBar,
-                                { width: row.progressWidth },
-                              ]}
-                            />
-                          ) : null}
-                        </View>
-                      )
-                    ) : (
-                      <Text style={styles.ganttMissingDate}>Set dates to place this item</Text>
-                    )}
-                  </View>
-                ))}
+                {timelineRows}
               </View>
             </View>
           </ScrollView>
@@ -1761,7 +1824,7 @@ function ScheduleEditor({
           disabled={Boolean(editingTask)}
           wide
         />
-        <EditorField label="WBS" value={state.wbsCode} onChange={value => update('wbsCode', value)} />
+        <EditorField label="WBS" value={state.wbsCode} onChange={value => onChange({ ...state, wbsCode: value, wbsCodeWasEdited: true })} />
         <ChoiceField
           label="Parent phase"
           value={state.parentItemId}
@@ -1966,7 +2029,7 @@ function ScheduleEditor({
           numberOfLines={3}
           style={[styles.input, styles.notesInput]}
           placeholder="Optional schedule note"
-          placeholderTextColor="#7D8794"
+          placeholderTextColor="#66645E"
           accessibilityLabel="Planning notes"
         />
       </View>
@@ -2513,7 +2576,7 @@ const webInputStyle = {
   borderRadius: 10,
   background: desktopSurfaces.input,
   color: desktopSurfaces.text,
-  fontSize: 15,
+  fontSize: 16,
   padding: '0 12px',
 };
 
@@ -2524,97 +2587,97 @@ const webSelectStyle = {
 
 const styles = StyleSheet.create({
   workspace: { gap: spacing.lg },
-  commandBar: { borderRadius: 18, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.sectionStrong, padding: spacing.lg, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.lg, boxShadow: desktopSurfaces.shadow },
+  commandBar: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.sectionStrong, padding: spacing.lg, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.lg, boxShadow: desktopSurfaces.shadow },
   commandCopy: { flex: 1, minWidth: 280, gap: 3 },
-  commandTitle: { color: desktopSurfaces.text, fontSize: 23, lineHeight: 29, fontWeight: '900' },
-  commandDetail: { color: desktopSurfaces.textMuted, fontSize: 14, lineHeight: 20, maxWidth: 720 },
+  commandTitle: { color: desktopSurfaces.text, fontSize: 26, fontFamily: displayFontFamily, lineHeight: 33, fontWeight: '400' },
+  commandDetail: { color: desktopSurfaces.textMuted, fontSize: 16, lineHeight: 23, maxWidth: 720 },
   commandActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  viewToggle: { minHeight: 44, borderRadius: 11, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: 3, flexDirection: 'row', alignItems: 'center' },
+  viewToggle: { minHeight: 44, borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: 3, flexDirection: 'row', alignItems: 'center' },
   viewToggleButton: { minHeight: 36, borderRadius: 8, paddingHorizontal: spacing.sm, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
   viewToggleButtonSelected: { backgroundColor: desktopSurfaces.accent },
-  viewToggleText: { color: desktopSurfaces.accentText, fontSize: 13, lineHeight: 18, fontWeight: '900' },
+  viewToggleText: { color: desktopSurfaces.accentText, fontSize: 15, lineHeight: 21, fontWeight: '600' },
   viewToggleTextSelected: { color: desktopSurfaces.onAccent },
-  actionButton: { minHeight: 44, borderRadius: 11, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs },
+  actionButton: { minHeight: 44, borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs },
   actionButtonPrimary: { backgroundColor: desktopSurfaces.accent, borderColor: desktopSurfaces.accent },
-  actionButtonText: { color: desktopSurfaces.accentText, fontSize: 14, lineHeight: 19, fontWeight: '900' },
+  actionButtonText: { color: desktopSurfaces.accentText, fontSize: 16, lineHeight: 22, fontWeight: '600' },
   actionButtonTextPrimary: { color: desktopSurfaces.onAccent },
   metricRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
-  metric: { flexGrow: 1, flexBasis: 180, minHeight: 76, borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  metricIcon: { width: 42, height: 42, borderRadius: 13, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
-  metricValue: { color: desktopSurfaces.text, fontSize: 23, lineHeight: 28, fontWeight: '900' },
-  metricLabel: { color: desktopSurfaces.textMuted, fontSize: 13, lineHeight: 18, fontWeight: '800' },
-  notice: { borderRadius: 12, borderWidth: 1, borderColor: '#7CC59A', backgroundColor: '#EFFAF3', padding: spacing.md },
+  metric: { flexGrow: 1, flexBasis: 180, minHeight: 76, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  metricIcon: { width: 42, height: 42, borderRadius: 10, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  metricValue: { color: desktopSurfaces.text, fontSize: 26, fontFamily: displayFontFamily, lineHeight: 32, fontWeight: '400' },
+  metricLabel: { color: desktopSurfaces.textMuted, fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  notice: { borderRadius: 8, borderWidth: 1, borderColor: '#7CC59A', backgroundColor: '#EFFAF3', padding: spacing.md },
   noticeDanger: { borderColor: '#E5A4A4', backgroundColor: '#FFF1F1' },
-  noticeText: { color: '#195B35', fontSize: 14, lineHeight: 20, fontWeight: '700' },
+  noticeText: { color: '#195B35', fontSize: 16, lineHeight: 23, fontWeight: '600' },
   noticeTextDanger: { color: '#922323' },
   // The Tasks page's conflict card (conflictResolutionCard), so both read alike.
-  conflictCard: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', borderRadius: 16, borderWidth: 1, borderColor: '#D5A84C', backgroundColor: '#FFF8E8', padding: spacing.lg, gap: spacing.lg },
+  conflictCard: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', borderRadius: 10, borderWidth: 1, borderColor: '#D5A84C', backgroundColor: '#FFF8E8', padding: spacing.lg, gap: spacing.lg },
   conflictCopy: { flexGrow: 1, flexShrink: 1, flexBasis: 320, gap: spacing.xs },
-  conflictTitle: { color: '#76510A', fontSize: 18, lineHeight: 24, fontWeight: '900' },
-  conflictText: { color: desktopSurfaces.text, fontSize: 14, lineHeight: 20 },
+  conflictTitle: { color: '#76510A', fontSize: 18, lineHeight: 24, fontWeight: '600' },
+  conflictText: { color: desktopSurfaces.text, fontSize: 16, lineHeight: 23 },
   conflictActions: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: spacing.sm },
-  editor: { borderRadius: 18, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, borderTopWidth: 5, borderTopColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.card, padding: spacing.xl, gap: spacing.lg, boxShadow: desktopSurfaces.shadowStrong },
+  editor: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, borderTopWidth: 5, borderTopColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.card, padding: spacing.xl, gap: spacing.lg, boxShadow: desktopSurfaces.shadowStrong },
   editorHeading: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.md },
-  editorEyebrow: { color: desktopSurfaces.accentText, fontSize: 11, lineHeight: 15, fontWeight: '900', letterSpacing: 1.2 },
-  editorTitle: { color: desktopSurfaces.text, fontSize: 24, lineHeight: 30, fontWeight: '900', marginTop: 2 },
-  closeButton: { width: 40, height: 40, borderRadius: 11, borderWidth: 1, borderColor: desktopSurfaces.border, alignItems: 'center', justifyContent: 'center' },
+  editorEyebrow: { color: desktopSurfaces.accentText, fontSize: 13, lineHeight: 18, fontWeight: '600', letterSpacing: 1.2 },
+  editorTitle: { color: desktopSurfaces.text, fontSize: 28, fontFamily: displayFontFamily, lineHeight: 35, fontWeight: '400', marginTop: 2 },
+  closeButton: { width: 40, height: 40, borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.border, alignItems: 'center', justifyContent: 'center' },
   formGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
   formField: { flexGrow: 1, flexBasis: 230, minWidth: 0, gap: spacing.xs },
   formFieldWide: { flexBasis: 480 },
-  fieldLabel: { color: desktopSurfaces.text, fontSize: 13, lineHeight: 18, fontWeight: '900' },
-  input: { minHeight: 46, borderWidth: 1, borderColor: desktopSurfaces.border, borderRadius: 10, backgroundColor: desktopSurfaces.input, color: desktopSurfaces.text, fontSize: 15, paddingHorizontal: spacing.md },
+  fieldLabel: { color: desktopSurfaces.text, fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  input: { minHeight: 46, borderWidth: 1, borderColor: desktopSurfaces.border, borderRadius: 10, backgroundColor: desktopSurfaces.input, color: desktopSurfaces.text, fontSize: 16, paddingHorizontal: spacing.md },
   notesInput: { minHeight: 88, paddingTop: spacing.sm, textAlignVertical: 'top' },
   relationshipSection: { gap: spacing.sm },
-  baselineSection: { borderRadius: 13, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.md, gap: spacing.md },
+  baselineSection: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.md, gap: spacing.md },
   baselineHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
   baselineCaptureButton: { minHeight: 38, borderRadius: 9, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs },
-  baselineCaptureText: { color: desktopSurfaces.accentText, fontSize: 12, lineHeight: 17, fontWeight: '900' },
-  helpText: { color: desktopSurfaces.textMuted, fontSize: 13, lineHeight: 19 },
-  scenarioPreview: { borderRadius: 13, borderWidth: 1, borderColor: '#7CC59A', backgroundColor: '#EFFAF3', padding: spacing.md, gap: spacing.sm },
+  baselineCaptureText: { color: desktopSurfaces.accentText, fontSize: 14, lineHeight: 20, fontWeight: '600' },
+  helpText: { color: desktopSurfaces.textMuted, fontSize: 15, lineHeight: 22 },
+  scenarioPreview: { borderRadius: 10, borderWidth: 1, borderColor: '#7CC59A', backgroundColor: '#EFFAF3', padding: spacing.md, gap: spacing.sm },
   scenarioPreviewDanger: { borderColor: '#E5A4A4', backgroundColor: desktopSurfaces.cardRose },
   scenarioHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.md },
-  scenarioStatus: { borderRadius: 999, backgroundColor: '#DDF2E5', color: '#27603B', fontSize: 11, lineHeight: 16, fontWeight: '900', paddingHorizontal: spacing.sm, paddingVertical: 5 },
+  scenarioStatus: { borderRadius: 999, backgroundColor: '#DDF2E5', color: '#27603B', fontSize: 13, lineHeight: 19, fontWeight: '600', paddingHorizontal: spacing.sm, paddingVertical: 5 },
   scenarioStatusDanger: { backgroundColor: '#FFE1E1', color: '#8B2B24' },
   scenarioFacts: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  scenarioFact: { borderRadius: 9, backgroundColor: desktopSurfaces.card, color: desktopSurfaces.text, fontSize: 12, lineHeight: 17, fontWeight: '800', paddingHorizontal: spacing.sm, paddingVertical: 7 },
-  scenarioIssue: { color: '#8B2B24', fontSize: 12, lineHeight: 17, fontWeight: '700' },
-  scenarioChange: { color: desktopSurfaces.accentText, fontSize: 12, lineHeight: 17, fontWeight: '800' },
+  scenarioFact: { borderRadius: 9, backgroundColor: desktopSurfaces.card, color: desktopSurfaces.text, fontSize: 14, lineHeight: 20, fontWeight: '600', paddingHorizontal: spacing.sm, paddingVertical: 7 },
+  scenarioIssue: { color: '#8B2B24', fontSize: 14, lineHeight: 20, fontWeight: '600' },
+  scenarioChange: { color: desktopSurfaces.accentText, fontSize: 14, lineHeight: 20, fontWeight: '600' },
   choiceWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   choiceChip: { minHeight: 40, maxWidth: 360, borderRadius: 999, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
   choiceChipSelected: { backgroundColor: desktopSurfaces.accent, borderColor: desktopSurfaces.accent },
-  choiceChipText: { flexShrink: 1, color: desktopSurfaces.text, fontSize: 13, lineHeight: 18, fontWeight: '800' },
+  choiceChipText: { flexShrink: 1, color: desktopSurfaces.text, fontSize: 15, lineHeight: 21, fontWeight: '600' },
   choiceChipTextSelected: { color: desktopSurfaces.onAccent },
   editorActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: spacing.sm, paddingTop: spacing.sm, borderTopWidth: 1, borderTopColor: desktopSurfaces.border },
-  primaryButton: { minWidth: 180, minHeight: 46, borderRadius: 11, backgroundColor: desktopSurfaces.accent, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.lg },
-  primaryButtonText: { color: desktopSurfaces.onAccent, fontSize: 14, lineHeight: 20, fontWeight: '900' },
-  secondaryButton: { minWidth: 100, minHeight: 46, borderRadius: 11, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.md },
-  secondaryButtonText: { color: desktopSurfaces.accentText, fontSize: 14, lineHeight: 20, fontWeight: '900' },
+  primaryButton: { minWidth: 180, minHeight: 46, borderRadius: 8, backgroundColor: desktopSurfaces.accent, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.lg },
+  primaryButtonText: { color: desktopSurfaces.onAccent, fontSize: 16, lineHeight: 23, fontWeight: '600' },
+  secondaryButton: { minWidth: 100, minHeight: 46, borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.md },
+  secondaryButtonText: { color: desktopSurfaces.accentText, fontSize: 16, lineHeight: 23, fontWeight: '600' },
   disabled: { opacity: 0.48 },
-  tableSurface: { minWidth: 1040, borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, overflow: 'hidden', boxShadow: desktopSurfaces.shadow },
+  tableSurface: { minWidth: 1040, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, overflow: 'hidden', boxShadow: desktopSurfaces.shadow },
   tableHeader: { minHeight: 44, backgroundColor: desktopSurfaces.dataHeader, flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.sm },
-  headerCell: { color: desktopSurfaces.dataHeaderMuted, fontSize: 11, lineHeight: 15, fontWeight: '900', letterSpacing: 0.8, paddingHorizontal: spacing.xs },
+  headerCell: { color: desktopSurfaces.dataHeaderMuted, fontSize: 13, lineHeight: 18, fontWeight: '600', letterSpacing: 0.8, paddingHorizontal: spacing.xs },
   projectGroup: { borderTopWidth: 1, borderTopColor: desktopSurfaces.border },
   projectHeading: { minHeight: 48, backgroundColor: desktopSurfaces.sectionStrong, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: spacing.md },
-  projectTitle: { color: desktopSurfaces.text, fontSize: 16, lineHeight: 21, fontWeight: '900' },
-  projectCount: { color: desktopSurfaces.accentText, fontSize: 12, lineHeight: 17, fontWeight: '900' },
+  projectTitle: { color: desktopSurfaces.text, fontSize: 17, lineHeight: 22, fontWeight: '600' },
+  projectCount: { color: desktopSurfaces.accentText, fontSize: 14, lineHeight: 20, fontWeight: '600' },
   hierarchyWarning: { backgroundColor: '#FFF5E1', flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
-  hierarchyWarningText: { color: '#754B08', fontSize: 13, lineHeight: 18, fontWeight: '800' },
+  hierarchyWarningText: { color: '#754B08', fontSize: 15, lineHeight: 21, fontWeight: '600' },
   tableRow: { minHeight: 62, flexDirection: 'row', alignItems: 'center', borderTopWidth: 1, borderTopColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, paddingHorizontal: spacing.sm },
   summaryRow: { backgroundColor: desktopSurfaces.cardMuted },
   orphanRow: { borderLeftWidth: 4, borderLeftColor: colors.warning },
   rowPressed: { backgroundColor: desktopSurfaces.selected },
-  cell: { color: desktopSurfaces.textMuted, fontSize: 12, lineHeight: 17, paddingHorizontal: spacing.xs },
+  cell: { color: desktopSurfaces.textMuted, fontSize: 14, lineHeight: 20, paddingHorizontal: spacing.xs },
   nameCell: { minHeight: 61, flexDirection: 'row', alignItems: 'center', paddingHorizontal: spacing.xs },
   collapseButton: { width: 28, height: 28, alignItems: 'center', justifyContent: 'center' },
   collapseSpacer: { width: 28 },
   nameCopy: { flex: 1, minWidth: 0 },
-  itemName: { color: desktopSurfaces.text, fontSize: 13, lineHeight: 18, fontWeight: '900' },
-  summaryName: { fontSize: 14 },
-  itemKind: { color: desktopSurfaces.textMuted, fontSize: 10, lineHeight: 14, fontWeight: '700', marginTop: 2 },
+  itemName: { color: desktopSurfaces.text, fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  summaryName: { fontSize: 16 },
+  itemKind: { color: desktopSurfaces.textMuted, fontSize: 12, lineHeight: 17, fontWeight: '600', marginTop: 2 },
   statusPill: { alignSelf: 'flex-start', borderRadius: 999, backgroundColor: desktopSurfaces.selected, paddingHorizontal: spacing.sm, paddingVertical: 5 },
   statusPillComplete: { backgroundColor: desktopSurfaces.cardGreen },
   statusPillProgress: { backgroundColor: desktopSurfaces.cardAmber },
-  statusText: { color: desktopSurfaces.text, fontSize: 11, lineHeight: 15, fontWeight: '900' },
+  statusText: { color: desktopSurfaces.text, fontSize: 13, lineHeight: 18, fontWeight: '600' },
   wbsColumn: { width: 68 },
   nameColumn: { flex: 1, minWidth: 250 },
   areaColumn: { width: 135 },
@@ -2623,113 +2686,113 @@ const styles = StyleSheet.create({
   predecessorColumn: { width: 150 },
   statusColumn: { width: 112, paddingHorizontal: spacing.xs },
   emptyState: { minHeight: 220, alignItems: 'center', justifyContent: 'center', gap: spacing.sm, padding: spacing.xl },
-  emptyTitle: { color: desktopSurfaces.text, fontSize: 19, lineHeight: 25, fontWeight: '900' },
-  emptyText: { color: desktopSurfaces.textMuted, fontSize: 14, lineHeight: 20, textAlign: 'center' },
-  ganttSurface: { minWidth: 900, borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, overflow: 'hidden', boxShadow: desktopSurfaces.shadowStrong },
+  emptyTitle: { color: desktopSurfaces.text, fontSize: 19, lineHeight: 25, fontWeight: '600' },
+  emptyText: { color: desktopSurfaces.textMuted, fontSize: 16, lineHeight: 23, textAlign: 'center' },
+  ganttSurface: { minWidth: 900, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, overflow: 'hidden', boxShadow: desktopSurfaces.shadowStrong },
   ganttToolbar: { minHeight: 72, backgroundColor: desktopSurfaces.sectionStrong, borderBottomWidth: 1, borderBottomColor: desktopSurfaces.borderStrong, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.lg },
-  ganttTitle: { color: desktopSurfaces.text, fontSize: 18, lineHeight: 23, fontWeight: '900' },
-  ganttRange: { color: desktopSurfaces.textMuted, fontSize: 12, lineHeight: 17, fontWeight: '700', marginTop: 2 },
+  ganttTitle: { color: desktopSurfaces.text, fontSize: 18, lineHeight: 23, fontWeight: '600' },
+  ganttRange: { color: desktopSurfaces.textMuted, fontSize: 14, lineHeight: 20, fontWeight: '600', marginTop: 2 },
   zoomToggle: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: 3, flexDirection: 'row', alignItems: 'center' },
   zoomButton: { minHeight: 34, minWidth: 62, borderRadius: 7, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.sm },
   zoomButtonSelected: { backgroundColor: desktopSurfaces.accent },
-  zoomButtonText: { color: desktopSurfaces.accentText, fontSize: 12, lineHeight: 17, fontWeight: '900' },
+  zoomButtonText: { color: desktopSurfaces.accentText, fontSize: 14, lineHeight: 20, fontWeight: '600' },
   zoomButtonTextSelected: { color: desktopSurfaces.onAccent },
   scheduleControlBar: { minHeight: 54, borderBottomWidth: 1, borderBottomColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.toolbar, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
   scheduleControl: { minHeight: 36, borderRadius: 999, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, paddingHorizontal: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: 5 },
   scheduleControlSelected: { borderColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.accent },
   scheduleControlDisabled: { opacity: 0.58 },
-  scheduleControlText: { color: desktopSurfaces.accentText, fontSize: 11, lineHeight: 16, fontWeight: '900' },
+  scheduleControlText: { color: desktopSurfaces.accentText, fontSize: 13, lineHeight: 19, fontWeight: '600' },
   scheduleControlTextSelected: { color: desktopSurfaces.onAccent },
   controlSummary: { marginLeft: 'auto', minHeight: 32, borderRadius: 9, backgroundColor: desktopSurfaces.cardGreen, paddingHorizontal: spacing.sm, alignItems: 'center', justifyContent: 'center' },
-  controlSummaryText: { color: '#27603B', fontSize: 11, lineHeight: 16, fontWeight: '900' },
+  controlSummaryText: { color: '#27603B', fontSize: 13, lineHeight: 19, fontWeight: '600' },
   controlSummaryTextLate: { color: '#8B2B24' },
   criticalPathWarning: { minHeight: 58, borderBottomWidth: 1, borderBottomColor: '#E5A4A4', backgroundColor: desktopSurfaces.cardRose, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   criticalPathWarningCopy: { flex: 1, minWidth: 0 },
-  criticalPathWarningTitle: { color: '#8B2B24', fontSize: 13, lineHeight: 18, fontWeight: '900' },
-  criticalPathWarningText: { color: '#8B2B24', fontSize: 11, lineHeight: 16, marginTop: 1 },
+  criticalPathWarningTitle: { color: '#8B2B24', fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  criticalPathWarningText: { color: '#8B2B24', fontSize: 13, lineHeight: 19, marginTop: 1 },
   criticalPathNotice: { minHeight: 58, borderBottomWidth: 1, borderBottomColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardBlue, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  criticalPathNoticeTitle: { color: desktopSurfaces.accentText, fontSize: 13, lineHeight: 18, fontWeight: '900' },
-  criticalPathNoticeText: { color: desktopSurfaces.textMuted, fontSize: 11, lineHeight: 16, marginTop: 1 },
+  criticalPathNoticeTitle: { color: desktopSurfaces.accentText, fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  criticalPathNoticeText: { color: desktopSurfaces.textMuted, fontSize: 13, lineHeight: 19, marginTop: 1 },
   ganttSplit: { flexDirection: 'row', alignItems: 'stretch' },
   ganttActivityPane: { width: 390, flexShrink: 0, borderRightWidth: 1, borderRightColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card },
   ganttActivityHeader: { height: 44, backgroundColor: desktopSurfaces.dataHeader, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  ganttHeaderText: { color: desktopSurfaces.dataHeaderMuted, fontSize: 10, lineHeight: 14, fontWeight: '900', letterSpacing: 0.8 },
+  ganttHeaderText: { color: desktopSurfaces.dataHeaderMuted, fontSize: 12, lineHeight: 17, fontWeight: '600', letterSpacing: 0.8 },
   ganttActivityRow: { height: 58, borderBottomWidth: 1, borderBottomColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   ganttRowAlternate: { backgroundColor: desktopSurfaces.cardMuted },
   ganttSummaryRow: { backgroundColor: desktopSurfaces.sectionStrong },
   ganttActivityCopy: { flex: 1, minWidth: 0 },
-  ganttProjectLabel: { color: desktopSurfaces.accentText, fontSize: 9, lineHeight: 12, fontWeight: '900', letterSpacing: 0.7, textTransform: 'uppercase' },
-  ganttItemName: { color: desktopSurfaces.text, fontSize: 12, lineHeight: 17, fontWeight: '800' },
-  ganttSummaryName: { fontSize: 13, fontWeight: '900' },
-  ganttCriticalLabel: { alignSelf: 'flex-start', color: '#A8332C', fontSize: 8, lineHeight: 11, fontWeight: '900', letterSpacing: 0.5 },
-  ganttDateText: { width: 108, color: desktopSurfaces.textMuted, fontSize: 10, lineHeight: 15, fontWeight: '700', textAlign: 'right' },
+  ganttProjectLabel: { color: desktopSurfaces.accentText, fontSize: 9, lineHeight: 12, fontWeight: '600', letterSpacing: 0.7, textTransform: 'uppercase' },
+  ganttItemName: { color: desktopSurfaces.text, fontSize: 14, lineHeight: 20, fontWeight: '600' },
+  ganttSummaryName: { fontSize: 15, fontWeight: '600' },
+  ganttCriticalLabel: { alignSelf: 'flex-start', color: '#A8332C', fontSize: 8, lineHeight: 11, fontWeight: '600', letterSpacing: 0.5 },
+  ganttDateText: { width: 108, color: desktopSurfaces.textMuted, fontSize: 12, lineHeight: 18, fontWeight: '600', textAlign: 'right' },
   ganttTimelineScroll: { flex: 1, minWidth: 0, backgroundColor: desktopSurfaces.canvasDeep },
   ganttTimelineHeader: { height: 44, backgroundColor: desktopSurfaces.dataHeader, position: 'relative' },
   ganttColumnHeader: { height: 44, position: 'absolute', top: 0, borderRightWidth: 1, borderRightColor: '#4D5254', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 4 },
-  ganttColumnLabel: { color: desktopSurfaces.dataHeaderMuted, fontSize: 10, lineHeight: 14, fontWeight: '900' },
+  ganttColumnLabel: { color: desktopSurfaces.dataHeaderMuted, fontSize: 12, lineHeight: 17, fontWeight: '600' },
   ganttTimelineCanvas: { position: 'relative', backgroundColor: desktopSurfaces.card },
   ganttGridColumn: { position: 'absolute', top: 0, bottom: 0, borderRightWidth: 1, borderRightColor: desktopSurfaces.border, backgroundColor: 'transparent' },
   ganttTodayLine: { width: 2, position: 'absolute', top: 0, bottom: 0, zIndex: 4, backgroundColor: '#D44343' },
-  ganttTodayLabel: { width: 42, position: 'absolute', top: 2, left: -20, color: '#A92B2B', backgroundColor: '#FFE8E4', fontSize: 8, lineHeight: 12, fontWeight: '900', textAlign: 'center' },
+  ganttTodayLabel: { width: 42, position: 'absolute', top: 2, left: -20, color: '#A92B2B', backgroundColor: '#FFE8E4', fontSize: 8, lineHeight: 12, fontWeight: '600', textAlign: 'center' },
   ganttTimelineRow: { position: 'absolute', left: 0, borderBottomWidth: 1, borderBottomColor: desktopSurfaces.border, backgroundColor: 'transparent' },
-  ganttTimelineRowAlternate: { backgroundColor: 'rgba(234, 242, 251, 0.55)' },
+  ganttTimelineRowAlternate: { backgroundColor: 'rgba(243, 241, 236, 0.55)' },
   ganttBar: { height: 25, position: 'absolute', borderRadius: 7, borderWidth: 1, borderColor: desktopSurfaces.accentStrong, backgroundColor: desktopSurfaces.accentSoft, overflow: 'hidden', zIndex: 2 },
   ganttSummaryBar: { height: 17, borderRadius: 3, backgroundColor: desktopSurfaces.dataHeader, borderColor: desktopSurfaces.dataHeader, overflow: 'visible' },
   ganttCompleteBar: { backgroundColor: '#DDF2E5', borderColor: '#3D8A5A' },
   ganttCriticalBar: { borderWidth: 2, borderColor: '#C23C33', boxShadow: '0 0 0 2px rgba(194,60,51,0.14)' },
   ganttProgressBar: { height: '100%', backgroundColor: desktopSurfaces.accent, borderTopLeftRadius: 5, borderBottomLeftRadius: 5 },
-  ganttBaselineBar: { height: 7, position: 'absolute', borderRadius: 4, borderWidth: 1, borderStyle: 'dashed', borderColor: '#64748B', backgroundColor: '#CBD5E1', zIndex: 1 },
+  ganttBaselineBar: { height: 7, position: 'absolute', borderRadius: 4, borderWidth: 1, borderStyle: 'dashed', borderColor: '#66645E', backgroundColor: '#DDD9D2', zIndex: 1 },
   ganttMilestone: { width: 17, height: 17, position: 'absolute', backgroundColor: desktopSurfaces.accent, borderWidth: 2, borderColor: desktopSurfaces.accentStrong, transform: [{ rotate: '45deg' }], zIndex: 3 },
-  ganttMissingDate: { position: 'absolute', top: 20, left: spacing.sm, color: desktopSurfaces.textMuted, fontSize: 10, lineHeight: 15, fontStyle: 'italic' },
+  ganttMissingDate: { position: 'absolute', top: 20, left: spacing.sm, color: desktopSurfaces.textMuted, fontSize: 12, lineHeight: 18, fontStyle: 'italic' },
   impactPanel: { borderTopWidth: 1, borderTopColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.section, padding: spacing.lg, gap: spacing.sm },
   impactHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.md },
   impactHeadingActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: spacing.sm },
-  impactTitle: { color: desktopSurfaces.text, fontSize: 17, lineHeight: 22, fontWeight: '900' },
-  impactDetail: { color: desktopSurfaces.textMuted, fontSize: 12, lineHeight: 17, marginTop: 2 },
+  impactTitle: { color: desktopSurfaces.text, fontSize: 17, lineHeight: 22, fontWeight: '600' },
+  impactDetail: { color: desktopSurfaces.textMuted, fontSize: 14, lineHeight: 20, marginTop: 2 },
   impactSafety: { borderRadius: 999, backgroundColor: desktopSurfaces.cardGreen, paddingHorizontal: spacing.sm, paddingVertical: 6 },
   impactSafetyDanger: { backgroundColor: desktopSurfaces.cardRose },
-  impactSafetyText: { color: '#27603B', fontSize: 11, lineHeight: 15, fontWeight: '900' },
+  impactSafetyText: { color: '#27603B', fontSize: 13, lineHeight: 18, fontWeight: '600' },
   impactSafetyTextDanger: { color: '#8B2B24' },
   impactIssues: { borderRadius: 10, borderWidth: 1, borderColor: '#E5A4A4', backgroundColor: desktopSurfaces.cardRose, padding: spacing.sm, gap: 3 },
-  impactIssueText: { color: '#8B2B24', fontSize: 12, lineHeight: 17, fontWeight: '700' },
-  impactEmpty: { color: desktopSurfaces.textMuted, fontSize: 13, lineHeight: 18, fontStyle: 'italic' },
+  impactIssueText: { color: '#8B2B24', fontSize: 14, lineHeight: 20, fontWeight: '600' },
+  impactEmpty: { color: desktopSurfaces.textMuted, fontSize: 15, lineHeight: 21, fontStyle: 'italic' },
   impactChange: { minHeight: 54, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
   impactChangeCopy: { flex: 1, minWidth: 260 },
-  impactChangeName: { color: desktopSurfaces.text, fontSize: 13, lineHeight: 18, fontWeight: '900' },
-  impactChangeReason: { color: desktopSurfaces.textMuted, fontSize: 11, lineHeight: 16 },
-  impactDates: { color: desktopSurfaces.accentText, fontSize: 12, lineHeight: 17, fontWeight: '900' },
+  impactChangeName: { color: desktopSurfaces.text, fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  impactChangeReason: { color: desktopSurfaces.textMuted, fontSize: 13, lineHeight: 19 },
+  impactDates: { color: desktopSurfaces.accentText, fontSize: 14, lineHeight: 20, fontWeight: '600' },
   impactChangeAction: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: spacing.sm },
   impactApplyButton: { minWidth: 96, minHeight: 36, borderRadius: 9, backgroundColor: desktopSurfaces.accent, paddingHorizontal: spacing.sm, alignItems: 'center', justifyContent: 'center' },
   impactApplyAllButton: { minWidth: 126, minHeight: 36, borderRadius: 9, backgroundColor: desktopSurfaces.accent, paddingHorizontal: spacing.md, alignItems: 'center', justifyContent: 'center' },
-  impactApplyButtonText: { color: desktopSurfaces.onAccent, fontSize: 11, lineHeight: 16, fontWeight: '900' },
-  lookaheadSurface: { minWidth: 1000, borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.section, overflow: 'hidden', boxShadow: desktopSurfaces.shadowStrong },
+  impactApplyButtonText: { color: desktopSurfaces.onAccent, fontSize: 13, lineHeight: 19, fontWeight: '600' },
+  lookaheadSurface: { minWidth: 1000, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.section, overflow: 'hidden', boxShadow: desktopSurfaces.shadowStrong },
   lookaheadToolbar: { minHeight: 76, borderBottomWidth: 1, borderBottomColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.sectionStrong, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.lg },
   lookaheadActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
   lookaheadMetrics: { padding: spacing.md, flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  lookaheadTable: { marginHorizontal: spacing.md, borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, overflow: 'hidden' },
+  lookaheadTable: { marginHorizontal: spacing.md, borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, overflow: 'hidden' },
   lookaheadHeader: { minHeight: 42, backgroundColor: desktopSurfaces.dataHeader, paddingHorizontal: spacing.sm, flexDirection: 'row', alignItems: 'center' },
-  lookaheadHeaderText: { color: desktopSurfaces.dataHeaderMuted, fontSize: 10, lineHeight: 14, fontWeight: '900', letterSpacing: 0.7, paddingHorizontal: spacing.xs },
+  lookaheadHeaderText: { color: desktopSurfaces.dataHeaderMuted, fontSize: 12, lineHeight: 17, fontWeight: '600', letterSpacing: 0.7, paddingHorizontal: spacing.xs },
   lookaheadProjectHeading: { minHeight: 46, backgroundColor: desktopSurfaces.sectionStrong, borderTopWidth: 1, borderTopColor: desktopSurfaces.border, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  lookaheadProjectName: { color: desktopSurfaces.text, fontSize: 15, lineHeight: 20, fontWeight: '900' },
+  lookaheadProjectName: { color: desktopSurfaces.text, fontSize: 16, lineHeight: 21, fontWeight: '600' },
   lookaheadAreaHeading: { minHeight: 38, backgroundColor: desktopSurfaces.cardMuted, borderTopWidth: 1, borderTopColor: desktopSurfaces.border, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
-  lookaheadAreaName: { color: desktopSurfaces.accentText, fontSize: 12, lineHeight: 17, fontWeight: '900' },
-  lookaheadAreaCount: { marginLeft: 'auto', color: desktopSurfaces.textMuted, fontSize: 11, lineHeight: 16, fontWeight: '900' },
+  lookaheadAreaName: { color: desktopSurfaces.accentText, fontSize: 14, lineHeight: 20, fontWeight: '600' },
+  lookaheadAreaCount: { marginLeft: 'auto', color: desktopSurfaces.textMuted, fontSize: 13, lineHeight: 19, fontWeight: '600' },
   lookaheadRow: { minHeight: 62, borderTopWidth: 1, borderTopColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, paddingHorizontal: spacing.sm, flexDirection: 'row', alignItems: 'center' },
   lookaheadWbs: { width: 66 },
   lookaheadName: { flex: 1, minWidth: 260, paddingHorizontal: spacing.xs },
   lookaheadNameLine: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
-  lookaheadItemName: { flexShrink: 1, color: desktopSurfaces.text, fontSize: 13, lineHeight: 18, fontWeight: '900' },
-  lookaheadResponsibility: { color: desktopSurfaces.textMuted, fontSize: 10, lineHeight: 15, marginTop: 2 },
+  lookaheadItemName: { flexShrink: 1, color: desktopSurfaces.text, fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  lookaheadResponsibility: { color: desktopSurfaces.textMuted, fontSize: 12, lineHeight: 18, marginTop: 2 },
   lookaheadDate: { width: 88 },
   lookaheadContractor: { width: 160 },
   lookaheadStatus: { width: 116, paddingHorizontal: spacing.xs },
   criticalBadge: { borderRadius: 999, backgroundColor: desktopSurfaces.cardRose, paddingHorizontal: 7, paddingVertical: 3 },
-  criticalBadgeText: { color: '#A8332C', fontSize: 8, lineHeight: 11, fontWeight: '900', letterSpacing: 0.5 },
+  criticalBadgeText: { color: '#A8332C', fontSize: 8, lineHeight: 11, fontWeight: '600', letterSpacing: 0.5 },
   readinessPill: { alignSelf: 'flex-start', borderRadius: 999, backgroundColor: desktopSurfaces.cardMuted, paddingHorizontal: spacing.sm, paddingVertical: 5 },
   readinessOverdue: { backgroundColor: desktopSurfaces.cardRose },
   readinessBlocked: { backgroundColor: desktopSurfaces.cardRose },
   readinessProgress: { backgroundColor: desktopSurfaces.cardAmber },
   readinessReady: { backgroundColor: desktopSurfaces.cardGreen },
-  readinessText: { color: desktopSurfaces.text, fontSize: 10, lineHeight: 14, fontWeight: '900' },
-  lookaheadFootnote: { color: desktopSurfaces.textMuted, fontSize: 11, lineHeight: 16, paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
+  readinessText: { color: desktopSurfaces.text, fontSize: 12, lineHeight: 17, fontWeight: '600' },
+  lookaheadFootnote: { color: desktopSurfaces.textMuted, fontSize: 13, lineHeight: 19, paddingHorizontal: spacing.lg, paddingVertical: spacing.md },
 });

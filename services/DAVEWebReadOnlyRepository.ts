@@ -82,6 +82,8 @@ export type DAVEWebReadOnlySnapshot = Readonly<{
 
 export type DAVEWebReferenceDocument = ReferenceDocument & DAVEWebDocumentExtension & Readonly<{
   cloudUpdatedAt: string | null;
+  /** Cloud archive mark, retained for conditional Archive/Restore; never part of document_data. */
+  archivedAt?: string | null;
   linkedScheduleItems: readonly Readonly<{
     id: string;
     cloudUpdatedAt: string | null;
@@ -466,6 +468,7 @@ function normalizeDocument(value: unknown): DAVEWebReferenceDocument | null {
     webContentReview: readString(data.webContentReview),
     webReport: normalizeWebReport(data.webReport),
     cloudUpdatedAt: readString(row.updated_at),
+    archivedAt: readString(row.archived_at),
     linkedScheduleItems: Object.freeze([]),
     importedScheduleItemCount: 0,
     ...(canonicalReferenceCategory({ category: readString(data.category) ?? readString(row.category) ?? '' }) === 'drawing'

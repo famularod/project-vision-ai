@@ -10,7 +10,7 @@
  */
 import type { AreaSuggestion, ProjectArea } from '../types';
 import { findProjectAreaSuggestions } from './AreaSuggestion';
-import { formatGpsAccuracy, isConfidentlyOutsideArea, PRECISE_LOCATION_OFF_TITLE } from './GpsPrecision';
+import { formatGpsAccuracy, isConfidentlyOutsideArea } from './GpsPrecision';
 
 export const UNASSIGNED_AREA_NAME = 'Unassigned / Unknown Area';
 /** The schedule's name for a task without a location (PIEEvidenceFusion). */
@@ -38,7 +38,8 @@ export type DraftAreaLocationSource =
   | 'gps-pending'
   | 'user-selection'
   | 'schedule'
-  | 'last-active-area';
+  | 'last-active-area'
+  | 'named-location';
 
 /**
  * Why the draft has no GPS suggestion (GPS review pass 22: the capture path
@@ -166,22 +167,16 @@ export function currentDraftLocationNoticeView(input: Readonly<{
   });
 }
 
-/** Add Photos has no re-fix, so this does not say "try again" (pass 23); the approximate fix is not written to the update (pass 25). */
-export const PRECISE_LOCATION_OFF_DRAFT_MESSAGE =
-  `${PRECISE_LOCATION_OFF_TITLE}. Vitruvius only gets an approximate location, which cannot place you in a work area, so this update has no GPS. Turn on Precise Location for Vitruvius in Settings; your next update will use it.`;
-
 /**
- * The same two reasons for an update being resumed after the app was closed
- * (review pass 1, L8). The update still has no GPS for that reason, and a
- * resumed update is never given a new fix, so the reason is kept. But "is
- * denied" and "is off" were true when the update was started; he may have
- * put the setting right since, and the sentence went on saying it had not
- * been. These say when, which stays true either way.
+ * A capture outcome stays attached to this update even if Settings changes
+ * while the app remains open. Say when it happened for fresh and resumed
+ * drafts alike; neither one acquires a new GPS fix from a permission grant.
  */
 export const LOCATION_NOT_ALLOWED_RESUMED_DRAFT_MESSAGE =
   'Location was not allowed when this update was started, so it has no GPS. Choose Project Area manually.';
-export const PRECISE_LOCATION_OFF_RESUMED_DRAFT_MESSAGE =
+export const PRECISE_LOCATION_OFF_DRAFT_MESSAGE =
   'Precise Location was off when this update was started. Vitruvius only got an approximate location, which cannot place you in a work area, so this update has no GPS. If it is still off, turn on Precise Location for Vitruvius in Settings; your next update will use it.';
+export const PRECISE_LOCATION_OFF_RESUMED_DRAFT_MESSAGE = PRECISE_LOCATION_OFF_DRAFT_MESSAGE;
 
 export function draftLocationNoticeText(notice: DraftLocationNoticeDetail): string {
   const accuracy = formatGpsAccuracy(notice.accuracyMeters);
@@ -190,13 +185,11 @@ export function draftLocationNoticeText(notice: DraftLocationNoticeDetail): stri
     case 'capturing':
       return 'Capturing GPS...';
     case 'denied':
-      return notice.resumed
-        ? LOCATION_NOT_ALLOWED_RESUMED_DRAFT_MESSAGE
-        : 'Location permission denied. Choose Project Area manually.';
+      return LOCATION_NOT_ALLOWED_RESUMED_DRAFT_MESSAGE;
     case 'failed':
       return 'GPS could not be captured. Choose Project Area manually.';
     case 'precise-off':
-      return notice.resumed ? PRECISE_LOCATION_OFF_RESUMED_DRAFT_MESSAGE : PRECISE_LOCATION_OFF_DRAFT_MESSAGE;
+      return PRECISE_LOCATION_OFF_DRAFT_MESSAGE;
     case 'no-mapped-areas':
       return 'This project has no work area with a saved GPS point yet, so GPS cannot suggest one. Choose the project area.';
     case 'unconfirmed':
@@ -245,6 +238,8 @@ export function draftAreaPresentation(input: Readonly<{
   areaStatus?: DraftAreaStatus | null;
   areaSuggestion: AreaSuggestion | null;
   hasScheduleRecommendation: boolean;
+  /** The actual recommendation for this project; a boolean alone proves no area identity. */
+  scheduleRecommendationAreaName?: string | null;
   correctionPenalty?: number;
   locationNotice?: DraftLocationNoticeDetail | null;
 }>): DraftAreaPresentation {
@@ -255,7 +250,7 @@ export function draftAreaPresentation(input: Readonly<{
   // A suggestion answers the question; where GPS thinks you are matters
   // only while no area is named (a mapped pick or a task's location; pass
   // 23); denied, failed and Precise Location off stay, since they explain
-  // every update until the setting changes.
+  // why this update has no captured GPS even if Settings changes.
   const notice = input.locationNotice ?? null;
   const locationNotice = notice && !areaSuggestion && !(PLACEMENT_NOTICES.has(notice.kind) && namedAreaOrNull(areaName))
     ? draftLocationNoticeText(notice)
@@ -269,6 +264,10 @@ export function draftAreaPresentation(input: Readonly<{
   const rowNamesSuggestion = Boolean(
     pendingSuggestion && !suggestionAnswered && areaName === UNASSIGNED_AREA_NAME,
   );
+  const namedArea = namedAreaOrNull(areaName);
+  const recommendedArea = namedAreaOrNull(input.scheduleRecommendationAreaName);
+  const namesRecommendedArea = Boolean(input.hasScheduleRecommendation && namedArea && recommendedArea &&
+    namedArea.toLowerCase() === recommendedArea.toLowerCase());
   const locationSource: DraftAreaLocationSource = suggestionIsShown
     ? areaSuggestion?.withinRadius ? 'exact-gps-area' : 'gps-radius'
     : pendingSuggestion
@@ -276,7 +275,7 @@ export function draftAreaPresentation(input: Readonly<{
       : selectedArea
         ? 'user-selection'
         : input.hasScheduleRecommendation
-          ? 'schedule'
+          ? namedArea && !namesRecommendedArea ? 'named-location' : 'schedule'
           : 'last-active-area';
   const baseScore = suggestionIsShown
     ? areaSuggestion?.withinRadius ? 90 : 70
@@ -319,6 +318,8 @@ function locationReason(source: DraftAreaLocationSource, pending: AreaSuggestion
         : CONFIRMED_SELECTION_REASON;
     case 'gps-radius':
       return 'This is the nearest saved area within the GPS recommendation range.';
+    case 'named-location':
+      return 'This is the location named on this update.';
     case 'schedule':
       return 'The imported schedule identifies this as the most urgent area.';
     default:

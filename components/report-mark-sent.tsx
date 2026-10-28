@@ -151,25 +151,25 @@ const styles = StyleSheet.create({
   },
   title: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
   },
   detail: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
     fontWeight: '600',
   },
   message: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '800',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
   footnote: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
     fontWeight: '600',
   },
   choices: {
@@ -192,8 +192,8 @@ const styles = StyleSheet.create({
   },
   choiceText: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
   },
   choiceTextActive: {
     color: colors.primary,
@@ -216,8 +216,8 @@ const styles = StyleSheet.create({
   },
   secondaryText: {
     color: colors.primary,
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
   },
   primaryButton: {
     flex: 1,
@@ -230,8 +230,8 @@ const styles = StyleSheet.create({
   },
   primaryText: {
     color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
   },
   disabled: {
     opacity: 0.5,

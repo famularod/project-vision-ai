@@ -95,7 +95,8 @@ describe('L3: the desktop Gantt with a task dated in the year 0202', () => {
     expect(screen.getAllByText(/^Week of /).map(node => node.props.children)).toEqual(['Week of Jul 13', 'Week of Jul 20']);
     expect(screen.getByLabelText('Open timeline item Stray date')).toBeTruthy();
     expect(screen.getByLabelText('Open timeline item Pour slab')).toBeTruthy();
-    expect(screen.getAllByText('Set dates to place this item')).toHaveLength(1);
+    expect(screen.queryByText('Set dates to place this item')).toBeNull();
+    expect(screen.getByText(/Date check: 0202-05-01.*outside 2000 to 2100/)).toBeTruthy();
   });
 });
 

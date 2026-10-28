@@ -240,6 +240,11 @@ function storedDraft(fields: Record<string, unknown>) {
   });
 }
 
+const task = (id: string, taskName: string, projectName: string, locationName: string) => ({
+    id, taskName, projectName, status: 'In Progress', percentComplete: 20, priority: 'Medium',
+    startDate: '09/28/2026', finishDate: '10/30/2026', owner: '', contractor: '', locationName, notes: '',
+  });
+
 async function launch() {
   const tree = render(<NativeRoot />);
   await waitFor(() => expect(tree.getByTestId('app-bottom-tabs')).toBeTruthy(), COLD);
@@ -298,10 +303,7 @@ describe('1. the Current Area card after the update\'s area is deleted', () => {
 
 describe('2. the home screen and the project picker, with Precise Location off', () => {
   const WIDE = { width: 1194, height: 834, scale: 2, fontScale: 1 } as const;
-  const task = (id: string, taskName: string, projectName: string, locationName: string) => ({
-    id, taskName, projectName, status: 'In Progress', percentComplete: 20, priority: 'Medium',
-    startDate: '09/28/2026', finishDate: '10/30/2026', owner: '', contractor: '', locationName, notes: '',
-  });
+
 
   beforeEach(async () => {
     // Two projects, each with a mapped area, so GPS has a choice to make; an
@@ -462,11 +464,42 @@ describe('3. an unfinished update resumed after the app was closed says why it h
     return tree;
   }
 
+  it.each(['denied', 'precise-off'] as const)('4.38: fresh %s reason stays true after Settings grant while Add Photos stays open', async kind => {
+    mockLocation.granted = kind !== 'denied';
+    mockLocation.precise = kind !== 'precise-off';
+    const tree = await launch();
+    await startUpdateForLot9(tree);
+    await waitFor(() => expect(tree.getByText(kind === 'denied' ? DENIED_WHEN_STARTED : PRECISE_OFF_WHEN_STARTED)).toBeTruthy(), COLD);
+    mockLocation.granted = true;
+    mockLocation.precise = true;
+    tree.rerender(<NativeRoot />);
+    expect(tree.getByText(kind === 'denied' ? DENIED_WHEN_STARTED : PRECISE_OFF_WHEN_STARTED)).toBeTruthy();
+    await press(tree, tree.getByText('Continue Without Photos'));
+    await waitFor(async () => {
+      const kept = JSON.parse((await AsyncStorage.getItem('projectPhotoUpdate.activeDraft.v2'))!);
+      expect(kept.draft.gpsLatitude ?? null).toBeNull();
+      expect(kept.draft.gpsLongitude ?? null).toBeNull();
+    }, COLD);
+    tree.unmount();
+  });
+
+  it('4.39: resumed task location is not described as another schedule area', async () => {
+    await AsyncStorage.setItem('projectPhotoUpdate.scheduleItems.v1', JSON.stringify([
+      task('task-lot9', 'Grade pad', 'Lot 9', 'North Pad'),
+    ]));
+    await AsyncStorage.setItem('projectPhotoUpdate.activeDraft.v2', storedDraft({ selectedAreaName: 'Roof staging', areaStatus: 'confirmed' }));
+    const tree = await reopenAndResume();
+    expect(tree.getByText('Roof staging')).toBeTruthy();
+    expect(tree.getByText('Why: This is the location named on this update.')).toBeTruthy();
+    expect(tree.queryByText('Why: The imported schedule identifies this as the most urgent area.')).toBeNull();
+    tree.unmount();
+  });
+
   it('location not allowed: the resumed update still says so', async () => {
     mockLocation.granted = false;
     const first = await launch();
     await startUpdateForLot9(first);
-    await waitFor(() => expect(first.getByText(DENIED)).toBeTruthy(), COLD);
+    await waitFor(() => expect(first.getByText(DENIED_WHEN_STARTED)).toBeTruthy(), COLD);
     await keepAndCloseApp(first);
 
     const again = await reopenAndResume();
@@ -480,7 +513,7 @@ describe('3. an unfinished update resumed after the app was closed says why it h
     mockLocation.granted = false;
     const first = await launch();
     await startUpdateForLot9(first);
-    await waitFor(() => expect(first.getByText(DENIED)).toBeTruthy(), COLD);
+    await waitFor(() => expect(first.getByText(DENIED_WHEN_STARTED)).toBeTruthy(), COLD);
     await keepAndCloseApp(first);
 
     // He sets Location to While Using in iOS Settings, then opens the app.
@@ -497,7 +530,7 @@ describe('3. an unfinished update resumed after the app was closed says why it h
     mockLocation.precise = false;
     const first = await launch();
     await startUpdateForLot9(first);
-    await waitFor(() => expect(first.getByText(PRECISE_OFF)).toBeTruthy(), COLD);
+    await waitFor(() => expect(first.getByText(PRECISE_OFF_WHEN_STARTED)).toBeTruthy(), COLD);
     await keepAndCloseApp(first);
 
     // He turns Precise Location on in iOS Settings, then opens the app.
@@ -541,7 +574,7 @@ describe('3. an unfinished update resumed after the app was closed says why it h
     mockLocation.granted = false;
     const first = await launch();
     await startUpdateForLot9(first);
-    await waitFor(() => expect(first.getByText(DENIED)).toBeTruthy(), COLD);
+    await waitFor(() => expect(first.getByText(DENIED_WHEN_STARTED)).toBeTruthy(), COLD);
     await keepAndCloseApp(first);
 
     // Location is allowed now. He opens the app and starts a new update instead of resuming.

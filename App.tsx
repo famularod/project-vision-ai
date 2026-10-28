@@ -1,3 +1,5 @@
+import { fieldUpdateChronologyDate } from './services/FieldUpdateChronology';
+import { fieldUpdatesNewestFirst } from './services/PIEEvidenceFusion';
 import {
   deleteCloudProject,
   loadCloudArchivedProjectNames,
@@ -505,7 +507,7 @@ import {
   reconcileDAVEScheduleRecords,
   recoverDAVEScheduleRecords,
 } from './services/DAVEScheduleRecovery';
-import { recordScheduleCloudPull, registerScheduleCloudPullRequest } from './services/ScheduleCloudPull';
+import { deviceCloudPullPending, noteDeviceCloudPullFailed, noteDeviceCloudPullNeeded, recordDeviceCloudPull, recordScheduleCloudPull, registerScheduleCloudPullRequest } from './services/ScheduleCloudPull';
 import {
   DAVE_SYNC_TOMBSTONES_STORAGE_KEY,
   deletedDAVERecordIds,
@@ -676,6 +678,7 @@ import { checkScheduleTaskProject, scheduleTaskSaveNotice } from './services/Sch
 import {
   DEFAULT_PROJECT_TIME_ZONE,
   parseMonthNameDateParts,
+  parsePlainDate,
   projectDateRelativeDays,
   projectTimeZoneOrDefault,
 } from './services/ProjectDateTime';
@@ -1331,6 +1334,16 @@ function formatDisplayDate(date: string) {
 type UpdateTimelineGroup = 'Today' | 'Yesterday' | 'Earlier';
 
 function updateDateValue(value: string) {
+  // An update's legacy YYYY-MM-DD is a local calendar day, not midnight UTC (7.66).
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const day = parsePlainDate(value);
+    if (!day) return null;
+    const [year, month, dayOfMonth] = day.split('-').map(Number);
+    const date = new Date(0);
+    date.setFullYear(year, month - 1, dayOfMonth);
+    date.setHours(0, 0, 0, 0);
+    return date;
+  }
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? date : null;
 }
@@ -2318,7 +2331,7 @@ function formatAppDate(value: string) {
 
   if (!date) return value.trim();
 
-  return `${zeroPad(date.getMonth() + 1)}/${zeroPad(date.getDate())}/${date.getFullYear()}`;
+  return `${zeroPad(date.getMonth() + 1)}/${zeroPad(date.getDate())}/${date.getFullYear() >= 100 && date.getFullYear() <= 999 ? String(date.getFullYear()).padStart(4, '0') : date.getFullYear()}`;
 }
 
 function formatCompactAppDate(value: string) {
@@ -4212,12 +4225,11 @@ function buildProjectCardPIEStatus(
   projectNames: string[],
   savedUpdates: ProjectUpdate[],
 ) {
-  const scopedUpdates = (projectNames.length > 0
+  const scopedUpdates = fieldUpdatesNewestFirst(projectNames.length > 0
     ? savedUpdates.filter(update =>
         projectNames.some(projectName => projectMatchesScope(update, projectName)),
       )
-    : [...savedUpdates])
-    .sort((a, b) => b.date.localeCompare(a.date));
+    : savedUpdates);
   const currentConfirmedBlocker = findCurrentDAVEConfirmedBlocker(scopedUpdates);
   if (currentConfirmedBlocker && updateHasSafetyConcern(currentConfirmedBlocker)) {
     return 'Safety item needs review';
@@ -4257,13 +4269,14 @@ function buildProjectCardPIEStatus(
 
   const latest = scopedUpdates[0];
   if (!latest) return 'No recent updates';
+  const latestDate = fieldUpdateChronologyDate(latest) || latest.date;
 
   if (lifecycleStatusForUpdate(latest) === 'sent') {
-    return `Last update cloud synced ${relativeUpdateDateLabel(latest.date)}`;
+    return `Last update cloud synced ${relativeUpdateDateLabel(latestDate)}`;
   }
 
   if (lifecycleStatusForUpdate(latest) === 'queued') {
-    return `Last local update ${relativeUpdateDateLabel(latest.date)}`;
+    return `Last local update ${relativeUpdateDateLabel(latestDate)}`;
   }
 
   if (lifecycleStatusForUpdate(latest) === 'failed') {
@@ -4274,12 +4287,12 @@ function buildProjectCardPIEStatus(
     return 'Draft ready to sync';
   }
 
-  return `Last local update ${relativeUpdateDateLabel(latest.date)}`;
+  return `Last local update ${relativeUpdateDateLabel(latestDate)}`;
 }
 
 function relativeUpdateDateLabel(value: string) {
-  const date = new Date(value);
-  if (!Number.isFinite(date.getTime())) return formatDisplayDate(value);
+  const date = updateDateValue(value);
+  if (!date) return formatDisplayDate(value);
 
   const today = new Date();
   if (date.toDateString() === today.toDateString()) return 'today';
@@ -5009,6 +5022,7 @@ function AppShell() {
   const [previewPhoto, setPreviewPhoto] =
     useState<UpdatePhoto | null>(null);
 
+  const documentUploadRequestEpochRef = useRef(0);
   const [documentUploadRequest, setDocumentUploadRequest] = useState<{
     asset: {
       uri: string;
@@ -6164,8 +6178,11 @@ useEffect(() => {
         !requestedCollectionSet || requestedCollectionSet.has(name);
       const refreshCommit = operationalRefreshCommitGuard.begin();
       const refreshStartedAt = new Date().toISOString(); // what the downloads below can hold (A6 pass 10 M1)
+      refreshAttemptStartedAt = refreshStartedAt;
+      refreshMissing = [];
       const tombstones = await loadDAVEOperationalTombstones();
-      if (!active || !refreshCommit.isCurrent()) return;
+      if (!active) return;
+      if (!refreshCommit.isCurrent()) throw new Error('operational_refresh_superseded');
       const latestOperationalTombstones = tombstones.tombstones;
       const currentOperationalTombstones = operationalSyncTombstonesRef.current;
       refreshCommit.commit(() => {
@@ -6422,22 +6439,43 @@ useEffect(() => {
       }});
 
       const failures = await runDAVEOperationalCollectionRefreshes(collectionRefreshes);
+      if (!active) return;
+      if (!refreshCommit.isCurrent()) throw new Error('operational_refresh_superseded');
+      if (!requestedCollectionSet) {
+        const requested: DAVEOperationalCollectionName[] = ['projects', 'project_updates', 'project_areas', 'schedule_items', 'reference_documents'];
+        failures.push(...requested.filter(name => !collectionRefreshes.some(collection => collection.name === name)));
+      }
+      refreshMissing = [...failures, ...(tombstones.cloudAuthoritative ? [] : ['sync_tombstones'])]; // named on Reports and Settings (N276b)
       if (failures.length > 0) throw new Error(`operational_collection_refresh_incomplete:${failures.join(',')}`);
+      // 2.76: without the deletion history the other devices' new records were left out; tried again soon.
+      if (!tombstones.cloudAuthoritative) throw new Error('operational_deletion_history_incomplete');
+      if (!requestedCollectionSet) {
+        recordDeviceCloudPull(tombstones.readStartedAt ?? refreshStartedAt);
+        // A shared deletion-history read may predate the foreground request.
+        // It is safe to apply, but a newer full read is still needed.
+        if (deviceCloudPullPending()) {
+          refreshMissing = ['sync_tombstones'];
+          throw new Error('operational_refresh_predates_request');
+        }
+      }
     }
-    let realtimeHealthy = false, lastSuccessfulRefreshAt: string | null = null;
+    let realtimeHealthy = false, lastSuccessfulRefreshAt: string | null = null, refreshMissing: string[] = [], refreshAttemptStartedAt: string | undefined;
     const refreshController = createDAVEOperationalRefreshController({
       refresh: refreshOperationalCollections,
       canRefresh: () => active && AppState.currentState !== 'background',
       onStateChange: state => {
         if (!active) return;
-        if (state.status === 'retrying') setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE);
-        else if (state.status === 'ready') {
+        if (state.status === 'retrying') {
+          setSyncCleanupNotice(DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE);
+          noteDeviceCloudPullFailed(refreshMissing, refreshAttemptStartedAt); // only this attempt's failure; a newer Sync Now may already have succeeded
+        } else if (state.status === 'ready') {
           lastSuccessfulRefreshAt = state.lastSuccessfulRefreshAt;
-          setSyncCleanupNotice(current =>
+          if (!refreshController.fullRefreshOwed()) setSyncCleanupNotice(current =>
             current === DAVE_OPERATIONAL_REFRESH_RETRY_MESSAGE ? null : current);
         }
       },
     });
+    noteDeviceCloudPullNeeded(); // opened: Reports and Settings wait for the first download of every record (2.76)
     refreshController.start();
     const stopReportPullRequests = registerScheduleCloudPullRequest(() => void refreshController.request('foreground', ['schedule_items'])); // Reports waiting for the other device's changes (A6 pass 10 L2)
 
@@ -6488,8 +6526,9 @@ useEffect(() => {
       if (shouldRefreshDAVEOperationalDataOnForeground({
         realtimeHealthy, lastSuccessfulRefreshAt,
       })) {
+        noteDeviceCloudPullNeeded(); // back after time away: the same (2.76)
         void refreshController.request('foreground');
-      }
+      } else if (refreshController.fullRefreshOwed()) void refreshController.request('foreground'); // its retry fell due away (N276b)
     });
     return () => {
       active = false;
@@ -7364,6 +7403,7 @@ useEffect(() => {
       updateId?: string | null;
     },
   ) {
+    documentUploadRequestEpochRef.current += 1;
     setDocumentUploadRequest({
       asset,
       selected: new Set([defaultProjectName]),
@@ -7416,11 +7456,19 @@ useEffect(() => {
   }
 
   function cancelDocumentProjectSelection() {
+    documentUploadRequestEpochRef.current += 1;
     setDocumentUploadRequest(null);
   }
 
   async function confirmDocumentProjectSelection() {
     if (!documentUploadRequest) return;
+    const request = documentUploadRequest;
+    const requestEpoch = documentUploadRequestEpochRef.current;
+    const requestIsCurrent = () => documentUploadRequestEpochRef.current === requestEpoch;
+    const reviewCopyKey = `review-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    let unopenedReview: PIEScheduleImportBatch | null = null;
+    let unkeptCopy: ProjectDocument | null = null;
+    let cancelledDuplicate = false;
 
     const {
       asset,
@@ -7440,11 +7488,17 @@ useEffect(() => {
       return;
     }
 
+    const selectedProjectNames = Array.from(selected);
+    const existingCardIds = new Set(projectDocumentsCurrentRef.current.map(document => document.id));
+    const attemptCards: Array<{ document: ProjectDocument; projectName: string }> = [];
+    let projectIndex = -1;
+    const uploadAfterReview: string[] = [];
+    let scheduleUploadIsCurrent: (() => boolean) | null = null;
+
     // Same picked file, one ProjectDocument record per selected project -
     // each project keeps its own independent upload/retry/status lifecycle,
     // matching how documents already work everywhere else in this screen.
     try {
-      const selectedProjectNames = Array.from(selected);
       const replacementDocument = category === 'Drawing' &&
         selectedProjectNames.length === 1 &&
         drawingControls.replacementDocumentId
@@ -7462,12 +7516,16 @@ useEffect(() => {
       // added here (it uploads as any added without signal), then reviewed; closing the review leaves the card.
       let unreadSchedule: PIEScheduleImportBatch | null = null;
       if (category === 'Schedule' && !attachToDraft) {
-        const batch = await prepareScheduleImportFromAsset(asset, selectedProjectNames);
+        scheduleUploadIsCurrent = bindProjectDocumentUploadToAccount();
+        const batch = await prepareScheduleImportFromAsset(asset, selectedProjectNames, reviewCopyKey);
+        unopenedReview = batch;
+        if (!requestIsCurrent() || !scheduleUploadIsCurrent()) return;
         if (!batch?.nothingRead) {
           if (batch) {
             setIncomingScheduleImportBatch(batch);
             setScheduleProjectFilter(null);
             setScreen('Schedule');
+            unopenedReview = null;
           }
           return;
         }
@@ -7477,6 +7535,8 @@ useEffect(() => {
       const keptCards: ProjectDocument[] = [];
       try {
         for (const projectName of selected) {
+          if (!requestIsCurrent() || (scheduleUploadIsCurrent && !scheduleUploadIsCurrent())) return;
+          projectIndex += 1;
           const document = await createProjectDocumentFromAsset(asset, {
             projectName,
             areaId: attachToDraft ? areaId : null,
@@ -7484,26 +7544,101 @@ useEffect(() => {
             category,
             drawingMetadata,
           });
+          unkeptCopy = document;
+          if (!requestIsCurrent() || (scheduleUploadIsCurrent && !scheduleUploadIsCurrent())) return;
           const duplicate = duplicateProjectDocumentForAsset(
             projectDocuments, document.projectId, {
               name: document.name, mimeType: document.mimeType, size: document.sizeBytes,
             },
           );
-          if (!duplicate) keptCards.push(document); // a duplicate is kept only if he says Upload Anyway
-          await confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
+          // A created copy is not proof of a saved card. Remember only this
+          // attempt's new non-duplicate identity; the catch checks the durable ref.
+          if (!attachToDraft && !duplicate && !existingCardIds.has(document.id)) attemptCards.push({ document, projectName });
+          if (unreadSchedule && duplicate) {
+            if (!requestIsCurrent() || !scheduleUploadIsCurrent?.()) return;
+            // 5.31: the duplicate question is a decision before the review,
+            // not a saved card. Only the acknowledged durable copy can own it.
+            const keepCopy = await new Promise<boolean>(resolve => Alert.alert(
+              'Possible duplicate document',
+              `${document.name} looks like it already exists for this project. Choose Upload Anyway to keep a separate copy and continue the schedule review. Cancel stops this review.`,
+              [
+                { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
+                { text: 'Upload Anyway', onPress: () => resolve(true) },
+              ],
+              { cancelable: false },
+            ));
+            if (!requestIsCurrent() || !scheduleUploadIsCurrent()) return;
+            if (!keepCopy) {
+              cancelledDuplicate = true;
+              return;
+            }
+            const keptDuplicate = { ...document, duplicateOf: duplicate.id };
+            if (!existingCardIds.has(keptDuplicate.id)) attemptCards.push({ document: keptDuplicate, projectName });
+            await addProjectDocumentDurably(keptDuplicate);
+            keptCards.push(keptDuplicate);
+            uploadAfterReview.push(keptDuplicate.id);
+            unkeptCopy = null;
+          } else if (unreadSchedule) {
+            // 5.30: durable storage is required before saying saved. Waiting
+            // for the upload is not: the review also works without a signal.
+            await addProjectDocumentDurably(document);
+            keptCards.push(document);
+            uploadAfterReview.push(document.id);
+            unkeptCopy = null;
+          } else {
+            if (!duplicate) keptCards.push(document);
+            // This helper owns an ordinary/attach duplicate's detached choice.
+            unkeptCopy = null;
+            await confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
+          }
         }
       } catch (error) {
-        if (unreadSchedule) cancelScheduleImport(unreadSchedule); // no review says "saved"; its copy goes
         throw error;
       }
       if (unreadSchedule) {
+        if (!requestIsCurrent() || !scheduleUploadIsCurrent?.()) return;
         // One project: its tasks saved from the review make this card current, as Import This Schedule does.
         if (selectedProjectNames.length === 1 && keptCards.length === 1) projectScheduleImportCardRef.current = { batchId: unreadSchedule.id, documentId: keptCards[0].id };
         setIncomingScheduleImportBatch({ ...unreadSchedule, message: `The PDF is saved in Documents. ${unreadSchedule.message}` });
         setScheduleProjectFilter(null);
         setScreen('Schedule');
+        unopenedReview = null;
       }
     } catch (error) {
+      if (!requestIsCurrent() || (scheduleUploadIsCurrent && !scheduleUploadIsCurrent())) return;
+      const savedCopies = attemptCards.flatMap(attempt => {
+        const made = attempt.document;
+        const saved = projectDocumentsCurrentRef.current.find(current =>
+          current.id === made.id && current.projectId === made.projectId &&
+          Boolean(made.ownedFileId) && current.ownedFileId === made.ownedFileId &&
+          current.localUri === made.localUri && current.name === made.name && current.category === made.category);
+        return saved ? [{ document: saved, projectName: attempt.projectName }] : [];
+      });
+      if (savedCopies.length > 0) {
+        const savedLines = savedCopies.map(({ document, projectName }) => {
+          const status = document.status === 'uploaded' ? 'file uploaded'
+            : document.status === 'uploading' ? 'upload in progress'
+              : document.status === 'failed' ? 'upload needs retry' : 'waiting to upload';
+          return `“${document.name}” — ${projectName} (${status}).`;
+        });
+        const currentProject = selectedProjectNames[projectIndex];
+        const currentWasSaved = savedCopies.some(copy => copy.projectName === currentProject);
+        const remainder = selectedProjectNames.slice(projectIndex + 1);
+        const reason = error instanceof Error ? error.message : 'The document add could not be completed.';
+        // Scope the old single-copy storage failure to this incomplete copy;
+        // earlier durable cards and their independent upload retries stay intact.
+        const detail = reason === 'Vitruvius could not save this document record. The selected file was not uploaded.'
+          ? 'Vitruvius could not save this document record.' : reason;
+        Alert.alert('Some document copies were saved', [
+          'Saved in Documents on this device:', ...savedLines,
+          currentProject ? currentWasSaved ? `The add for ${currentProject} did not finish.` : `The copy for ${currentProject} was not saved.` : '',
+          remainder.length ? `Not attempted: ${remainder.join(', ')}.` : '',
+          category === 'Schedule' ? 'Schedule review was not opened.' : '',
+          detail,
+          'Review Documents before adding the incomplete copies again.',
+        ].filter(Boolean).join('\n'));
+        return;
+      }
       Alert.alert(
         category === 'Schedule' ? 'Schedule review unavailable' : 'Document unavailable',
         error instanceof Error
@@ -7511,7 +7646,33 @@ useEffect(() => {
           : 'The selected document could not be copied into secure app storage.',
       );
     } finally {
-      setDocumentUploadRequest(null);
+      // Resource ownership outlives the UI/account check. Never abandon an
+      // unkept copy, and never dispose of a card already made durable.
+      const copy = unkeptCopy;
+      if (copy && !projectDocumentsCurrentRef.current.some(current =>
+        current.id === copy.id && current.ownedFileId === copy.ownedFileId)) {
+        await deleteOwnedProjectDocument(copy).catch(() => undefined);
+      }
+      // This review was never handed to the UI. Its per-attempt paths cannot
+      // collide with a newer request, and cleanup does not touch current mapping.
+      if (unopenedReview) await Promise.all(unopenedReview.documents.map(document =>
+        deleteStoredReferenceDocument(document.uri).catch(() => undefined)));
+      if (requestIsCurrent()) {
+        if (cancelledDuplicate && uploadAfterReview.length && scheduleUploadIsCurrent?.()) Alert.alert('Schedule review cancelled', 'Review Documents for any copies saved before cancellation. Remaining project copies were not added.');
+        setDocumentUploadRequest(current => current === request ? null : current);
+      }
+      // Keep the same sequential, silent background upload behavior as Retry.
+      // This attempt's saved copies stay retryable even after a partial add.
+      // Never start its deferred work in a different account's workspace.
+      const sameAccount = scheduleUploadIsCurrent;
+      if (sameAccount && uploadAfterReview.length) void (async () => {
+        for (const documentId of uploadAfterReview) {
+          if (!sameAccount()) break;
+          const current = projectDocumentsCurrentRef.current.find(document => document.id === documentId);
+          if (current?.status !== 'local' || current.isArchived) continue;
+          await retryProjectDocumentUpload(documentId);
+        }
+      })().catch(() => undefined);
     }
   }
 
@@ -10337,8 +10498,10 @@ Note: This update was opened through Outlook because PLZ email security may reje
       reportPhotoIds,
       drawingReferences: readableDrawingReferences,
     });
+    // Encode only the basename: the Expo directory is already a file URI.
+    // Raw #/percent escapes would otherwise change Foundation URL.path.
     const fileUri =
-      `${directory}${sanitizeFilename(reportFileTitleWithDate(report.title || 'Vitruvius Project Report', report.generatedAt))}.docx`;
+      `${directory}${encodeURIComponent(reportFileTitleWithDate(report.title || 'Vitruvius Project Report', report.generatedAt))}.docx`;
 
     try {
       const {
@@ -10348,6 +10511,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       const base64 = await buildReportWordBase64({
         title: report.title,
         body: report.body,
+        taskLines: report.daveBriefing?.wordTaskLines ?? [],
         generatedAt: report.generatedAt,
         media: resolvedMedia.media.map(item => item.kind === 'photo'
           ? {
@@ -11958,6 +12122,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       size?: number | null;
     },
     selectedProjectNames: readonly string[] = activeProjects.length ? activeProjects : projects,
+    reviewCopyKey?: string,
   ): Promise<PIEScheduleImportBatch | null> {
     const fileName = file.name?.trim() || 'Imported schedule';
     const mimeType = file.mimeType || '';
@@ -12068,7 +12233,7 @@ Note: This update was opened through Outlook because PLZ email security may reje
       ? `${fileName}.pdf`
       : fileName;
     const targetUri =
-      `${directory}${sourceIdentity.documentId}-${sanitizeFilename(originalFileName)}`;
+      `${directory}${sourceIdentity.documentId}${reviewCopyKey ? `-${sanitizeFilename(reviewCopyKey)}` : ''}-${sanitizeFilename(originalFileName)}`;
     await FileSystem.deleteAsync(targetUri, { idempotent: true });
     await FileSystem.copyAsync({ from: file.uri, to: targetUri });
     const onlyProject = scopeProjects.length === 1 ? scopeProjects[0] : null;
@@ -12209,6 +12374,9 @@ Note: This update was opened through Outlook because PLZ email security may reje
         extractionMethod = 'schedule service';
       } catch (error) {
         extractionIssue = error instanceof Error ? error.message : 'Automatic schedule extraction could not finish.';
+        // 5.32: the review already says no dated activities were extracted. Keep the
+        // empty-payload reader's readable-PDF guidance without repeating that result.
+        extractionIssue = extractionIssue.replace(/^No dated schedule activities could be extracted\.\s*/, '');
       }
     }
     if (extractedItems.length > 0) {
@@ -14631,7 +14799,7 @@ function HomeScreen({
   return (
     <View style={styles.overviewPageWrap}>
       <LinearGradient
-        colors={['#E4E9FA', '#EEEBFB', 'rgba(245,245,247,0)']}
+        colors={['#F3F1EC', '#EEEBFB', 'rgba(251,250,248,0)']}
         locations={[0, 0.4, 1]}
         style={styles.overviewPageGradient}
       />
@@ -15308,6 +15476,7 @@ function AddPhotosScreen({
     areaStatus: update.areaStatus,
     areaSuggestion,
     hasScheduleRecommendation: Boolean(scheduleRecommendation),
+    scheduleRecommendationAreaName: scheduleRecommendation?.areaName,
     correctionPenalty: walkCorrectionMemory?.correctionPenalty,
     locationNotice,
   });
@@ -17935,6 +18104,7 @@ function ProjectDocumentsScreen({
     );
   };
 
+  const archivedDocuments = buildMobileArchivedDocuments({ documents, referenceDocuments, projectNames, projectIdentities, archive });
   const listHeader = (<>
     <ProjectDocumentsHeader
       projectName={projectName}
@@ -17946,9 +18116,14 @@ function ProjectDocumentsScreen({
       onTakePhoto={onTakePhoto}
       showActions={sizeClass !== 'wide'}
     />
-    <ArchivedDocumentsSection documents={buildMobileArchivedDocuments({ documents, referenceDocuments, projectNames, projectIdentities, archive })} onRestore={archive.restore} />
+    <ArchivedDocumentsSection documents={archivedDocuments} onRestore={archive.restore} />
   </>);
-  const emptyState = workspaceDocuments.length === 0 ? (
+  const emptyState = workspaceDocuments.length === 0 && archivedDocuments.length > 0 ? (
+    <EmptyState
+      title="All documents are archived."
+      text="Open Archived to restore a document, or upload another document."
+    />
+  ) : workspaceDocuments.length === 0 ? (
     <EmptyState
       title="No documents yet — upload your first document."
       text="Documents can be linked to the project, an area, or a saved update without blocking photo capture, review, or saving."

@@ -4,7 +4,8 @@
  * file picked again came preset and forced to Lookahead; accepted, the master
  * became its own lookahead. The review now says to use Set Active, and Accept
  * refuses either choice while a project F covers shows no full schedule. With
- * another master shown, it saves as a lookahead as before. Synthetic data.
+ * another master shown, it saves as a lookahead after the current explicit
+ * same-named identity check is confirmed. Synthetic data.
  */
 import { act, fireEvent, render } from '@testing-library/react-native';
 import { ScheduleImportFlow } from '../../components/ScheduleImportFlow';
@@ -78,11 +79,22 @@ describe('A8 pass 6 L1: the review never makes the old master its own lookahead 
     view.unmount();
   });
 
-  it('with M2 shown, it is added as a lookahead, as before', async () => {
+  it('with M2 shown, identity confirmation gates saving it as a lookahead', async () => {
     const view = renderReview([savedF, m2]);
     await view.findByText('How should Vitruvius use this schedule?');
+    const title = '2 tasks named Pour slab in Lot — confirm which is which';
+    expect(await view.findByText(title)).toBeTruthy();
+    await acceptAll(view);
+    expect(view.onApprove).not.toHaveBeenCalled();
+    expect(view.getByText('Confirm which Pour slab is which in Lot before saving.')).toBeTruthy();
+    await act(async () => {
+      fireEvent.press(view.getByRole('button', { name: `Confirm: ${title}` }));
+      await Promise.resolve();
+    });
     await acceptAll(view);
     expect(view.onApprove.mock.calls.map(call => call[0].documents.map(item => item.scheduleRole))).toEqual([['lookahead']]);
+    expect(view.onApprove).toHaveBeenCalledTimes(1);
+    expect(view.onApprove.mock.calls[0][0].pairingChoices).toEqual({ 'a-1': 'f-1' });
     view.unmount();
   });
 });

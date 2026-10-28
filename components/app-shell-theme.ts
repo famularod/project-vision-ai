@@ -1,24 +1,25 @@
 import { Platform, StyleSheet } from 'react-native';
 import { VITRUVIUS_NATIVE_MIN_TOUCH_TARGET } from '../services/NativeInteractionPolicy';
+import { displayFontFamily } from '../theme/typography';
 
 export const colors = {
-  bg: '#F5F5F7',
+  bg: '#FBFAF8',
   card: '#FFFFFF',
-  fill: '#F2F2F7',
-  text: '#1D1D1F',
-  muted: '#6E6E73',
-  tertiaryText: '#9A9AA0',
-  line: '#E5E5EA',
-  primary: '#007AFF',
-  primarySoft: '#EAF4FF',
-  success: '#34C759',
-  successSoft: '#EAF8EE',
-  warning: '#FF9500',
-  warningSoft: '#FFF4E5',
-  insight: '#6B5DD3',
-  insightSoft: '#F0EEFF',
-  dangerSoft: '#FFECEC',
-  danger: '#FF3B30',
+  fill: '#F3F1EC',
+  text: '#1A1A18',
+  muted: '#66645E',
+  tertiaryText: '#8A877F',
+  line: '#E7E4DE',
+  primary: '#1F3A2E',
+  primarySoft: '#E3EAE5',
+  success: '#1F5E3F',
+  successSoft: '#E6EFE9',
+  warning: '#8A5A00',
+  warningSoft: '#FBF3E2',
+  insight: '#4F3F99',
+  insightSoft: '#F1EFF8',
+  dangerSoft: '#F8ECEA',
+  danger: '#9E2A22',
 };
 
 export const styles = StyleSheet.create({
@@ -38,22 +39,23 @@ export const styles = StyleSheet.create({
 
   kicker: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '600',
     marginBottom: 8,
   },
 
   title: {
     color: colors.text,
-    fontSize: 28,
-    fontWeight: '800',
-    lineHeight: 34,
+    fontSize: 32,
+    fontFamily: displayFontFamily,
+    fontWeight: '400',
+    lineHeight: 39,
   },
 
   subtitle: {
     color: colors.muted,
-    fontSize: 15,
-    lineHeight: 21,
+    fontSize: 16,
+    lineHeight: 22,
     marginTop: 7,
     fontWeight: '500',
   },
@@ -81,8 +83,8 @@ export const styles = StyleSheet.create({
 
   sectionLabel: {
     color: colors.text,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '600',
     marginTop: 10,
     marginBottom: 10,
     textTransform: 'uppercase',
@@ -113,8 +115,8 @@ export const styles = StyleSheet.create({
 
   countPillText: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   countPillTextDanger: {
@@ -123,15 +125,15 @@ export const styles = StyleSheet.create({
 
   mutedNote: {
     color: colors.muted,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 23,
     fontWeight: '600',
     marginBottom: 16,
   },
 
   primaryButton: {
     backgroundColor: colors.primary,
-    borderRadius: 12,
+    borderRadius: 8,
     paddingVertical: 14,
     paddingHorizontal: 14,
     alignItems: 'center',
@@ -144,7 +146,7 @@ export const styles = StyleSheet.create({
     backgroundColor: colors.card,
     borderColor: colors.line,
     borderWidth: 1,
-    borderRadius: 12,
+    borderRadius: 8,
     paddingVertical: 14,
     paddingHorizontal: 14,
     alignItems: 'center',
@@ -173,16 +175,16 @@ export const styles = StyleSheet.create({
 
   primaryButtonText: {
     color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 17,
+    fontWeight: '600',
     textAlign: 'center',
     flexShrink: 1,
   },
 
   secondaryButtonText: {
     color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 17,
+    fontWeight: '600',
     textAlign: 'center',
     flexShrink: 1,
   },
@@ -199,14 +201,14 @@ export const styles = StyleSheet.create({
   panelTitle: {
     color: colors.text,
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: '600',
     marginBottom: 10,
   },
 
   bodyText: {
     color: colors.muted,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 23,
     fontWeight: '500',
   },
 
@@ -228,9 +230,9 @@ export const styles = StyleSheet.create({
 
   locationDetailText: {
     color: colors.muted,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '600',
     marginTop: 7,
   },
 
@@ -260,8 +262,8 @@ export const styles = StyleSheet.create({
 
   photoComparisonPreviewLabel: {
     color: colors.muted,
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 14,
+    fontWeight: '600',
     textAlign: 'center',
   },
 
@@ -310,8 +312,8 @@ export const styles = StyleSheet.create({
 
   areaChipText: {
     color: colors.text,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   areaChipTextSelected: {
@@ -335,7 +337,7 @@ export const styles = StyleSheet.create({
     backgroundColor: colors.warningSoft,
     borderWidth: 1,
     borderColor: '#FFD8A3',
-    borderRadius: 12,
+    borderRadius: 8,
     padding: 15,
     marginBottom: 14,
   },
@@ -358,12 +360,12 @@ export const styles = StyleSheet.create({
   draftRecoveryTitle: {
     color: colors.text,
     fontSize: 17,
-    fontWeight: '800',
+    fontWeight: '600',
   },
 
   draftRecoveryProject: {
     color: colors.muted,
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '600',
     marginTop: 3,
   },
@@ -377,13 +379,13 @@ export const styles = StyleSheet.create({
 
   draftStatText: {
     color: colors.muted,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   draftStatDot: {
     color: colors.muted,
-    fontSize: 13,
+    fontSize: 15,
     paddingHorizontal: 7,
   },
 
@@ -405,8 +407,8 @@ export const styles = StyleSheet.create({
 
   resumeDraftText: {
     color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
   },
 
   discardDraftButton: {
@@ -422,8 +424,8 @@ export const styles = StyleSheet.create({
 
   discardDraftText: {
     color: colors.danger,
-    fontSize: 15,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
   },
 
   draftSavedIndicator: {
@@ -439,14 +441,14 @@ export const styles = StyleSheet.create({
 
   draftSavedText: {
     color: '#248A3D',
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 14,
+    fontWeight: '600',
     flex: 1,
   },
 
   dashboardCard: {
     backgroundColor: colors.card,
-    borderRadius: 12,
+    borderRadius: 8,
     padding: 14,
     marginBottom: 12,
     borderColor: colors.line,
@@ -480,7 +482,7 @@ export const styles = StyleSheet.create({
   miniStatValue: {
     color: colors.primary,
     fontSize: 20,
-    fontWeight: '800',
+    fontWeight: '600',
   },
 
   miniStatValueDanger: {
@@ -489,8 +491,8 @@ export const styles = StyleSheet.create({
 
   miniStatLabel: {
     color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
+    fontSize: 13,
+    fontWeight: '600',
     marginTop: 2,
   },
 
@@ -509,8 +511,8 @@ export const styles = StyleSheet.create({
 
   smallActionText: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   smallActionDanger: {
@@ -519,8 +521,8 @@ export const styles = StyleSheet.create({
 
   smallActionDangerText: {
     color: colors.danger,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   addProjectCard: {
@@ -582,8 +584,8 @@ export const styles = StyleSheet.create({
 
   scheduleItemContext: {
     flexShrink: 1,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 23,
   },
 
   scheduleItemBody: {
@@ -637,8 +639,8 @@ export const styles = StyleSheet.create({
 
   deliveryChoiceText: {
     color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
     maxWidth: 230,
   },
 
@@ -661,13 +663,13 @@ export const styles = StyleSheet.create({
 
   projectName: {
     color: colors.text,
-    fontSize: 16,
-    fontWeight: '700',
+    fontSize: 17,
+    fontWeight: '600',
   },
 
   rowSub: {
     color: colors.muted,
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '500',
     marginTop: 4,
   },
@@ -686,21 +688,21 @@ export const styles = StyleSheet.create({
 
   contactSummaryText: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     flex: 1,
   },
 
   contactSummaryAction: {
     color: colors.primary,
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
   },
 
   contactSelectText: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   contactSelectTextSelected: {
@@ -718,8 +720,8 @@ export const styles = StyleSheet.create({
 
   inlineLinkText: {
     color: colors.primary,
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
   },
 
   progressPanel: {
@@ -746,25 +748,26 @@ export const styles = StyleSheet.create({
 
   progressNumber: {
     color: colors.primary,
-    fontSize: 28,
-    fontWeight: '800',
+    fontSize: 32,
+    fontFamily: displayFontFamily,
+    fontWeight: '400',
   },
 
   progressText: {
     color: colors.muted,
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '600',
     marginTop: 2,
   },
 
   emptyState: {
     backgroundColor: colors.card,
-    borderRadius: 16,
+    borderRadius: 10,
     padding: 20,
     marginBottom: 16,
     borderWidth: 1,
     borderColor: colors.line,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
@@ -774,7 +777,7 @@ export const styles = StyleSheet.create({
   emptyTitle: {
     color: colors.text,
     fontSize: 18,
-    fontWeight: '700',
+    fontWeight: '600',
     marginBottom: 6,
   },
 
@@ -808,7 +811,7 @@ export const styles = StyleSheet.create({
   photoTitle: {
     color: colors.text,
     fontSize: 17,
-    fontWeight: '700',
+    fontWeight: '600',
   },
 
   categoryGrid: {
@@ -834,8 +837,8 @@ export const styles = StyleSheet.create({
 
   categoryText: {
     color: colors.primary,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
 
   categoryTextActive: {
@@ -857,7 +860,7 @@ export const styles = StyleSheet.create({
   actionPanel: {
     backgroundColor: colors.primarySoft,
     borderWidth: 1,
-    borderColor: '#CFE6FF',
+    borderColor: '#F3F1EC',
     borderRadius: 10,
     padding: 12,
     marginBottom: 12,
@@ -872,8 +875,8 @@ export const styles = StyleSheet.create({
 
   actionPanelTitle: {
     color: colors.text,
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 17,
+    fontWeight: '600',
   },
 
   statusGrid: {
@@ -898,8 +901,8 @@ export const styles = StyleSheet.create({
 
   statusButtonText: {
     color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
 
   statusButtonTextActive: {
@@ -908,8 +911,8 @@ export const styles = StyleSheet.create({
 
   dateHelpError: {
     color: colors.danger,
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 14,
+    fontWeight: '600',
     marginTop: -7,
     marginBottom: 10,
   },
@@ -939,8 +942,8 @@ export const styles = StyleSheet.create({
 
   photoControlText: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   photoControlTextDisabled: {
@@ -982,13 +985,13 @@ export const styles = StyleSheet.create({
   photoModalTitle: {
     color: '#FFFFFF',
     fontSize: 18,
-    fontWeight: '800',
+    fontWeight: '600',
   },
 
   photoModalCaption: {
-    color: '#D1D1D6',
-    fontSize: 13,
-    lineHeight: 18,
+    color: '#DDD9D2',
+    fontSize: 15,
+    lineHeight: 21,
     marginTop: 3,
   },
 
@@ -1027,13 +1030,13 @@ export const styles = StyleSheet.create({
   sheetModalTitle: {
     color: colors.text,
     fontSize: 18,
-    fontWeight: '800',
+    fontWeight: '600',
   },
 
   sheetModalCaption: {
     color: colors.muted,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 21,
     marginTop: 3,
   },
 
@@ -1061,7 +1064,7 @@ export const styles = StyleSheet.create({
 
   photoModalBottomCloseButton: {
     minHeight: 54,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: 'rgba(255,255,255,0.18)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.28)',
@@ -1073,8 +1076,8 @@ export const styles = StyleSheet.create({
 
   photoModalBottomCloseText: {
     color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 17,
+    fontWeight: '600',
   },
 
   iconOnlyDangerButton: {
@@ -1097,8 +1100,8 @@ export const styles = StyleSheet.create({
 
   label: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     marginBottom: 8,
   },
 
@@ -1109,7 +1112,7 @@ export const styles = StyleSheet.create({
     borderColor: colors.line,
     borderRadius: 8,
     color: colors.text,
-    fontSize: 15,
+    fontSize: 16,
     paddingHorizontal: 12,
     paddingVertical: 10,
     marginBottom: 12,
@@ -1131,16 +1134,16 @@ export const styles = StyleSheet.create({
 
   previewLabel: {
     color: colors.muted,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '600',
     marginBottom: 7,
   },
 
   subjectText: {
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 22,
-    fontWeight: '700',
+    fontSize: 17,
+    lineHeight: 23,
+    fontWeight: '600',
   },
 
   divider: {
@@ -1151,8 +1154,8 @@ export const styles = StyleSheet.create({
 
   previewBody: {
     color: colors.text,
-    fontSize: 15,
-    lineHeight: 22,
+    fontSize: 16,
+    lineHeight: 23,
     fontWeight: '500',
   },
 
@@ -1171,8 +1174,8 @@ export const styles = StyleSheet.create({
 
   sectionLabelNoMargin: {
     color: colors.text,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
 
@@ -1191,7 +1194,7 @@ export const styles = StyleSheet.create({
   addLocationInlineButton: {
     width: 52,
     height: 52,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
@@ -1199,7 +1202,7 @@ export const styles = StyleSheet.create({
 
   areaListCard: {
     backgroundColor: colors.card,
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.line,
     overflow: 'hidden',
@@ -1251,8 +1254,8 @@ export const styles = StyleSheet.create({
 
   areaListRadius: {
     color: colors.muted,
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     minWidth: 58,
     textAlign: 'right',
   },
@@ -1305,14 +1308,14 @@ export const styles = StyleSheet.create({
 
   radiusEditUnit: {
     color: colors.muted,
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 17,
+    fontWeight: '600',
     marginBottom: 12,
   },
 
   locationSummaryCard: {
     backgroundColor: colors.fill,
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.line,
     padding: 12,
@@ -1326,7 +1329,7 @@ export const styles = StyleSheet.create({
     marginTop: 14,
     marginBottom: 12,
     borderWidth: 1,
-    borderColor: '#CFE6FF',
+    borderColor: '#F3F1EC',
   },
 
   checklistRow: {
@@ -1340,8 +1343,8 @@ export const styles = StyleSheet.create({
 
   checklistText: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     flex: 1,
   },
 
@@ -1352,7 +1355,7 @@ export const styles = StyleSheet.create({
 
   dashboardSummaryCard: {
     backgroundColor: colors.card,
-    borderRadius: 14,
+    borderRadius: 10,
     padding: 16,
     marginBottom: 14,
     borderColor: colors.line,
@@ -1376,8 +1379,8 @@ export const styles = StyleSheet.create({
 
   dashboardManageText: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   dashboardMetricGrid: {
@@ -1389,7 +1392,7 @@ export const styles = StyleSheet.create({
   dashboardMetricCard: {
     width: '48%',
     backgroundColor: colors.fill,
-    borderRadius: 11,
+    borderRadius: 8,
     paddingVertical: 10,
     paddingHorizontal: 12,
     minHeight: 86,
@@ -1411,8 +1414,9 @@ export const styles = StyleSheet.create({
 
   dashboardMetricValue: {
     color: colors.primary,
-    fontSize: 24,
-    fontWeight: '900',
+    fontSize: 28,
+    fontFamily: displayFontFamily,
+    fontWeight: '400',
   },
 
   dashboardMetricValueDanger: {
@@ -1421,8 +1425,8 @@ export const styles = StyleSheet.create({
 
   dashboardMetricLabel: {
     color: colors.muted,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
 
   quickActionGrid: {
@@ -1435,7 +1439,7 @@ export const styles = StyleSheet.create({
   quickActionButton: {
     width: '48%',
     backgroundColor: colors.card,
-    borderRadius: 12,
+    borderRadius: 8,
     borderColor: colors.line,
     borderWidth: 1,
     minHeight: 76,
@@ -1452,9 +1456,9 @@ export const styles = StyleSheet.create({
 
   quickActionText: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 17,
-    fontWeight: '800',
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '600',
     textAlign: 'center',
   },
 
@@ -1464,7 +1468,7 @@ export const styles = StyleSheet.create({
 
   attentionCard: {
     backgroundColor: colors.card,
-    borderRadius: 11,
+    borderRadius: 8,
     padding: 13,
     marginBottom: 10,
     borderWidth: 1,
@@ -1481,7 +1485,7 @@ export const styles = StyleSheet.create({
 
   activityRow: {
     backgroundColor: colors.card,
-    borderRadius: 11,
+    borderRadius: 8,
     padding: 13,
     marginBottom: 10,
     borderWidth: 1,
@@ -1493,12 +1497,12 @@ export const styles = StyleSheet.create({
 
   projectFinderPanel: {
     backgroundColor: colors.card,
-    borderRadius: 16,
+    borderRadius: 10,
     padding: 15,
     marginBottom: 18,
     borderColor: colors.line,
     borderWidth: 1,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
@@ -1520,28 +1524,28 @@ export const styles = StyleSheet.create({
 
   phase2SelectorLabel: {
     color: colors.muted,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
 
   phase2SelectorValue: {
     color: colors.text,
     fontSize: 18,
-    fontWeight: '800',
+    fontWeight: '600',
     marginTop: 2,
   },
 
   phase2BriefCard: {
     backgroundColor: colors.card,
-    borderRadius: 14,
+    borderRadius: 10,
     padding: 16,
     marginBottom: 12,
     borderColor: colors.line,
     borderWidth: 1,
     flexDirection: 'row',
     gap: 12,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
@@ -1573,10 +1577,10 @@ export const styles = StyleSheet.create({
     backgroundColor: colors.card,
     borderColor: colors.line,
     borderWidth: 1,
-    borderRadius: 14,
+    borderRadius: 10,
     overflow: 'hidden',
     marginBottom: 12,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
@@ -1612,8 +1616,8 @@ export const styles = StyleSheet.create({
 
   projectWorkspaceCoverTitle: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     paddingHorizontal: 12,
     paddingTop: 12,
   },
@@ -1645,13 +1649,14 @@ export const styles = StyleSheet.create({
   },
 
   overviewGreetingText: {
-    fontSize: 26,
-    fontWeight: '700',
+    fontSize: 30,
+    fontFamily: displayFontFamily,
+    fontWeight: '400',
     color: colors.text,
   },
 
   overviewGreetingDate: {
-    fontSize: 13,
+    fontSize: 15,
     color: colors.muted,
     marginTop: 2,
   },
@@ -1661,13 +1666,13 @@ export const styles = StyleSheet.create({
     borderRadius: 22,
     paddingHorizontal: 13,
     backgroundColor: 'rgba(255,255,255,0.72)',
-    borderColor: 'rgba(32,83,158,0.18)',
+    borderColor: 'rgba(31,58,46,0.18)',
     borderWidth: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 6,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.05,
     shadowRadius: 6,
@@ -1676,16 +1681,16 @@ export const styles = StyleSheet.create({
 
   overviewAskDaveText: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
 
   overviewFieldNotesCard: {
     marginTop: 10,
     minHeight: 78,
-    borderRadius: 18,
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: 'rgba(32,83,158,0.16)',
+    borderColor: 'rgba(31,58,46,0.16)',
     backgroundColor: 'rgba(255,255,255,0.78)',
     paddingHorizontal: 14,
     paddingVertical: 12,
@@ -1697,30 +1702,30 @@ export const styles = StyleSheet.create({
   overviewFieldNotesIcon: {
     width: 44,
     height: 44,
-    borderRadius: 15,
-    backgroundColor: '#EAF4FF',
+    borderRadius: 10,
+    backgroundColor: '#F3F1EC',
     alignItems: 'center',
     justifyContent: 'center',
   },
 
   overviewFieldNotesTitle: {
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 21,
-    fontWeight: '800',
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   overviewFieldNotesText: {
     color: colors.muted,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 21,
     marginTop: 2,
   },
 
   overviewHealthCard: {
     marginTop: 10,
     marginBottom: 20,
-    borderRadius: 20,
+    borderRadius: 12,
     paddingHorizontal: 16,
     paddingVertical: 20,
     backgroundColor: colors.primary,
@@ -1740,16 +1745,17 @@ export const styles = StyleSheet.create({
 
   overviewHealthEyebrow: {
     color: 'rgba(255,255,255,0.68)',
-    fontSize: 11,
-    fontWeight: '900',
+    fontSize: 13,
+    fontWeight: '600',
     letterSpacing: 1.2,
     marginBottom: 3,
   },
 
   overviewHealthTitle: {
     color: '#FFFFFF',
-    fontSize: 22,
-    fontWeight: '800',
+    fontSize: 25,
+    fontFamily: displayFontFamily,
+    fontWeight: '400',
   },
 
   overviewHealthMetrics: {
@@ -1766,8 +1772,9 @@ export const styles = StyleSheet.create({
 
   overviewHealthMetricValue: {
     color: '#FFFFFF',
-    fontSize: 25,
-    fontWeight: '800',
+    fontSize: 29,
+    fontFamily: displayFontFamily,
+    fontWeight: '400',
     marginBottom: 4,
     width: '100%',
     textAlign: 'center',
@@ -1781,9 +1788,9 @@ export const styles = StyleSheet.create({
 
   overviewHealthMetricLabel: {
     color: 'rgba(255,255,255,0.72)',
-    fontSize: 10,
-    lineHeight: 13,
-    fontWeight: '700',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '600',
     width: '100%',
     textAlign: 'center',
   },
@@ -1799,7 +1806,7 @@ export const styles = StyleSheet.create({
   overviewDashboardHeading: {
     color: colors.text,
     fontSize: 19,
-    fontWeight: '800',
+    fontWeight: '600',
   },
 
   overviewFocusSummary: {
@@ -1814,7 +1821,7 @@ export const styles = StyleSheet.create({
     backgroundColor: colors.card,
     borderWidth: 1,
     borderColor: colors.line,
-    borderRadius: 12,
+    borderRadius: 8,
     paddingVertical: 9,
     paddingHorizontal: 11,
   },
@@ -1822,32 +1829,32 @@ export const styles = StyleSheet.create({
   overviewFocusMetricValue: {
     fontSize: 19,
     lineHeight: 23,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   overviewFocusMetricLabel: {
     color: colors.muted,
-    fontSize: 10,
-    lineHeight: 14,
-    fontWeight: '800',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
     marginTop: 1,
   },
 
   overviewDashboardLink: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
     paddingVertical: 8,
   },
 
   overviewPriorityCard: {
     backgroundColor: colors.card,
-    borderRadius: 20,
+    borderRadius: 12,
     borderColor: colors.line,
     borderWidth: 1,
     overflow: 'hidden',
     marginBottom: 22,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 0.12,
     shadowRadius: 18,
@@ -1887,14 +1894,14 @@ export const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 18,
     lineHeight: 23,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   overviewPriorityClearText: {
     color: colors.muted,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   overviewPriorityContent: {
@@ -1915,8 +1922,8 @@ export const styles = StyleSheet.create({
 
   overviewPriorityBadgeText: {
     color: colors.warning,
-    fontSize: 10,
-    fontWeight: '900',
+    fontSize: 12,
+    fontWeight: '600',
     letterSpacing: 0.7,
   },
 
@@ -1927,22 +1934,22 @@ export const styles = StyleSheet.create({
   overviewPriorityProject: {
     color: colors.text,
     fontSize: 21,
-    fontWeight: '800',
+    fontWeight: '600',
     marginBottom: 6,
   },
 
   overviewPriorityRecommendation: {
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 22,
-    fontWeight: '700',
+    fontSize: 17,
+    lineHeight: 23,
+    fontWeight: '600',
     marginBottom: 7,
   },
 
   overviewPrioritySupport: {
     color: colors.muted,
-    fontSize: 13,
-    lineHeight: 19,
+    fontSize: 15,
+    lineHeight: 22,
     marginBottom: 15,
   },
 
@@ -1958,8 +1965,8 @@ export const styles = StyleSheet.create({
 
   overviewPriorityObservationText: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 21,
     fontWeight: '600',
   },
 
@@ -1970,16 +1977,16 @@ export const styles = StyleSheet.create({
 
   overviewPriorityObservationLabel: {
     color: colors.primary,
-    fontSize: 10,
-    lineHeight: 14,
-    fontWeight: '900',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
     letterSpacing: 0.7,
     marginTop: 2,
   },
 
   overviewPriorityButton: {
     minHeight: 46,
-    borderRadius: 12,
+    borderRadius: 8,
     paddingHorizontal: 15,
     backgroundColor: colors.primary,
     flexDirection: 'row',
@@ -1990,14 +1997,14 @@ export const styles = StyleSheet.create({
 
   overviewPriorityButtonText: {
     color: '#FFFFFF',
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
   },
 
   overviewDailyBriefCard: {
     alignSelf: 'stretch',
     backgroundColor: colors.card,
-    borderRadius: 16,
+    borderRadius: 10,
     borderColor: colors.line,
     borderWidth: 1,
     flexDirection: 'column',
@@ -2006,7 +2013,7 @@ export const styles = StyleSheet.create({
     paddingVertical: 4,
     marginBottom: 22,
     minWidth: 0,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
@@ -2035,28 +2042,28 @@ export const styles = StyleSheet.create({
 
   overviewBriefProject: {
     color: colors.text,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
     marginBottom: 2,
   },
 
   overviewBriefText: {
     color: colors.muted,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 21,
   },
 
   overviewBriefEmpty: {
     color: colors.muted,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 23,
     paddingVertical: 18,
   },
 
   overviewProjectCard: {
     minHeight: 116,
     backgroundColor: colors.card,
-    borderRadius: 16,
+    borderRadius: 10,
     borderColor: colors.line,
     borderWidth: 1,
     padding: 11,
@@ -2064,7 +2071,7 @@ export const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
@@ -2074,14 +2081,14 @@ export const styles = StyleSheet.create({
   overviewProjectImage: {
     width: 92,
     height: 92,
-    borderRadius: 12,
+    borderRadius: 8,
     resizeMode: 'cover',
   },
 
   overviewProjectImagePlaceholder: {
     width: 92,
     height: 92,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
@@ -2102,37 +2109,37 @@ export const styles = StyleSheet.create({
   overviewProjectTitle: {
     flex: 1,
     color: colors.text,
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 17,
+    fontWeight: '600',
   },
 
   overviewProjectHealth: {
-    fontSize: 11,
-    fontWeight: '900',
+    fontSize: 13,
+    fontWeight: '600',
   },
 
   overviewProjectSummary: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 21,
     marginBottom: 7,
   },
 
   overviewProjectActivity: {
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '600',
   },
 
   overviewActivityCard: {
     backgroundColor: colors.card,
-    borderRadius: 16,
+    borderRadius: 10,
     borderColor: colors.line,
     borderWidth: 1,
     paddingHorizontal: 15,
     paddingVertical: 6,
     marginBottom: 12,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
@@ -2141,8 +2148,8 @@ export const styles = StyleSheet.create({
 
   overviewActivityGroup: {
     color: colors.muted,
-    fontSize: 11,
-    fontWeight: '900',
+    fontSize: 13,
+    fontWeight: '600',
     textTransform: 'uppercase',
     letterSpacing: 0.7,
     paddingTop: 12,
@@ -2169,25 +2176,25 @@ export const styles = StyleSheet.create({
 
   overviewActivityProject: {
     color: colors.text,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
     marginBottom: 2,
   },
 
   overviewActivityText: {
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 14,
   },
 
   overviewActivityTime: {
     color: colors.muted,
-    fontSize: 11,
-    fontWeight: '700',
+    fontSize: 13,
+    fontWeight: '600',
   },
 
   overviewHeroCard: {
     marginTop: 8,
-    borderRadius: 20,
+    borderRadius: 12,
     overflow: 'hidden',
     height: 190,
     borderWidth: 1,
@@ -2205,21 +2212,22 @@ export const styles = StyleSheet.create({
   },
 
   overviewHeroLabel: {
-    fontSize: 11,
-    fontWeight: '700',
+    fontSize: 13,
+    fontWeight: '600',
     letterSpacing: 0.8,
     textTransform: 'uppercase',
     color: 'rgba(255,255,255,0.75)',
   },
 
   overviewHeroNumber: {
-    fontSize: 52,
-    fontWeight: '800',
-    lineHeight: 56,
+    fontSize: 60,
+    fontFamily: displayFontFamily,
+    fontWeight: '400',
+    lineHeight: 65,
   },
 
   overviewHeroCaption: {
-    fontSize: 14,
+    fontSize: 16,
     color: 'rgba(255,255,255,0.88)',
     marginTop: 2,
   },
@@ -2230,13 +2238,13 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 5,
     backgroundColor: 'rgba(255,255,255,0.16)',
-    borderRadius: 20,
+    borderRadius: 12,
     paddingVertical: 5,
     paddingHorizontal: 11,
   },
 
   overviewHeroPillText: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '600',
     color: '#FFFFFF',
   },
@@ -2254,7 +2262,7 @@ export const styles = StyleSheet.create({
   },
 
   overviewBentoCard: {
-    borderRadius: 12,
+    borderRadius: 8,
     padding: 12,
     borderWidth: 1,
     borderColor: 'rgba(0,0,0,0.18)',
@@ -2271,13 +2279,14 @@ export const styles = StyleSheet.create({
   },
 
   overviewBentoNumber: {
-    fontSize: 22,
-    fontWeight: '800',
+    fontSize: 25,
+    fontFamily: displayFontFamily,
+    fontWeight: '400',
     color: colors.text,
   },
 
   overviewBentoLabel: {
-    fontSize: 12,
+    fontSize: 14,
     color: colors.muted,
   },
 
@@ -2291,7 +2300,7 @@ export const styles = StyleSheet.create({
 
   overviewSectionLabel: {
     color: colors.muted,
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: '600',
     textTransform: 'uppercase',
   },
@@ -2301,7 +2310,7 @@ export const styles = StyleSheet.create({
   },
 
   overviewGroupedCell: {
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: 'rgba(0,0,0,0.18)',
     overflow: 'hidden',
@@ -2332,7 +2341,7 @@ export const styles = StyleSheet.create({
   },
 
   overviewRowSubtitle: {
-    fontSize: 13,
+    fontSize: 15,
     color: colors.muted,
   },
 
@@ -2349,13 +2358,13 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 5,
     backgroundColor: colors.card,
-    borderRadius: 20,
+    borderRadius: 12,
     paddingVertical: 4,
     paddingHorizontal: 10,
   },
 
   overviewDueTodayText: {
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '600',
     color: colors.warning,
   },
@@ -2367,7 +2376,7 @@ export const styles = StyleSheet.create({
 
   projectSelectorScrim: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: 'rgba(15, 23, 42, 0.34)',
+    backgroundColor: 'rgba(26, 26, 24, 0.34)',
   },
 
   projectSelectorRow: {
@@ -2389,7 +2398,7 @@ export const styles = StyleSheet.create({
 
   phase2ProjectCard: {
     minHeight: 116,
-    borderRadius: 16,
+    borderRadius: 10,
     padding: 11,
     marginBottom: 12,
     borderColor: colors.line,
@@ -2398,7 +2407,7 @@ export const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 12,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
@@ -2408,7 +2417,7 @@ export const styles = StyleSheet.create({
   phase2ProjectThumb: {
     width: 92,
     height: 92,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.fill,
     resizeMode: 'cover',
   },
@@ -2416,7 +2425,7 @@ export const styles = StyleSheet.create({
   phase2ProjectThumbPlaceholder: {
     width: 92,
     height: 92,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
@@ -2433,8 +2442,8 @@ export const styles = StyleSheet.create({
   phase2ProjectTitle: {
     flex: 1,
     color: colors.text,
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 17,
+    fontWeight: '600',
   },
 
   phase2ProjectStatusPill: {
@@ -2444,20 +2453,20 @@ export const styles = StyleSheet.create({
   },
 
   phase2ProjectStatusText: {
-    fontSize: 10,
-    fontWeight: '900',
+    fontSize: 12,
+    fontWeight: '600',
   },
 
   phase2ProjectSummary: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 21,
     marginBottom: 7,
   },
 
   phase2ProjectActivity: {
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '600',
   },
 
@@ -2496,8 +2505,8 @@ export const styles = StyleSheet.create({
 
   phase2ToolLabel: {
     color: colors.text,
-    fontSize: 15,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
     marginTop: 8,
   },
 
@@ -2531,8 +2540,8 @@ export const styles = StyleSheet.create({
 
   phase3StepText: {
     color: colors.muted,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
     textAlign: 'center',
   },
 
@@ -2542,8 +2551,9 @@ export const styles = StyleSheet.create({
 
   phase3MainTitle: {
     color: colors.text,
-    fontSize: 24,
-    fontWeight: '900',
+    fontSize: 28,
+    fontFamily: displayFontFamily,
+    fontWeight: '400',
     marginBottom: 12,
   },
 
@@ -2634,8 +2644,8 @@ export const styles = StyleSheet.create({
 
   phase3ContextText: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
   },
 
   phase3ContextTextSelected: {
@@ -2664,8 +2674,8 @@ export const styles = StyleSheet.create({
 
   phase4SafetyTitle: {
     color: colors.danger,
-    fontSize: 16,
-    fontWeight: '900',
+    fontSize: 17,
+    fontWeight: '600',
     marginBottom: 4,
   },
 
@@ -2700,12 +2710,12 @@ export const styles = StyleSheet.create({
 
   updateSearchPanel: {
     backgroundColor: colors.card,
-    borderRadius: 16,
+    borderRadius: 10,
     padding: 12,
     marginBottom: 12,
     borderColor: colors.line,
     borderWidth: 1,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
@@ -2717,7 +2727,7 @@ export const styles = StyleSheet.create({
     backgroundColor: colors.fill,
     borderColor: colors.line,
     borderWidth: 1,
-    borderRadius: 12,
+    borderRadius: 8,
     minHeight: 48,
     flexDirection: 'row',
     alignItems: 'center',
@@ -2728,7 +2738,7 @@ export const styles = StyleSheet.create({
   updateFilterButton: {
     width: 48,
     height: 48,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.card,
     borderColor: colors.line,
     borderWidth: 1,
@@ -2749,7 +2759,7 @@ export const styles = StyleSheet.create({
   updateSegmentRow: {
     flexDirection: 'row',
     backgroundColor: colors.fill,
-    borderRadius: 12,
+    borderRadius: 8,
     borderColor: colors.line,
     borderWidth: 1,
     padding: 4,
@@ -2771,8 +2781,8 @@ export const styles = StyleSheet.create({
 
   updateSegmentText: {
     color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
     textAlign: 'center',
   },
 
@@ -2782,7 +2792,7 @@ export const styles = StyleSheet.create({
 
   updateCard: {
     backgroundColor: colors.card,
-    borderRadius: 16,
+    borderRadius: 10,
     borderColor: colors.line,
     borderWidth: 1,
     padding: 12,
@@ -2791,7 +2801,7 @@ export const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 12,
     minHeight: 118,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
@@ -2800,8 +2810,8 @@ export const styles = StyleSheet.create({
 
   updateGroupHeader: {
     color: colors.text,
-    fontSize: 15,
-    fontWeight: '800',
+    fontSize: 16,
+    fontWeight: '600',
     marginTop: 2,
     marginBottom: 9,
   },
@@ -2838,22 +2848,22 @@ export const styles = StyleSheet.create({
     borderRadius: 999,
     paddingVertical: 4,
     paddingHorizontal: 9,
-    fontSize: 11,
-    fontWeight: '800',
+    fontSize: 13,
+    fontWeight: '600',
     overflow: 'hidden',
   },
 
   updateCardProject: {
     color: colors.text,
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 17,
+    fontWeight: '600',
     marginBottom: 4,
   },
 
   updateCardSummary: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 19,
+    fontSize: 16,
+    lineHeight: 22,
     marginBottom: 8,
   },
 
@@ -2863,9 +2873,9 @@ export const styles = StyleSheet.create({
     borderRadius: 8,
     paddingVertical: 6,
     paddingHorizontal: 8,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '600',
     marginBottom: 8,
   },
 
@@ -2878,18 +2888,18 @@ export const styles = StyleSheet.create({
 
   updateCardType: {
     color: colors.primary,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
 
   updateCardMetaDot: {
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 14,
   },
 
   updateCardTime: {
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '600',
   },
 
@@ -2901,12 +2911,12 @@ export const styles = StyleSheet.create({
 
   updateEmptyState: {
     backgroundColor: colors.card,
-    borderRadius: 16,
+    borderRadius: 10,
     borderColor: colors.line,
     borderWidth: 1,
     padding: 20,
     marginBottom: 16,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
@@ -2916,21 +2926,21 @@ export const styles = StyleSheet.create({
   updateEmptyTitle: {
     color: colors.text,
     fontSize: 19,
-    fontWeight: '800',
+    fontWeight: '600',
     marginBottom: 7,
   },
 
   updateEmptyText: {
     color: colors.muted,
-    fontSize: 15,
-    lineHeight: 21,
+    fontSize: 16,
+    lineHeight: 22,
     marginBottom: 14,
   },
 
   updateEmptyPrompt: {
     color: colors.text,
-    fontSize: 15,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     marginBottom: 12,
   },
 
@@ -2964,7 +2974,7 @@ export const styles = StyleSheet.create({
   projectSearchInput: {
     flex: 1,
     color: colors.text,
-    fontSize: 16,
+    fontSize: 17,
     fontWeight: '600',
     paddingVertical: 8,
   },
@@ -3000,8 +3010,8 @@ export const styles = StyleSheet.create({
 
   projectFilterText: {
     color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
 
   projectFilterTextSelected: {
@@ -3015,7 +3025,7 @@ export const styles = StyleSheet.create({
 
   projectFinderRow: {
     backgroundColor: colors.card,
-    borderRadius: 11,
+    borderRadius: 8,
     padding: 12,
     marginBottom: 10,
     borderWidth: 1,
@@ -3047,8 +3057,8 @@ export const styles = StyleSheet.create({
     borderRadius: 999,
     paddingVertical: 4,
     paddingHorizontal: 7,
-    fontSize: 11,
-    fontWeight: '800',
+    fontSize: 13,
+    fontWeight: '600',
   },
 
   compactStatDanger: {
@@ -3106,13 +3116,13 @@ export const styles = StyleSheet.create({
 
   compactInlineActionText: {
     color: colors.primary,
-    fontSize: 11,
-    fontWeight: '800',
+    fontSize: 13,
+    fontWeight: '600',
   },
 
   scheduleProjectCard: {
     backgroundColor: colors.card,
-    borderRadius: 14,
+    borderRadius: 10,
     borderColor: colors.line,
     borderWidth: 1,
     marginBottom: 12,
@@ -3128,7 +3138,7 @@ export const styles = StyleSheet.create({
   scheduleProjectIcon: {
     width: 48,
     height: 48,
-    borderRadius: 14,
+    borderRadius: 10,
     backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
@@ -3137,7 +3147,7 @@ export const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 19,
     lineHeight: 24,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   scheduleProjectTasks: {
     borderTopWidth: 1,
@@ -3161,13 +3171,13 @@ export const styles = StyleSheet.create({
   },
   statusPillText: {
     color: colors.primary,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
   percentText: {
     color: colors.primary,
-    fontSize: 13,
-    fontWeight: '900',
+    fontSize: 15,
+    fontWeight: '600',
   },
   progressTrack: {
     height: 6,
@@ -3185,7 +3195,7 @@ export const styles = StyleSheet.create({
   projectTaskPanel: {
     backgroundColor: colors.card,
     borderColor: colors.line,
-    borderRadius: 22,
+    borderRadius: 12,
     borderWidth: 1,
     gap: 12,
     padding: 18,
@@ -3193,7 +3203,7 @@ export const styles = StyleSheet.create({
   taskUpdateContextCard: {
     backgroundColor: colors.primarySoft,
     borderColor: colors.primary,
-    borderRadius: 16,
+    borderRadius: 10,
     borderWidth: 1,
     gap: 4,
     marginBottom: 14,
@@ -3201,8 +3211,8 @@ export const styles = StyleSheet.create({
   },
   projectTaskEyebrow: {
     color: colors.primary,
-    fontSize: 12,
-    fontWeight: '900',
+    fontSize: 14,
+    fontWeight: '600',
     letterSpacing: 1.1,
   },
   projectTaskMetrics: {
@@ -3211,7 +3221,7 @@ export const styles = StyleSheet.create({
   },
   projectTaskMetric: {
     backgroundColor: colors.fill,
-    borderRadius: 12,
+    borderRadius: 8,
     flex: 1,
     gap: 2,
     paddingHorizontal: 8,
@@ -3221,18 +3231,18 @@ export const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 18,
     fontVariant: ['tabular-nums'],
-    fontWeight: '900',
+    fontWeight: '600',
   },
   projectTaskMetricLabel: {
     color: colors.muted,
-    fontSize: 10,
-    fontWeight: '800',
+    fontSize: 12,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
   projectTaskForecast: {
     color: colors.text,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '600',
   },
   projectTaskFilters: {
     flexDirection: 'row',
@@ -3253,8 +3263,8 @@ export const styles = StyleSheet.create({
   },
   projectTaskFilterText: {
     color: colors.text,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
   projectTaskFilterTextActive: {
     color: '#FFFFFF',
@@ -3267,7 +3277,7 @@ export const styles = StyleSheet.create({
     backgroundColor: colors.primarySoft,
     borderColor: colors.primary,
     borderLeftWidth: 5,
-    borderRadius: 14,
+    borderRadius: 10,
     flexDirection: 'row',
     gap: 12,
     minHeight: 62,
@@ -3281,19 +3291,19 @@ export const styles = StyleSheet.create({
   projectTaskGroupTitle: {
     color: colors.text,
     fontSize: 17,
-    fontWeight: '900',
+    fontWeight: '600',
     letterSpacing: 0.2,
   },
   projectTaskGroupDetail: {
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 14,
     fontVariant: ['tabular-nums'],
-    fontWeight: '700',
+    fontWeight: '600',
     marginTop: 2,
   },
   projectTaskEmpty: {
     color: colors.muted,
-    fontSize: 14,
+    fontSize: 16,
     paddingVertical: 18,
     textAlign: 'center',
   },
@@ -3306,27 +3316,27 @@ export const styles = StyleSheet.create({
   },
   scheduleFieldEvidenceTitle: {
     color: colors.primary,
-    fontSize: 12,
-    fontWeight: '900',
+    fontSize: 14,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
   scheduleFieldEvidenceText: {
     color: colors.text,
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 15,
+    fontWeight: '600',
     marginTop: 4,
   },
   scheduleFieldEvidenceAction: {
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: '600',
-    lineHeight: 17,
+    lineHeight: 20,
     marginTop: 5,
   },
   scheduleVerificationCard: {
     backgroundColor: colors.warningSoft,
     borderColor: colors.warning,
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     gap: 6,
     marginTop: 10,
@@ -3335,13 +3345,13 @@ export const styles = StyleSheet.create({
   scheduleVerificationTitle: {
     color: colors.warning,
     flex: 1,
-    fontSize: 13,
-    fontWeight: '900',
+    fontSize: 15,
+    fontWeight: '600',
   },
   scheduleVerificationText: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 21,
   },
   scheduleVerificationActions: {
     gap: 10,
@@ -3357,8 +3367,8 @@ export const styles = StyleSheet.create({
   },
   keyboardAccessoryText: {
     color: colors.primary,
-    fontSize: 16,
-    fontWeight: '800',
+    fontSize: 17,
+    fontWeight: '600',
   },
 
 });

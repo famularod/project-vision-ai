@@ -1,4 +1,5 @@
 import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
+import { ECOSProjectQuestionError } from '../../services/ECOSProjectQuestion';
 import { DesktopAskECOSWorkspace } from '../../components/web-shell/desktop-ask-ecos';
 
 jest.mock('expo-router', () => ({ Link: ({ children }: { children: React.ReactNode }) => children }));
@@ -46,4 +47,33 @@ it.each(['project', 'owner'])('clears the desktop result and drops a late answer
   await act(async () => finish(answer({ conversationId: '55555555-5555-4555-8555-555555555555' })));
   expect(screen.queryByText('Test answer, not project accuracy evidence.')).toBeNull();
   expect(screen.getByLabelText('Project question for ECOS').props.value).toBe('');
+});
+
+it.each(['request_failed','answer_provider_unavailable'])('issue3.19 desktop retry keeps prior conversation after %s',async code=>{
+ const onAsk=jest.fn(async input=>answer(input));
+ const screen=render(<DesktopAskECOSWorkspace ownerKey="owner" projectId="one" projectName="Project One" onAsk={onAsk}/>);
+ fireEvent.changeText(screen.getByLabelText('Project question for ECOS'),'What is the canopy area?');
+ await act(async()=>{fireEvent.press(screen.getByText('Ask ECOS'));});
+ onAsk.mockRejectedValueOnce(new ECOSProjectQuestionError(code,'Synthetic temporary failure'));
+ fireEvent.changeText(screen.getByLabelText('Project question for ECOS'),'And canopy C?');
+ await act(async()=>{fireEvent.press(screen.getByText('Ask ECOS'));});
+ await screen.findByText('Synthetic temporary failure');
+ await act(async()=>{fireEvent.press(screen.getByText('Ask ECOS'));});
+ expect(onAsk).toHaveBeenCalledTimes(3);
+ expect(onAsk.mock.calls[2][0]).toMatchObject({conversationId:onAsk.mock.calls[0][0].conversationId,priorTurnId:turnId,question:'And canopy C?',projectId:'one'});
+});
+
+it('issue3.19 synchronous desktop double submit sends once and unmount aborts the pending request',async()=>{
+ const onAsk=jest.fn((_input,control)=>new Promise<never>(()=>undefined));
+ const screen=render(<DesktopAskECOSWorkspace ownerKey="owner" projectId="one" projectName="Project One" onAsk={onAsk}/>);
+ fireEvent.changeText(screen.getByLabelText('Project question for ECOS'),'And canopy C?');
+ let button=screen.getByText('Ask ECOS');
+ while(typeof button.props.onPress!=='function' && button.parent) button=button.parent;
+ const press=button.props.onPress as ()=>void;
+ expect(typeof press).toBe('function');
+ await act(async()=>{press();press();});
+ expect(onAsk).toHaveBeenCalledTimes(1);
+ const signal=onAsk.mock.calls[0][1]!.signal;
+ screen.unmount();
+ expect(signal.aborted).toBe(true);
 });

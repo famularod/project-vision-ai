@@ -74,7 +74,7 @@ jest.mock('expo-crypto', () => ({
 jest.mock('@expo/vector-icons/Ionicons', () => () => null);
 jest.mock('@expo/vector-icons', () => ({ Ionicons: () => null }));
 
-import { act, fireEvent, render } from '@testing-library/react-native';
+import { act, fireEvent, render, waitFor } from '@testing-library/react-native';
 
 import { ScheduleImportFlow } from '../../components/ScheduleImportFlow';
 import { deletedDAVERecordIds } from '../../services/DAVESyncTombstones';
@@ -82,7 +82,7 @@ import { dedupeScheduleImportItems, type PIEScheduleImportBatch } from '../../se
 import { normalizeScheduleImport } from '../../services/PIEScheduleIntelligence';
 import * as remoteExtraction from '../../services/PIEScheduleRemoteExtraction';
 import { importProjectDocumentIntoOwnedStorage } from '../../services/ProjectDocumentLifecycle';
-import { createProjectDocumentUploadRetryRunner, projectDocumentsAwaitingUpload } from '../../services/ProjectDocumentUploadRetry';
+import { bindProjectDocumentUploadToAccount, createProjectDocumentUploadRetryRunner, projectDocumentsAwaitingUpload } from '../../services/ProjectDocumentUploadRetry';
 import { normalizeReferenceDocument } from '../../services/ReferenceDocumentRepository';
 import { validateScheduleImportScope } from '../../services/ScheduleImportScopeGuard';
 import { bindStableScheduleImportItemIds } from '../../services/ScheduleImportSourceIdentity';
@@ -165,7 +165,7 @@ function phone(options: Readonly<{ storageFails?: boolean }> = {}) {
   const storage = new Map<string, string>();
   const projectDocumentsCurrentRef = { current: [] as ProjectDocument[] };
   const projectScheduleImportCardRef = { current: null as null | { batchId: string; documentId: string } };
-  const alerts: Array<{ title: string; message: string; buttons?: Array<{ text: string }> }> = [];
+  const alerts: Array<{ title: string; message: string; buttons?: Array<{ text: string; onPress?: () => void }> }> = [];
   const uploadAttempts: string[] = [];
   const deletedReferenceCopies: string[] = [];
   const opened: PIEScheduleImportBatch[] = [];
@@ -173,9 +173,9 @@ function phone(options: Readonly<{ storageFails?: boolean }> = {}) {
   let picks = 0;
   let ids = 0;
 
-  const Alert = { alert: (title: string, message: string, buttons?: Array<{ text: string }>) => { alerts.push({ title, message, buttons }); } };
+  const Alert = { alert: (title: string, message: string, buttons?: Array<{ text: string; onPress?: () => void }>) => { alerts.push({ title, message, buttons }); } };
   const shared: Record<string, unknown> = {
-    Alert, screen: 'ProjectDocuments',
+    Alert, documentUploadRequestEpochRef: { current: 0 }, screen: 'ProjectDocuments',
     // The projects
     activeProjects: [PROJECT], projects: [PROJECT],
     archivedProjectsCurrentRef: { current: [] }, deletedProjectNamesRef: { current: [] },
@@ -224,6 +224,7 @@ function phone(options: Readonly<{ storageFails?: boolean }> = {}) {
     deleteOwnedProjectDocument: async () => ({ status: 'deleted' }),
     reportStoragePersistenceFailure: () => undefined,
     /** The upload tried at once, as for any add; with no signal it fails and the document waits (App.tsx retryProjectDocumentUpload). */
+    bindProjectDocumentUploadToAccount,
     retryProjectDocumentUpload: async (documentId: string) => { uploadAttempts.push(documentId); return false; },
     attachProjectDocumentToDraft: async () => undefined,
     setDocumentUploadRequest: () => undefined,
@@ -359,18 +360,23 @@ describe('Open item 5.26: a schedule PDF added without signal keeps its card', (
     expect(iPhone.projectScheduleImportCardRef.current).toBeNull();
   });
 
-  it('the same file already has a card in the project: the duplicate question is asked, as for any add, and the review is not tied to a card that may not be kept', async () => {
+  it('the same file already has a card: wait for the duplicate decision before claiming a saved review; Cancel keeps only the original card', async () => {
     const iPhone = phone();
     await iPhone.addInDocuments(F1, 'Other');
     expect(iPhone.savedCards()).toHaveLength(1);
 
-    await iPhone.addInDocuments(F1, 'Schedule');
+    const operation = iPhone.addInDocuments(F1, 'Schedule');
+    await waitFor(() => expect(iPhone.alerts.some(alert => alert.title === 'Possible duplicate document')).toBe(true));
 
     expect(iPhone.alerts.map(alert => [alert.title, alert.buttons?.map(button => button.text)])).toEqual([
       ['Possible duplicate document', ['Cancel', 'Upload Anyway']],
     ]);
-    expect(iPhone.opened).toHaveLength(1);
+    expect(iPhone.opened).toHaveLength(0);
     expect(iPhone.projectScheduleImportCardRef.current).toBeNull();
+    iPhone.alerts[0].buttons!.find(button => button.text === 'Cancel')!.onPress!();
+    await operation;
+    expect(iPhone.opened).toHaveLength(0);
+    expect(iPhone.savedCards()).toHaveLength(1);
   });
 
   it('when the card cannot be saved, no review says "saved": its copy is removed and the alert says why', async () => {
@@ -382,7 +388,7 @@ describe('Open item 5.26: a schedule PDF added without signal keeps its card', (
     expect(iPhone.alerts.map(alert => [alert.title, alert.message])).toEqual([
       ['Schedule review unavailable', 'Vitruvius could not save this document record. The selected file was not uploaded.'],
     ]);
-    expect(iPhone.deletedReferenceCopies).toEqual([expect.stringMatching(/^file:\/\/\/app\/Documents\/project-documents\/schedule-document-[a-f0-9]{64}-F1\.pdf$/)]);
+    expect(iPhone.deletedReferenceCopies).toEqual([expect.stringMatching(/^file:\/\/\/app\/Documents\/project-documents\/schedule-document-[a-f0-9]{64}-review-[0-9]+-[a-z0-9]+-F1\.pdf$/)]);
     expect([...mockDisk.keys()].filter(uri => uri.startsWith(REFERENCE_DIR))).toEqual([]);
   });
 
@@ -409,3 +415,48 @@ describe('Open item 5.26: a schedule PDF added without signal keeps its card', (
     expect(iPhone.projectScheduleImportCardRef.current).toBeNull();
   });
 });
+
+
+describe('5.32: empty remote extraction is explained once in the production preparation/review path', () => {
+  const serviceReadEmptyPayload = async ({ fileName, projects }: { fileName: string; projects: readonly string[] }) =>
+    remoteExtraction.scheduleItemsFromRemoteExtractorPayload({ ok: true, items: [] }, { fileName, projects, extractedAt: '2026-10-15T08:00:00.000Z' });
+  it.each(['Tasks', 'Documents'] as const)('%s uses the actual empty-payload error, preserves help and no fabricated activities', async road => {
+    schedule = serviceReadEmptyPayload;
+    const iPhone = phone();
+    const batch = road === 'Tasks'
+      ? await iPhone.addInTasks(F1)
+      : (await iPhone.addInDocuments(F1, 'Schedule'), iPhone.opened[0]);
+    expect(batch).toBeTruthy();
+    console.log('EMPTY_EXTRACTION_COPY', JSON.stringify({ road, message: batch!.message, nothingRead: batch!.nothingRead, items: batch!.items.map(item => ({ taskName: item.taskName, startDate: item.startDate, finishDate: item.finishDate })) }));
+    expect(batch!.message.match(/no dated(?: schedule)? activities (?:were|could be) extracted/gi)).toHaveLength(1);
+    expect(batch!.message).toContain('Check that the PDF is readable and includes task names and dates.');
+    expect(batch!.nothingRead).toBe(true);
+    expect(batch!.items.every(item => !item.taskName && !item.startDate && !item.finishDate)).toBe(true);
+    const view = review(batch!, iPhone.cancelScheduleImport);
+    expect(view.getByText(batch!.message)).toBeTruthy();
+    await act(async () => { fireEvent.press(view.getByLabelText('Close Review Imported Schedule')); });
+    expect(iPhone.deletedReferenceCopies).toEqual([batch!.documents[0].uri]);
+    expect(iPhone.savedCards()).toHaveLength(road === 'Documents' ? 1 : 0);
+    if (road === 'Documents') expect(mockDisk.get(iPhone.savedCards()[0].localUri as string)).toEqual(F1.bytes);
+  });
+  it.each([401, 403, 409, 429, 413, 415, 500])('keeps the genuine service/auth failure reason for HTTP %s', async status => {
+    const reason = remoteExtraction.scheduleExtractionFailureMessage({ code: 'REQUEST_IN_PROGRESS' }, status);
+    schedule = async () => { throw new remoteExtraction.PIEScheduleRemoteExtractionError(reason); };
+    const batch = await phone().addInTasks(F1);
+    expect(batch!.message).toBe(`The PDF's tasks could not be read: no dated activities were extracted. ${reason}`);
+    expect(batch!.nothingRead).toBe(true);
+    expect(batch!.items.every(item => !item.taskName && !item.startDate && !item.finishDate)).toBe(true);
+  });
+});
+
+ it.each([
+   remoteExtraction.SCHEDULE_EXTRACTION_UNREACHABLE_MESSAGE,
+   'Schedule extraction took too long. Try again on a stable connection.',
+   'An unexpected preparation error prevented reading this PDF.',
+   'Service reason: No dated schedule activities could be extracted. Retry later.',
+ ])('5.32 keeps a distinct failure reason unchanged: %s', async reason => {
+   schedule = async () => { throw new Error(reason); };
+   const batch = await phone().addInTasks(F1);
+   expect(batch!.message).toBe(`The PDF's tasks could not be read: no dated activities were extracted. ${reason}`);
+   expect(batch!.nothingRead).toBe(true);
+ });

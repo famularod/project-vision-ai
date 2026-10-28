@@ -896,10 +896,10 @@ function normalizeMicrosoftProjectDate(value: string) {
   const day = Number(dateMatch[2]);
   const rawYear = Number(dateMatch[3]);
   const year = rawYear < 100 ? 2000 + rawYear : rawYear;
-  const parsed = parseFlexibleDate(`${month}/${day}/${year}`);
+  const parsed = parseFlexibleDate(`${month}/${day}/${String(year).padStart(4, '0')}`);
   if (!parsed) return '';
 
-  return `${String(month).padStart(2, '0')}/${String(day).padStart(2, '0')}/${year}`;
+  return formatCalendarDate(parsed);
 }
 
 function scheduleProjectNameFromGanttRoot(value: string) {

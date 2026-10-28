@@ -62,7 +62,7 @@ export function scheduleLagBoxProblem(text: string): string | null {
 export function scheduleDurationIsSupported(days: unknown): boolean {
   if (days === null || days === undefined) return true;
   return typeof days === 'number' && Number.isFinite(days) && days >= 0 &&
-    Math.round(days) <= SCHEDULE_MAX_DURATION_WORKING_DAYS;
+    days <= SCHEDULE_MAX_DURATION_WORKING_DAYS;
 }
 
 /** Whether a calendar day (YYYY-MM-DD, or a Date read in UTC) is in the years the schedule takes. */

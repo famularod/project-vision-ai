@@ -20,6 +20,7 @@ import { sameReportSource, type DAVEReportSnapshot } from './DAVEReportSnapshot'
 import {
   bindPIEScheduleImportBatchProvenance,
   dedupeScheduleImportItems,
+  unresolvedScheduleFileProjectKey,
   scheduleImportItemIdentity,
   type PIEScheduleImportBatch,
 } from './PIEScheduleImportBatch';
@@ -356,7 +357,7 @@ export function prepareDAVEWebDocumentUpload({
   const fileTopLineProjectRows: string[] = [];
   const asNamed = readItems.map((item, index) => {
     const root = item.scheduleProjectName?.trim() || '';
-    const his = root && ownProjects.some(project => normalized(project) === normalized(root) || scheduleProjectScopeKey(project) === scheduleProjectScopeKey(root));
+    const his = root && ownProjects.some(project => normalized(project) === normalized(root) || sameNonemptyScheduleProjectScope(project, root));
     if (item.projectName?.trim() || parents[index] || !his) return item;
     fileTopLineProjectRows.push(item.id);
     return { ...item, projectName: root };
@@ -430,6 +431,14 @@ export function prepareDAVEWebDocumentUpload({
   });
 }
 
+/** Empty ASCII scope keys prove no alias. Exact Unicode names still resolve
+ * through validateScheduleImportScope; unrelated names must wait for review.
+ */
+function sameNonemptyScheduleProjectScope(left: string, right: string): boolean {
+  const key = scheduleProjectScopeKey(left);
+  return Boolean(key.trim()) && key === scheduleProjectScopeKey(right);
+}
+
 /**
  * Open item 2.35 (the 2.33 fixer's R-2, "the PDF root door"; 13 Oct 2026). A Microsoft Project PDF's root (the top line,
  * scheduleProjectNameFromGanttRoot) was saved as every task's schedule parent as written; where it was none of his
@@ -448,7 +457,7 @@ function daveWebRowParents(items: readonly ScheduleItem[], ticked: readonly stri
     selectedProjects: ticked.map(name => ({
       id: name,
       name,
-      ...(aliases ? { aliases: spellings.filter(spelling => scheduleProjectScopeKey(spelling) === scheduleProjectScopeKey(name)) } : {}),
+      ...(aliases ? { aliases: spellings.filter(spelling => sameNonemptyScheduleProjectScope(spelling, name)) } : {}),
     })),
   }).items.map(item => item.scheduleProjectName || null);
   const exact = kept(false);
@@ -485,7 +494,7 @@ function daveWebRowProjects(items: readonly ScheduleItem[], ownProjects: readonl
     selectedProjects: projects.map(name => ({
       id: name,
       name,
-      aliases: spellings.filter(spelling => scheduleProjectScopeKey(spelling) === scheduleProjectScopeKey(name)),
+      aliases: spellings.filter(spelling => sameNonemptyScheduleProjectScope(spelling, name)),
     })),
   }).itemResults;
   const exact = validateScheduleImportScope({ items: named, selectedProjects: ownProjects.map(name => ({ id: name, name })) }).itemResults;
@@ -507,7 +516,7 @@ function daveWebRowProjects(items: readonly ScheduleItem[], ownProjects: readonl
       const fileName = item.projectName.trim();
       waiting.add(item.id);
       if (fileName !== SCHEDULE_IMPORT_NEEDS_PROJECT) fileProjectNames[item.id] = fileName;
-      const fitsEqually = ownProjects.filter(project => scheduleProjectScopeKey(project) === scheduleProjectScopeKey(fileName));
+      const fitsEqually = ownProjects.filter(project => sameNonemptyScheduleProjectScope(project, fileName));
       // Review pass 2, H2S-1: the guess only says "may be another project"; it never names one (it read a year, a
       // street number, a short name inside a longer one as a project), and not where it also reads a ticked one.
       const guess = bestScheduleProjectMatch(fileName, [...ownProjects]);
@@ -515,7 +524,7 @@ function daveWebRowProjects(items: readonly ScheduleItem[], ownProjects: readonl
         fitsEqually: fitsEqually.length > 1 ? fitsEqually : [],
         mayBeAnother: fitsEqually.length < 2 && Boolean(guess) && !tickedKeys.has(normalized(guess)) && !bestScheduleProjectMatch(fileName, [...ticked]),
       };
-      const key = scheduleProjectScopeKey(fileName);
+      const key = unresolvedScheduleFileProjectKey(fileName);
       if (!firstSpelling.has(key)) firstSpelling.set(key, item.projectName);
       return [item, firstSpelling.get(key)!] as const;
     }
@@ -1457,6 +1466,10 @@ function buildDAVEWebProjectTruths(
     !selectedProject || normalized(project.name) === normalized(selectedProject),
   );
   if (projects.length === 0) return [];
+  // The archive column's UI projection is kept out of report facts, including
+  // the preserved Build 230 truth used by the 1.0 fingerprint. Archive
+  // visibility remains governed by snapshot.archivedDocumentIds below.
+  const reportDocuments = snapshot.referenceDocuments.map(({ archivedAt: _archiveView, ...document }) => document);
   const projectRecords = snapshot.projects.map(project => ({
     id: project.id,
     name: project.name,
@@ -1506,7 +1519,7 @@ function buildDAVEWebProjectTruths(
     knownScheduleItems: (knownScheduleItems ?? scheduleItems) as readonly ScheduleItem[],
     currentUpdate: null,
     // A document the cloud marks archived is not counted (owner answer Q44; review of D1, L10); with none, this is the list itself.
-    referenceDocuments: daveWebListedDocuments(snapshot.referenceDocuments, snapshot.archivedDocumentIds) as unknown as ReferenceDocument[],
+    referenceDocuments: daveWebListedDocuments(reportDocuments, snapshot.archivedDocumentIds) as unknown as ReferenceDocument[],
   };
   const appScope = names.length === 1
     ? buildDailyReportAuthorityScope({ ...appScopeInput, selectedProjectName: names[0] })
@@ -1516,13 +1529,14 @@ function buildDAVEWebProjectTruths(
     // The Reports screen's: the report's projects by name.
     projectRecords: names.map(name => ({ name })),
     updates: appScope.updates,
+    cloudUpdateReceipts: true, // actual downloaded rows, without changing their persisted/raw contents
     scheduleItems: appScope.scheduleItems,
     knownScheduleItems: scheduleSavedTasksOfProjects(appScopeInput.knownScheduleItems, appScope.scheduleItems, appScope.projectNames),
     ...(handedAsBefore ? { asBuiltBefore: { scheduleItems: snapshot.scheduleItems, knownScheduleItems: snapshot.knownScheduleItems } } : {}),
     // The web's Word report cites drawings from every document downloaded (the Reports page), so the fingerprint does (R8 item 2).
     // High item 3: a drawing piece only from the list's copy of its index (the phone's rule); the documents as before.
-    drawingDocuments: referenceDocumentsCitedAsListed([...snapshot.referenceDocuments] as ReferenceDocument[]),
-    knownScheduleDocuments: snapshot.referenceDocuments,
+    drawingDocuments: referenceDocumentsCitedAsListed(reportDocuments as ReferenceDocument[]),
+    knownScheduleDocuments: reportDocuments,
     referenceDocuments: withoutListedPageIndexes([...appScope.referenceDocuments]),
     now: snapshot.refreshedAt,
   });
@@ -1561,7 +1575,7 @@ function scheduleDateAsThePhoneSavesIt(value: string): string {
     (named ? new Date(named.year, named.month - 1, named.day) : null);
   if (!date) return trimmed;
   const pad = (part: number) => part.toString().padStart(2, '0');
-  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())}/${date.getFullYear()}`;
+  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())}/${date.getFullYear() >= 100 && date.getFullYear() <= 999 ? String(date.getFullYear()).padStart(4, '0') : date.getFullYear()}`;
 }
 
 export function buildDAVEWebReportTitle(

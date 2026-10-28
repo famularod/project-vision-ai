@@ -26,6 +26,7 @@ import {
   scheduleImportAddsToMaster,
   scheduleImportAsksRole,
   scheduleImportRoleRefusal,
+  scheduleImportWithReviewedProjectScope,
   suggestScheduleImportRole,
   withScheduleImportRole,
   type ScheduleImportRole,
@@ -85,7 +86,7 @@ export function ScheduleImportFlow({
   const [pendingBatch, setPendingBatch] = useState<PIEScheduleImportBatch | null>(null);
   const [expandedItemIds, setExpandedItemIds] = useState<string[]>([]);
   // How the schedule is used: suggested when the review opens, David's choice after (owner answer Q22).
-  const [roleReview, setRoleReview] = useState<ScheduleImportRoleSuggestion & { batchId: string; chosen: ScheduleImportRole | null } | null>(null);
+  const [roleReview, setRoleReview] = useState<ScheduleImportRoleSuggestion & { batchId: string; chosen: ScheduleImportRole | null; projectScopeReviewed: boolean } | null>(null);
   const importOperationRef = useRef(0);
   const pendingChoiceRef = useRef<'file' | 'screenshots' | 'manual' | null>(null);
   const counts = useMemo(
@@ -97,8 +98,20 @@ export function ScheduleImportFlow({
     [pendingBatch],
   );
   // Same-named tasks whose pairing the dates cannot settle: David confirms which is which (owner answer Q30).
-  const reviewedRole = pendingBatch && scheduleImportAsksRole(pendingBatch) && roleReview?.batchId === pendingBatch.id
-    ? roleReview.chosen || roleReview.role
+  const activeRoleReview = useMemo(() => {
+    if (!pendingBatch || roleReview?.batchId !== pendingBatch.id) return null;
+    const provisional = pendingBatch.items.some(item => !item.projectName.trim() || item.projectName.trim() === 'Needs Project');
+    // Only a project assignment reviewed here changes the automatic default.
+    // Initially resolved files keep the existing4.58/root-master inference.
+    const reviewedBatch = roleReview.projectScopeReviewed && !provisional
+      ? scheduleImportWithReviewedProjectScope(pendingBatch) : pendingBatch;
+    const suggestion: ScheduleImportRoleSuggestion = provisional
+      ? {role: 'lookahead', reason: ''}
+      : suggestScheduleImportRole({batch: reviewedBatch, documents: roleContext?.documents || [], scheduleItems: roleContext?.items || []});
+    return {...suggestion, batchId: roleReview.batchId, chosen: roleReview.chosen, provisional};
+  }, [pendingBatch, roleReview, roleContext?.documents, roleContext?.items]);
+  const reviewedRole = pendingBatch && scheduleImportAsksRole(pendingBatch) && activeRoleReview
+    ? activeRoleReview.chosen || (activeRoleReview.provisional ? null : activeRoleReview.role)
     : null;
   const pairingQuestions = useMemo(() => {
     if (!pendingBatch) return [];
@@ -118,23 +131,28 @@ export function ScheduleImportFlow({
     setSaveError(null);
     setTurnedHighLine(null);
     setRoleReview({
-      ...suggestScheduleImportRole({ batch, documents: roleContext?.documents || [], scheduleItems: roleContext?.items || [] }),
+      role: 'lookahead', reason: '',
       batchId: batch.id,
       chosen: null,
+      projectScopeReviewed: false,
     });
     setPendingBatch(batch);
   }
 
   /** The batch with its schedule file marked as reviewed. */
   function withReviewedRole(batch: PIEScheduleImportBatch): PIEScheduleImportBatch {
-    if (!scheduleImportAsksRole(batch) || roleReview?.batchId !== batch.id) return batch;
-    return withScheduleImportRole(batch, roleReview.chosen || roleReview.role);
+    if (!scheduleImportAsksRole(batch) || activeRoleReview?.batchId !== batch.id) return batch;
+    // The save gate below prevents this provisional state being applied.
+    if (activeRoleReview.provisional && !activeRoleReview.chosen) return batch;
+    return withScheduleImportRole(batch, activeRoleReview.chosen || activeRoleReview.role);
   }
 
   /** Why the reviewed role cannot be saved, or null (whole-app audit A8 pass 5 L3; the file's full copy shown, M1). */
   function reviewedRoleRefusal(batch: PIEScheduleImportBatch): string | null {
-    if (!scheduleImportAsksRole(batch) || roleReview?.batchId !== batch.id) return null;
-    return scheduleImportRoleRefusal(batch, roleReview.chosen || roleReview.role, roleContext?.documents);
+    if (!scheduleImportAsksRole(batch) || activeRoleReview?.batchId !== batch.id) return null;
+    if (activeRoleReview.provisional && !activeRoleReview.chosen)
+      return 'Choose Full schedule or Lookahead for the selected items before saving.';
+    return scheduleImportRoleRefusal(batch, activeRoleReview.chosen || activeRoleReview.role, roleContext?.documents, savedItems ?? roleContext?.items);
   }
 
   useEffect(() => {
@@ -203,6 +221,7 @@ export function ScheduleImportFlow({
   function updatePendingItem(itemId: string, next: Partial<ScheduleItem>) {
     if (saveBusy) return;
     setSaveError(null);
+    if (next.projectName !== undefined) setRoleReview(current => current ? {...current, projectScopeReviewed: true} : current);
     setExpandedItemIds(current => current.includes(itemId) ? current : [...current, itemId]);
     setPendingBatch(current => current ? {
       ...current,
@@ -222,7 +241,7 @@ export function ScheduleImportFlow({
     const readyItems = batchToReview.items.filter(scheduleImportItemIsReady);
     const remainingItems = batchToReview.items.filter(item => !scheduleImportItemIsReady(item));
     if (!readyItems.length) return;
-    const refusal = reviewedRoleRefusal(batchToReview) || scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);
+    const refusal = reviewedRoleRefusal({...batchToReview, items: readyItems}) || scheduleImportPairingRefusal(pairingQuestions, pairingAnswerOf);
     if (refusal) return setSaveError(refusal);
 
     setSaveError(null);
@@ -409,9 +428,9 @@ export function ScheduleImportFlow({
                 </View>
               </View>
             ) : null}
-            {pendingBatch && scheduleImportAsksRole(pendingBatch) && roleReview?.batchId === pendingBatch.id ? (
+            {pendingBatch && scheduleImportAsksRole(pendingBatch) && activeRoleReview?.batchId === pendingBatch.id ? (
               <ScheduleRoleReview
-                review={roleReview}
+                review={activeRoleReview}
                 disabled={saveBusy}
                 onChoose={chosen => setRoleReview(current => current ? { ...current, chosen } : current)}
               />
@@ -567,11 +586,11 @@ function ScheduleRoleReview({
   disabled,
   onChoose,
 }: {
-  review: ScheduleImportRoleSuggestion & { chosen: ScheduleImportRole | null };
+  review: ScheduleImportRoleSuggestion & { chosen: ScheduleImportRole | null; provisional: boolean };
   disabled: boolean;
   onChoose: (role: ScheduleImportRole) => void;
 }) {
-  const selected = review.chosen || review.role;
+  const selected = review.chosen || (review.provisional ? null : review.role);
   const suggested = SCHEDULE_ROLE_CHOICES.find(choice => choice.role === review.role);
   return (
     <View style={styles.bulkSaveCard} accessibilityRole="radiogroup">
@@ -598,7 +617,8 @@ function ScheduleRoleReview({
         </TouchableOpacity>
       ))}
       <Text style={styles.bulkSaveText}>
-        {`Suggested: ${suggested?.title || ''}, because ${review.reason}.${review.only ? '' : ' You can change this before saving.'}`}
+        {review.provisional ? 'Assign projects to suggest an import type'
+          : `Suggested: ${suggested?.title || ''}, because ${review.reason}.${review.only ? '' : ' You can change this before saving.'}`}
       </Text>
     </View>
   );
@@ -726,48 +746,48 @@ const styles = StyleSheet.create({
   modalTitle: { ...typography.h2 },
   modalSubtitle: { ...typography.body, color: colors.mutedText, marginTop: spacing.xs },
   closeButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.surfaceMuted, alignItems: 'center', justifyContent: 'center' },
-  choice: { minHeight: 76, borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, padding: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  choice: { minHeight: 76, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, padding: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   choiceDisabled: { opacity: 0.55 },
-  choiceIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: colors.primarySoft, alignItems: 'center', justifyContent: 'center' },
-  choiceTitle: { color: colors.text, fontSize: 17, fontWeight: '800' },
-  choiceDetail: { color: colors.mutedText, fontSize: 13, lineHeight: 18, marginTop: 2 },
-  loadingCard: { minHeight: 72, borderRadius: 16, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.primarySoft, padding: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  choiceIcon: { width: 44, height: 44, borderRadius: 10, backgroundColor: colors.primarySoft, alignItems: 'center', justifyContent: 'center' },
+  choiceTitle: { color: colors.text, fontSize: 17, fontWeight: '600' },
+  choiceDetail: { color: colors.mutedText, fontSize: 15, lineHeight: 21, marginTop: 2 },
+  loadingCard: { minHeight: 72, borderRadius: 10, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.primarySoft, padding: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   loadingCopy: { flex: 1 },
-  loadingTitle: { color: colors.text, fontSize: 16, fontWeight: '800' },
-  loadingText: { color: colors.mutedText, fontSize: 13, lineHeight: 18, marginTop: 2 },
+  loadingTitle: { color: colors.text, fontSize: 17, fontWeight: '600' },
+  loadingText: { color: colors.mutedText, fontSize: 15, lineHeight: 21, marginTop: 2 },
   cancelLoadingButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center' },
   reviewMessage: { ...typography.body, color: colors.mutedText },
-  warningCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.warning, backgroundColor: colors.warningSoft, padding: spacing.md, gap: spacing.xs },
+  warningCard: { borderRadius: 10, borderWidth: 1, borderColor: colors.warning, backgroundColor: colors.warningSoft, padding: spacing.md, gap: spacing.xs },
   warningHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.xs },
-  warningTitle: { color: colors.text, fontSize: 16, lineHeight: 21, fontWeight: '800' },
-  warningText: { color: colors.text, fontSize: 14, lineHeight: 20 },
-  saveErrorCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.danger, backgroundColor: colors.dangerSoft, padding: spacing.md, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
-  turnedHighCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.warning, backgroundColor: colors.warningSoft, padding: spacing.md, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
-  turnedHighText: { flex: 1, color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: '700' },
-  saveErrorText: { flex: 1, color: colors.danger, fontSize: 14, lineHeight: 20, fontWeight: '700' },
-  savingCard: { minHeight: 72, borderRadius: 16, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.primarySoft, padding: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  bulkSaveCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.primarySoft, padding: spacing.md, gap: spacing.sm },
-  bulkSaveTitle: { color: colors.text, fontSize: 17, lineHeight: 22, fontWeight: '800' },
-  bulkSaveText: { color: colors.mutedText, fontSize: 14, lineHeight: 20 },
-  verificationNotice: { borderRadius: 14, borderWidth: 1, borderColor: colors.warning, backgroundColor: colors.warningSoft, padding: spacing.md, gap: spacing.xs, marginBottom: spacing.sm },
-  verificationTitle: { color: colors.warning, fontSize: 13, lineHeight: 18, fontWeight: '800' },
-  itemCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.md },
+  warningTitle: { color: colors.text, fontSize: 17, lineHeight: 22, fontWeight: '600' },
+  warningText: { color: colors.text, fontSize: 16, lineHeight: 23 },
+  saveErrorCard: { borderRadius: 10, borderWidth: 1, borderColor: colors.danger, backgroundColor: colors.dangerSoft, padding: spacing.md, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  turnedHighCard: { borderRadius: 10, borderWidth: 1, borderColor: colors.warning, backgroundColor: colors.warningSoft, padding: spacing.md, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  turnedHighText: { flex: 1, color: colors.text, fontSize: 16, lineHeight: 23, fontWeight: '600' },
+  saveErrorText: { flex: 1, color: colors.danger, fontSize: 16, lineHeight: 23, fontWeight: '600' },
+  savingCard: { minHeight: 72, borderRadius: 10, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.primarySoft, padding: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  bulkSaveCard: { borderRadius: 10, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.primarySoft, padding: spacing.md, gap: spacing.sm },
+  bulkSaveTitle: { color: colors.text, fontSize: 17, lineHeight: 22, fontWeight: '600' },
+  bulkSaveText: { color: colors.mutedText, fontSize: 16, lineHeight: 23 },
+  verificationNotice: { borderRadius: 10, borderWidth: 1, borderColor: colors.warning, backgroundColor: colors.warningSoft, padding: spacing.md, gap: spacing.xs, marginBottom: spacing.sm },
+  verificationTitle: { color: colors.warning, fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  itemCard: { borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.md },
   itemCardReview: { borderColor: colors.warning },
   itemHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, marginBottom: spacing.sm },
   itemHeaderText: { flex: 1 },
-  itemEyebrow: { color: colors.mutedText, fontSize: 11, fontWeight: '800', textTransform: 'uppercase' },
-  itemStatus: { color: colors.text, fontSize: 15, fontWeight: '800', marginTop: 2 },
+  itemEyebrow: { color: colors.mutedText, fontSize: 13, fontWeight: '600', textTransform: 'uppercase' },
+  itemStatus: { color: colors.text, fontSize: 16, fontWeight: '600', marginTop: 2 },
   inputGroup: { marginTop: spacing.sm },
-  inputLabel: { color: colors.text, fontSize: 13, fontWeight: '700', marginBottom: spacing.xs },
-  input: { minHeight: 46, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, color: colors.text, fontSize: 15, paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
+  inputLabel: { color: colors.text, fontSize: 15, fontWeight: '600', marginBottom: spacing.xs },
+  input: { minHeight: 46, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, color: colors.text, fontSize: 16, paddingHorizontal: spacing.sm, paddingVertical: spacing.sm },
   inputReview: { borderColor: colors.warning, backgroundColor: colors.warningSoft },
   inlineChoices: { gap: spacing.sm },
   compactSummary: { gap: spacing.xs },
-  compactTask: { color: colors.text, fontSize: 16, lineHeight: 21, fontWeight: '800' },
-  compactDetail: { color: colors.mutedText, fontSize: 13, lineHeight: 18 },
+  compactTask: { color: colors.text, fontSize: 17, lineHeight: 22, fontWeight: '600' },
+  compactDetail: { color: colors.mutedText, fontSize: 15, lineHeight: 21 },
   editLink: { minHeight: 36, alignSelf: 'flex-start', justifyContent: 'center' },
-  editLinkText: { color: colors.primary, fontSize: 13, fontWeight: '800' },
+  editLinkText: { color: colors.primary, fontSize: 15, fontWeight: '600' },
   controlDisabled: { opacity: 0.45 },
-  roleChoice: { minHeight: 64, borderRadius: 14, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.sm, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
+  roleChoice: { minHeight: 64, borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.sm, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
   roleChoiceSelected: { borderColor: colors.primary, borderWidth: 2 },
 });

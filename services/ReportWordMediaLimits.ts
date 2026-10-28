@@ -52,9 +52,10 @@ export function reportDrawingScanTooLarge(width: number, height: number): boolea
   return width * height > REPORT_DRAWING_SCAN_MAX_PIXELS;
 }
 
-/** Why a very large scan has no excerpt, and what to do. */
+/** Header dimensions are not a damage diagnosis or a promise that re-saving will work. */
 export function reportDrawingScanTooLargeMessage(width: number, height: number): string {
   const size = `${width.toLocaleString('en-US')} x ${height.toLocaleString('en-US')} pixels`;
-  return `This drawing picture is too large to crop on this device (${size}). ` +
-    'Save it at a lower resolution and its excerpt will be included.';
+  return `The image file reports ${size}, beyond this report's image limit. It was left out. ` +
+    'If the file opens correctly, export a lower-resolution copy. ' +
+    'If it appears damaged or will not open, replace or re-export it from its original source.';
 }

@@ -293,14 +293,14 @@ const styles = StyleSheet.create({
   },
   railLabel: {
     color: colors.mutedText,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '800',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
   railLabelExpanded: {
     fontSize: 18,
     lineHeight: 24,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   railLabelActive: {
     color: colors.primary,
@@ -323,9 +323,9 @@ const styles = StyleSheet.create({
   },
   talkText: {
     color: colors.primary,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
   talkTextExpanded: {
     fontSize: 18,
@@ -347,9 +347,9 @@ const styles = StyleSheet.create({
   },
   railIconCountText: {
     color: colors.surface,
-    fontSize: 10,
-    lineHeight: 12,
-    fontWeight: '900',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '600',
   },
   buttonPressed: {
     opacity: 0.72,

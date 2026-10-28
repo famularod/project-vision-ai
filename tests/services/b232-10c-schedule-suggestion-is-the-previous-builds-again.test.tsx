@@ -210,7 +210,7 @@ async function fromTheTasksTab(saved: Saved, picked: Picked, active: readonly st
     view.UNSAFE_getAllByType(Modal)[0].props.onDismiss();
     await settled();
   });
-  const sentence = String(view.getByText(/^Suggested: /).props.children);
+  const sentence = String((view.queryByText(/^Suggested: /) || view.getByText('Assign projects to suggest an import type')).props.children);
   const acceptAll = view.queryByText(/^Accept All \(\d+\)$/);
   if (acceptAll) {
     await act(async () => {
@@ -315,7 +315,8 @@ describe('R-2 (review pass 6): a building\'s real three-week lookahead in an acc
     expect(east.batch.documents[0].projectNames).toEqual(COLLEGE);
     // The building's name is also known under the root, so the phone's own project check leaves each row waiting.
     expect([...new Set(east.batch.items.map(item => item.projectName))]).toEqual(['Needs Project']);
-    expect(east.sentence).toBe(`${LOOKAHEAD} ${AGAINST_ROOT}. ${CHANGE}`);
+    // B76 RED2 changes only this unresolved-project UI expectation. The direct desktop/root-master and resolved4.58 controls remain unchanged.
+    expect(east.sentence).toBe('Assign projects to suggest an import type');
     // Nothing is saved until each row has its project: Accept All is not offered yet.
     expect(east.savedAs).toBeNull();
   });

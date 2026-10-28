@@ -21,7 +21,7 @@ import { KeyboardAvoidingModalCard } from '../components/KeyboardAvoidingModalCa
 import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPending } from '../components/native-workspace-owner';
 import { unsavedFieldNoteExists } from '../hooks/use-field-note-draft';
 import { unsavedWalkMemoryExists } from '../hooks/use-kept-walk-memory-draft';
-import { unusedScheduleVerificationNoteExists } from '../hooks/use-schedule-progress-draft';
+import { unusedScheduleProgressDraftExists, unusedScheduleVerificationNoteExists } from '../hooks/use-schedule-progress-draft';
 import { keptVoiceRecordingExists } from '../services/KeptVoiceRecording';
 import { copyDAVEReportCheckDetails } from '../services/DAVEReportCheckDetails';
 import { clearSignOutAskedHere, noteAskedSignOutAnswered, noteSignOutAskedHere } from '../services/SignOutIntent';
@@ -95,6 +95,7 @@ import {
   startProjectDocumentUploadRun,
   type ProjectDocumentUploadRetryResult,
 } from '../services/ProjectDocumentUploadRetry';
+import { deviceCloudPullState, noteSyncNowDownloadFailed, onDeviceCloudPullChange, recordDeviceCloudPull } from '../services/ScheduleCloudPull';
 import type {
   ProjectArea,
   ProjectUpdate,
@@ -241,6 +242,13 @@ export function AdminScreen({
   const [syncAttemptMessage, setSyncAttemptMessage] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const [lastFullSyncIssueCount, setLastFullSyncIssueCount] = useState(0);
+  // Open item 2.76: this device has not downloaded every record since it was opened (or came back); N276b: or a
+  // download has failed since the last one of every record.
+  const [cloudDownload, setCloudDownload] = useState(() => deviceCloudPullState());
+  useEffect(() => {
+    setCloudDownload(deviceCloudPullState());
+    return onDeviceCloudPullChange(() => setCloudDownload(deviceCloudPullState()));
+  }, []);
   // Read when a sync ends, while the document uploads it started may still run.
   const failedDocumentCountRef = useRef(failedDocumentCount);
   failedDocumentCountRef.current = failedDocumentCount;
@@ -364,12 +372,18 @@ export function AdminScreen({
       ? `${syncStatus.conflicts} conflict${syncStatus.conflicts === 1 ? '' : 's'} on this device ${syncStatus.conflicts === 1 ? 'needs' : 'need'} review`
       : lastFullSyncIssueCount > 0
         ? `${lastFullSyncIssueCount} ${lastFullSyncIssueCount === 1 ? 'item needs' : 'items need'} retry`
+      // Open item 2.76: "All caught up" only once this device has downloaded every record since it was opened. N276b
+      // F4: not before the connection check answers, and never "Downloading" offline or while the downloads fail.
+      : cloudDownload.pending || cloudDownload.failing
+        ? cloudDownload.failing || signInPending || (!connected && !isCheckingConnection)
+          ? "Could not download your other devices' changes yet; Sync Now to retry"
+          : "Downloading your other devices' changes"
       : 'All caught up';
   const syncNeedsAttention =
     pendingSyncCount > 0 ||
     Boolean(syncStatus?.conflicts) ||
     Boolean(syncStatus?.recoveryAvailable) ||
-    lastFullSyncIssueCount > 0;
+    lastFullSyncIssueCount > 0 || cloudDownload.failing || (cloudDownload.pending && !connected && !isCheckingConnection);
 
   async function shareFeedback() {
     try {
@@ -888,6 +902,13 @@ export function AdminScreen({
       ]);
       setSyncStatus(nextStatus);
       onApplyCloudRecovery({ ...result.recovered, syncStartedAt });
+      // Every record came down, deletions verified: "All caught up" and Reports stop waiting (2.76).
+      const downloadErrors = result.recovered?.collectionErrors;
+      const downloadKinds = ['projects', 'updates', 'projectAreas', 'scheduleItems', 'referenceDocuments'] as const;
+      const missingDownloads = downloadKinds.filter(kind => downloadErrors?.[kind] !== null);
+      if (missingDownloads.length === 0) recordDeviceCloudPull(syncStartedAt);
+      // N276b F2: one that could not bring every record down ends Reports' wait, saying what is missing.
+      else noteSyncNowDownloadFailed(missingDownloads, syncStartedAt);
       setSyncConflicts(nextConflicts);
       const documentsRemaining = documentRun.remaining(failedDocumentCountRef.current);
       setLastFullSyncIssueCount(Math.max(
@@ -927,6 +948,7 @@ export function AdminScreen({
       setAdminActionSummary(message);
       if (result.missingPhotos.length > 0) showMissingPhotoSyncAlert(result.missingPhotos);
     } catch {
+      noteSyncNowDownloadFailed([], syncStartedAt); // N276b F2: Reports stops waiting
       let actualIssueCount = updateSyncAttentionCount + failedDocumentCount;
 
       try {
@@ -1304,7 +1326,8 @@ export function AdminScreen({
       (keptRecording ? 'The recording waiting for signal will be discarded. ' : '') +
       // Review pass 1, L8: the optional verification note typed on a task and not yet used goes too, and is named.
       // Second review, F6: this account's own note only; another account's kept note is neither named nor discarded.
-      (unusedScheduleVerificationNoteExists(fieldNoteOwnerKey) ? 'The verification note you have typed will be discarded. ' : '');
+      (unusedScheduleVerificationNoteExists(fieldNoteOwnerKey) ? 'The verification note you have typed will be discarded. ' : '') +
+      (unusedScheduleProgressDraftExists(fieldNoteOwnerKey) ? 'The task status and percent changes you have not saved will be discarded. ' : '');
     const message =
       notInCloudCount > 0
         // A11 pass 7 L1: "syncs after you sign in" covers only items not marked Review needed.
@@ -1968,7 +1991,7 @@ const styles = StyleSheet.create({
   conflictCard: {
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 14,
+    borderRadius: 10,
     backgroundColor: colors.surfaceMuted,
     padding: spacing.md,
     marginBottom: spacing.md,
@@ -1977,9 +2000,9 @@ const styles = StyleSheet.create({
 
   conflictTitle: {
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 21,
-    fontWeight: '800',
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   conflictActions: {
@@ -1992,7 +2015,7 @@ const styles = StyleSheet.create({
   settingsIcon: {
     width: 38,
     height: 38,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
@@ -2004,15 +2027,15 @@ const styles = StyleSheet.create({
 
   settingsRowTitle: {
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 20,
-    fontWeight: '800',
+    fontSize: 17,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   settingsRowDetail: {
     color: colors.mutedText,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 21,
     marginTop: 2,
   },
 
@@ -2022,12 +2045,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.sm,
     backgroundColor: colors.surface,
-    borderRadius: 16,
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: colors.border,
     padding: spacing.md,
     marginBottom: spacing.lg,
-    shadowColor: '#17213A',
+    shadowColor: '#1A1A18',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
     shadowRadius: 8,
@@ -2055,7 +2078,7 @@ const styles = StyleSheet.create({
     flexBasis: '47%',
     minHeight: 56,
     minWidth: 142,
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surfaceMuted,
@@ -2078,9 +2101,9 @@ const styles = StyleSheet.create({
 
   adminActionButtonText: {
     color: colors.primary,
-    fontSize: 15,
-    lineHeight: 19,
-    fontWeight: '800',
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '600',
     textAlign: 'center',
     flexShrink: 1,
   },
@@ -2147,8 +2170,8 @@ const styles = StyleSheet.create({
 
   modalLabel: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '600',
     marginBottom: spacing.xs,
   },
 
@@ -2157,9 +2180,9 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceMuted,
     borderWidth: 1,
     borderColor: colors.border,
-    borderRadius: 12,
+    borderRadius: 8,
     color: colors.text,
-    fontSize: 15,
+    fontSize: 16,
     paddingHorizontal: spacing.sm,
     paddingVertical: spacing.sm,
     marginBottom: spacing.sm,
@@ -2167,8 +2190,8 @@ const styles = StyleSheet.create({
 
   modalErrorText: {
     color: colors.danger,
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 14,
+    fontWeight: '600',
     marginBottom: spacing.sm,
   },
 });

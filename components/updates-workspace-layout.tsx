@@ -227,8 +227,8 @@ const styles = StyleSheet.create({
   },
   inspectorEyebrow: {
     color: colors.tertiaryText,
-    fontSize: 11,
-    fontWeight: '900',
+    fontSize: 13,
+    fontWeight: '600',
     letterSpacing: 1.3,
   },
   comparisonCard: {
@@ -251,12 +251,12 @@ const styles = StyleSheet.create({
   comparisonTitle: {
     color: colors.text,
     fontSize: 18,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   comparisonCaption: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
   },
   confidencePill: {
     borderRadius: 999,
@@ -266,8 +266,8 @@ const styles = StyleSheet.create({
   },
   confidenceText: {
     color: colors.primary,
-    fontSize: 11,
-    fontWeight: '900',
+    fontSize: 13,
+    fontWeight: '600',
   },
   photoPair: {
     flexDirection: 'row',
@@ -286,13 +286,13 @@ const styles = StyleSheet.create({
   },
   evidenceLabel: {
     color: colors.text,
-    fontSize: 13,
-    fontWeight: '900',
+    fontSize: 15,
+    fontWeight: '600',
   },
   comparisonSummary: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '700',
+    fontSize: 16,
+    lineHeight: 23,
+    fontWeight: '600',
   },
 });

@@ -270,7 +270,7 @@ describe('a schedule uploaded on the web that lists again a task an earlier mast
     expect(question.title).toBe('Paint in Lot was on an earlier schedule: the same task, or new work?');
     const wording = scheduleImportPairingWording(question);
     expect(wording.intro).toBe(
-      'This task was on an earlier schedule and is not in your list now. If this file brings the same task back, its percent, notes and what you set on it come back with it. Nothing is carried unless you say it is the same task.',
+      'This task was on an earlier schedule and is not in your list now. If this file brings the same task back, its notes and what you set on it come back with it. Your own percent is kept unless this file states a higher percent. Nothing is carried unless you say it is the same task.',
     );
     expect(wording.savedTitle(question.saved[0], 0)).toBe('Earlier Paint: 11/2–11/6 · 60% · “Primer on”');
     expect(question.rows.map(wording.rowOption)).toEqual(['The same task: 11/9–11/13 · no %']);

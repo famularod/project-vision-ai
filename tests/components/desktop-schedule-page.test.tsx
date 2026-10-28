@@ -13,11 +13,13 @@ jest.mock('@react-native-async-storage/async-storage', () => ({
 }));
 const mockCreateTask = jest.fn();
 const mockUpdateTask = jest.fn();
+const mockUpdateTasks = jest.fn();
 jest.mock('../../components/web-shell/desktop-auth-provider', () => ({
   useDesktopAuth: () => ({
     userEmail: 'pm@example.com',
     createTask: mockCreateTask,
     updateTask: mockUpdateTask,
+    updateTasks: mockUpdateTasks,
   }),
 }));
 
@@ -44,6 +46,7 @@ describe('DesktopSchedulePage', () => {
   beforeEach(() => {
     mockCreateTask.mockReset();
     mockUpdateTask.mockReset();
+    mockUpdateTasks.mockReset().mockImplementation(async (updates: unknown[])=>updates.length);
   });
 
   test('presents the hierarchy as a schedule builder with planning controls', () => {
@@ -159,6 +162,21 @@ describe('DesktopSchedulePage', () => {
         finishDate: '2026-07-23',
       }),
     ));
+  });
+
+  test.each(['one','all'])('issue4.68 Apply %s retains 2.5 working days and spans the third workday', async mode => {
+    const fractional = {...task,durationDays:2.5};
+    const screen=render(<DesktopSchedulePage tasks={[phase,predecessor,fractional,...(mode==='all'?[{...fractional,id:'second-fraction',taskName:'Second fractional task'}]:[])]} projects={['2321 Compliance Project']} selectedProject="2321 Compliance Project"/>);
+    fireEvent.press(screen.getByText('Gantt'));
+    fireEvent.press(screen.getByText(/Impact preview/));
+    fireEvent.press(screen.getByLabelText(mode==='one'?'Apply calculated dates for Place asphalt':'Apply all calculated dependency date changes'));
+    const expected=expect.objectContaining({id:task.id,startDate:'2026-07-22',finishDate:'2026-07-24',durationDays:2.5});
+    if(mode==='one') await waitFor(()=>expect(mockUpdateTask).toHaveBeenCalledWith(expected));
+    else {
+      await waitFor(()=>expect(mockUpdateTasks).toHaveBeenCalledWith(expect.arrayContaining([expected])));
+      expect(mockUpdateTasks.mock.calls[0][0]).toHaveLength(2);
+      expect(mockUpdateTasks.mock.calls[0][0].every((item: DAVEWebScheduleItem)=>item.durationDays===2.5)).toBe(true);
+    }
   });
 
   test('does not present an invalid dependency network as a valid critical path', () => {

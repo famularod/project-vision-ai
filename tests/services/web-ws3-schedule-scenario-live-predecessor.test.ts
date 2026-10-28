@@ -119,6 +119,27 @@ describe('the editor\'s preview and a predecessor filed under another schedule n
     expect(scenario.safety.safeToApply).toBe(true);
   });
 
+  it('3.7: another task can still point to an earlier row of a task in this same schedule without blocking every save', () => {
+    const items = [task('excavation'), punch({ dependencies: [{ predecessorItemId: 'excavation-earlier-row', type: 'FS', lagDays: 1 }] }), task('fence')];
+    const before = JSON.stringify(items);
+    const shownTaskOf = (id: string) => id === 'excavation-earlier-row' ? items[0] : shownIn(items)(id);
+    const scenario = buildVitruviusScheduleChangeScenario({ items, itemId: 'fence', draft: {}, shownTaskOf });
+    expect(scenario.safety.safeToApply).toBe(true);
+    expect(scenario.safety.issues).toEqual([]);
+    expect(scenario.proposedProjectItems.find(item => item.id === 'punch')?.dependencies)
+      .toEqual([{ predecessorItemId: 'excavation', type: 'FS', lagDays: 1 }]);
+    expect(JSON.stringify(items)).toBe(before);
+  });
+
+  it('3.7: a cycle through an earlier row is still refused, including when a different task is edited', () => {
+    const items = [task('excavation', { dependencies: [{ predecessorItemId: 'punch', type: 'FS' }] }), punch({ dependencies: [{ predecessorItemId: 'excavation-earlier-row', type: 'FS' }] }), task('fence')];
+    const shownTaskOf = (id: string) => id === 'excavation-earlier-row' ? items[0] : shownIn(items)(id);
+    const scenario = buildVitruviusScheduleChangeScenario({ items, itemId: 'fence', draft: {}, shownTaskOf });
+    expect(scenario.safety.safeToApply).toBe(false);
+    expect(scenario.safety.issues.some(issue => /circl|cycl/i.test(issue.message))).toBe(true);
+    expect(scenario.safety.issues.some(issue => /missing predecessor/.test(issue.message))).toBe(false);
+  });
+
   it('guard: a predecessor no schedule shows (deleted, or only on a schedule that is not the current one) is still missing', () => {
     const items = [excavation(), punch({ dependencies: [{ predecessorItemId: 'deleted-task', type: 'FS', lagDays: 0 }] })];
     const scenario = buildVitruviusScheduleChangeScenario({ items, itemId: 'punch', draft: {}, shownTaskOf: shownIn(items) });

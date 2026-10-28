@@ -362,6 +362,15 @@ describe('Open item 2.45: nothing else changes', () => {
       fireEvent.press(view.getByText('Accept Selected (2)'));
       await settled();
     });
+    // B77 compatibility correction: unresolved remaining rows require a deliberate role for this ready subset.
+    expect(approvals).toEqual([]);
+    expect(view.getByText('Choose Full schedule or Lookahead for the selected items before saving.')).toBeTruthy();
+    expect(cardLines(view)).toEqual([`${SHED} • Lot`, 'Needs Project (the file names "6101") • Lot', `${SHED} • Lot`, 'Needs Project (the file names "6102") • Lot']);
+    fireEvent.press(view.getByText('Full schedule (replaces)'));
+    await act(async () => {
+      fireEvent.press(view.getByText('Accept Selected (2)'));
+      await settled();
+    });
     expect(cardLines(view)).toEqual(['Needs Project (the file names "6101") • Lot', 'Needs Project (the file names "6102") • Lot']);
     openEveryCard(view);
     view.getAllByPlaceholderText('Project').forEach((input, index) => fireEvent.changeText(input, [QUAY, MILL][index]));
@@ -370,6 +379,7 @@ describe('Open item 2.45: nothing else changes', () => {
       await settled();
     });
     view.unmount();
+    expect(approvals.map(each => scheduleImportAddsToMaster(each, saved.cloudSync.mock.calls[0][0].referenceDocuments))).toEqual([false, false]);
     expect(approvals.map(each => each.items.map(item => `${item.taskName} [${item.projectName}] ${item.id}`))).toEqual([
       [`Footings [${SHED}] ${batch.items[0].id}`, `Frame [${SHED}] ${batch.items[2].id}`],
       [`Safety walk [${QUAY}] ${batch.items[1].id}`, `Safety walk [${MILL}] ${batch.items[3].id}`],

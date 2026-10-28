@@ -13,6 +13,7 @@ import {
 import type { ScheduleItem } from '../types';
 import { colors, radius, spacing } from '../theme';
 import { useAppShellLayout } from './app-shell-layout';
+import { displayFontFamily } from '../theme/typography';
 
 export function MobileSchedulePlanning({
   items,
@@ -111,7 +112,7 @@ function MobileScheduleTimeline({
               <Text style={styles.dateText}>
                 {dateSpan(row.startDate, row.finishDate)}
               </Text>
-              {row.startDate || row.finishDate ? (
+              {row.left !== null && row.width !== null ? (
                 <View style={styles.timelineTrack}>
                   <View
                     style={[
@@ -136,7 +137,7 @@ function MobileScheduleTimeline({
               ) : (
                 <View style={styles.needsDateRow}>
                   <Ionicons name="calendar-outline" size={16} color={colors.warning} />
-                  <Text style={styles.needsDateText}>Dates needed</Text>
+                  <Text style={styles.needsDateText}>{row.outsideSupportedYears ? 'Check dates: outside the timeline range' : row.finishDate ? 'Start date needed' : 'Dates needed'}</Text>
                 </View>
               )}
             </Pressable>
@@ -358,21 +359,22 @@ const styles = StyleSheet.create({
   },
   eyebrow: {
     color: colors.primary,
-    fontSize: 11,
-    fontWeight: '900',
+    fontSize: 13,
+    fontWeight: '600',
     letterSpacing: 1.3,
   },
   heading: {
     color: colors.text,
-    fontSize: 24,
-    lineHeight: 30,
-    fontWeight: '900',
+    fontSize: 28,
+    fontFamily: displayFontFamily,
+    lineHeight: 35,
+    fontWeight: '400',
     paddingTop: 4,
   },
   subtitle: {
     color: colors.mutedText,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 21,
     fontWeight: '600',
     paddingTop: 4,
   },
@@ -387,12 +389,12 @@ const styles = StyleSheet.create({
   countValue: {
     color: colors.primary,
     fontSize: 21,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   countLabel: {
     color: colors.mutedText,
-    fontSize: 10,
-    fontWeight: '800',
+    fontSize: 12,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
   timelineRow: {
@@ -419,30 +421,30 @@ const styles = StyleSheet.create({
   },
   taskName: {
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 21,
-    fontWeight: '900',
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '600',
   },
   taskContext: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
     fontWeight: '600',
     paddingTop: 2,
   },
   statusText: {
     color: colors.primary,
-    fontSize: 14,
-    fontWeight: '900',
+    fontSize: 16,
+    fontWeight: '600',
   },
   statusTextComplete: {
     color: colors.success,
   },
   dateText: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
   timelineTrack: {
     height: 18,
@@ -477,8 +479,8 @@ const styles = StyleSheet.create({
   },
   needsDateText: {
     color: colors.warning,
-    fontSize: 12,
-    fontWeight: '800',
+    fontSize: 14,
+    fontWeight: '600',
   },
   weekTabs: {
     flexDirection: 'row',
@@ -500,8 +502,8 @@ const styles = StyleSheet.create({
   },
   weekTabText: {
     color: colors.primary,
-    fontSize: 14,
-    fontWeight: '900',
+    fontSize: 16,
+    fontWeight: '600',
   },
   weekTabTextActive: {
     color: colors.surface,
@@ -531,7 +533,7 @@ const styles = StyleSheet.create({
   summaryValue: {
     color: colors.primary,
     fontSize: 20,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   summaryValueDanger: {
     color: colors.danger,
@@ -541,8 +543,8 @@ const styles = StyleSheet.create({
   },
   summaryLabel: {
     color: colors.mutedText,
-    fontSize: 11,
-    fontWeight: '800',
+    fontSize: 13,
+    fontWeight: '600',
     paddingTop: 2,
   },
   lookaheadGrid: {
@@ -569,20 +571,20 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.xxs,
   },
   statusBadgeText: {
-    fontSize: 10,
-    fontWeight: '900',
+    fontSize: 12,
+    fontWeight: '600',
   },
   assignmentText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
   blockedText: {
     color: colors.warning,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '800',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
   emptyState: {
     minHeight: 180,
@@ -599,12 +601,12 @@ const styles = StyleSheet.create({
   emptyTitle: {
     color: colors.text,
     fontSize: 18,
-    fontWeight: '900',
+    fontWeight: '600',
   },
   emptyText: {
     color: colors.mutedText,
-    fontSize: 13,
-    lineHeight: 19,
+    fontSize: 15,
+    lineHeight: 22,
     fontWeight: '600',
     textAlign: 'center',
   },

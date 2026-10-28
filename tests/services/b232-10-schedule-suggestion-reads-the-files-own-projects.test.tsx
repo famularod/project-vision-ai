@@ -12,7 +12,9 @@
  * suggestScheduleImportRole (services/ScheduleLookahead.ts) is Build 231's
  * again, word for word.
  *
- * WHAT THIS FILE IS NOW: the 11 of item 10's 23 tests that hold on Build
+ * B76 TEST-ONLY CONTRACT UPDATE: original4.64/4.65 assertions below now demand resolved-file-scope duplicate/current-copy protection. The historical bug assertions are preserved in parent9403823 and the B76 packet; positive same-scope, root/building and role controls are retained. No product code changes in this RED commit.
+ *
+ * WHAT THIS FILE WAS BEFORE B76: the 11 of item 10's 23 tests that hold on Build
  * 231's function, kept as guards on what Build 231 does. The 12 that
  * asserted the removed behaviour are gone (they are whole in the commits
  * that added them). Open item 4.58 (a new project's first full schedule can
@@ -212,7 +214,7 @@ async function fromTheTasksTab(saved: Saved, picked: Picked, active: readonly st
     view.UNSAFE_getAllByType(Modal)[0].props.onDismiss();
     await settled();
   });
-  const sentence = String(view.getByText(/^Suggested: /).props.children);
+  const sentence = String((view.queryByText(/^Suggested: /) || view.getByText('Assign projects to suggest an import type')).props.children);
   const acceptAll = view.queryByText(/^Accept All \(\d+\)$/);
   if (acceptAll) {
     await act(async () => {
@@ -279,7 +281,8 @@ describe('Kept from Build 232 item 10, as Build 231 does it: an account whose ma
   it('on the phone a file naming one building comes up unassigned (the name is the root\'s too), so the label is read, as before', async () => {
     const north = await fromTheTasksTab(CAMPUS, northOctober, HARBOR);
     expect(north.batch.items.map(item => [item.projectName, item.scheduleProjectName])).toEqual([['Needs Project', null], ['Needs Project', null]]);
-    expect(north.sentence).toBe(`${LOOKAHEAD} its dates cover 12 days and the master for 2400 Compliance Project covers 16 weeks. ${CHANGE}`);
+    // B76 RED2: unresolved root/building assignment withholds the automatic UI recommendation; direct root-master safety controls remain.
+    expect(north.sentence).toBe('Assign projects to suggest an import type');
   });
 });
 
@@ -289,7 +292,8 @@ describe('Kept from Build 232 item 10, as Build 231 does it: a file with no Proj
     expect([...new Set(unnamed.batch.items.map(item => item.projectName))]).toEqual(['Needs Project']);
     expect(unnamed.batch.documents[0].projectNames).toEqual(ACTIVE);
     // Kept as it was: with nothing in the rows to go by, the longest master among the projects it could be for.
-    expect(unnamed.sentence).toBe(`${LOOKAHEAD} its dates cover 3 weeks and the master for 2321 Compliance Project covers about 16 months. ${CHANGE}`);
+    // B76 RED2: do not name an unrelated master before projects resolve.
+    expect(unnamed.sentence).toBe('Assign projects to suggest an import type');
     // Nothing is saved until each row has its project: Accept All is not offered yet.
     expect(unnamed.savedAs).toBeNull();
   });
@@ -329,23 +333,21 @@ describe('Kept from Build 232 item 10, as Build 231 does it: the other readers o
       .toMatchObject({ alreadyImported: false, asLookahead: true });
   });
 
-  it('scheduleImportOfFile (REPORTED, not changed): saved for Test project alone, then picked from the Tasks tab, it is not recognised', async () => {
-    // Saved first from a pick for Test project alone (the Documents screen's project choice): another id, label Test project.
+  it('B76 4.64: a file already saved for Test alone is recognised from a widened Tasks selection', async () => {
     const alone = phone(ACCOUNT, picked);
     const aloneBatch = await alone.prepareScheduleImportFromAsset(alone.file, [TEST]);
     const saved = afterApproval(ACCOUNT, aloneBatch!, 'master');
-    // The saved copy's label is compared with every active project, and its id is another scope's: a plain new import.
+    const before = JSON.stringify(saved);
     const fromTasksTab = pick(saved.documents, saved.items, ACTIVE);
+    // The requested wider scope keeps its deterministic identity; duplicate
+    // detection must reconcile the file's actual projects, not rewrite IDs.
     expect(fromTasksTab.identity.documentId).not.toBe(aloneBatch!.documents[0].id);
-    expect(fromTasksTab).toMatchObject({ alreadyImported: false, asLookahead: false });
-    // Picked for Test project alone again, it is recognised.
+    expect(fromTasksTab).toMatchObject({ alreadyImported: true, asLookahead: false });
     expect(pick(saved.documents, saved.items, [TEST])).toMatchObject({ alreadyImported: true, asLookahead: false });
-    // The review of that unrecognised second import. ITEM 10c: this last line said "Full schedule ... the master for
-    // [the new project] covers 3 weeks" while item 10 was in; it is restated as Build 231 says it (the longest master
-    // among the projects the pick was for: ACTIVE[0], the one with the 16-month master). Everything above it is
-    // unchanged.
-    const review = await fromTheTasksTab(saved, picked);
-    expect(review.sentence).toBe(`${LOOKAHEAD} its dates cover 3 weeks and the master for ${ACTIVE[0]} covers about 16 months. ${CHANGE}`);
+    const h = phone(saved, picked);
+    expect(await h.importScheduleFile()).toBeNull();
+    expect(h.alerts.map(a => a.title)).toEqual(['Schedule already added']);
+    expect(JSON.stringify(saved)).toBe(before);
   });
 
   it('scheduleFileFullCopyInUse: when the review opens it agrees with the pick, wide label or not', async () => {
@@ -362,7 +364,7 @@ describe('Kept from Build 232 item 10, as Build 231 does it: the other readers o
     expect(again.savedAs).toBe('lookahead');
   });
 
-  it('the four sentences of a file already saved as a full schedule name no project; scheduleFileFullCopyInUse (REPORTED, not changed) finds the saved copy only when the two labels are the same', () => {
+  it('B76 4.65: widened preapproval labels preserve every saved-copy refusal and message', () => {
     // A file for Test project and 2375, saved as their full schedule: its label is its rows' two projects.
     const SHA = 'f'.repeat(64);
     const copy = savedDocument('copy', [TEST, P2375], '2026-10-01T12:00:00.000Z', { contentSha256: SHA });
@@ -391,9 +393,10 @@ describe('Kept from Build 232 item 10, as Build 231 does it: the other readers o
       expect(own).toEqual({ role: 'lookahead', reason: sentence, only: true });
       ACTIVE.forEach(name => expect(own.reason).not.toContain(name));
       expect(scheduleImportRoleRefusal(again([TEST, P2375]), 'lookahead', documents)).toBe(refusal);
-      // Labelled with every active project, the saved copy is not found: always the first sentence, never refused.
-      expect(suggestScheduleImportRole({ batch: again(ACTIVE), documents, scheduleItems: [] })).toEqual({ role: 'lookahead', reason: states[0][2], only: true });
-      expect(scheduleImportRoleRefusal(again(ACTIVE), 'lookahead', documents)).toBeNull();
+      // B76: resolved rows bind the two projects even though the preapproval label is wider; all four controls retained.
+      const widened = {...again(ACTIVE), items: [savedRow('resolved-test', TEST, '10/26/2026', '11/13/2026', 'again'), savedRow('resolved-2375', P2375, '10/26/2026', '11/13/2026', 'again')]};
+      expect(suggestScheduleImportRole({ batch: widened, documents, scheduleItems: [] })).toEqual({ role: 'lookahead', reason: sentence, only: true });
+      expect(scheduleImportRoleRefusal(widened, 'lookahead', documents)).toBe(refusal);
     });
   });
 });
@@ -435,15 +438,15 @@ describe('Kept from Build 232 items 10 and 10b, as Build 231 does it: the deskto
   // desktop keeps the file's spelling on the rows", which filed the tasks under a second project called by that
   // spelling. Such rows now wait for a project on the desktop too, as on the phone (below); the suggestion still
   // reads the file's spelling, as before.
-  it('a Project column that spells no project of the app: the rows wait for a project on the desktop too, and the suggestion reads the ticked project (as on Build 231)', async () => {
+  it('a Project column that spells no project of the app: desktop service keeps its ticked-project suggestion; unresolved phone review waits for assignment', async () => {
     const shortened = P2321.split(' ').slice(0, 2).join(' '); // the project's name without its last word
     const misspelt = threeWeeks(shortened, 'Field plan.csv');
     expect([...new Set(upload([P2321], misspelt).scheduleItems.map(item => item.projectName))]).toEqual(['Needs Project']);
     expect(suggestion([P2321], misspelt)).toEqual({ role: 'lookahead', reason: `its dates cover 3 weeks and the master for ${P2321} covers about 16 months` });
-    // On the phone such a row is left without a project, so the label is read, as before.
+    // B77 test-only compatibility correction: unresolved phone review is provisional (B76 4.63); desktop service assertions above stay unchanged.
     const onThePhone = await fromTheTasksTab(ACCOUNT, misspelt);
     expect([...new Set(onThePhone.batch.items.map(item => item.projectName))]).toEqual(['Needs Project']);
-    expect(onThePhone.sentence).toBe(`${LOOKAHEAD} its dates cover 3 weeks and the master for 2321 Compliance Project covers about 16 months. ${CHANGE}`);
+    expect(onThePhone.sentence).toBe('Assign projects to suggest an import type');
   });
 
   // CHANGED by item 10b, part 2 (review pass 4, O-3; the coordinator's decision). This test pinned what item 10

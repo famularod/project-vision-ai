@@ -573,7 +573,8 @@ function nameWordsAround(name: string, at: RegExpExecArray, before: string, afte
   const afterWords = /^[\s,-]+[a-z0-9]/i.test(after) ? wordsIn(after) : [];
   // The last 64 characters are enough to test the end and keep the match linear.
   const beforeWords = /[a-z0-9][\s#:.-]*$/i.test(before.slice(-64)) ? wordsIn(before).reverse() : [];
-  const nameAfter = withStreetLetter(wordsIn(name.slice(at.index + at[0].length)));
+  const printedNameAfterNumber = name.slice(at.index + at[0].length);
+  const nameAfter = withStreetLetter(wordsIn(printedNameAfterNumber), printedNameAfterNumber);
   const nameBefore = wordsIn(name.slice(0, at.index)).reverse();
   const following = wordsInCommon(nameAfter, afterWords, true);
   const preceding = wordsInCommon(nameBefore, beforeWords);
@@ -594,9 +595,13 @@ function wordsIn(text: string): string[] {
  * "a" straight after the number and before a street word is the letter;
  * "2375 a new roof" keeps its article.
  */
-function withStreetLetter(nameWordsAfterNumber: string[]) {
+function withStreetLetter(nameWordsAfterNumber: string[], printedNameAfterNumber: string) {
   const [first, next] = nameWordsAfterNumber;
-  return first === 'a' && next && ECOS_STREET_LETTER_WORDS.has(next.toLowerCase())
+  // The general matcher uses ASCII words. A finite suffix must also be a
+  // complete printed token: Straße must not become USPS STRA plus "e".
+  const printedWords = printedNameAfterNumber.match(/[\p{L}\p{N}\p{M}]+/gu) ?? [];
+  return first === 'a' && next && printedWords[0] === first && printedWords[1]?.toLowerCase() === next.toLowerCase()
+    && ECOS_STREET_LETTER_WORDS.has(next.toLowerCase())
     ? ['A', ...nameWordsAfterNumber.slice(1)]
     : nameWordsAfterNumber;
 }
@@ -607,22 +612,72 @@ function withStreetLetter(nameWordsAfterNumber: string[]) {
  * 450 A Way (review pass 1, L5: only ten street words did, so "450 a Way",
  * Circle, Terrace, Trail and Alley were still read with the article).
  *
- * The common street words of United States addresses, each written out and
- * in its usual short form. The list follows the street suffixes of USPS
- * Publication 28 (Appendix C1), written from memory: it was not looked up
- * when this was written, and it is the common ones, not all of them.
+ * All 549 distinct primary, common and abbreviated suffix spellings in USPS
+ * Publication 28 Appendix C1, checked 17 October 2026:
+ * https://pe.usps.com/text/pub28/28apc_002.htm
+ * Plus Close, explicitly named in issue 4.36. This is a finite vocabulary,
+ * not a general address parser or a worldwide suffix inference rule.
  *
  * This list is used for that one reading only. It does not make a short
  * form and its word the same word in a question; that is STREET_WORDS, which
  * is kept to its ten on purpose ("CT" is also a cabinet, "CIR" a circuit).
  */
 export const ECOS_STREET_LETTER_WORDS: ReadonlySet<string> = new Set([
-  'alley', 'aly', 'avenue', 'ave', 'bend', 'bnd', 'boulevard', 'blvd', 'circle', 'cir', 'court', 'ct',
-  'cove', 'cv', 'crescent', 'cres', 'crossing', 'xing', 'drive', 'dr', 'expressway', 'expy',
-  'freeway', 'fwy', 'glen', 'gln', 'heights', 'hts', 'highway', 'hwy', 'lane', 'ln', 'loop',
-  'parkway', 'pkwy', 'pass', 'path', 'pike', 'place', 'pl', 'plaza', 'plz', 'point', 'pt',
-  'ridge', 'rdg', 'road', 'rd', 'route', 'rte', 'row', 'run', 'square', 'sq', 'street', 'st',
-  'terrace', 'ter', 'trace', 'trce', 'trail', 'trl', 'turnpike', 'tpke', 'view', 'vw', 'walk', 'way',
+  'allee', 'alley', 'ally', 'aly', 'anex', 'annex', 'annx', 'anx', 'arc', 'arcade',
+  'av', 'ave', 'aven', 'avenu', 'avenue', 'avn', 'avnue', 'bayoo', 'bayou', 'bch',
+  'beach', 'bend', 'bg', 'bgs', 'blf', 'blfs', 'bluf', 'bluff', 'bluffs', 'blvd',
+  'bnd', 'bot', 'bottm', 'bottom', 'boul', 'boulevard', 'boulv', 'br', 'branch', 'brdge',
+  'brg', 'bridge', 'brk', 'brks', 'brnch', 'brook', 'brooks', 'btm', 'burg', 'burgs',
+  'byp', 'bypa', 'bypas', 'bypass', 'byps', 'byu', 'camp', 'canyn', 'canyon', 'cape',
+  'causeway', 'causwa', 'cen', 'cent', 'center', 'centers', 'centr', 'centre', 'cir', 'circ',
+  'circl', 'circle', 'circles', 'cirs', 'clb', 'clf', 'clfs', 'cliff', 'cliffs', 'close',
+  'club', 'cmn', 'cmns', 'cmp', 'cnter', 'cntr', 'cnyn', 'common', 'commons', 'cor',
+  'corner', 'corners', 'cors', 'course', 'court', 'courts', 'cove', 'coves', 'cp', 'cpe',
+  'crcl', 'crcle', 'creek', 'cres', 'crescent', 'crest', 'crk', 'crossing', 'crossroad', 'crossroads',
+  'crse', 'crsent', 'crsnt', 'crssng', 'crst', 'cswy', 'ct', 'ctr', 'ctrs', 'cts',
+  'curv', 'curve', 'cv', 'cvs', 'cyn', 'dale', 'dam', 'div', 'divide', 'dl',
+  'dm', 'dr', 'driv', 'drive', 'drives', 'drs', 'drv', 'dv', 'dvd', 'est',
+  'estate', 'estates', 'ests', 'exp', 'expr', 'express', 'expressway', 'expw', 'expy', 'ext',
+  'extension', 'extensions', 'extn', 'extnsn', 'exts', 'fall', 'falls', 'ferry', 'field', 'fields',
+  'flat', 'flats', 'fld', 'flds', 'fls', 'flt', 'flts', 'ford', 'fords', 'forest',
+  'forests', 'forg', 'forge', 'forges', 'fork', 'forks', 'fort', 'frd', 'frds', 'freeway',
+  'freewy', 'frg', 'frgs', 'frk', 'frks', 'frry', 'frst', 'frt', 'frway', 'frwy',
+  'fry', 'ft', 'fwy', 'garden', 'gardens', 'gardn', 'gateway', 'gatewy', 'gatway', 'gdn',
+  'gdns', 'glen', 'glens', 'gln', 'glns', 'grden', 'grdn', 'grdns', 'green', 'greens',
+  'grn', 'grns', 'grov', 'grove', 'groves', 'grv', 'grvs', 'gtway', 'gtwy', 'harb',
+  'harbor', 'harbors', 'harbr', 'haven', 'hbr', 'hbrs', 'heights', 'highway', 'highwy', 'hill',
+  'hills', 'hiway', 'hiwy', 'hl', 'hllw', 'hls', 'hollow', 'hollows', 'holw', 'holws',
+  'hrbor', 'ht', 'hts', 'hvn', 'hway', 'hwy', 'inlet', 'inlt', 'is', 'island',
+  'islands', 'isle', 'isles', 'islnd', 'islnds', 'iss', 'jct', 'jction', 'jctn', 'jctns',
+  'jcts', 'junction', 'junctions', 'junctn', 'juncton', 'key', 'keys', 'knl', 'knls', 'knol',
+  'knoll', 'knolls', 'ky', 'kys', 'lake', 'lakes', 'land', 'landing', 'lane', 'lck',
+  'lcks', 'ldg', 'ldge', 'lf', 'lgt', 'lgts', 'light', 'lights', 'lk', 'lks',
+  'ln', 'lndg', 'lndng', 'loaf', 'lock', 'locks', 'lodg', 'lodge', 'loop', 'loops',
+  'mall', 'manor', 'manors', 'mdw', 'mdws', 'meadow', 'meadows', 'medows', 'mews', 'mill',
+  'mills', 'mission', 'missn', 'ml', 'mls', 'mnr', 'mnrs', 'mnt', 'mntain', 'mntn',
+  'mntns', 'motorway', 'mount', 'mountain', 'mountains', 'mountin', 'msn', 'mssn', 'mt', 'mtin',
+  'mtn', 'mtns', 'mtwy', 'nck', 'neck', 'opas', 'orch', 'orchard', 'orchrd', 'oval',
+  'overpass', 'ovl', 'park', 'parks', 'parkway', 'parkways', 'parkwy', 'pass', 'passage', 'path',
+  'paths', 'pike', 'pikes', 'pine', 'pines', 'pkway', 'pkwy', 'pkwys', 'pky', 'pl',
+  'place', 'plain', 'plains', 'plaza', 'pln', 'plns', 'plz', 'plza', 'pne', 'pnes',
+  'point', 'points', 'port', 'ports', 'pr', 'prairie', 'prk', 'prr', 'prt', 'prts',
+  'psge', 'pt', 'pts', 'rad', 'radial', 'radiel', 'radl', 'ramp', 'ranch', 'ranches',
+  'rapid', 'rapids', 'rd', 'rdg', 'rdge', 'rdgs', 'rds', 'rest', 'ridge', 'ridges',
+  'riv', 'river', 'rivr', 'rnch', 'rnchs', 'road', 'roads', 'route', 'row', 'rpd',
+  'rpds', 'rst', 'rte', 'rue', 'run', 'rvr', 'shl', 'shls', 'shoal', 'shoals',
+  'shoar', 'shoars', 'shore', 'shores', 'shr', 'shrs', 'skwy', 'skyway', 'smt', 'spg',
+  'spgs', 'spng', 'spngs', 'spring', 'springs', 'sprng', 'sprngs', 'spur', 'spurs', 'sq',
+  'sqr', 'sqre', 'sqrs', 'sqs', 'squ', 'square', 'squares', 'st', 'sta', 'station',
+  'statn', 'stn', 'str', 'stra', 'strav', 'straven', 'stravenue', 'stravn', 'stream', 'street',
+  'streets', 'streme', 'strm', 'strt', 'strvn', 'strvnue', 'sts', 'sumit', 'sumitt', 'summit',
+  'ter', 'terr', 'terrace', 'throughway', 'tpke', 'trace', 'traces', 'track', 'tracks', 'trafficway',
+  'trail', 'trailer', 'trails', 'trak', 'trce', 'trfy', 'trk', 'trks', 'trl', 'trlr',
+  'trlrs', 'trls', 'trnpk', 'trwy', 'tunel', 'tunl', 'tunls', 'tunnel', 'tunnels', 'tunnl',
+  'turnpike', 'turnpk', 'un', 'underpass', 'union', 'unions', 'uns', 'upas', 'valley', 'valleys',
+  'vally', 'vdct', 'via', 'viadct', 'viaduct', 'view', 'views', 'vill', 'villag', 'village',
+  'villages', 'ville', 'villg', 'villiage', 'vis', 'vist', 'vista', 'vl', 'vlg', 'vlgs',
+  'vlly', 'vly', 'vlys', 'vst', 'vsta', 'vw', 'vws', 'walk', 'walks', 'wall',
+  'way', 'ways', 'well', 'wells', 'wl', 'wls', 'wy', 'xing', 'xrd', 'xrds',
 ]);
 
 /**

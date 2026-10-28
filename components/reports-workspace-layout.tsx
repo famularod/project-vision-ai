@@ -79,8 +79,8 @@ const styles = StyleSheet.create({
   },
   eyebrow: {
     color: colors.tertiaryText,
-    fontSize: 11,
-    fontWeight: '900',
+    fontSize: 13,
+    fontWeight: '600',
     letterSpacing: 1.2,
   },
 });

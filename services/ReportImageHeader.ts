@@ -11,14 +11,16 @@ import type { ReportImageFormat } from './ReportWordImageFormat';
  * "does this photo need to be made smaller at all?" and "is this scan too
  * large to open?".
  *
- * Read here: JPEG, PNG, GIF, BMP, WebP and ordinary TIFF.
+ * Read here: JPEG, PNG, GIF, BMP, WebP and ordinary TIFF. A header
+ * describes dimensions; it does not prove that the picture can be decoded.
  * Not read here (null, and the caller asks the device as before): HEIC and
  * HEIF, AVIF, BigTIFF, a PNG that says it is stored turned, and any file
- * whose header is cut short or damaged.
+ * whose size fields cannot be read. Some damaged files still have size fields.
  *
  * The size returned is the picture's size as it is shown upright: a JPEG or
- * TIFF that says it is stored on its side has its width and height swapped,
- * which is what the device reports for it too.
+ * TIFF that states a standard orientation has its width and height swapped.
+ * JPEG metadata this reader cannot resolve is left to the device, while
+ * readReportImageHeaderInfo retains the pixel budget for the early guard.
  */
 export type ReportImageBytes = Readonly<{
   /** Up to `length` bytes starting at `offset`; fewer, or none, at the end of the file. */
@@ -27,21 +29,40 @@ export type ReportImageBytes = Readonly<{
 
 export type ReportImageHeaderSize = Readonly<{ width: number; height: number }>;
 
+export type ReportImageHeaderInfo = ReportImageHeaderSize & Readonly<{
+  /** False: width/height are the encoded frame's dimensions, for its pixel budget only. */
+  displaySizeKnown: boolean;
+}>;
+
 /** The most header segments, chunks or directory entries walked before giving up. */
 const MAX_STEPS = 512;
 /** The most of one EXIF block read to find the orientation. */
 const MAX_EXIF_BYTES = 65_536;
+/** Bound all EXIF payload reads in one JPEG, not just each block individually. */
+const MAX_JPEG_EXIF_BYTES = 262_144;
 
 export function readReportImageHeaderSize(
   format: ReportImageFormat,
   bytes: ReportImageBytes,
 ): ReportImageHeaderSize | null {
+  const info = readReportImageHeaderInfo(format, bytes);
+  return info?.displaySizeKnown ? { width: info.width, height: info.height } : null;
+}
+
+/**
+ * Dimensions for the early pixel guard even when upright dimensions need
+ * the platform's metadata reader. A quarter turn never changes pixel count.
+ */
+export function readReportImageHeaderInfo(
+  format: ReportImageFormat,
+  bytes: ReportImageBytes,
+): ReportImageHeaderInfo | null {
   try {
     const size = sizeFor(format, bytes);
     if (!size) return null;
     const { width, height } = size;
     return Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0
-      ? { width, height }
+      ? { width, height, displaySizeKnown: size.displaySizeKnown }
       : null;
   } catch {
     return null;
@@ -50,12 +71,13 @@ export function readReportImageHeaderSize(
 
 function sizeFor(format: ReportImageFormat, bytes: ReportImageBytes) {
   if (format === 'jpeg') return jpegSize(bytes);
-  if (format === 'png') return pngSize(bytes);
-  if (format === 'gif') return gifSize(bytes);
-  if (format === 'bmp') return bmpSize(bytes);
-  if (format === 'webp') return webpSize(bytes);
-  if (format === 'tiff') return tiffSize(bytes);
-  return null;
+  const size = format === 'png' ? pngSize(bytes)
+    : format === 'gif' ? gifSize(bytes)
+    : format === 'bmp' ? bmpSize(bytes)
+    : format === 'webp' ? webpSize(bytes)
+    : format === 'tiff' ? tiffSize(bytes)
+    : null;
+  return size ? { ...size, displaySizeKnown: true } : null;
 }
 
 /** Stored on its side: EXIF orientations 5 to 8 swap width and height when shown. */
@@ -68,9 +90,16 @@ function upright(width: number, height: number, orientation: number | null) {
 function jpegSize(bytes: ReportImageBytes) {
   let offset = 2;
   let orientation: number | null = null;
+  let exifBlockCount = 0;
+  let uncertain = false;
+  let frameSize: ReportImageHeaderSize | null = null;
+  let exifBytesLeft = MAX_JPEG_EXIF_BYTES;
+  const finish = (): ReportImageHeaderInfo | null => frameSize && (uncertain
+    ? { ...frameSize, displaySizeKnown: false }
+    : { ...upright(frameSize.width, frameSize.height, orientation), displaySizeKnown: true });
   for (let step = 0; step < MAX_STEPS; step += 1) {
     const head = bytes.read(offset, 4);
-    if (head.length < 2 || head[0] !== 0xff) return null;
+    if (head.length < 2 || head[0] !== 0xff) return finish();
     const marker = head[1];
     // A fill byte before a marker.
     if (marker === 0xff) {
@@ -82,22 +111,44 @@ function jpegSize(bytes: ReportImageBytes) {
       offset += 2;
       continue;
     }
-    // The picture's data, or its end, before any size was given.
-    if (marker === 0xd9 || marker === 0xda || head.length < 4) return null;
+    // Metadata may follow the frame, so scan through to the image data/end.
+    if (marker === 0xd9 || marker === 0xda) return finish();
+    if (head.length < 4) { uncertain = true; return finish(); }
     const length = (head[2] << 8) | head[3];
-    if (length < 2) return null;
+    if (length < 2) { uncertain = true; return finish(); }
     if (isJpegFrameMarker(marker)) {
       const frame = bytes.read(offset + 4, 5);
-      if (frame.length < 5) return null;
-      return upright((frame[3] << 8) | frame[4], (frame[1] << 8) | frame[2], orientation);
+      if (length < 7 || frame.length < 5) { uncertain = true; return finish(); }
+      const stated = { width: (frame[3] << 8) | frame[4], height: (frame[1] << 8) | frame[2] };
+      if (frameSize) uncertain = true;
+      // Conflicting frames cannot resolve display shape, but the largest
+      // stated pixel budget must still reach the guard before decoding.
+      if (!frameSize || stated.width * stated.height > frameSize.width * frameSize.height) frameSize = stated;
     }
-    if (marker === 0xe1 && orientation === null) {
-      const block = bytes.read(offset + 4, Math.min(length - 2, MAX_EXIF_BYTES));
-      if (startsWithText(block, 'Exif\0\0')) orientation = tiffDirectory(windowOf(block, 6))?.orientation ?? null;
+    if (marker === 0xe1) {
+      const prefix = bytes.read(offset + 4, Math.min(length - 2, 6));
+      if (startsWithText(prefix, 'Exif\0\0') && exifBytesLeft > 0) {
+        // Even a valid first IFD with no orientation can govern the platform.
+        // Multiple EXIF blocks therefore cannot establish display authority here.
+        exifBlockCount += 1;
+        if (exifBlockCount > 1) uncertain = true;
+        const block = bytes.read(offset + 4, Math.min(length - 2, MAX_EXIF_BYTES, exifBytesLeft));
+        exifBytesLeft -= block.length;
+        const directory = tiffDirectory(windowOf(block, 6), true);
+        if (block.length !== length - 2 || !directory || directory.orientationUncertain) uncertain = true;
+        if (directory?.orientation !== null && directory?.orientation !== undefined) {
+          orientation = directory.orientation;
+        }
+      } else {
+        // Includes XMP (attribute/element/namespace/precedence variations).
+        // Do not guess XML semantics or assume APP1 contains only EXIF.
+        uncertain = true;
+      }
     }
     offset += 2 + length;
   }
-  return null;
+  uncertain = true;
+  return finish();
 }
 
 /** Start-of-frame markers carry the size; C4, C8 and CC are other tables in the same range. */
@@ -173,7 +224,7 @@ function tiffSize(bytes: ReportImageBytes) {
  * block inside a JPEG or PNG. Gives the width, height and orientation it
  * names, each null when it does not.
  */
-function tiffDirectory(bytes: ReportImageBytes) {
+function tiffDirectory(bytes: ReportImageBytes, standardOrientationOnly = false) {
   const header = bytes.read(0, 8);
   if (header.length < 8) return null;
   const little = header[0] === 0x49 && header[1] === 0x49;
@@ -183,15 +234,24 @@ function tiffDirectory(bytes: ReportImageBytes) {
   const start = uint32(header, 4, little);
   const counted = bytes.read(start, 2);
   if (counted.length < 2) return null;
-  const count = Math.min(uint16(counted, 0, little), MAX_STEPS);
+  const statedCount = uint16(counted, 0, little);
+  const count = Math.min(statedCount, MAX_STEPS);
   const entries = bytes.read(start + 2, count * 12);
   let width: number | null = null;
   let height: number | null = null;
   let orientation: number | null = null;
+  let orientationUncertain = standardOrientationOnly && (statedCount > MAX_STEPS || entries.length < count * 12);
+  let orientations = 0;
   for (let at = 0; at + 12 <= entries.length; at += 12) {
     const tag = uint16(entries, at, little);
     if (tag !== 256 && tag !== 257 && tag !== 274) continue;
     const type = uint16(entries, at + 2, little);
+    if (tag === 274 && standardOrientationOnly) {
+      orientations += 1;
+      // EXIF 274 is SHORT/count1. Other encodings and duplicates are
+      // delegated to the actual platform instead of predicting its policy.
+      if (type !== 3 || uint32(entries, at + 4, little) !== 1 || orientations > 1) orientationUncertain = true;
+    }
     if (uint32(entries, at + 4, little) !== 1) continue;
     // A short number (type 3) sits in the first two bytes of the value; a long one (type 4) fills it.
     const value = type === 3 ? uint16(entries, at + 8, little) : type === 4 ? uint32(entries, at + 8, little) : null;
@@ -199,8 +259,9 @@ function tiffDirectory(bytes: ReportImageBytes) {
     if (tag === 256) width = value;
     else if (tag === 257) height = value;
     else if (value >= 1 && value <= 8) orientation = value;
+    else if (standardOrientationOnly) orientationUncertain = true;
   }
-  return { width, height, orientation };
+  return { width, height, orientation, orientationUncertain };
 }
 
 /** The same bytes, counted from `from`. */

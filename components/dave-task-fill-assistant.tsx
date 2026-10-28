@@ -1,5 +1,7 @@
 import Ionicons from '@expo/vector-icons/Ionicons';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import * as Crypto from 'expo-crypto';
+import { NativeWorkspaceOwnerContext } from './native-workspace-owner';
 import {
   StyleSheet,
   Text,
@@ -149,6 +151,17 @@ export function DAVETaskFillAssistant({
   /** May return the patch as applied (a changed project brings its location). */
   onApply: (patch: DAVETaskFillPatch) => DAVETaskFillPatch | void;
 }) {
+  // A new unsaved Add Task opening is a different draft, even with the
+  // same name/project. Capture origin survives mutable form values.
+  const account = useContext(NativeWorkspaceOwnerContext);
+  const draft = useRef<{ active: boolean; id: string }>({ active: false, id: '' });
+  if (active && !draft.current.active) draft.current.id = Crypto.randomUUID();
+  draft.current.active = active;
+  const [voiceOrigin, setVoiceOrigin] = useState<{
+    key: string; slot: string; draftId: string; account: string | null | undefined;
+    projectId: string | null; projectName: string;
+    purpose: 'instruction' | 'guided'; field: DAVETaskFillFieldName;
+  } | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [voiceOpen, setVoiceOpen] = useState(false);
   const [voicePurpose, setVoicePurpose] = useState<'instruction' | 'guided'>('instruction');
@@ -178,6 +191,41 @@ export function DAVETaskFillAssistant({
     contractorNames,
     milestoneNames,
   });
+
+  const voiceOriginIsCurrent = Boolean(voiceOrigin && active && voiceOrigin.draftId === draft.current.id &&
+    voiceOrigin.account === account && voiceOrigin.projectId === currentProjectId &&
+    voiceOrigin.projectName === currentProjectName &&
+    (voiceOrigin.purpose !== 'guided' || voiceOrigin.field === currentGuidedField));
+  const voiceCurrentRef = useRef<string | null>(null);
+  voiceCurrentRef.current = voiceOriginIsCurrent ? voiceOrigin!.key : null;
+  useLayoutEffect(() => () => { voiceCurrentRef.current = null; }, []);
+  function openVoice(purpose: 'instruction' | 'guided') {
+    const key = JSON.stringify([draft.current.id, account, currentProjectId, currentProjectName, purpose, currentGuidedField]);
+    // Capture before React runs a queued updater: a later draft opening
+    // must not change the origin of the tap that opened this voice sheet.
+    const origin = {
+      key,
+      slot: `task-fill/${JSON.stringify({
+        draftId: draft.current.id,
+        projectId: currentProjectId,
+        projectName: currentProjectName,
+        purpose,
+        field: currentGuidedField,
+        question: purpose === 'guided' ? GUIDED_QUESTIONS[currentGuidedField].question : 'Describe the task fields to fill',
+        task: currentValues.taskName || 'Unsaved task',
+      })}`,
+      draftId: draft.current.id,
+      account,
+      projectId: currentProjectId,
+      projectName: currentProjectName,
+      purpose,
+      field: currentGuidedField,
+    };
+    setVoiceOrigin(previous => previous?.key === key ? previous : origin);
+    setVoicePurpose(purpose);
+    setVoiceOpen(true);
+  }
+  useEffect(() => { if (!voiceOriginIsCurrent) setVoiceOpen(false); }, [voiceOriginIsCurrent]);
 
   function startGuidedQuestions() {
     setExpanded(true);
@@ -451,8 +499,7 @@ export function DAVETaskFillAssistant({
               <TouchableOpacity
                 style={styles.recordAnswerButton}
                 onPress={() => {
-                  setVoicePurpose('guided');
-                  setVoiceOpen(true);
+                  openVoice('guided');
                 }}
                 accessibilityRole="button"
                 accessibilityLabel={`Record answer for ${FIELD_LABELS[currentGuidedField]}`}
@@ -525,8 +572,7 @@ export function DAVETaskFillAssistant({
             <TouchableOpacity
               style={styles.secondaryButton}
               onPress={() => {
-                setVoicePurpose('instruction');
-                setVoiceOpen(true);
+                openVoice('instruction');
               }}
               accessibilityRole="button"
               accessibilityLabel="Record task instruction"
@@ -671,9 +717,11 @@ export function DAVETaskFillAssistant({
       ) : null}
 
       <DAVEVoiceCaptureSheet
-        visible={voiceOpen}
-        projectId={currentProjectId}
-        projectName={currentProjectName}
+        visible={voiceOpen && voiceOriginIsCurrent}
+        projectId={voiceOrigin?.projectId ?? currentProjectId}
+        projectName={voiceOrigin?.projectName ?? currentProjectName}
+        keepSlot={voiceOrigin?.slot}
+        retryKeptRecordingAutomatically={false}
         candidateProjects={candidateProjects}
         candidateLocations={candidateLocations}
         title={voicePurpose === 'guided' ? `Answer: ${FIELD_LABELS[currentGuidedField]}` : 'Record Task Instruction'}
@@ -687,6 +735,7 @@ export function DAVETaskFillAssistant({
         autoSubmitOnStop={voicePurpose === 'guided'}
         showWalkContext={false}
         onMemoryReady={result => {
+          if (!voiceOrigin || voiceCurrentRef.current !== voiceOrigin.key) return;
           if (voicePurpose === 'guided') {
             applyGuidedAnswer(result.transcript, true);
           } else {
@@ -897,8 +946,8 @@ const styles = StyleSheet.create({
     width: 40,
   },
   main: { flex: 1 },
-  title: { color: colors.text, fontSize: 16, fontWeight: '800' },
-  subtitle: { color: colors.mutedText, fontSize: 13, lineHeight: 18, marginTop: 2 },
+  title: { color: colors.text, fontSize: 17, fontWeight: '600' },
+  subtitle: { color: colors.mutedText, fontSize: 15, lineHeight: 21, marginTop: 2 },
   body: { backgroundColor: colors.surface, borderTopColor: colors.border, borderTopWidth: 1, padding: spacing.md },
   guidedStartCard: {
     alignItems: 'center',
@@ -911,40 +960,40 @@ const styles = StyleSheet.create({
     minHeight: 72,
     padding: spacing.md,
   },
-  guidedStartTitle: { color: colors.text, fontSize: 15, fontWeight: '800' },
-  guidedStartText: { color: colors.mutedText, fontSize: 13, lineHeight: 18, marginTop: 2 },
-  orText: { color: colors.mutedText, fontSize: 12, fontWeight: '700', marginVertical: spacing.md, textAlign: 'center' },
+  guidedStartTitle: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  guidedStartText: { color: colors.mutedText, fontSize: 15, lineHeight: 21, marginTop: 2 },
+  orText: { color: colors.mutedText, fontSize: 14, fontWeight: '600', marginVertical: spacing.md, textAlign: 'center' },
   guidedCard: { gap: spacing.sm },
   guidedProgressRow: { alignItems: 'center', flexDirection: 'row', justifyContent: 'space-between' },
-  guidedStep: { color: colors.primary, fontSize: 13, fontWeight: '800' },
+  guidedStep: { color: colors.primary, fontSize: 15, fontWeight: '600' },
   guidedReadyBanner: { alignItems: 'center', backgroundColor: colors.primarySoft, borderColor: colors.primary, borderRadius: radius.md, borderWidth: 2, flexDirection: 'row', gap: spacing.xs, justifyContent: 'center', minHeight: 48, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
-  guidedReadyText: { color: colors.primary, flexShrink: 1, fontSize: 15, fontWeight: '800', lineHeight: 20, textAlign: 'center' },
-  requiredTag: { backgroundColor: colors.primarySoft, borderRadius: 999, color: colors.primary, fontSize: 12, fontWeight: '800', overflow: 'hidden', paddingHorizontal: spacing.sm, paddingVertical: 4 },
-  optionalTag: { backgroundColor: colors.surfaceMuted, borderRadius: 999, color: colors.mutedText, fontSize: 12, fontWeight: '800', overflow: 'hidden', paddingHorizontal: spacing.sm, paddingVertical: 4 },
-  guidedQuestion: { color: colors.text, fontSize: 20, fontWeight: '800', lineHeight: 27 },
-  guidedFieldLabel: { color: colors.mutedText, fontSize: 12, fontWeight: '800', textTransform: 'uppercase' },
-  guidedInput: { backgroundColor: colors.surfaceMuted, borderColor: colors.border, borderRadius: radius.md, borderWidth: 1, color: colors.text, fontSize: 16, minHeight: 50, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  guidedReadyText: { color: colors.primary, flexShrink: 1, fontSize: 16, fontWeight: '600', lineHeight: 21, textAlign: 'center' },
+  requiredTag: { backgroundColor: colors.primarySoft, borderRadius: 999, color: colors.primary, fontSize: 14, fontWeight: '600', overflow: 'hidden', paddingHorizontal: spacing.sm, paddingVertical: 4 },
+  optionalTag: { backgroundColor: colors.surfaceMuted, borderRadius: 999, color: colors.mutedText, fontSize: 14, fontWeight: '600', overflow: 'hidden', paddingHorizontal: spacing.sm, paddingVertical: 4 },
+  guidedQuestion: { color: colors.text, fontSize: 20, fontWeight: '600', lineHeight: 27 },
+  guidedFieldLabel: { color: colors.mutedText, fontSize: 14, fontWeight: '600', textTransform: 'uppercase' },
+  guidedInput: { backgroundColor: colors.surfaceMuted, borderColor: colors.border, borderRadius: radius.md, borderWidth: 1, color: colors.text, fontSize: 17, minHeight: 50, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   guidedInputMultiline: { minHeight: 110 },
-  guidedError: { color: colors.danger, fontSize: 13, fontWeight: '700', lineHeight: 18 },
+  guidedError: { color: colors.danger, fontSize: 15, fontWeight: '600', lineHeight: 21 },
   guidedChoice: { backgroundColor: colors.surfaceMuted, borderColor: colors.border, borderRadius: 999, borderWidth: 1, justifyContent: 'center', minHeight: 42, paddingHorizontal: spacing.sm },
   guidedChoiceSelected: { backgroundColor: colors.primary, borderColor: colors.primary },
-  guidedChoiceText: { color: colors.text, fontSize: 13, fontWeight: '800' },
+  guidedChoiceText: { color: colors.text, fontSize: 15, fontWeight: '600' },
   guidedChoiceTextSelected: { color: '#FFFFFF' },
   recordAnswerButton: { alignItems: 'center', alignSelf: 'flex-start', flexDirection: 'row', gap: spacing.xs, justifyContent: 'center', minHeight: 44, paddingHorizontal: spacing.sm },
   guidedNavigation: { alignItems: 'stretch', flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.xs },
   guidedBackButton: { alignItems: 'center', borderColor: colors.primary, borderRadius: radius.md, borderWidth: 1, justifyContent: 'center', minHeight: 48, paddingHorizontal: spacing.md },
   guidedCompleteCard: { alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.md },
-  guidedCompleteTitle: { color: colors.text, fontSize: 19, fontWeight: '800', textAlign: 'center' },
-  guidedCompleteText: { color: colors.mutedText, fontSize: 14, lineHeight: 20, textAlign: 'center' },
-  label: { color: colors.text, fontSize: 14, fontWeight: '800', marginBottom: spacing.xs },
+  guidedCompleteTitle: { color: colors.text, fontSize: 19, fontWeight: '600', textAlign: 'center' },
+  guidedCompleteText: { color: colors.mutedText, fontSize: 16, lineHeight: 23, textAlign: 'center' },
+  label: { color: colors.text, fontSize: 16, fontWeight: '600', marginBottom: spacing.xs },
   instruction: {
     backgroundColor: colors.surfaceMuted,
     borderColor: colors.border,
     borderRadius: radius.md,
     borderWidth: 1,
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 22,
+    fontSize: 17,
+    lineHeight: 23,
     minHeight: 110,
     padding: spacing.sm,
     textAlignVertical: 'top',
@@ -961,7 +1010,7 @@ const styles = StyleSheet.create({
     minHeight: 48,
     paddingHorizontal: spacing.md,
   },
-  secondaryButtonText: { color: colors.primary, fontSize: 15, fontWeight: '800' },
+  secondaryButtonText: { color: colors.primary, fontSize: 16, fontWeight: '600' },
   primaryButton: {
     alignItems: 'center',
     backgroundColor: colors.primary,
@@ -973,7 +1022,7 @@ const styles = StyleSheet.create({
     minHeight: 48,
     paddingHorizontal: spacing.md,
   },
-  primaryButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
+  primaryButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '600' },
   disabled: { opacity: 0.45 },
   reviewCard: {
     backgroundColor: colors.surfaceMuted,
@@ -984,25 +1033,25 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   reviewHeader: { alignItems: 'center', flexDirection: 'row', gap: spacing.sm, padding: spacing.md },
-  reviewTitle: { color: colors.text, fontSize: 16, fontWeight: '800' },
-  reviewHelp: { color: colors.mutedText, fontSize: 12, lineHeight: 17, marginTop: 2 },
+  reviewTitle: { color: colors.text, fontSize: 17, fontWeight: '600' },
+  reviewHelp: { color: colors.mutedText, fontSize: 14, lineHeight: 20, marginTop: 2 },
   proposalRow: { backgroundColor: colors.surface, borderTopColor: colors.border, borderTopWidth: 1, padding: spacing.md },
-  proposalLabel: { color: colors.mutedText, fontSize: 12, fontWeight: '800', textTransform: 'uppercase' },
-  proposalValue: { color: colors.text, fontSize: 16, fontWeight: '800', marginTop: 3 },
-  unresolvedValue: { color: colors.warning, fontSize: 15, fontWeight: '800', marginTop: 3 },
-  confidenceText: { color: colors.mutedText, fontSize: 12, marginTop: 3 },
+  proposalLabel: { color: colors.mutedText, fontSize: 14, fontWeight: '600', textTransform: 'uppercase' },
+  proposalValue: { color: colors.text, fontSize: 17, fontWeight: '600', marginTop: 3 },
+  unresolvedValue: { color: colors.warning, fontSize: 16, fontWeight: '600', marginTop: 3 },
+  confidenceText: { color: colors.mutedText, fontSize: 14, marginTop: 3 },
   candidates: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, marginTop: spacing.sm },
   candidateButton: { backgroundColor: colors.primarySoft, borderRadius: 999, minHeight: 40, paddingHorizontal: spacing.sm, justifyContent: 'center' },
-  candidateText: { color: colors.primary, fontSize: 13, fontWeight: '800' },
+  candidateText: { color: colors.primary, fontSize: 15, fontWeight: '600' },
   confirmButton: { alignSelf: 'flex-start', minHeight: 40, justifyContent: 'center', marginTop: spacing.xs, paddingHorizontal: spacing.sm },
-  confirmText: { color: colors.primary, fontSize: 13, fontWeight: '800' },
+  confirmText: { color: colors.primary, fontSize: 15, fontWeight: '600' },
   warningRow: { alignItems: 'flex-start', backgroundColor: colors.warningSoft, borderTopColor: colors.border, borderTopWidth: 1, flexDirection: 'row', gap: spacing.xs, padding: spacing.sm },
-  warningText: { color: colors.text, flex: 1, fontSize: 13, lineHeight: 18 },
+  warningText: { color: colors.text, flex: 1, fontSize: 15, lineHeight: 21 },
   gapCard: { backgroundColor: colors.warningSoft, borderTopColor: colors.border, borderTopWidth: 1, padding: spacing.sm },
-  gapText: { color: colors.text, fontSize: 13, fontWeight: '700', lineHeight: 18 },
-  gapCandidate: { color: colors.mutedText, fontSize: 12, lineHeight: 18, marginTop: 2 },
+  gapText: { color: colors.text, fontSize: 15, fontWeight: '600', lineHeight: 21 },
+  gapCandidate: { color: colors.mutedText, fontSize: 14, lineHeight: 21, marginTop: 2 },
   applyButton: { alignItems: 'center', backgroundColor: colors.primary, flexDirection: 'row', gap: spacing.xs, justifyContent: 'center', minHeight: 52, margin: spacing.md, borderRadius: radius.md },
-  appliedHelp: { color: colors.success, fontSize: 13, fontWeight: '700', lineHeight: 18, paddingBottom: spacing.md, paddingHorizontal: spacing.md, textAlign: 'center' },
+  appliedHelp: { color: colors.success, fontSize: 15, fontWeight: '600', lineHeight: 21, paddingBottom: spacing.md, paddingHorizontal: spacing.md, textAlign: 'center' },
   cancelButton: { alignItems: 'center', justifyContent: 'center', minHeight: 44, marginTop: spacing.xs },
-  cancelText: { color: colors.mutedText, fontSize: 14, fontWeight: '700' },
+  cancelText: { color: colors.mutedText, fontSize: 16, fontWeight: '600' },
 });

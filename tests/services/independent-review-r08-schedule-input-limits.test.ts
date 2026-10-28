@@ -107,7 +107,8 @@ describe('R08: the limits and their sentences', () => {
   });
 
   it('a stored duration is supported up to the limit; not set is supported', () => {
-    for (const supported of [null, undefined, 0, 1, 2_600, 2_600.4]) expect(scheduleDurationIsSupported(supported)).toBe(true);
+    for (const supported of [null, undefined, 0, 0.4, 1, 2.5, 2_600]) expect(scheduleDurationIsSupported(supported)).toBe(true);
+    expect(scheduleDurationIsSupported(2_600.4)).toBe(false);
     for (const unsupported of [2_600.5, 2_601, 1_000_000_000, 1e21, Number.MAX_VALUE, Infinity, NaN, -1, '5']) {
       expect([unsupported, scheduleDurationIsSupported(unsupported)]).toEqual([unsupported, false]);
     }

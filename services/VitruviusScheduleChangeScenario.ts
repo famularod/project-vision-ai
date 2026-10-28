@@ -147,16 +147,33 @@ export function buildVitruviusScheduleChangeScenario({
   }
 
   const projectName = scheduleProjectName(editedItem);
-  const currentProjectItems = items
+  const projectItems = items
     .filter(item => scheduleProjectName(item) === projectName)
     .map(cloneScheduleItem);
-  const draftedItem = cloneScheduleItem({
+  const ownIds = new Set(projectItems.map(item => item.id));
+  // 3.7: the editor already resolves the edited task's saved row aliases.
+  // Resolve the other tasks' aliases for this preview too. Keep real rows,
+  // rather than fixed copies of them, so their dependencies still expose cycles.
+  const resolveOwnPredecessors = (item: ScheduleItem): ScheduleItem => {
+    if (!shownTaskOf || !Array.isArray(item.dependencies)) return item;
+    let changed = false;
+    const dependencies = normalizeScheduleDependencies(item.dependencies).map(link => {
+      if (ownIds.has(link.predecessorItemId)) return link;
+      const shown = shownTaskOf(link.predecessorItemId);
+      if (!shown || !ownIds.has(shown.id)) return link;
+      changed = true;
+      return { ...link, predecessorItemId: shown.id };
+    });
+    return changed ? { ...item, dependencies } : item;
+  };
+  const currentProjectItems = projectItems.map(resolveOwnPredecessors);
+  const draftedItem = resolveOwnPredecessors(cloneScheduleItem({
     ...editedItem,
     ...draft,
     dependencies: draft.dependencies === undefined
       ? editedItem.dependencies
       : normalizeScheduleDependencies(draft.dependencies),
-  });
+  }));
   // The draft's limits are checked before anything is calculated
   // (independent review R08: validation came after the analytics, so a
   // duration of a billion days was walked day by day first).
@@ -262,8 +279,9 @@ export function buildVitruviusScheduleChangeScenario({
  * schedule places it; this one only starts after it). A predecessor with no
  * finish date is then named as one of the schedule's own would be. Left as
  * before, so still "missing": a predecessor no schedule shows (deleted, or
- * only on a schedule that is not the current one), and a link that names an
- * earlier row of one of this schedule's own tasks, the task itself included.
+ * only on a schedule that is not the current one). Earlier rows of this
+ * schedule's own tasks are resolved to their real rows before this step (3.7),
+ * including a self-link: the engine still refuses that cycle.
  *
  * Open item 3.6 (14 Oct 2026): a task may start after a phase, and then starts after every task and milestone in
  * it. A phase filed elsewhere comes with the work under it (from the tasks given), each a fixed row as above.

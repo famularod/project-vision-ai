@@ -250,7 +250,7 @@ describe('the web\'s delete dialog for that lookahead (WS1 item 4)', () => {
     fireEvent.press(screen.getByLabelText('Delete LOOKAHEAD L1'));
 
     expect(screen.getByText('Delete “LOOKAHEAD L1”?')).toBeTruthy();
-    expect(screen.getByText(/No linked imported tasks were found\. Delete Document \+ Its Changes also puts back the earlier progress of 1 task this lookahead changed\.$/)).toBeTruthy();
+    expect(screen.getByText(/Its linked tasks are also contained in another schedule, so they will be kept\. Delete Document \+ Its Changes also puts back the earlier progress of 1 task this lookahead changed\.$/)).toBeTruthy();
     expect(screen.queryByText(/leaves those tasks as they show now/)).toBeNull();
     expect(screen.getByText('Cancel')).toBeTruthy();
     expect(screen.queryByText('Delete Document Only')).toBeNull();

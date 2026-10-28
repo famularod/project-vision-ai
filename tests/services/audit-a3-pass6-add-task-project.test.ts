@@ -182,6 +182,17 @@ describe('App.tsx addScheduleItem and syncScheduleItemRevision, compiled with th
     expect(app.alert).not.toHaveBeenCalled();
   });
 
+  it('two native manual creates keep separate task ids and no allocated WBS through the actual queue/upload consumer',async()=>{
+    const app=compile();
+    app.addScheduleItem({taskName:'First hand task',projectName:'Lot 5'});await app.settled();
+    app.addScheduleItem({taskName:'Second hand task',projectName:'Lot 5'});await app.settled();
+    const saved=app.scheduleItemsCurrentRef.current;
+    expect(new Set(saved.map(item=>item.id)).size).toBe(2);
+    expect(saved.map(item=>item.wbsCode??null)).toEqual([null,null]);
+    for(const item of saved) expect(mockUpsertScheduleItem).toHaveBeenCalledWith(expect.objectContaining({id:item.id,projectName:'Lot 5',projectId:mockLot5Id}),{onlyIfAbsent:true});
+    await expect(getOfflineQueue()).resolves.toEqual([]);
+  });
+
   it('does not say "still retrying" when the task\'s project is not open in the cloud', async () => {
     // An edit to a task of a project closed on another device.
     const app = compile();

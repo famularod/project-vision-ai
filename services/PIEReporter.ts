@@ -1,3 +1,4 @@
+import { reportProjectNameOrder } from './ReportProjectOrder';
 import type {
   ContactBook,
   ProjectArea,
@@ -93,7 +94,8 @@ import type { PIERecommendationChallengeResult } from './PIERecommendationChalle
 import type { PIEJarvisReasoningValidation } from './PIEJarvisReasoningValidation';
 import type { PIEConfidenceDecomposition } from './PIEConfidenceDecomposition';
 import type { PIEEvidenceValuePrioritization } from './PIEEvidenceValuePrioritization';
-import { fieldUpdatesNewestFirst, scheduleTasksInReportOrder, whatChangedForWrittenReport } from './PIEEvidenceFusion';
+import { projectScheduleItemsForReport } from './ReportScheduleProjection';
+import { fieldUpdatesNewestFirst, scheduleTasksInReportOrder, whatChangedForWrittenReport, extractScheduleEvidence } from './PIEEvidenceFusion';
 import { confirmedComparisonQuoted, isEmptyRuntimeSummary, noteIsAcceptedPhotoSuggestion } from './ReportWrittenFacts';
 import { resolvePIEReportProjectNames } from './PIEReportScope';
 import { SCHEDULE_CHECK_REVIEW_FLAG } from './ReportApprovalPolicy';
@@ -191,7 +193,15 @@ export type PIEWorkAreaUnderstanding = {
 
 /** Open item 7.62: one record an area's lines are made from. */
 export type PIEWorkAreaLineSource = Readonly<{
+  /** Own-screen label only; never changes the written line's kind or words. */
+  previewKind?: PIEReportPreviewKind;
+  preservesCapturedFor?: boolean;
+  /** Exact authored span protected from machine wording cleanup, never an unverified runtime sentence. */
+  preservedCapturedForText?: string;
   evidenceId: string;
+  /** B78: this record's printed location, separate from the unchanged raw bucket. */
+  printedAreaName?: string;
+  sourceKind?: PIEReportSourceEvidence['source'];
   /** Its words as a line prints them, compared without case or closing stop. */
   words: string;
   updateId: string | null;
@@ -210,6 +220,16 @@ export type PIEConstructionUnderstanding = {
 };
 
 export type PIEReportSourceEvidence = {
+  /** Proven photo-only fused quote, for the owner's preview label only. */
+  previewKind?: PIEReportPreviewKind;
+  /** Schedule action words composed without its generated structured owner field (7.51). */
+  scheduleActionSummary?: string;
+  /** A Latest quote matched to the newest selected saved plain field note (4.81). */
+  authoredPlainLatest?: boolean;
+  /** Authored field words, including the fused Latest update sentence; never machine boilerplate. */
+  preservesCapturedFor?: boolean;
+  /** Exact authored span protected from machine wording cleanup, never an unverified runtime sentence. */
+  preservedCapturedForText?: string;
   id: string;
   source:
     | 'runtime'
@@ -279,7 +299,11 @@ export type PIEReportDecisionNeeded = {
   sourceEvidenceIds: string[];
 };
 
+export type PIEReportPreviewKind = 'field_note' | 'photo';
+
 export type PIEReportBullet = {
+  /** Presentation provenance, separate from the established written-report classification. */
+  previewKind?: PIEReportPreviewKind;
   id: string;
   text: string;
   kind:
@@ -340,6 +364,8 @@ export type PIEReportDraft = {
   reviewFlags: string[];
   sourceEvidence: PIEReportSourceEvidence[];
   constructionUnderstanding: PIEConstructionUnderstanding;
+  /** Legacy sends without a text digest cannot prove equality after candidate selection restores words. */
+  candidateSelectionRequiresAppTextKey?: boolean;
   daveBriefing?: import('./DAVEReportIntelligence').DAVEReportBriefing | null;
   generatedAt: string;
 };
@@ -356,9 +382,11 @@ export type PIEReporterRuntimeInput = {
     trust?: number;
   };
   fusedEvidence?: {
+    /** The existing runtime recipe's project scope; never broadened by a report projection. */
+    projectName?: string;
     scheduleReconciliation?: PIEScheduleReconciliationResult;
     /** What the written report's "Latest update / Latest photo / Schedule focus" sentence is made from. */
-    userUpdateEvidence?: Parameters<typeof whatChangedForWrittenReport>[0]['userUpdateEvidence'];
+    userUpdateEvidence?: Array<Parameters<typeof whatChangedForWrittenReport>[0]['userUpdateEvidence'][number] & { projectName?: string; areaName?: string | null }>;
     photoEvidence?: Parameters<typeof whatChangedForWrittenReport>[0]['photoEvidence'];
     scheduleEvidence?: Parameters<typeof whatChangedForWrittenReport>[0]['scheduleEvidence'];
   } | null;
@@ -495,6 +523,7 @@ export type PIEReportDraftInput = {
 };
 
 type PIEProjectNarrative = {
+  imageReferences: PIEReportImageReference[];
   executiveSummaryBullets: string[];
   locationGroups: PIEReportLocationGroup[];
   actionItems: PIEReportActionItem[];
@@ -598,6 +627,8 @@ export function collectReportEvidence(
     const context = reportContextForUpdate(update, scheduleItems, selectedProjects.length > 1);
     // The rule the report's fingerprint reads too (ReportWrittenFacts, HIGH item 1: F6).
     const noteWasGeneratedFromPhotoAnalysis = noteIsAcceptedPhotoSuggestion(update);
+    const authoredNote = !noteWasGeneratedFromPhotoAnalysis && /captured\s+for/i.test(update.notes)
+      ? update.notes.replace(/\s+/g, ' ').trim() : undefined;
 
     if (
       update.notes.trim() &&
@@ -606,9 +637,11 @@ export function collectReportEvidence(
       evidence.push({
         id: `note-${update.id}`,
         source: 'note',
+        preservesCapturedFor: !noteWasGeneratedFromPhotoAnalysis,
+        preservedCapturedForText: authoredNote,
         projectName: context.projectName,
         areaName: context.areaName,
-        summary: cleanReportBulletText(update.notes),
+        summary: cleanReportBulletText(update.notes.replace(/\s+/g, ' ').trim(), authoredNote),
         confidence: isUnclearText(update.notes) ? 'low' : 'medium',
         sourceUpdateId: update.id,
       });
@@ -638,6 +671,7 @@ export function collectReportEvidence(
         projectName: scheduleProjectName,
         areaName: scheduleAreaName,
         summary: scheduleSummaryLine(item),
+        scheduleActionSummary: scheduleSummaryLine(item, false),
         confidence: item.projectName && item.taskName ? 'medium' : 'low',
         owner: item.owner || item.contractor || null,
         actionRequired: scheduleActionLine(item),
@@ -645,7 +679,32 @@ export function collectReportEvidence(
       });
     });
 
-  const runtime = input.runtime;
+  const projectedTasks = input.scheduleItems && projectScheduleItemsForReport(input.scheduleItems);
+  const originalRuntime = input.runtime;
+  const fusedProjectName = originalRuntime?.fusedEvidence?.projectName || selectedProjects[0];
+  const fusedProjectKey = normalizeName(fusedProjectName || '');
+  const tasksChanged = projectedTasks?.some((item, index) =>
+    item !== input.scheduleItems![index] &&
+    selectedProjects.includes(normalizeName(item.scheduleProjectName?.trim() || item.projectName)) &&
+    (!fusedProjectKey || fusedProjectKey === 'unassigned project' || normalizeName(item.projectName) === fusedProjectKey),
+  );
+  // The report reads its own projected tasks, while retaining the runtime's authored
+  // update/photo recipe and every other model product. Do not change the wider runtime.
+  const runtime = tasksChanged && originalRuntime?.fusedEvidence?.scheduleEvidence
+    ? {
+        ...originalRuntime,
+        fusedEvidence: {
+          ...originalRuntime.fusedEvidence,
+          scheduleEvidence: extractScheduleEvidence({
+            projectName: fusedProjectName,
+            scheduleItems: projectedTasks!.filter(item => selectedProjects.includes(
+              normalizeName(item.scheduleProjectName?.trim() || item.projectName),
+            )),
+            now: input.generatedAt,
+          }),
+        },
+      }
+    : originalRuntime;
   const situation = runtime?.situationIntelligence;
   if (situation?.situationSummary.headline) {
     evidence.push({
@@ -665,15 +724,48 @@ export function collectReportEvidence(
       status: situation.situationReadiness.readiness,
     });
   }
-  const runtimeChanged = writtenReportWhatChanged(runtime);
-  if (runtimeChanged && !isEmptyRuntimeSummary(runtimeChanged)) {
+  const fused = runtime?.fusedEvidence;
+  const latestWrittenUpdate = fieldUpdatesNewestFirst(fused?.userUpdateEvidence ?? [])[0];
+  // Match the newest selected saved record, including its project, area, date and words.
+  // A complete fusion recipe supplies the quote; arbitrary runtime/provider prose cannot become authored.
+  const latestSaved = updates[0];
+  const matchedLatest = fused?.photoEvidence && fused.scheduleEvidence && latestWrittenUpdate && latestSaved &&
+    latestSaved.id === latestWrittenUpdate.id &&
+    normalizeName(latestSaved.projectName) === normalizeName(latestWrittenUpdate.projectName || '') &&
+    normalizeName(latestSaved.selectedAreaName || '') === normalizeName(latestWrittenUpdate.areaName || '') &&
+    latestSaved.date === latestWrittenUpdate.date &&
+    latestSaved.notes.replace(/\s+/g, ' ').trim() === (latestWrittenUpdate.notes ?? '').replace(/\s+/g, ' ').trim() &&
+    !noteIsAcceptedPhotoSuggestion(latestSaved)
+      ? latestSaved : undefined;
+  const authoredPlainLatest = Boolean(matchedLatest && evidence.some(item =>
+    item.id === `note-${matchedLatest.id}` && isPlainFieldNote(item)));
+  const authoredLatest = matchedLatest && latestWrittenUpdate && (authoredPlainLatest || /captured\s+for/i.test(matchedLatest.notes))
+    ? whatChangedForWrittenReport({ userUpdateEvidence: [latestWrittenUpdate], photoEvidence: [], scheduleEvidence: [] }).replace(/\s+/g, ' ').trim()
+    : undefined;
+  const latestContext = authoredLatest && matchedLatest
+    ? reportContextForUpdate(matchedLatest, scheduleItems, selectedProjects.length > 1) : undefined;
+  const rawRuntimeChanged = writtenReportWhatChanged(runtime)?.replace(/\s+/g, ' ').trim();
+  const runtimeChanged = authoredLatest && rawRuntimeChanged && shouldSuppressReportBullet(rawRuntimeChanged, authoredLatest)
+    ? authoredLatest : rawRuntimeChanged;
+  if (runtimeChanged && (authoredLatest || !isEmptyRuntimeSummary(runtimeChanged))) {
+    const areaWords = writtenReportWhatChanged(runtime, { taskDate: false })?.replace(/\s+/g, ' ').trim() || runtimeChanged;
+    // Only a complete photo-only recipe backed by selected saved photos gets a Photo label.
+    // Arbitrary runtime prose, authored notes and confirmed comparisons keep their own classification.
+    const photoOnlyChange = fused?.userUpdateEvidence && fused.photoEvidence?.length && fused.scheduleEvidence &&
+      fused.photoEvidence.every(photo => updates.some(update => update.id === photo.updateId &&
+        update.photos.some(saved => (saved.caption || '').trim() === (photo.caption || '').trim()))) &&
+      runtimeChanged === whatChangedForWrittenReport({ userUpdateEvidence: [], photoEvidence: fused.photoEvidence, scheduleEvidence: [] }).replace(/\s+/g, ' ').trim();
     evidence.push({
       id: 'runtime-what-changed',
       source: 'runtime',
-      projectName: input.currentUpdate?.projectName || selectedProjects[0] || '',
-      areaName: input.currentUpdate?.selectedAreaName || '',
-      summary: cleanReportBulletText(runtimeChanged),
-      workAreaNameFrom: cleanReportBulletText(writtenReportWhatChanged(runtime, { taskDate: false }) || runtimeChanged),
+      ...(photoOnlyChange ? { previewKind: 'photo' as const } : {}),
+      authoredPlainLatest,
+      preservesCapturedFor: Boolean(authoredLatest),
+      preservedCapturedForText: authoredLatest,
+      projectName: latestContext?.projectName || input.currentUpdate?.projectName || selectedProjects[0] || '',
+      areaName: latestContext?.areaName ?? input.currentUpdate?.selectedAreaName ?? '',
+      summary: cleanReportBulletText(runtimeChanged, authoredLatest),
+      workAreaNameFrom: cleanReportBulletText(authoredLatest && shouldSuppressReportBullet(areaWords, authoredLatest) ? authoredLatest : areaWords, authoredLatest),
       confidence: 'medium',
     });
   }
@@ -689,7 +781,7 @@ export function collectReportEvidence(
       .filter(item => item.source !== 'gps')
       .filter(item => item.summary.trim())
       .filter(item => !isIncidentalReportEvidence(item))
-      .filter(item => !containsGenericAiWording(item.summary)),
+      .filter(item => !containsGenericAiWording(item.preservedCapturedForText ? item.summary.replace(item.preservedCapturedForText, '') : item.summary)),
   );
 }
 
@@ -748,13 +840,14 @@ function isIncidentalReportEvidence(item: PIEReportSourceEvidence) {
   // photo's analysis sees in passing (a dog, a desk, a chair). A note he
   // typed with such a word and no construction word ("Conference table and
   // chairs were delivered to the trailer.") was dropped here, unseen.
-  if (!['photo', 'runtime'].includes(item.source)) return false;
+  if (!['photo', 'runtime'].includes(item.source) || item.preservedCapturedForText) return false;
   return isIncidentalVisualObservation(item.summary);
 }
 
 export function buildConstructionUnderstanding(
   input: PIEReportDraftInput,
   rawEvidence: PIEReportSourceEvidence[] = collectReportEvidence(input),
+  legacyCandidateCaps = false,
 ): PIEConstructionUnderstanding {
   // "2375 compliance project" and "2375 Compliance Project" are one project.
   const evidence = withCanonicalProjectNames(input, rawEvidence);
@@ -789,14 +882,14 @@ export function buildConstructionUnderstanding(
     const progress = items
       .filter(isVerifiedConstructionProgressEvidence)
       .map(item => ({
-        summary: cleanReportBulletText(item.summary),
+        summary: cleanReportBulletText(item.summary, item.preservedCapturedForText),
         sourceEvidenceIds: [item.id],
       }))
       .filter(item => item.summary);
     const issues = items
       .filter(item => item.source === 'issue' || item.source === 'safety' || isRiskText(item.summary))
       .map(item => ({
-        summary: cleanReportBulletText(item.summary),
+        summary: cleanReportBulletText(item.summary, item.preservedCapturedForText),
         severity: item.source === 'safety' || classifyDAVEBlocker(item.summary) === 'blocked'
           ? 'high' as const
           : 'medium' as const,
@@ -821,12 +914,22 @@ export function buildConstructionUnderstanding(
     // The area's progress LINES: the verified progress, and with it, in the
     // same order, his field notes of none of the three kinds (item 4 part B).
     // Only verified construction evidence still COUNTS as progress above.
-    const changed = items
-      .filter(item => isVerifiedConstructionProgressEvidence(item) || isPlainFieldNote(item))
-      .map(item => cleanReportBulletText(item.summary))
-      .filter(Boolean);
+    const changedItems = items
+      .filter(item => isVerifiedConstructionProgressEvidence(item) || isPlainFieldNote(item) ||
+        (item.id === 'runtime-what-changed' && item.preservesCapturedFor && /^Latest update:/i.test(item.summary)));
+    const changed = changedItems
+      .map(item => ({ summary: cleanReportBulletText(item.summary, item.preservedCapturedForText), authored: item.preservedCapturedForText }))
+      // Nonprinting candidates must not consume the four-note allowance.
+      // Use the same exact authored-span exception as final line selection.
+      .filter(item => item.summary && (legacyCandidateCaps || !shouldSuppressReportBullet(item.summary, item.authored)))
+      .map(item => item.summary);
 
-    const printedName = printedNameOfFiledWorkArea(areaName, items);
+    const reportedIds = new Set([
+      ...changedItems.map(item => item.id),
+      ...[...progress, ...issues, ...nextSteps].flatMap(item => item.sourceEvidenceIds),
+    ]);
+    const reportedItems = items.filter(item => reportedIds.has(item.id));
+    const printedName = printedNameOfFiledWorkArea(areaName, reportedItems.length ? reportedItems : items);
 
     return {
       id: slug(`understanding-${location}-${areaName}`),
@@ -1091,13 +1194,20 @@ function renumberWorkAreaImageReferences(
 
 export function buildProjectNarrative(
   understanding: PIEConstructionUnderstanding,
+  legacyCandidateCaps = false,
 ): PIEProjectNarrative {
-  const locationGroups = understanding.locationGroups.map(group => ({
+  // Select and merge exactly as before. Printed ownership never awards a new cap.
+  // Legacy rendered IDs can collide across projects; ownership belongs to
+  // the actual selected bullet, whose object survives the legacy merge.
+  const ownership = new WeakMap<PIEReportBullet, ReportLineOwnership>();
+  const sourceNames = new Map(understanding.workAreas.flatMap(area =>
+    (area.lineSources ?? []).map(source => [source.evidenceId, source.printedAreaName] as const)));
+  const legacyLocationGroups = understanding.locationGroups.map(group => ({
     id: group.id,
     title: group.title,
     workAreas: workAreasPrintedOncePerName(group.workAreas.map(area => {
       const actionItems = buildReportActionItems(area);
-      const bullets = buildReportBulletsFromUnderstanding(area, actionItems);
+      const bullets = buildReportBulletsFromUnderstanding(area, actionItems, legacyCandidateCaps, ownership);
       const risks = area.issues.map(issue => ({
         id: slug(`risk-${area.id}-${issue.summary}`),
         projectName: area.projectName,
@@ -1129,23 +1239,109 @@ export function buildProjectNarrative(
     })),
   }));
 
-  const actionItems = locationGroups.flatMap(group =>
+  const actionItems = legacyLocationGroups.flatMap(group =>
     group.workAreas.flatMap(area => area.actionItems),
   );
-  const risks = locationGroups.flatMap(group =>
+  const risks = legacyLocationGroups.flatMap(group =>
     group.workAreas.flatMap(area => area.risks),
   );
-  const decisionsNeeded = locationGroups.flatMap(group =>
+  const decisionsNeeded = legacyLocationGroups.flatMap(group =>
     group.workAreas.flatMap(area => area.decisionsNeeded),
   );
 
+  // Global metadata retains the legacy order, independently of its placement
+  // beside the selected lines. Every object is attached to one printed run.
+  const imageReferences = legacyLocationGroups.flatMap(group => group.workAreas.flatMap(area => area.imageReferences));
+  const locationGroups = legacyLocationGroups.map(group => ({
+    ...group,
+    workAreas: adjacentPrintedRuns(group.workAreas.flatMap(area => printedRunsOfSelectedArea(area, ownership, sourceNames))),
+  }));
   return {
     executiveSummaryBullets: understanding.executiveSummaryBullets,
     locationGroups,
     actionItems,
     risks,
     decisionsNeeded,
+    imageReferences,
   };
+}
+
+/** B78: exact selected-line sources; broad public sourceEvidenceIds stay untouched. */
+type ReportLineOwnership = Readonly<{ name: string; evidenceIds: readonly string[] }>;
+
+function selectedLineOwnership(
+  area: PIEWorkAreaUnderstanding,
+  line: PIEReportBullet,
+  madeFrom: ReportLineMadeFrom,
+): ReportLineOwnership {
+  let sources = (area.lineSources ?? []).filter(source => madeFrom.evidenceIds.has(source.evidenceId));
+  if (sources.length === 0 && madeFrom.words) sources = (area.lineSources ?? []).filter(source => source.words === madeFrom.words);
+  // An image-only line carries photo ids, not the photo evidence ids.
+  if (sources.length === 0 && line.kind === 'image_reference') sources = (area.lineSources ?? []).filter(source =>
+    Boolean(source.photoId) && line.sourceEvidenceIds.includes(source.photoId!));
+  const recorded = sources.filter(source => source.sourceKind !== 'runtime');
+  const naming = recorded.length ? recorded : sources.filter(source => source.evidenceId !== SAVED_MODEL_EVIDENCE_ID);
+  const names = uniqueText(naming.map(source => source.printedAreaName || '').filter(Boolean));
+  return {
+    name: names.length === 1 ? names[0] : printedWorkAreaName(area),
+    evidenceIds: sources.map(source => source.evidenceId),
+  };
+}
+
+/** Only an area whose selected lines disagree with its printed heading changes.
+ * Consecutive runs keep the original selected order, including note/task/note.
+ * A repeated heading is necessary only across an intervening different heading.
+ */
+function printedRunsOfSelectedArea(
+  area: PIEReportWorkArea,
+  ownership: WeakMap<PIEReportBullet, ReportLineOwnership>,
+  sourceNames: ReadonlyMap<string, string | undefined>,
+): PIEReportWorkArea[] {
+  if (!area.bullets.length || area.bullets.every(line => (ownership.get(line)?.name || area.title) === area.title)) return [area];
+  const runs: PIEReportWorkArea[] = [];
+  area.bullets.forEach(line => {
+    const title = ownership.get(line)?.name || area.title;
+    const previous = runs.at(-1);
+    if (previous?.title === title) { previous.bullets.push(line); return; }
+    runs.push({
+      ...area,
+      id: slug(`${area.id}-printed-run-${runs.length + 1}-${title}`),
+      title, areaName: title,
+      bullets: [line], actionItems: [], risks: [], decisionsNeeded: [], imageReferences: [],
+    });
+  });
+  const runOf = (ids: readonly string[]) => {
+    const byLine = runs.find(run => run.bullets.some(line => ownership.get(line)?.evidenceIds.some(id => ids.includes(id))));
+    if (byLine) return byLine;
+    const names = uniqueText(ids.map(id => sourceNames.get(id) || '').filter(Boolean));
+    return (names.length === 1 ? runs.find(run => run.title === names[0]) : undefined) || runs[0];
+  };
+  area.actionItems.forEach(item => runOf(item.sourceEvidenceIds).actionItems.push(item));
+  area.risks.forEach(item => runOf(item.sourceEvidenceIds).risks.push(item));
+  area.decisionsNeeded.forEach(item => runOf(item.sourceEvidenceIds).decisionsNeeded.push(item));
+  area.imageReferences.forEach(reference => {
+    // Keep its actual selected citation, without adding or renumbering any.
+    const cited = runs.find(run => run.bullets.some(line =>
+      [...line.text.matchAll(/\bSee Images?\s+([\d,\s]+(?:and\s+)?[\d,\s]*)\./g)]
+        .some(match => (match[1].match(/\d+/g) ?? []).some(number => Number(number) === reference.imageNumber))));
+    const own = sourceNames.get(`photo-${reference.photoId}`);
+    (cited || runs.find(run => run.title === own) || runs[0]).imageReferences.push(reference);
+  });
+  return runs;
+}
+
+/** Merge only neighbours after a protected split: a global merge would move
+ * a later note across the intervening task. Unaffected reports are unchanged.
+ */
+function adjacentPrintedRuns(areas: PIEReportWorkArea[]): PIEReportWorkArea[] {
+  const result: PIEReportWorkArea[] = [];
+  areas.forEach(area => {
+    const previous = result.at(-1);
+    if (previous && normalizeName(previous.projectName) === normalizeName(area.projectName) && normalizeName(previous.title) === normalizeName(area.title)) {
+      result[result.length - 1] = workAreasPrintedOncePerName([previous, area])[0];
+    } else result.push(area);
+  });
+  return result;
 }
 
 /**
@@ -1198,7 +1394,11 @@ function printedWorkAreaName(area: PIEWorkAreaUnderstanding) {
  * own (a building in the task's name) names the area as before.
  */
 function printedNameOfFiledWorkArea(filedUnder: string, items: PIEReportSourceEvidence[]) {
-  const named = items.map(item =>
+  // Advice and a fused Latest recipe may mention another task. Recorded
+  // evidence owns this heading; those mentions still remain in the report.
+  const recorded = items.filter(item => item.source !== 'runtime');
+  const namingItems = recorded.length ? recorded : items.filter(item => item.id !== SAVED_MODEL_EVIDENCE_ID);
+  const named = namingItems.map(item =>
     printedReportWorkAreaName(item.projectName, item.areaName, item.workAreaNameFrom ?? item.summary));
   return named.length === 0 || named.includes(filedUnder) ? filedUnder : named[0] || filedUnder;
 }
@@ -1430,8 +1630,8 @@ const REPORT_MONTH_NAME =
   '(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?';
 /** The dates a line can print: 10/08/2026, 2026-10-08, Oct 8, 2026, 8 Oct 2026, October 2026. */
 const REPORT_LINE_DATES = new RegExp([
-  '\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b',
-  '\\b\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}\\b',
+  '\\b\\d{1,2}[-/.]\\d{1,2}[-/.]\\d{2,4}\\b',
+  '\\b\\d{4}[-/.]\\d{1,2}[-/.]\\d{1,2}\\b',
   `\\b${REPORT_MONTH_NAME}\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{4}\\b`,
   `\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${REPORT_MONTH_NAME},?\\s+\\d{4}\\b`,
   `\\b${REPORT_MONTH_NAME},?\\s+\\d{4}\\b`,
@@ -1454,11 +1654,21 @@ export function printedReportWorkAreaName(
   areaName: string,
   lineWords = '',
 ) {
-  return cleanReportWorkAreaName(
-    projectName,
-    areaName,
-    lineWords.replace(REPORT_LINE_DATES, ' ').replace(/\s+/g, ' ').trim(),
-  );
+  // Only the Latest recipe's authored portion can name its work area. Its
+  // Schedule focus suffix describes a separate task, not the note's location.
+  const authoredWords = /^Latest (?:update|photo):/i.test(lineWords)
+    ? lineWords.replace(/\s+Schedule focus:.*$/i, '')
+    : lineWords;
+  const namingWords = authoredWords
+    .replace(REPORT_LINE_DATES, ' ')
+    .replace(/\b\d{4}(?:[.,]\d+)?\s*(?:psi|psf|ksi|mpa|kpa|pa|mm|cm|m|km|inches|inch|feet|foot|ft|yards|yard|yd|lbs|lb|kg|tons|ton|sf|sq\.?\s*ft|sq\.?\s*m)\b/gi, ' ')
+    .replace(/\s+/g, ' ').trim();
+  // A generic project's actual name is still preferable to leftover note
+  // prose when it has no recorded area or meaningful location number.
+  if (!areaName.trim() && /^project$/i.test(projectName.trim()) && !/\b\d{4}\b/.test(namingWords)) {
+    return projectName.trim();
+  }
+  return cleanReportWorkAreaName(projectName, areaName, namingWords);
 }
 
 export function cleanReportWorkAreaName(
@@ -1577,7 +1787,7 @@ export function buildReportRisks(
       id: slug(`risk-${item.id}`),
       projectName: item.projectName,
       areaName: cleanReportWorkAreaName(item.projectName, item.areaName, item.workAreaNameFrom ?? item.summary),
-      summary: cleanReportBulletText(item.summary),
+      summary: cleanReportBulletText(item.summary, item.preservedCapturedForText),
       severity:
         item.source === 'safety' ||
         classifyDAVEBlocker(item.summary) === 'blocked'
@@ -1649,9 +1859,18 @@ function buildReport(
     ...input,
     reportType,
     audience,
+    generatedAt,
   });
   const constructionUnderstanding = buildConstructionUnderstanding(input, sourceEvidence);
   const narrative = buildProjectNarrative(constructionUnderstanding);
+  // A legacy send kept no digest of its words. Replay only the old candidate
+  // caps, using the same source authority, photo ownership and final selector.
+  // Require fresh approval only when the actual printed area wording changes.
+  const candidateSelectionRequiresAppTextKey = sourceEvidence.some(item =>
+    shouldSuppressReportBullet(cleanReportBulletText(item.summary, item.preservedCapturedForText), item.preservedCapturedForText),
+  ) && printedAreaWords(narrative) !== printedAreaWords(buildProjectNarrative(
+    buildConstructionUnderstanding(input, sourceEvidence, true), true,
+  ));
   const reviewFlags = [
     ...constructionUnderstanding.reviewFlags,
     ...reflectionReviewFlags(input.runtime),
@@ -1724,9 +1943,7 @@ function buildReport(
     ],
     locationGroups: narrative.locationGroups,
     actionItems: narrative.actionItems,
-    imageReferences: narrative.locationGroups.flatMap(group =>
-      group.workAreas.flatMap(area => area.imageReferences),
-    ),
+    imageReferences: narrative.imageReferences,
     risks: narrative.risks,
     decisionsNeeded: narrative.decisionsNeeded,
     confidence,
@@ -1735,6 +1952,7 @@ function buildReport(
     reviewFlags,
     sourceEvidence,
     constructionUnderstanding,
+    ...(candidateSelectionRequiresAppTextKey ? { candidateSelectionRequiresAppTextKey: true } : {}),
     generatedAt: generatedAt.toISOString(),
   };
 }
@@ -1797,12 +2015,14 @@ function onlyFromTheSavedModel(sourceEvidenceIds: readonly string[]) {
 function buildReportBulletsFromUnderstanding(
   area: PIEWorkAreaUnderstanding,
   actionItems: PIEReportActionItem[],
+  legacyCandidateCaps = false,
+  ownership?: WeakMap<PIEReportBullet, ReportLineOwnership>,
 ): PIEReportBullet[] {
-  const { lines: chosen, uncited, madeFrom } = linesAsBuild231ChoseThem(area, actionItems);
+  const { lines: chosen, uncited, madeFrom } = linesAsBuild231ChoseThem(area, actionItems, legacyCandidateCaps);
   const progressKeys = new Set(area.progress.map(item => normalizeName(item.summary)));
   const printedKeys = new Set(chosen.map(bullet => normalizeName(bullet.text)));
   const filling = area.whatChanged
-    .filter(summary => summary && !progressKeys.has(normalizeName(summary)) && !shouldSuppressReportBullet(summary))
+    .filter(summary => summary && !progressKeys.has(normalizeName(summary)) && !shouldSuppressReportBullet(summary, preservesCapturedFor(area, summary)))
     .map(ensureSentence)
     .filter(text => {
       const key = normalizeName(text);
@@ -1813,6 +2033,7 @@ function buildReportBulletsFromUnderstanding(
     .slice(0, Math.max(0, 3 - chosen.length))
     .map((text, index): PIEReportBullet => ({
       id: slug(`bullet-${area.id}-plain-${index}`),
+      previewKind: previewKindForLine(area, text) ?? 'field_note',
       text,
       kind: 'progress',
       sourceEvidenceIds: area.sourceEvidenceIds,
@@ -1824,10 +2045,18 @@ function buildReportBulletsFromUnderstanding(
     chosen.length === 1 && chosen[0].kind === 'image_reference' && filling.length === 1 &&
     area.imageReferences.every(reference => lineIsOfPhoto(area, lineMadeFrom(madeFrom, filling[0]), reference))
   ) {
-    return [{ ...filling[0], text: `${stripTerminalPunctuation(filling[0].text)}. ${chosen[0].text}` }];
+    const selected = [{ ...filling[0], text: `${stripTerminalPunctuation(filling[0].text)}. ${chosen[0].text}` }];
+    if (ownership) selected.forEach(line => ownership.set(line, selectedLineOwnership(area, line, lineMadeFrom(madeFrom, filling[0]))));
+    return selected;
   }
 
-  return photosCitedOnTheirOwnLines(area, chosen, filling, uncited, madeFrom);
+  const selected = photosCitedOnTheirOwnLines(area, chosen, filling, uncited, madeFrom);
+  if (ownership) selected.forEach(line => {
+    // Plain notes retain their pre-citation words for exact source matching.
+    const original = filling.find(note => note.id === line.id) || line;
+    ownership.set(line, selectedLineOwnership(area, line, lineMadeFrom(madeFrom, original)));
+  });
+  return selected;
 }
 
 /** Open item 7.62: what one printed line is made from: its records, and its words (a plain note is known by them). */
@@ -1840,13 +2069,29 @@ function lineWords(text: string) {
 }
 
 function lineSourceOf(item: PIEReportSourceEvidence): PIEWorkAreaLineSource {
+  const previewKind = item.source === 'photo' && !item.id.startsWith(CONFIRMED_PHOTO_NOTE_ID) ? 'photo' : item.previewKind ??
+    (item.authoredPlainLatest || isPlainFieldNote(item) ? 'field_note' : undefined);
   return {
+    ...(previewKind ? { previewKind } : {}),
     evidenceId: item.id,
-    words: lineWords(cleanReportBulletText(item.summary)),
+    printedAreaName: printedReportWorkAreaName(item.projectName, item.areaName, item.workAreaNameFrom ?? item.summary),
+    sourceKind: item.source,
+    preservesCapturedFor: item.preservesCapturedFor,
+    preservedCapturedForText: item.preservedCapturedForText,
+    words: lineWords(cleanReportBulletText(item.summary, item.preservedCapturedForText)),
     updateId: item.sourceUpdateId?.trim() || null,
     photoId: item.photoId?.trim() ||
       (item.id.startsWith(CONFIRMED_PHOTO_NOTE_ID) ? item.id.slice(CONFIRMED_PHOTO_NOTE_ID.length) : null),
   };
+}
+
+/** 7.49: match the line's exact sources, never an area's unrelated photos or notes. */
+function previewKindForLine(area: PIEWorkAreaUnderstanding, summary: string, evidenceIds?: readonly string[]): PIEReportPreviewKind | undefined {
+  const sources = area.lineSources?.filter(source => evidenceIds
+    ? evidenceIds.includes(source.evidenceId) : source.words === lineWords(summary)) ?? [];
+  if (sources.length && sources.every(source => source.previewKind === 'photo')) return 'photo';
+  if (sources.length && sources.every(source => source.previewKind === 'field_note')) return 'field_note';
+  return undefined;
 }
 
 function lineMadeFrom(madeFrom: ReadonlyMap<string, ReportLineMadeFrom>, line: PIEReportBullet): ReportLineMadeFrom {
@@ -1915,6 +2160,7 @@ function photosCitedOnTheirOwnLines(
 function linesAsBuild231ChoseThem(
   area: PIEWorkAreaUnderstanding,
   actionItems: PIEReportActionItem[],
+  legacyCandidateCaps = false,
 ): Readonly<{
   lines: PIEReportBullet[];
   /** Open item 7.62: the photos no chosen line is the photo's own, to cite once the plain notes are in. */
@@ -1934,11 +2180,24 @@ function linesAsBuild231ChoseThem(
   const issues = area.issues.filter(issue => !onlyFromTheSavedModel(issue.sourceEvidenceIds));
   const nextSteps = actionItems.filter(item => !onlyFromTheSavedModel(item.sourceEvidenceIds));
 
-  progressLines.slice(0, 3).forEach((summary, index) => {
-    if (!summary || shouldSuppressReportBullet(summary)) return;
+  // Preserve the first matching authored span, exactly as preservesCapturedFor
+  // does, without repeatedly scanning every source while filtering candidates.
+  const authoredSpans = new Map<string, string>();
+  area.lineSources?.forEach(source => {
+    if (source.preservedCapturedForText && !authoredSpans.has(source.words)) authoredSpans.set(source.words, source.preservedCapturedForText);
+  });
+  const printableProgress = legacyCandidateCaps ? progressLines : progressLines.filter(summary =>
+    summary && !shouldSuppressReportBullet(summary, authoredSpans.get(lineWords(summary))),
+  );
+  printableProgress.slice(0, 3).forEach((summary, index) => {
+    if (!summary || shouldSuppressReportBullet(summary, preservesCapturedFor(area, summary))) return;
     const id = slug(`bullet-${area.id}-progress-${index}`);
+    const sourceIds = area.progress.filter(item => normalizeName(item.summary) === normalizeName(summary))
+      .flatMap(item => item.sourceEvidenceIds);
+    const previewKind = previewKindForLine(area, summary, sourceIds);
     bullets.push({
       id,
+      ...(previewKind ? { previewKind } : {}),
       text: ensureSentence(summary),
       kind: 'progress',
       sourceEvidenceIds: area.sourceEvidenceIds,
@@ -2034,15 +2293,16 @@ function isActionEvidence(item: PIEReportSourceEvidence) {
 }
 
 function actionFromEvidence(item: PIEReportSourceEvidence) {
-  const action = item.actionRequired || item.summary;
-
-  return cleanReportBulletText(
-    action
-      .replace(/^next step:\s*/i, '')
-      .replace(/^please\s+/i, '')
-      .replace(/\bowner\s*:?\s*[A-Z][A-Za-z]+(?:\s*\/\s*[A-Z][A-Za-z]+)?/i, '')
-      .trim(),
-  );
+  const action = item.actionRequired || item.scheduleActionSummary || item.summary;
+  const formatted = action
+    .replace(/^next step:\s*/i, '')
+    .replace(/^please\s+([a-z]+)(?=\b)/i, (_prefix, word: string) => /^[a-z]+$/.test(word) ? word.charAt(0).toUpperCase() + word.slice(1) : word)
+    .replace(/^please\s+/i, '')
+    .trim();
+  // Ordinary action formatting can remove the Please prefix from an authored note. Protect its resulting words,
+  // while keeping the existing cleanup order for every unauthored action.
+  return cleanReportBulletText(formatted,
+    item.preservedCapturedForText && action.includes(item.preservedCapturedForText) ? formatted : undefined);
 }
 
 function formatActionItem(item: PIEReportActionItem) {
@@ -2737,12 +2997,6 @@ function groupUnderstandingByLocation(
     : groups;
 }
 
-/** HIGH item 1e: the order a report of several projects lists them in: by name, not in the order they were ticked. */
-function reportProjectNameOrder(left: string, right: string) {
-  const byName = (name: string) => normalizeName(name).replace(/[^a-z0-9]+/g, ' ').trim();
-  return byName(left).localeCompare(byName(right));
-}
-
 function selectedProjectsFromInput(input: PIEReportDraftInput) {
   // HIGH item 1e: by name, not in the order they were ticked: a combined report's line filed under its first project
   // (the open update's project, else the first selected) is the same however he ticked them, as the report's own order is.
@@ -2764,7 +3018,7 @@ function selectedProjectsFromInput(input: PIEReportDraftInput) {
  * read as before; none is added or left out by the order.
  */
 function reportScheduleItems(input: PIEReportDraftInput) {
-  return scheduleTasksInReportOrder(input.scheduleItems || []);
+  return scheduleTasksInReportOrder(projectScheduleItemsForReport(input.scheduleItems || []));
 }
 
 function selectedUpdates(
@@ -2781,7 +3035,7 @@ function selectedUpdates(
   // for the parent must still carry it.
   //
   // Build 232 item 2 part A (the coordinator's decision): NEWEST FIRST BY THE
-  // UPDATES' OWN DATES, the one place the report's updates are put in order.
+  // SHARED SEND TIMES (legacy records keep their dates), the report's update order.
   // Which notes lead each work area, and the numbers of the images, followed
   // the order this device's list held them in, and two devices hold the same
   // updates in different orders. The same updates are read as before; none is
@@ -2882,7 +3136,7 @@ function photoToEvidence(
   };
 }
 
-function scheduleSummaryLine(item: ScheduleItem) {
+function scheduleSummaryLine(item: ScheduleItem, includeOwner = true) {
   const scheduleNote = reportScheduleNote(item.notes);
   const parts = [
     cleanReportBulletText(item.taskName),
@@ -2890,7 +3144,7 @@ function scheduleSummaryLine(item: ScheduleItem) {
       ? `due ${item.finishDate}`
       : null,
     item.status ? `status ${item.status}` : null,
-    item.owner || item.contractor ? `owner ${item.owner || item.contractor}` : null,
+    includeOwner && (item.owner || item.contractor) ? `owner ${item.owner || item.contractor}` : null,
     scheduleNote || null,
   ].filter(Boolean);
 
@@ -2920,7 +3174,7 @@ function reportScheduleNote(value: string) {
 }
 
 function isVerifiedConstructionProgressEvidence(item: PIEReportSourceEvidence) {
-  if (isActionEvidence(item)) return false;
+  if (item.authoredPlainLatest || isActionEvidence(item)) return false;
   if (item.source === 'schedule' || item.source === 'safety' || item.source === 'issue') {
     return false;
   }
@@ -2993,8 +3247,12 @@ function buildReaderTakeaway(
   return `${areaName} has evidence that should be reviewed before sending.`;
 }
 
-function cleanReportBulletText(value: string) {
-  let text = value
+function cleanReportBulletText(value: string, authoredCapturedForText?: string) {
+  // A unique placeholder protects only the authoritative authored span through repeated cleaning passes.
+  let marker = '\uE000';
+  while (value.includes(marker)) marker += '\uE000';
+  const protectedText = authoredCapturedForText && value.includes(authoredCapturedForText) ? authoredCapturedForText : undefined;
+  let text = (protectedText ? value.replace(protectedText, marker) : value)
     .replace(/\s+/g, ' ')
     .replace(/\.\.+/g, '.')
     .replace(/\s+([.,!?])/g, '$1')
@@ -3012,15 +3270,42 @@ function cleanReportBulletText(value: string) {
 
   text = text.replace(/([.!?])\1+$/g, '$1');
 
-  if (/structural work is complete/i.test(text) && /electrical work remains/i.test(text)) {
+  if (!protectedText && /structural work is complete/i.test(text) && /electrical work remains/i.test(text)) {
     return 'Structural work is complete. Electrical work remains before the area can advance to the next phase.';
   }
 
-  return text;
+  return protectedText ? text.replace(marker, () => protectedText).replace(/\s+/g, ' ').trim() : text;
 }
 
-function shouldSuppressReportBullet(value: string) {
-  return /location was captured|gps was captured|captured for|project area|evidence was fused|runtime indicates|no image references included/i.test(value);
+function preservesCapturedFor(area: PIEWorkAreaUnderstanding, summary: string) {
+  return area.lineSources?.find(source => source.preservedCapturedForText && source.words === lineWords(summary))?.preservedCapturedForText;
+}
+
+function shouldSuppressReportBullet(value: string, authoredCapturedForText?: string) {
+  const machineWords = authoredCapturedForText ? value.replace(authoredCapturedForText, '') : value;
+  return /location was captured|gps was captured|captured for|project area|evidence was fused|runtime indicates|no image references included/i.test(machineWords);
+}
+
+/** Only written area words count; internal ids or unchanged hidden candidates do not. */
+function printedAreaWords(narrative: PIEProjectNarrative): string {
+  return JSON.stringify(narrative.locationGroups.map(group => [group.title, group.workAreas.map(area =>
+    [area.projectName, area.title, area.bullets.map(bullet => bullet.text)],
+  )]));
+}
+
+/** Legacy sends kept no app-text digest. These source words can now print differently under the same facts. */
+export function reportWordingRequiresAppTextKey(
+  report: Pick<PIEReportDraft, 'sourceEvidence' | 'daveBriefing' | 'body'> & Partial<Pick<PIEReportDraft, 'candidateSelectionRequiresAppTextKey' | 'reportType'>>,
+  format: 'project_manager' | 'executive' = report.reportType === 'executive_summary' ? 'executive' : 'project_manager',
+): boolean {
+  // Executive output omits area notes; recovered hidden candidates do not change its sent words.
+  return Boolean(report.candidateSelectionRequiresAppTextKey && format !== 'executive') || Boolean(report.daveBriefing?.dashboard.workAreas.some(area => /[^\u0000-\u007f]/.test(area.areaName))) || report.sourceEvidence.some(item =>
+    // Earlier writers removed substantive owner words from action text, even without a Please prefix.
+    (isActionEvidence(item) && /\bowner\s*:?\s*[A-Z][A-Za-z]+(?:\s*\/\s*[A-Z][A-Za-z]+)?/i.test(item.actionRequired || item.summary)) ||
+    (item.authoredPlainLatest && report.body.includes(item.summary)) ||
+    (item.preservesCapturedFor && /captured\s+for/i.test(item.summary)) ||
+    /^please\s+[a-z]+\b/i.test((item.actionRequired || item.summary).replace(/^next step:\s*/i, '')),
+  );
 }
 
 function isRiskText(value: string) {

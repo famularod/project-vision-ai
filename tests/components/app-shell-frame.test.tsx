@@ -136,7 +136,7 @@ describe('AppShellFrame', () => {
     ).toBe(104);
     expect(
       StyleSheet.flatten(screen.getByText('Overview').props.style).fontSize,
-    ).toBe(14);
+    ).toBe(16);
     expect(
       StyleSheet.flatten(
         screen.getByRole('tab', { name: 'Overview' }).props.style,

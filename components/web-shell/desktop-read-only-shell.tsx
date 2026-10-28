@@ -1,3 +1,6 @@
+import { fieldUpdatesNewestFirst } from '../../services/PIEEvidenceFusion';
+import { recentProjectItemActivity } from '../../services/ProjectItemActivityPresentation';
+import { daveProjectTruthHasProjectKey } from '../../services/DAVEProjectTruth';
 import { Link, useLocalSearchParams, usePathname, useRouter } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -37,12 +40,15 @@ import {
   DAVEWebAuthorizationError,
   DAVEWebDocumentMutationError,
   DAVEWebSignOutNeedsConnectionError,
+  DAVEWebSignOutWaitError,
   DAVEWebTaskMutationError,
   type DAVEWebSignOutScope,
 } from '../../services/DAVEWebSupabaseClient';
 import { loadDAVEWebReadOnlySnapshot, type DAVEWebReadOnlySnapshot, type DAVEWebReferenceDocument } from '../../services/DAVEWebReadOnlyRepository';
 import {
   daveWebDocumentDeletionIsProtected,
+  daveWebDocumentCanArchive,
+  daveWebArchiveScopeAllows,
   daveWebDocumentInEffect,
   daveWebListedDocuments,
   groupDAVEWebDocuments,
@@ -66,7 +72,7 @@ import {
   scheduleTasksForParentProject,
 } from '../../services/dave-project-schedule-rollup';
 import { projectUpdateBelongsToParentProject } from '../../services/DAVEProjectUpdateScope';
-import { scheduleProjectScopeNames } from '../../services/PIEScheduleImportBatch';
+import { scheduleItemsForExactImportBatch, scheduleProjectScopeNames } from '../../services/PIEScheduleImportBatch';
 import {
   scheduleDocumentAddsToMaster,
   scheduleDocumentCurrentLabel,
@@ -202,6 +208,7 @@ import {
   type DAVEWebPeriodOutcome,
   type DAVEWebSendOutcome,
 } from '../../services/DAVEWebReportSend';
+import { displayFontFamily } from '../../theme/typography';
 import { approvalReplacesUnsentApproval, manualReportMarkTime, manualReportSendTime } from '../../services/ReportManualSend';
 import { reportFileTitleWithDate, reportSubjectWithDate } from '../../services/ReportCommunication';
 import {
@@ -428,7 +435,7 @@ function DesktopSessionGate() {
                 autoComplete="email"
                 inputMode="email"
                 placeholder="name@example.com"
-                placeholderTextColor="#8A909C"
+                placeholderTextColor="#66645E"
                 style={styles.input}
                 editable={!submitting}
                 accessibilityLabel="Email"
@@ -444,7 +451,7 @@ function DesktopSessionGate() {
                 autoComplete="current-password"
                 secureTextEntry
                 placeholder="Password"
-                placeholderTextColor="#8A909C"
+                placeholderTextColor="#66645E"
                 style={styles.input}
                 editable={!submitting}
                 accessibilityLabel="Password"
@@ -800,6 +807,9 @@ function DesktopPageData({
       <Section title={`${documents.length} document${documents.length === 1 ? '' : 's'}`} detail="Upload, classify, version, and safely remove project documents from the shared record.">
         <DocumentManagementWorkspace
           documents={documents}
+          scopeProjects={selectedScopes}
+          archivedDocuments={snapshot.referenceDocuments.filter(document =>
+            snapshot.archivedDocumentIds?.includes(document.id) && daveWebArchiveScopeAllows(document, snapshot.projects, selectedScopes))}
           tasks={snapshot.scheduleItems}
           knownTasks={snapshot.knownScheduleItems}
           scheduleDocuments={snapshot.referenceDocuments}
@@ -1575,7 +1585,7 @@ function TaskEditingWorkspace({
             value={searchQuery}
             onChangeText={setSearchQuery}
             placeholder="Search task, project, area, owner, or contractor"
-            placeholderTextColor="#7D8794"
+            placeholderTextColor="#66645E"
             style={styles.taskSearchInput}
             accessibilityLabel="Search tasks"
           />
@@ -1902,7 +1912,7 @@ function TaskFilterSelect({
             borderRadius: 10,
             background: desktopSurfaces.input,
             color: desktopSurfaces.text,
-            fontSize: 13,
+            fontSize: 15,
             fontWeight: 700,
             padding: '0 32px 0 12px',
             fontFamily: 'inherit',
@@ -1947,7 +1957,7 @@ function WorkspaceFilterSelect({
             borderRadius: 10,
             background: desktopSurfaces.input,
             color: desktopSurfaces.text,
-            fontSize: 13,
+            fontSize: 15,
             fontWeight: 700,
             padding: '0 32px 0 12px',
             fontFamily: 'inherit',
@@ -2611,7 +2621,7 @@ function TaskEditor({
           multiline
           numberOfLines={4}
           placeholder="Jobsite note"
-          placeholderTextColor="#8A909C"
+          placeholderTextColor="#66645E"
           style={[styles.input, styles.notesInput]}
         />
       </View>
@@ -2619,7 +2629,7 @@ function TaskEditor({
       {task?.activity?.length ? (
         <View style={styles.fieldGroup}>
           <Text style={styles.fieldLabel}>Recent activity</Text>
-          {task.activity.slice(-3).reverse().map(entry => (
+          {recentProjectItemActivity(task.activity).map(entry => (
             <View key={entry.id} style={styles.activityEntry}>
               <Text style={styles.dataDetail}>{entry.message}</Text>
               <Text style={styles.dataMeta}>{entry.author} · {formatDateTime(entry.createdAt)}</Text>
@@ -2635,7 +2645,7 @@ function TaskEditor({
           multiline
           numberOfLines={3}
           placeholder="Progress note, decision, or follow-up"
-          placeholderTextColor="#8A909C"
+          placeholderTextColor="#66645E"
           style={[styles.input, styles.notesInput]}
         />
       </View>
@@ -2677,10 +2687,10 @@ function WebDateField({
         style: {
           minHeight: 52,
           border: `1px solid ${desktopSurfaces.border}`,
-          borderRadius: 12,
+          borderRadius: 8,
           background: desktopSurfaces.input,
           color: desktopSurfaces.text,
-          fontSize: 16,
+          fontSize: 17,
           padding: '0 16px',
           fontFamily: 'inherit',
           width: '100%',
@@ -2722,10 +2732,10 @@ function LabeledTextField({
         style: {
           minHeight: 48,
           border: `1px solid ${desktopSurfaces.border}`,
-          borderRadius: 12,
+          borderRadius: 8,
           background: desktopSurfaces.input,
           color: desktopSurfaces.text,
-          fontSize: 16,
+          fontSize: 17,
           padding: '0 16px',
           fontFamily: 'inherit',
           width: '100%',
@@ -2737,7 +2747,7 @@ function LabeledTextField({
           value={value}
           onChangeText={onChangeText}
           placeholder={placeholder}
-          placeholderTextColor="#8A909C"
+          placeholderTextColor="#66645E"
           style={styles.input}
           accessibilityLabel={label}
         />
@@ -2795,7 +2805,7 @@ function ChoiceOrTypeField({
         value={value}
         onChangeText={onChange}
         placeholder={`Type ${label.toLowerCase()}`}
-        placeholderTextColor="#8A909C"
+        placeholderTextColor="#66645E"
         style={styles.input}
         accessibilityLabel={`${label}, custom value`}
       />
@@ -3049,7 +3059,7 @@ function TaskDetailsPanel({
   onAddPhoto: (file: File | null) => void;
   onDelete: () => void;
 }) {
-  const latestActivity = task.activity?.[task.activity.length - 1] ?? null;
+  const latestActivity = recentProjectItemActivity(task.activity)[0] ?? null;
   return (
     <View style={styles.taskDetailsPanel}>
       <View style={styles.taskDetailsHeader}>
@@ -3704,7 +3714,7 @@ function WorkspaceSearch({
         value={value}
         onChangeText={onChange}
         placeholder={placeholder}
-        placeholderTextColor="#7D8794"
+        placeholderTextColor="#66645E"
         style={styles.taskSearchInput}
         accessibilityLabel={accessibilityLabel}
       />
@@ -3873,6 +3883,8 @@ type DocumentCoverageSummaryState = Readonly<{
 
 function DocumentManagementWorkspace({
   documents,
+  scopeProjects,
+  archivedDocuments,
   tasks,
   knownTasks,
   scheduleDocuments,
@@ -3882,6 +3894,9 @@ function DocumentManagementWorkspace({
   proofFocus,
 }: {
   documents: readonly DAVEWebReferenceDocument[];
+  /** The same parent-expanded scopes used to render active and archived documents. */
+  scopeProjects: readonly string[];
+  archivedDocuments: readonly DAVEWebReferenceDocument[];
   tasks: readonly DAVEWebScheduleItem[];
   /** Every saved task and schedule, for what a lookahead's delete with its tasks puts back (review N2 W1). */
   knownTasks?: readonly ScheduleItem[];
@@ -3892,6 +3907,20 @@ function DocumentManagementWorkspace({
   proofFocus: ECOSDesktopDocumentProofFocus | null;
 }) {
   const auth = useDesktopAuth();
+  const [archiveOpen, setArchiveOpen] = useState(false);
+  const [archiveQuestion, setArchiveQuestion] = useState<DAVEWebReferenceDocument | null>(null);
+  const [archivePending, setArchivePending] = useState<string | null>(null);
+  const archiveOperationRef = useRef<object | null>(null);
+  const archiveMountedRef = useRef(true);
+  const archiveContext = JSON.stringify([
+    auth.userEmail, selectedProject,
+    scopeProjects.map(name => name.trim().toLowerCase()).sort(),
+    projectIdentities.map(project => JSON.stringify([project.id, project.name?.trim().toLowerCase()])).sort(),
+  ]);
+  const archiveContextRef = useRef(archiveContext);
+  archiveContextRef.current = archiveContext;
+  useEffect(() => { archiveMountedRef.current = true; return () => { archiveMountedRef.current = false; }; }, []);
+  useEffect(() => { setArchiveQuestion(null); setArchivePending(null); setNotice(null); archiveOperationRef.current = null; }, [archiveContext]);
   const router = useRouter();
   const { width, height } = useWindowDimensions();
   const compactWorkspace = width < 1120;
@@ -3970,6 +3999,13 @@ function DocumentManagementWorkspace({
     [documents, selectedProject],
   );
   const groups = useMemo(() => groupDAVEWebDocuments(documents), [documents]);
+  const linkedTaskCount = useMemo(() => {
+    const saved = knownTasks ?? tasks;
+    const scoped = selectedProject ? scheduleTasksForParentProject(selectedProject, [...saved]) : saved;
+    return new Set(documents.flatMap(document =>
+      scheduleItemsForExactImportBatch(scoped, document).map(task => task.id),
+    )).size;
+  }, [documents, knownTasks, selectedProject, tasks]);
   const categoryOptions = useMemo(
     () => uniqueOptions(documents.map(document => document.category)),
     [documents],
@@ -4288,7 +4324,7 @@ function DocumentManagementWorkspace({
         setPreparedBytes(null);
         setPreparedFile(null);
       }
-      setNotice({ tone: 'danger', text: documentMutationMessage(error) });
+      setNotice({ tone: 'danger', text: documentMutationMessage(error, 'uploaded') });
     } finally {
       setUploading(false);
       setUploadProgress(null);
@@ -4602,6 +4638,35 @@ function DocumentManagementWorkspace({
     }
   }
 
+  async function changeDocumentArchive(document: DAVEWebReferenceDocument, archived: boolean) {
+    if (!archiveMountedRef.current || archiveContextRef.current !== archiveContext || archiveOperationRef.current) return;
+    const current = [...documents, ...archivedDocuments].find(item => item.id === document.id);
+    if (!current || current.cloudUpdatedAt !== document.cloudUpdatedAt ||
+      (current.archivedAt ?? null) !== (document.archivedAt ?? null)) return;
+    if (!daveWebArchiveScopeAllows(current, projectIdentities, scopeProjects)) {
+      setNotice({ tone: 'danger', text: 'This document’s project identity needs review. Refresh Documents before trying again.' });
+      return;
+    }
+    if (archived && (!daveWebDocumentCanArchive(current) || daveWebDocumentDeletionIsProtected(current))) return;
+    const operation = {};
+    archiveOperationRef.current = operation;
+    setArchivePending(archived ? 'Archiving…' : 'Restoring…');
+    setNotice(null);
+    const stillHere = () => archiveMountedRef.current && archiveContextRef.current === archiveContext && archiveOperationRef.current === operation;
+    try {
+      await auth.setDocumentArchived(current, archived);
+      if (!stillHere()) return;
+      setArchiveQuestion(null);
+      setNotice({ tone: 'good', text: `“${document.name}” is ${archived ? 'archived' : 'restored'}.` });
+    } catch (error) {
+      if (!stillHere()) return;
+      setNotice({ tone: 'danger', text: error instanceof Error && error.message.trim()
+        ? error.message : 'The archive change could not be confirmed. Refresh Documents and try again.' });
+    } finally {
+      if (stillHere()) { archiveOperationRef.current = null; setArchivePending(null); }
+    }
+  }
+
   async function confirmDelete(deleteLinkedTasks: boolean) {
     if (!deleteCandidate || protectedCurrentDocument || deleting) return;
     setDeleting(true);
@@ -4632,10 +4697,34 @@ function DocumentManagementWorkspace({
 
   return (
     <>
+      <View style={styles.editorCard}>
+        <Pressable accessibilityRole="button" accessibilityState={{ expanded: archiveOpen }} onPress={() => setArchiveOpen(value => !value)}>
+          <Text style={styles.editorTitle}>Archived ({archivedDocuments.length})</Text>
+        </Pressable>
+        {archiveOpen ? <>
+          <Text style={styles.sectionDetail}>Hidden from Documents; kept in the cloud. Restore brings a document back. Files, tasks and sent field updates are kept.</Text>
+          {archivedDocuments.length === 0 ? <Text style={styles.dataMeta}>No archived documents in this project.</Text> : null}
+          {archivedDocuments.map(document => <View key={document.id} style={styles.dataCard}>
+            <Text style={styles.dataTitle}>{document.name}</Text>
+            <Text style={styles.dataMeta}>{documentProjectLabel(document)} · {document.category}</Text>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Restore ${document.name}`} disabled={Boolean(archivePending)}
+              onPress={() => { void changeDocumentArchive(document, false); }} style={styles.secondaryButton}>
+              <Text style={styles.secondaryButtonText}>Restore</Text>
+            </Pressable>
+          </View>)}
+        </> : null}
+        {archivePending ? <Text accessibilityRole="alert">{archivePending}</Text> : null}
+      </View>
+      {archiveQuestion ? <View style={styles.deleteConfirm} accessibilityRole="alert">
+        <Text style={styles.deleteConfirmTitle}>Archive “{archiveQuestion.name}”?</Text>
+        <Text style={styles.dataDetail}>Hide this compliance document from Documents on signed-in devices. Keep its file, tasks and sent field updates. You can restore it from Archived. A connection is required; this computer does not queue this change.</Text>
+        <Pressable accessibilityRole="button" disabled={Boolean(archivePending)} onPress={() => setArchiveQuestion(null)}><Text>Cancel archive</Text></Pressable>
+        <Pressable accessibilityRole="button" disabled={Boolean(archivePending)} onPress={() => { void changeDocumentArchive(archiveQuestion, true); }}><Text>Confirm archive</Text></Pressable>
+      </View> : null}
       <WorkspaceSummary metrics={[
         { icon: 'checkmark-circle-outline', label: 'Current Schedule', value: groups.currentSchedule.length, tone: groups.currentSchedule.length ? 'success' : 'warning' },
         { icon: 'time-outline', label: 'Prior Versions', value: groups.priorScheduleVersions.length, tone: 'neutral' },
-        { icon: 'checkbox-outline', label: 'Linked Tasks', value: documents.reduce((total, document) => total + document.linkedScheduleItems.length, 0) },
+        { icon: 'checkbox-outline', label: 'Linked Tasks', value: linkedTaskCount },
       ]} />
       <DesktopDocumentOnboarding
         documents={documents}
@@ -4948,7 +5037,9 @@ function DocumentManagementWorkspace({
                   : ' Its Vitruvius-managed file and ECOS index will be queued for cleanup.'}
                 {deleteCandidate.linkedScheduleItems.length > 0
                   ? ` This import has ${deleteCandidate.linkedScheduleItems.length} linked task${deleteCandidate.linkedScheduleItems.length === 1 ? '' : 's'}.`
-                  : ' No linked imported tasks were found.'}
+                  : documentLinkedTaskCount(deleteCandidate) > 0
+                    ? ' Its linked tasks are also contained in another schedule, so they will be kept.'
+                    : ' No linked imported tasks were found.'}
                 {deleteCandidate.linkedScheduleItems.length > 0 && !linkedTasksAreRevisionSafe
                   ? keepsDocumentOnlyDelete ? ' Those legacy tasks do not have safe cloud revisions, so this page will keep them.'
                     : ' Those legacy tasks do not have safe cloud revisions, so this page cannot delete them with the file. Delete this schedule on the iPhone or iPad: Delete PDF + Items there removes them with it.'
@@ -5138,7 +5229,16 @@ function DocumentManagementWorkspace({
   );
 
   function openDeleteCandidate(document: DAVEWebReferenceDocument) {
+    if (!archiveMountedRef.current || archiveContextRef.current !== archiveContext || archiveOperationRef.current) return;
     setNotice(null);
+    if (daveWebDocumentCanArchive(document)) {
+      if (!daveWebArchiveScopeAllows(document, projectIdentities, scopeProjects)) {
+        setNotice({ tone: 'danger', text: 'This document’s project identity needs review. Refresh Documents before trying again.' });
+        return;
+      }
+      if (!daveWebDocumentDeletionIsProtected(document)) setArchiveQuestion(document);
+      return;
+    }
     setDeleteCandidateId(document.id);
   }
 }
@@ -5229,8 +5329,8 @@ function DocumentList({
                   <Text style={styles.dataMeta}>{documentProjectLabel(document)} · {document.category}</Text>
                   <Text style={styles.dataMeta}>
                     Imported {formatDateTime(document.importedAt)}
-                    {document.linkedScheduleItems.length > 0
-                      ? ` · ${document.linkedScheduleItems.length} linked task${document.linkedScheduleItems.length === 1 ? '' : 's'}`
+                    {documentLinkedTaskCount(document) > 0
+                      ? ` · ${documentLinkedTaskCount(document)} linked task${documentLinkedTaskCount(document) === 1 ? '' : 's'}`
                       : ''}
                   </Text>
                 </View>
@@ -5263,9 +5363,9 @@ function DocumentList({
                 style={({ pressed }) => [styles.deleteTextButton, pressed && styles.buttonPressed]}
                 onPress={() => onDelete(document)}
                 accessibilityRole="button"
-                accessibilityLabel={`Delete ${document.name}`}
+                accessibilityLabel={`${daveWebDocumentCanArchive(document) ? 'Archive' : 'Delete'} ${document.name}`}
               >
-                <Text style={styles.deleteText}>Delete</Text>
+                <Text style={styles.deleteText}>{daveWebDocumentCanArchive(document) ? 'Archive' : 'Delete'}</Text>
               </Pressable>
             </View>
           ) : null}
@@ -5274,6 +5374,13 @@ function DocumentList({
       {progressive.showMore ? <ProgressiveListFooter remaining={documents.length - progressive.limit} onShowMore={progressive.showMore} /> : null}
     </View>
   );
+}
+
+/** All tasks this file contains, including memberships shared with another import (7.66).
+ * linkedScheduleItems remains the exclusive set used by deletion decisions. */
+function documentLinkedTaskCount(document: DAVEWebReferenceDocument): number {
+  const imported = document.importedScheduleItemCount;
+  return Math.max(Number.isFinite(imported) ? imported : 0, document.linkedScheduleItems.length);
 }
 
 function DocumentDetailsPanel({
@@ -5389,7 +5496,7 @@ function DocumentDetailsPanel({
         <TaskDetailFact label="Projects" value={projectLabel} />
         <TaskDetailFact label="Source" value={document.sourceProvider === 'google_drive' ? 'Google Drive' : 'Protected Vitruvius storage'} />
         <TaskDetailFact label="Imported" value={formatDateTime(document.importedAt)} />
-        <TaskDetailFact label="Linked Tasks" value={String(document.linkedScheduleItems.length)} />
+        <TaskDetailFact label="Linked Tasks" value={String(documentLinkedTaskCount(document))} />
         <TaskDetailFact label="File Size" value={sizeLabel} />
         <TaskDetailFact
           label="ECOS Index"
@@ -5529,8 +5636,9 @@ function DocumentDetailsPanel({
             style={({ pressed }) => [styles.deleteTextButton, pressed && styles.buttonPressed]}
             onPress={() => onDelete(document)}
             accessibilityRole="button"
+            accessibilityLabel={`${daveWebDocumentCanArchive(document) ? 'Archive' : 'Delete'} ${document.name}`}
           >
-            <Text style={styles.deleteText}>Delete</Text>
+            <Text style={styles.deleteText}>{daveWebDocumentCanArchive(document) ? 'Archive' : 'Delete'}</Text>
           </Pressable>
         ) : null}
       </View>
@@ -5579,9 +5687,7 @@ function DocumentECOSDetailsEditor({
   pending: boolean;
   onSave: (next: Partial<ReferenceDocument>) => void;
 }) {
-  const initialProjects = [document.projectName || '', ...(document.projectNames || [])]
-    .map(value => value.trim())
-    .filter(Boolean);
+  const initialProjects = uniqueOptions([document.projectName, ...(document.projectNames || [])]);
   const [editing, setEditing] = useState(false);
   const [category, setCategory] = useState(document.category);
   const [selectedProjects, setSelectedProjects] = useState<string[]>(initialProjects);
@@ -5596,9 +5702,7 @@ function DocumentECOSDetailsEditor({
   useEffect(() => {
     setEditing(false);
     setCategory(document.category);
-    setSelectedProjects([document.projectName || '', ...(document.projectNames || [])]
-      .map(value => value.trim())
-      .filter(Boolean));
+    setSelectedProjects(uniqueOptions([document.projectName, ...(document.projectNames || [])]));
     setNumber(document.drawingNumber || '');
     setRevision(document.drawingRevision || '');
     setDiscipline(document.drawingDiscipline || '');
@@ -5623,7 +5727,8 @@ function DocumentECOSDetailsEditor({
   // Open item 2.34 and review pass H4, H4S-1: a schedule file with tasks keeps its Category and Projects (changed, its
   // tasks came back on every device, or Make Current on it hid another project's tasks), so nothing here is offered.
   const stays = daveWebScheduleCategoryStays(document);
-  const canSave = selectedProjects.length > 0 && (!drawing || (
+  const selectedProjectNames = uniqueOptions(selectedProjects);
+  const canSave = selectedProjectNames.length > 0 && (!drawing || (
     Boolean(number.trim()) && Boolean(revision.trim()) && Boolean(issueStatus)
   ));
   return (
@@ -5697,8 +5802,8 @@ function DocumentECOSDetailsEditor({
             style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed, (!canSave || pending) && styles.buttonDisabled]}
             onPress={() => onSave({
               category,
-              projectName: selectedProjects[0] || null,
-              projectNames: selectedProjects,
+              projectName: selectedProjectNames[0] || null,
+              projectNames: selectedProjectNames,
               drawingNumber: drawing ? number.trim() || null : null,
               drawingRevision: drawing ? revision.trim() || null : null,
               drawingDiscipline: drawing ? discipline.trim() || null : null,
@@ -6041,8 +6146,15 @@ function ReportWorkspace({
   // R4 (the coordinator's decision): the report on this page is the one another device already sent, unchanged since. The
   // "since" lines read as that report was sent (the same fingerprint on every device now), and the page says so in
   // the phone's words until he approves it to send a second time.
-  const alreadySentElsewhereAt = currentPeriodRead.status === 'loaded' && reportStatus !== 'approved'
-    ? daveWebReportAlreadySentElsewhereAt(periodSnapshot, reportFingerprint, daveWebOwnReportSends())
+  // An empty truth project key omits its facts. Fingerprint equality then cannot prove that
+  // the report on this page is the report the other device sent (7.67). Approval still stays explicit.
+  const alreadySentElsewhereAt = reportTruths.length > 0 &&
+    reportTruths.every(truth => daveProjectTruthHasProjectKey(truth.projectName)) &&
+    currentPeriodRead.status === 'loaded' && reportStatus !== 'approved'
+    ? daveWebReportAlreadySentElsewhereAt(periodSnapshot, reportFingerprint, daveWebOwnReportSends(), {
+      requiresTextKey: briefing.dashboard.workAreas.some(area => /[^\u0000-\u007f]/.test(area.areaName)),
+      title: generatedTitle, body: generatedBody,
+    })
     : null;
   // Review N2 (5 Oct 2026): another TAB's later send. With Reports open in two tabs, this tab approved a report
   // (Pour slab 20% to 50%), the other tab then sent a later one (70%), and this tab's report still went out:
@@ -6270,9 +6382,11 @@ function ReportWorkspace({
     setNotice(null);
     try {
       const sourceIds = new Set(updateIds);
-      const sourceUpdates = snapshot.projectUpdates
+      // Match the written report/native Image numbers, never the cloud row upload order.
+      // Keep each update's authored photo order and the exact saved source ID selection.
+      const sourceUpdates = fieldUpdatesNewestFirst(snapshot.projectUpdates
         .filter(update => sourceIds.has(update.id) || sourceIds.has(update.updateData.id))
-        .map(update => update.updateData);
+        .map(update => update.updateData), { cloudReceipts: true });
       const reportPhotoIds = uniqueStrings(
         sourceUpdates.flatMap(update => update.photos.map(photo => photo.id)),
       );
@@ -6295,11 +6409,12 @@ function ReportWorkspace({
       const blob = await buildReportWordBlob({
         title,
         body,
+        taskLines: briefing.wordTaskLines ?? [],
         generatedAt,
         media: resolvedMedia.media,
         unavailableMedia: resolvedMedia.unavailableMedia,
       });
-      downloadBlob(`${safeDownloadName(reportFileTitleWithDate(title, generatedAt))}.docx`, blob);
+      downloadBlob(`${reportFileTitleWithDate(title, generatedAt)}.docx`, blob);
       const embeddedPhotos = resolvedMedia.media.filter(item => item.kind === 'photo').length;
       const embeddedDrawings = resolvedMedia.media.filter(item => item.kind === 'drawing').length;
       const embedded = embeddedPhotos + embeddedDrawings;
@@ -7102,6 +7217,7 @@ function ReportWorkspace({
 function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
   const auth = useDesktopAuth();
   const [pending, setPending] = useState<DAVEWebSignOutScope | null>(null);
+  const signOutInFlight = useRef(false);
   const [problem, setProblem] = useState('');
   // Review N2 (5 Oct 2026): signing out removes this account's report periods from this browser (review N1). A
   // report sent from here while the shared record could not be reached was only in this browser, though the page
@@ -7111,7 +7227,8 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
   const [sendsNotShared, setSendsNotShared] = useState<Readonly<{ scope: DAVEWebSignOutScope; sentAts: readonly string[] }> | null>(null);
 
   const signOut = async (scope: DAVEWebSignOutScope, despiteSendsNotShared = false) => {
-    if (pending) return;
+    if (signOutInFlight.current) return;
+    signOutInFlight.current = true;
     setPending(scope);
     setProblem('');
     try {
@@ -7123,6 +7240,7 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
         );
         if (notShared.length > 0) {
           setSendsNotShared({ scope, sentAts: notShared.map(send => send.sentAt) });
+          signOutInFlight.current = false;
           setPending(null);
           return;
         }
@@ -7135,11 +7253,14 @@ function DesktopSignOutChoice({ onCancel }: { onCancel: () => void }) {
       // the cloud answers, like the phone with no signal, and the sign-in page says so when the cloud did not
       // confirm it. It comes here only if this browser itself would not finish, so its message does not speak
       // of the internet connection.
-      setProblem(error instanceof DAVEWebSignOutNeedsConnectionError
+      setProblem(error instanceof DAVEWebSignOutWaitError
+        ? error.message
+        : error instanceof DAVEWebSignOutNeedsConnectionError
         ? `${error.message} Try again when this computer is back online.`
         : scope === 'global'
           ? 'Sign out did not finish. Check the internet connection and try again.'
           : 'Sign out did not finish. Try again.');
+      signOutInFlight.current = false;
       setPending(null);
     }
   };
@@ -7279,7 +7400,7 @@ function SettingsWorkspace({
                 setDisplayNameNotice('');
               }}
               placeholder="Enter your name"
-              placeholderTextColor="#7D8794"
+              placeholderTextColor="#66645E"
               maxLength={50}
               autoCapitalize="words"
               style={styles.input}
@@ -7656,10 +7777,10 @@ function WebFilePicker({
         style: {
           minHeight: 52,
           border: `1px solid ${desktopSurfaces.border}`,
-          borderRadius: 12,
+          borderRadius: 8,
           background: desktopSurfaces.input,
           color: desktopSurfaces.text,
-          fontSize: 14,
+          fontSize: 16,
           padding: 12,
           fontFamily: 'inherit',
           width: '100%',
@@ -7670,9 +7791,9 @@ function WebFilePicker({
   );
 }
 
-function documentMutationMessage(error: unknown): string {
+function documentMutationMessage(error: unknown, action: 'uploaded' | 'deleted' = 'deleted'): string {
   if (error instanceof DAVEWebDocumentMutationError) return error.message;
-  return 'The document could not be deleted. Refresh the workspace and try again.';
+  return `The document could not be ${action}. Refresh the workspace and try again.`;
 }
 
 function documentReindexMessage(error: unknown): string {
@@ -7738,19 +7859,59 @@ function DesktopSidebar({
     <View style={styles.sidebar}>
       <VitruviusBrandLockup large testID="desktop-sidebar-brand-lockup" />
       <View style={styles.navigation} role="navigation">
-        {desktopNavigationItems.map(item => (
-          <DesktopNavigationLink
-            key={item.href}
-            pathname={pathname}
-            item={item}
-            selectedProject={selectedProject}
-            badgeCount={item.page === 'documents' ? documentCount : undefined}
-          />
-        ))}
+        {desktopSidebarSections.map(section => {
+          const sectionItems = desktopNavigationItems.filter(item => desktopSidebarSectionFor(item.page) === section.key);
+          if (sectionItems.length === 0) return null;
+          return (
+            <View key={section.key} style={[styles.navigationSection, section.key === 'settings' && styles.navigationSectionBottom]}>
+              {section.label ? <Text style={styles.navigationSectionLabel}>{section.label}</Text> : null}
+              {sectionItems.map(item => (
+                <DesktopNavigationLink
+                  key={item.href}
+                  pathname={pathname}
+                  item={item}
+                  selectedProject={selectedProject}
+                  badgeCount={item.page === 'documents' ? documentCount : undefined}
+                />
+              ))}
+            </View>
+          );
+        })}
       </View>
       <DesktopReleaseLabel />
     </View>
   );
+}
+
+// Sidebar grouping is presentation only: the item list and its order stay in
+// desktop-navigation.ts.
+const desktopSidebarSections: readonly { key: string; label: string | null }[] = [
+  { key: 'home', label: null },
+  { key: 'work', label: 'Work' },
+  { key: 'field', label: 'Field' },
+  { key: 'library', label: 'Library' },
+  { key: 'settings', label: null },
+];
+
+function desktopSidebarSectionFor(page: DesktopNavigationItem['page']): string {
+  switch (page) {
+    case 'overview':
+    case 'ask-ecos':
+      return 'home';
+    case 'projects':
+    case 'tasks':
+    case 'schedule':
+      return 'work';
+    case 'field-notes':
+    case 'evidence':
+    case 'photos':
+      return 'field';
+    case 'documents':
+    case 'reports':
+      return 'library';
+    default:
+      return 'settings';
+  }
 }
 
 function RefreshProjectDataButton({ onPress }: { onPress: () => void }) {
@@ -7818,26 +7979,23 @@ function DesktopNavigationLink({
   return (
     <Link href={href} asChild>
       <Pressable
-        style={({ pressed }) => [compact ? styles.topNavigationLink : styles.navigationLink, active && styles.navigationLinkActive, pressed && styles.buttonPressed]}
+        style={compact ? styles.topNavigationLinkPressable : styles.navigationLinkPressable}
         accessibilityRole="link"
         accessibilityState={{ selected: active }}
         accessibilityLabel={!compact && badgeCount !== undefined
           ? `${item.label}, ${badgeCount} document${badgeCount === 1 ? '' : 's'}`
           : item.label}
       >
+        {({ pressed }) => (
+        // Layout lives on this inner View: on web, Link asChild does not apply
+        // the Pressable's style function, which stacked the icon over the label.
+        <View style={[compact ? styles.topNavigationLink : styles.navigationLink, active && styles.navigationLinkActive, pressed && styles.buttonPressed]}>
         <View style={compact ? styles.topNavigationIconWrap : styles.navigationIconWrap}>
           <Ionicons
             name={item.icon}
-            size={compact ? 19 : 30}
+            size={compact ? 19 : 20}
             color={active ? desktopSurfaces.accent : desktopSurfaces.sidebarMuted}
           />
-          {!compact && badgeCount !== undefined ? (
-            <View style={styles.navigationIconCountBadge}>
-              <Text style={styles.navigationIconCountText}>
-                {badgeCount > 99 ? '99+' : String(badgeCount)}
-              </Text>
-            </View>
-          ) : null}
         </View>
         <Text
           style={[
@@ -7848,6 +8006,13 @@ function DesktopNavigationLink({
         >
           {item.label}
         </Text>
+        {!compact && badgeCount !== undefined ? (
+          <Text style={styles.navigationCountText}>
+            {badgeCount > 99 ? '99+' : String(badgeCount)}
+          </Text>
+        ) : null}
+        </View>
+        )}
       </Pressable>
     </Link>
   );
@@ -8234,126 +8399,130 @@ const styles = StyleSheet.create({
   contentCompact: { padding: spacing.sm, gap: spacing.md },
   gateRoot: { flex: 1, minHeight: '100%', backgroundColor: desktopSurfaces.canvas },
   gateContent: { flexGrow: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl, gap: spacing.xl },
-  gateCard: { width: '100%', maxWidth: 560, borderRadius: 24, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.xxl, gap: spacing.lg, boxShadow: desktopSurfaces.shadowStrong },
-  gateTitle: { color: '#171A21', fontSize: 32, lineHeight: 39, fontWeight: '900' },
+  gateCard: { width: '100%', maxWidth: 560, borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.xxl, gap: spacing.lg, boxShadow: desktopSurfaces.shadowStrong },
+  gateTitle: { color: '#1A1A18', fontSize: 37, fontFamily: displayFontFamily, lineHeight: 45, fontWeight: '400' },
   sidebar: { width: 280, minHeight: '100%', backgroundColor: desktopSurfaces.sidebar, borderRightWidth: 1, borderRightColor: desktopSurfaces.sidebarDeep, padding: spacing.lg, gap: spacing.xl, boxShadow: desktopSurfaces.sidebarShadow },
-  navigation: { gap: spacing.xs },
-  navigationLink: { minHeight: 68, borderRadius: 14, flexDirection: 'row', alignItems: 'center', gap: spacing.md, justifyContent: 'flex-start', paddingHorizontal: spacing.md },
-  topNavigationLink: { flexGrow: 1, flexBasis: 132, minWidth: 0, minHeight: 44, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: spacing.xs, justifyContent: 'center', paddingHorizontal: spacing.sm },
-  navigationLinkActive: { backgroundColor: desktopSurfaces.selected, borderLeftWidth: 4, borderLeftColor: desktopSurfaces.accent },
-  navigationLabel: { color: desktopSurfaces.sidebarMuted, fontSize: 14, lineHeight: 20, fontWeight: '800' },
-  navigationLabelSidebar: { fontSize: 19, lineHeight: 25, fontWeight: '900' },
-  navigationIconWrap: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'visible' },
+  navigation: { flex: 1, gap: spacing.lg },
+  navigationSection: { gap: 2 },
+  navigationSectionBottom: { marginTop: 'auto' },
+  navigationSectionLabel: { color: desktopSurfaces.sidebarMuted, fontSize: 13, lineHeight: 17, fontWeight: '500', letterSpacing: 1.2, textTransform: 'uppercase', paddingHorizontal: spacing.md, paddingBottom: spacing.xs },
+  navigationCountText: { marginLeft: -spacing.xs, color: desktopSurfaces.sidebarMuted, fontSize: 14, lineHeight: 20, fontWeight: '500' },
+  navigationLink: { minHeight: 42, borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: spacing.md, justifyContent: 'flex-start', paddingHorizontal: spacing.md },
+  topNavigationLinkPressable: { flexGrow: 1, flexBasis: 132, minWidth: 0 },
+  navigationLinkPressable: { alignSelf: 'stretch' },
+  topNavigationLink: { flexGrow: 1, flexBasis: 132, minWidth: 0, minHeight: 44, borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: spacing.xs, justifyContent: 'center', paddingHorizontal: spacing.sm },
+  navigationLinkActive: { backgroundColor: desktopSurfaces.selected },
+  navigationLabel: { color: desktopSurfaces.sidebarMuted, fontSize: 16, lineHeight: 23, fontWeight: '600' },
+  navigationLabelSidebar: { fontSize: 16, lineHeight: 22, fontWeight: '500' },
+  navigationIconWrap: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'visible' },
   topNavigationIconWrap: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
-  navigationIconCountBadge: { position: 'absolute', top: -3, right: -6, minWidth: 20, height: 20, borderRadius: 10, backgroundColor: desktopSurfaces.accent, borderWidth: 2, borderColor: desktopSurfaces.sidebar, paddingHorizontal: 3, alignItems: 'center', justifyContent: 'center' },
-  navigationIconCountText: { color: desktopSurfaces.onAccent, fontSize: 10, lineHeight: 12, fontWeight: '900' },
-  navigationLabelActive: { color: desktopSurfaces.accent },
+  navigationLabelActive: { color: desktopSurfaces.text, fontWeight: '600' },
   sidebarReleaseSummary: { marginTop: 'auto', paddingHorizontal: spacing.xs, gap: 2 },
   topReleaseSummary: { alignSelf: 'flex-start', paddingHorizontal: spacing.xs, gap: 2 },
-  pilotNote: { color: desktopSurfaces.sidebarMuted, fontSize: 12, lineHeight: 17 },
-  releaseNote: { color: desktopSurfaces.sidebarMuted, fontSize: 11, lineHeight: 16, fontWeight: '700' },
-  topNavigation: { backgroundColor: desktopSurfaces.sidebar, borderWidth: 1, borderColor: desktopSurfaces.border, borderRadius: 14, padding: spacing.sm, gap: spacing.sm, boxShadow: desktopSurfaces.shadow },
+  pilotNote: { color: desktopSurfaces.sidebarMuted, fontSize: 14, lineHeight: 20 },
+  releaseNote: { color: desktopSurfaces.sidebarMuted, fontSize: 13, lineHeight: 19, fontWeight: '600' },
+  topNavigation: { backgroundColor: desktopSurfaces.sidebar, borderWidth: 1, borderColor: desktopSurfaces.border, borderRadius: 10, padding: spacing.sm, gap: spacing.sm, boxShadow: desktopSurfaces.shadow },
   topNavigationLinks: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs, alignItems: 'center' },
-  topRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.lg, borderLeftWidth: 5, borderLeftColor: desktopSurfaces.accent, borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.header, paddingHorizontal: spacing.xl, paddingVertical: spacing.lg },
+  topRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-end', justifyContent: 'space-between', gap: spacing.lg, borderBottomWidth: 1, borderBottomColor: desktopSurfaces.border, paddingBottom: spacing.lg },
   topRowCompact: { flexDirection: 'column', flexWrap: 'nowrap', gap: spacing.sm },
   titleBlock: { flex: 1, minWidth: 0, maxWidth: 820 },
   titleBlockCompact: { width: '100%', maxWidth: '100%' },
-  eyebrow: { color: desktopSurfaces.accent, fontSize: 12, lineHeight: 17, fontWeight: '900', letterSpacing: 1.6 },
-  title: { color: desktopSurfaces.text, fontSize: 36, lineHeight: 42, fontWeight: '900', marginTop: spacing.xs },
-  description: { color: desktopSurfaces.textMuted, fontSize: 16, lineHeight: 23, marginTop: spacing.xs },
-  overviewDate: { color: colors.mutedText, fontSize: 15, lineHeight: 21, fontWeight: '600', marginTop: 4 },
-  settingsButton: { width: 40, height: 40, borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, alignItems: 'center', justifyContent: 'center' },
+  eyebrow: { color: desktopSurfaces.textMuted, fontSize: 14, lineHeight: 20, fontWeight: '500', letterSpacing: 1.6, textTransform: 'uppercase' },
+  title: { color: desktopSurfaces.text, fontSize: 50, fontFamily: displayFontFamily, lineHeight: 56, fontWeight: '400', marginTop: spacing.xs },
+  description: { color: desktopSurfaces.textMuted, fontSize: 17, lineHeight: 24, marginTop: spacing.xs },
+  overviewDate: { color: colors.mutedText, fontSize: 16, lineHeight: 22, fontWeight: '600', marginTop: 4 },
+  settingsButton: { width: 40, height: 40, borderRadius: 6, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, alignItems: 'center', justifyContent: 'center' },
   displayNameRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-end', gap: spacing.md },
   displayNameField: { flexGrow: 1, flexBasis: 360, minWidth: 260, gap: spacing.xs },
   saveDisplayNameButton: { minWidth: 150 },
-  textButton: { color: desktopSurfaces.accent, fontSize: 14, lineHeight: 20, fontWeight: '800' },
-  freshnessBanner: { borderRadius: 14, borderWidth: 1, borderColor: '#E4C17E', backgroundColor: '#FFF8E8', padding: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  textButton: { color: desktopSurfaces.accent, fontSize: 16, lineHeight: 23, fontWeight: '600' },
+  freshnessBanner: { borderRadius: 10, borderWidth: 1, borderColor: '#E4C17E', backgroundColor: '#FFF8E8', padding: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   freshnessBannerStale: { borderColor: '#E5A4A4', backgroundColor: '#FFF3F3' },
-  freshnessBannerText: { flex: 1, color: '#5D4A23', fontSize: 14, lineHeight: 20, fontWeight: '700' },
-  contextBar: { minHeight: 56, borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.toolbar, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md, boxShadow: desktopSurfaces.shadow },
+  freshnessBannerText: { flex: 1, color: '#5D4A23', fontSize: 16, lineHeight: 23, fontWeight: '600' },
+  contextBar: { minHeight: 56, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.toolbar, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md, boxShadow: desktopSurfaces.shadow },
   contextBarCompact: { alignItems: 'stretch', flexDirection: 'column' },
   contextScope: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   contextUtilities: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: spacing.sm },
   projectChoiceScrollerCompact: { width: '100%', minWidth: 0 },
-  projectFilterLabel: { color: desktopSurfaces.textMuted, fontSize: 11, lineHeight: 15, fontWeight: '900', letterSpacing: 1.1 },
+  projectFilterLabel: { color: desktopSurfaces.textMuted, fontSize: 13, lineHeight: 18, fontWeight: '600', letterSpacing: 1.1 },
   projectChoices: { flexGrow: 1, gap: spacing.sm, alignItems: 'center' },
-  refreshIconButton: { width: 40, height: 40, borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, alignItems: 'center', justifyContent: 'center' },
+  refreshIconButton: { width: 40, height: 40, borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, alignItems: 'center', justifyContent: 'center' },
   choice: { minHeight: 38, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, paddingHorizontal: spacing.md, paddingVertical: spacing.xs, backgroundColor: desktopSurfaces.card, justifyContent: 'center' },
   choiceActive: { borderColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.selected },
-  choiceText: { color: desktopSurfaces.textMuted, fontSize: 14, lineHeight: 20, fontWeight: '800' },
+  choiceText: { color: desktopSurfaces.textMuted, fontSize: 16, lineHeight: 23, fontWeight: '600' },
   choiceTextActive: { color: desktopSurfaces.accent },
-  projectHealthCard: { borderRadius: 22, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.lg, gap: spacing.lg, boxShadow: desktopSurfaces.shadow },
+  projectHealthCard: { borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.lg, gap: spacing.lg, boxShadow: desktopSurfaces.shadow },
   projectHealthHeading: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.md },
-  projectHealthEyebrow: { color: desktopSurfaces.accent, fontSize: 12, lineHeight: 17, fontWeight: '900', letterSpacing: 1.4 },
-  projectHealthTitle: { color: desktopSurfaces.text, fontSize: 26, lineHeight: 32, fontWeight: '900', marginTop: 2 },
-  projectHealthMark: { color: desktopSurfaces.accent, fontSize: 32, lineHeight: 34, fontWeight: '700' },
+  projectHealthEyebrow: { color: desktopSurfaces.accent, fontSize: 14, lineHeight: 20, fontWeight: '600', letterSpacing: 1.4 },
+  projectHealthTitle: { color: desktopSurfaces.text, fontSize: 30, fontFamily: displayFontFamily, lineHeight: 37, fontWeight: '400', marginTop: 2 },
+  projectHealthMark: { color: desktopSurfaces.accent, fontSize: 37, fontFamily: displayFontFamily, lineHeight: 39, fontWeight: '400' },
   metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
   metricCard: { flexGrow: 1, flexBasis: 150, minHeight: 74, justifyContent: 'space-between', gap: spacing.xs },
-  metricValue: { color: desktopSurfaces.text, fontSize: 30, lineHeight: 36, fontWeight: '900' },
-  metricLabel: { color: desktopSurfaces.textMuted, fontSize: 13, lineHeight: 18, fontWeight: '800' },
-  accountingBanner: { borderRadius: 18, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.accentSoft, padding: spacing.lg, gap: spacing.xs },
-  accountingTitle: { color: desktopSurfaces.accentText, fontSize: 17, lineHeight: 23, fontWeight: '900' },
-  accountingDetail: { color: desktopSurfaces.accentText, fontSize: 14, lineHeight: 21 },
-  section: { borderRadius: 18, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.section, padding: spacing.xl, gap: spacing.md, boxShadow: desktopSurfaces.shadow },
-  sectionTitle: { color: '#171A21', fontSize: 24, lineHeight: 31, fontWeight: '900' },
-  sectionDetail: { color: '#6A717E', fontSize: 15, lineHeight: 22 },
+  metricValue: { color: desktopSurfaces.text, fontSize: 34, fontFamily: displayFontFamily, lineHeight: 41, fontWeight: '400' },
+  metricLabel: { color: desktopSurfaces.textMuted, fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  accountingBanner: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.accentSoft, padding: spacing.lg, gap: spacing.xs },
+  accountingTitle: { color: desktopSurfaces.accentText, fontSize: 17, lineHeight: 23, fontWeight: '600' },
+  accountingDetail: { color: desktopSurfaces.accentText, fontSize: 16, lineHeight: 24 },
+  section: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.section, padding: spacing.xl, gap: spacing.md, boxShadow: desktopSurfaces.shadow },
+  sectionTitle: { color: '#1A1A18', fontSize: 28, fontFamily: displayFontFamily, lineHeight: 36, fontWeight: '400' },
+  sectionDetail: { color: '#66645E', fontSize: 16, lineHeight: 23 },
   workspaceSummary: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md, marginVertical: spacing.xs },
-  workspaceMetric: { flexGrow: 1, flexBasis: 180, minHeight: 78, borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, flexDirection: 'row', alignItems: 'center', gap: spacing.md, padding: spacing.md, boxShadow: desktopSurfaces.shadow },
-  workspaceMetricIcon: { width: 46, height: 46, borderRadius: 15, alignItems: 'center', justifyContent: 'center' },
+  workspaceMetric: { flexGrow: 1, flexBasis: 180, minHeight: 78, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, flexDirection: 'row', alignItems: 'center', gap: spacing.md, padding: spacing.md, boxShadow: desktopSurfaces.shadow },
+  workspaceMetricIcon: { width: 46, height: 46, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   workspaceMetricIcon_primary: { backgroundColor: desktopSurfaces.accentSoft },
   workspaceMetricIcon_success: { backgroundColor: colors.successSoft },
   workspaceMetricIcon_warning: { backgroundColor: colors.warningSoft },
   workspaceMetricIcon_neutral: { backgroundColor: desktopSurfaces.selected },
   workspaceMetricCopy: { flex: 1, minWidth: 0 },
-  workspaceMetricValue: { color: colors.text, fontSize: 24, lineHeight: 29, fontWeight: '900' },
-  workspaceMetricLabel: { color: colors.mutedText, fontSize: 12, lineHeight: 17, fontWeight: '800', marginTop: 2 },
+  workspaceMetricValue: { color: colors.text, fontSize: 28, fontFamily: displayFontFamily, lineHeight: 34, fontWeight: '400' },
+  workspaceMetricLabel: { color: colors.mutedText, fontSize: 14, lineHeight: 20, fontWeight: '600', marginTop: 2 },
   portfolioGrid: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', gap: spacing.lg },
-  portfolioCard: { flexGrow: 1, flexBasis: 520, minWidth: 0, borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, borderTopWidth: 5, borderTopColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.card, padding: spacing.xl, gap: spacing.lg, boxShadow: desktopSurfaces.shadow },
+  portfolioCard: { flexGrow: 1, flexBasis: 520, minWidth: 0, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, borderTopWidth: 5, borderTopColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.card, padding: spacing.xl, gap: spacing.lg, boxShadow: desktopSurfaces.shadow },
   portfolioCardHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  portfolioProjectIcon: { width: 52, height: 52, borderRadius: 17, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
-  portfolioProjectName: { color: colors.text, fontSize: 21, lineHeight: 27, fontWeight: '900' },
+  portfolioProjectIcon: { width: 52, height: 52, borderRadius: 10, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  portfolioProjectName: { color: colors.text, fontSize: 21, lineHeight: 27, fontWeight: '600' },
   portfolioProgressHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
-  portfolioProgressText: { color: colors.text, fontSize: 18, lineHeight: 24, fontWeight: '900' },
+  portfolioProgressText: { color: colors.text, fontSize: 18, lineHeight: 24, fontWeight: '600' },
   portfolioProgressTrack: { height: 10, borderRadius: 999, backgroundColor: colors.border, overflow: 'hidden' },
   portfolioProgressFill: { height: '100%', borderRadius: 999, backgroundColor: desktopSurfaces.accent },
-  portfolioFacts: { flexDirection: 'row', flexWrap: 'wrap', borderRadius: 16, backgroundColor: desktopSurfaces.cardBlue, padding: spacing.sm, gap: spacing.xs },
+  portfolioFacts: { flexDirection: 'row', flexWrap: 'wrap', borderRadius: 10, backgroundColor: desktopSurfaces.cardBlue, padding: spacing.sm, gap: spacing.xs },
   projectFact: { flexGrow: 1, flexBasis: 124, minWidth: 108, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.sm },
-  projectFactValue: { color: colors.text, fontSize: 18, lineHeight: 22, fontWeight: '900' },
+  projectFactValue: { color: colors.text, fontSize: 18, lineHeight: 22, fontWeight: '600' },
   projectFactValueDanger: { color: colors.danger },
-  projectFactLabel: { color: colors.mutedText, fontSize: 11, lineHeight: 15, fontWeight: '800', marginTop: 1 },
+  projectFactLabel: { color: colors.mutedText, fontSize: 13, lineHeight: 18, fontWeight: '600', marginTop: 1 },
   portfolioActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
   portfolioPrimaryAction: { minWidth: 220, flexBasis: 250, backgroundColor: desktopSurfaces.accent },
   cardGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
   list: { gap: spacing.sm },
-  dataCard: { borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.lg, gap: spacing.sm, boxShadow: desktopSurfaces.shadow },
+  dataCard: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.lg, gap: spacing.sm, boxShadow: desktopSurfaces.shadow },
   gridDataCard: { flexGrow: 1, flexBasis: 320 },
   taskListCard: { padding: 0, gap: 0, overflow: 'hidden' },
   taskListCardSelected: { borderColor: desktopSurfaces.accent, boxShadow: '0 0 0 2px rgba(212,90,10,0.14)' },
   taskCardMain: { paddingHorizontal: spacing.md, paddingTop: spacing.md, paddingBottom: spacing.sm, gap: spacing.xs },
   taskCardMainPressed: { backgroundColor: desktopSurfaces.cardMuted },
   taskBadgeColumn: { alignItems: 'flex-end', gap: spacing.xs },
-  taskNextAction: { color: desktopSurfaces.accentText, fontSize: 14, lineHeight: 20, fontWeight: '800' },
+  taskNextAction: { color: desktopSurfaces.accentText, fontSize: 16, lineHeight: 23, fontWeight: '600' },
   taskCompactFacts: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.xs },
-  taskFactDivider: { color: '#A2A9B3', fontSize: 13, lineHeight: 20 },
+  taskFactDivider: { color: '#8A877F', fontSize: 15, lineHeight: 23 },
   taskProjectChoices: { marginTop: spacing.sm },
   buttonLabelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm },
-  workspaceSearchField: { width: '100%', minHeight: 52, borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.input, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md },
+  workspaceSearchField: { width: '100%', minHeight: 52, borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.input, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md },
   evidenceGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md },
   evidenceList: { gap: spacing.sm },
   evidenceCard: { flexGrow: 0, flexBasis: 'auto', width: '100%', minWidth: 0, borderLeftWidth: 4, borderLeftColor: desktopSurfaces.accent, padding: spacing.md },
   evidenceCardSelected: { maxWidth: '100%', borderColor: desktopSurfaces.accent, boxShadow: '0 0 0 2px rgba(212,90,10,0.14)' },
   evidenceCardHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  evidenceIcon: { width: 44, height: 44, borderRadius: 14, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
-  evidenceDate: { color: colors.tertiaryText, fontSize: 12, lineHeight: 17, fontWeight: '700' },
-  emptyRecordText: { color: colors.tertiaryText, fontSize: 14, lineHeight: 21, fontStyle: 'italic' },
-  linkedTaskPill: { alignSelf: 'flex-start', maxWidth: '100%', borderRadius: 12, backgroundColor: desktopSurfaces.accentSoft, flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: spacing.sm, paddingVertical: 7 },
-  linkedTaskText: { flexShrink: 1, color: desktopSurfaces.accentText, fontSize: 12, lineHeight: 17, fontWeight: '800' },
+  evidenceIcon: { width: 44, height: 44, borderRadius: 10, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  evidenceDate: { color: colors.tertiaryText, fontSize: 14, lineHeight: 20, fontWeight: '600' },
+  emptyRecordText: { color: colors.tertiaryText, fontSize: 16, lineHeight: 24, fontStyle: 'italic' },
+  linkedTaskPill: { alignSelf: 'flex-start', maxWidth: '100%', borderRadius: 8, backgroundColor: desktopSurfaces.accentSoft, flexDirection: 'row', alignItems: 'center', gap: spacing.xs, paddingHorizontal: spacing.sm, paddingVertical: 7 },
+  linkedTaskText: { flexShrink: 1, color: desktopSurfaces.accentText, fontSize: 14, lineHeight: 20, fontWeight: '600' },
   evidenceCardFooter: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
-  viewDetailsText: { color: desktopSurfaces.accent, fontSize: 13, lineHeight: 18, fontWeight: '900' },
+  viewDetailsText: { color: desktopSurfaces.accent, fontSize: 15, lineHeight: 21, fontWeight: '600' },
   evidenceInspectorPhotos: { gap: spacing.sm },
-  evidenceInspectorPhoto: { borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, overflow: 'hidden', gap: spacing.xs, paddingBottom: spacing.sm },
+  evidenceInspectorPhoto: { borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, overflow: 'hidden', gap: spacing.xs, paddingBottom: spacing.sm },
   photoGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
-  photoCard: { flexGrow: 1, flexBasis: 340, minWidth: 0, maxWidth: 460, borderRadius: 20, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, overflow: 'hidden', boxShadow: desktopSurfaces.shadow },
+  photoCard: { flexGrow: 1, flexBasis: 340, minWidth: 0, maxWidth: 460, borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, overflow: 'hidden', boxShadow: desktopSurfaces.shadow },
   photoCardSelected: { borderColor: desktopSurfaces.accent, boxShadow: '0 0 0 2px rgba(212,90,10,0.17)' },
   photoCardPressed: { opacity: 0.94 },
   photoInspectorPane: { flexGrow: 1, flexBasis: 400, minWidth: 300, maxWidth: 500, alignSelf: 'flex-start', position: 'sticky' as any, top: spacing.lg },
@@ -8362,20 +8531,20 @@ const styles = StyleSheet.create({
   photoImage: { ...StyleSheet.absoluteFill, width: '100%', height: '100%' },
   photoAreaOverlay: { position: 'absolute', left: 0, right: 0, bottom: 0, padding: spacing.lg, backgroundColor: 'rgba(12,25,48,0.58)' },
   photoUnavailable: { flex: 1, minHeight: 82, alignItems: 'center', justifyContent: 'center', gap: spacing.xs },
-  photoUnavailableText: { color: '#5E6875', fontSize: 13, lineHeight: 18, fontWeight: '800' },
-  photoVisualIcon: { position: 'absolute', top: spacing.lg, right: spacing.lg, width: 50, height: 50, borderRadius: 18, backgroundColor: 'rgba(255,255,255,0.18)', alignItems: 'center', justifyContent: 'center' },
-  photoVisualArea: { color: desktopSurfaces.onAccent, fontSize: 19, lineHeight: 25, fontWeight: '900', maxWidth: '76%' },
-  photoVisualAreaUnavailable: { color: '#334155', fontSize: 17, lineHeight: 23, fontWeight: '900', maxWidth: '76%' },
+  photoUnavailableText: { color: '#66645E', fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  photoVisualIcon: { position: 'absolute', top: spacing.lg, right: spacing.lg, width: 50, height: 50, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.18)', alignItems: 'center', justifyContent: 'center' },
+  photoVisualArea: { color: desktopSurfaces.onAccent, fontSize: 19, lineHeight: 25, fontWeight: '600', maxWidth: '76%' },
+  photoVisualAreaUnavailable: { color: '#3A3935', fontSize: 17, lineHeight: 23, fontWeight: '600', maxWidth: '76%' },
   photoCardBody: { padding: spacing.lg, gap: spacing.sm },
-  photoActionCard: { borderRadius: 12, backgroundColor: colors.warningSoft, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, padding: spacing.sm },
-  photoActionText: { flex: 1, color: '#7A4C00', fontSize: 13, lineHeight: 19, fontWeight: '700' },
-  photoComparisonContext: { borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.md, gap: spacing.sm },
-  photoComparisonExplanation: { color: '#4E5E70', fontSize: 13, lineHeight: 20 },
-  comparisonPhoto: { borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, overflow: 'hidden' },
+  photoActionCard: { borderRadius: 8, backgroundColor: colors.warningSoft, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, padding: spacing.sm },
+  photoActionText: { flex: 1, color: '#7A4C00', fontSize: 15, lineHeight: 22, fontWeight: '600' },
+  photoComparisonContext: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.md, gap: spacing.sm },
+  photoComparisonExplanation: { color: '#3A3935', fontSize: 15, lineHeight: 23 },
+  comparisonPhoto: { borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, overflow: 'hidden' },
   comparisonPhotoHeading: { paddingHorizontal: spacing.sm, paddingVertical: spacing.xs, gap: 2 },
-  comparisonPhotoLabel: { color: colors.text, fontSize: 13, lineHeight: 18, fontWeight: '900' },
+  comparisonPhotoLabel: { color: colors.text, fontSize: 15, lineHeight: 21, fontWeight: '600' },
   photoAnalysisHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm },
-  photoAnalysisObservation: { borderRadius: 10, backgroundColor: desktopSurfaces.cardMuted, color: '#3F4C5B', fontSize: 13, lineHeight: 20, padding: spacing.sm },
+  photoAnalysisObservation: { borderRadius: 10, backgroundColor: desktopSurfaces.cardMuted, color: '#3A3935', fontSize: 15, lineHeight: 23, padding: spacing.sm },
   documentGroups: { gap: spacing.xl },
   documentListPaneIndependent: {
     overflowY: 'auto',
@@ -8389,123 +8558,123 @@ const styles = StyleSheet.create({
     top: 0,
     paddingRight: spacing.xs,
   } as any,
-  documentGroup: { borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.sectionStrong, padding: spacing.lg, gap: spacing.sm },
+  documentGroup: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.sectionStrong, padding: spacing.lg, gap: spacing.sm },
   documentGroupHeading: { gap: 3 },
-  documentGroupTitle: { color: '#1B1F27', fontSize: 18, lineHeight: 24, fontWeight: '900' },
-  documentGroupDetail: { color: '#737A87', fontSize: 13, lineHeight: 19 },
+  documentGroupTitle: { color: '#1A1A18', fontSize: 18, lineHeight: 24, fontWeight: '600' },
+  documentGroupDetail: { color: '#66645E', fontSize: 15, lineHeight: 22 },
   documentCard: { paddingVertical: spacing.md, gap: spacing.xs },
   documentListCard: { backgroundColor: desktopSurfaces.card },
   documentListMain: { padding: spacing.md },
   documentListStatus: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   documentTitleRow: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  documentIcon: { width: 48, height: 48, borderRadius: 15, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
-  documentProtectedNotice: { flexGrow: 1, minHeight: 42, borderRadius: 11, backgroundColor: colors.successSoft, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, paddingHorizontal: spacing.md },
-  documentProtectedText: { color: '#246C42', fontSize: 13, lineHeight: 18, fontWeight: '900' },
+  documentIcon: { width: 48, height: 48, borderRadius: 10, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  documentProtectedNotice: { flexGrow: 1, minHeight: 42, borderRadius: 8, backgroundColor: colors.successSoft, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, paddingHorizontal: spacing.md },
+  documentProtectedText: { color: '#246C42', fontSize: 15, lineHeight: 21, fontWeight: '600' },
   artifactAccess: { gap: spacing.xs, marginTop: spacing.xs },
   artifactUnavailable: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, marginTop: spacing.xs },
-  artifactError: { color: colors.danger, fontSize: 13, lineHeight: 19, fontWeight: '700' },
+  artifactError: { color: colors.danger, fontSize: 15, lineHeight: 22, fontWeight: '600' },
   dataRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.md },
   dataGrow: { flex: 1, minWidth: 0 },
-  dataTitle: { color: '#1B1F27', fontSize: 18, lineHeight: 24, fontWeight: '900' },
-  cardTitle: { color: '#1B1F27', fontSize: 17, lineHeight: 23, fontWeight: '900' },
-  dataMeta: { color: '#737A87', fontSize: 13, lineHeight: 19 },
-  dataDetail: { color: '#4E5562', fontSize: 15, lineHeight: 22 },
+  dataTitle: { color: '#1A1A18', fontSize: 18, lineHeight: 24, fontWeight: '600' },
+  cardTitle: { color: '#1A1A18', fontSize: 17, lineHeight: 23, fontWeight: '600' },
+  dataMeta: { color: '#66645E', fontSize: 15, lineHeight: 22 },
+  dataDetail: { color: '#3A3935', fontSize: 16, lineHeight: 23 },
   taskActionRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.md },
   addTaskButton: { minWidth: 180 },
-  taskSyncHint: { color: '#68717E', fontSize: 13, lineHeight: 19 },
-  taskSearchField: { flexGrow: 1, flexBasis: 420, minWidth: 260, minHeight: 52, borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.input, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md },
-  taskSearchInput: { flex: 1, minWidth: 0, color: colors.text, fontSize: 15, paddingVertical: 0, outlineStyle: 'none' } as any,
+  taskSyncHint: { color: '#66645E', fontSize: 15, lineHeight: 22 },
+  taskSearchField: { flexGrow: 1, flexBasis: 420, minWidth: 260, minHeight: 52, borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.input, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md },
+  taskSearchInput: { flex: 1, minWidth: 0, color: colors.text, fontSize: 16, paddingVertical: 0, outlineStyle: 'none' } as any,
   clearSearchButton: { width: 34, height: 34, borderRadius: 9, alignItems: 'center', justifyContent: 'center' },
   taskControlsRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-end', justifyContent: 'space-between', gap: spacing.md },
-  taskViewTabs: { alignSelf: 'flex-start', flexDirection: 'row', flexWrap: 'wrap', borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.cardMuted, padding: 4, gap: 4 },
-  taskViewTab: { minHeight: 42, borderRadius: 11, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md },
+  taskViewTabs: { alignSelf: 'flex-start', flexDirection: 'row', flexWrap: 'wrap', borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.cardMuted, padding: 4, gap: 4 },
+  taskViewTab: { minHeight: 42, borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md },
   taskViewTabActive: { backgroundColor: desktopSurfaces.card, boxShadow: desktopSurfaces.shadow },
-  taskViewTabText: { color: '#606875', fontSize: 14, lineHeight: 20, fontWeight: '900' },
+  taskViewTabText: { color: '#66645E', fontSize: 16, lineHeight: 23, fontWeight: '600' },
   taskViewTabTextActive: { color: desktopSurfaces.accent },
   taskViewCount: { minWidth: 26, height: 24, borderRadius: 12, backgroundColor: desktopSurfaces.selected, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 6 },
   taskViewCountActive: { backgroundColor: desktopSurfaces.accentSoft },
-  taskViewCountText: { color: '#616977', fontSize: 12, lineHeight: 16, fontWeight: '900' },
+  taskViewCountText: { color: '#66645E', fontSize: 14, lineHeight: 19, fontWeight: '600' },
   taskViewCountTextActive: { color: desktopSurfaces.accent },
   taskFilters: { flexGrow: 1, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-end', justifyContent: 'flex-end', gap: spacing.sm },
   taskFilterField: { gap: 3 },
-  taskFilterLabel: { color: '#66707C', fontSize: 10, lineHeight: 14, fontWeight: '900', letterSpacing: 0.8, textTransform: 'uppercase' },
+  taskFilterLabel: { color: '#66645E', fontSize: 12, lineHeight: 17, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase' },
   clearFiltersButton: { minHeight: 40, justifyContent: 'center', paddingHorizontal: spacing.sm },
-  clearFiltersText: { color: desktopSurfaces.accent, fontSize: 13, lineHeight: 18, fontWeight: '900' },
-  taskResultCount: { color: '#68717E', fontSize: 13, lineHeight: 18, fontWeight: '700' },
+  clearFiltersText: { color: desktopSurfaces.accent, fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  taskResultCount: { color: '#66645E', fontSize: 15, lineHeight: 21, fontWeight: '600' },
   taskWorkspaceBody: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', gap: spacing.lg },
   taskListPane: { flexGrow: 1, flexBasis: 660, minWidth: 0 },
   taskInspectorPane: { flexGrow: 1, flexBasis: 360, minWidth: 280, maxWidth: 430, alignSelf: 'flex-start', position: 'sticky' as any, top: spacing.lg },
   taskInspectorPaneCompact: { order: -1, flexBasis: '100%', minWidth: 0, maxWidth: '100%', position: 'relative', top: 0 } as any,
   taskInspectorPaneEditing: { position: 'relative' as any, top: 0 },
   taskGroups: { gap: spacing.md },
-  taskHierarchyToolbar: { minHeight: 58, borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
+  taskHierarchyToolbar: { minHeight: 58, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
   taskHierarchyToolbarCopy: { flexGrow: 1, flexBasis: 280, minWidth: 0, gap: 1 },
-  taskHierarchyToolbarTitle: { color: colors.text, fontSize: 15, lineHeight: 21, fontWeight: '900' },
-  taskHierarchyToolbarDetail: { color: colors.mutedText, fontSize: 13, lineHeight: 18 },
+  taskHierarchyToolbarTitle: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: '600' },
+  taskHierarchyToolbarDetail: { color: colors.mutedText, fontSize: 15, lineHeight: 21 },
   taskHierarchyActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.xs },
   taskHierarchyButton: { minHeight: 36, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, justifyContent: 'center', paddingHorizontal: spacing.md },
-  taskHierarchyButtonText: { color: desktopSurfaces.accentText, fontSize: 12, lineHeight: 17, fontWeight: '900' },
-  taskProjectGroup: { borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.sm, gap: spacing.sm, boxShadow: desktopSurfaces.shadow },
-  taskProjectHeading: { minHeight: 52, borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.header, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  taskHierarchyButtonText: { color: desktopSurfaces.accentText, fontSize: 14, lineHeight: 20, fontWeight: '600' },
+  taskProjectGroup: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.sm, gap: spacing.sm, boxShadow: desktopSurfaces.shadow },
+  taskProjectHeading: { minHeight: 52, borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.header, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   taskProjectHeadingCopy: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  taskProjectTitle: { flex: 1, color: '#171A21', fontSize: 18, lineHeight: 24, fontWeight: '900' },
-  taskProjectCount: { color: desktopSurfaces.accentText, fontSize: 13, lineHeight: 19, fontWeight: '900' },
-  taskGroup: { borderRadius: 13, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.sm, gap: spacing.sm },
+  taskProjectTitle: { flex: 1, color: '#1A1A18', fontSize: 18, lineHeight: 24, fontWeight: '600' },
+  taskProjectCount: { color: desktopSurfaces.accentText, fontSize: 15, lineHeight: 22, fontWeight: '600' },
+  taskGroup: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.sm, gap: spacing.sm },
   taskAreaHeading: { minHeight: 48, borderLeftWidth: 5, borderLeftColor: desktopSurfaces.accent, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.selected, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   taskAreaHeadingSelected: { borderWidth: 2, borderLeftWidth: 6, borderColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.accentSoft },
   taskAreaHeadingCopy: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  taskAreaTitle: { flex: 1, color: '#1B1F27', fontSize: 15, lineHeight: 20, fontWeight: '900' },
-  taskAreaCount: { color: desktopSurfaces.accentText, fontSize: 12, lineHeight: 17, fontWeight: '900' },
+  taskAreaTitle: { flex: 1, color: '#1A1A18', fontSize: 16, lineHeight: 21, fontWeight: '600' },
+  taskAreaCount: { color: desktopSurfaces.accentText, fontSize: 14, lineHeight: 20, fontWeight: '600' },
   taskAreaContent: { gap: spacing.sm },
   taskHierarchyHeadingPressed: { opacity: 0.78 },
-  taskPaginationFooter: { borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.toolbar, padding: spacing.md, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
+  taskPaginationFooter: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.toolbar, padding: spacing.md, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
   taskCardActions: { minHeight: 38, borderTopWidth: 1, borderTopColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.cardMuted, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: spacing.xs, paddingHorizontal: spacing.sm, paddingVertical: 3 },
   taskDetailsButton: { minHeight: 32, borderRadius: 9, backgroundColor: desktopSurfaces.accentSoft, justifyContent: 'center', paddingHorizontal: spacing.sm },
-  taskDetailsButtonText: { color: desktopSurfaces.accent, fontSize: 12, lineHeight: 17, fontWeight: '900' },
+  taskDetailsButtonText: { color: desktopSurfaces.accent, fontSize: 14, lineHeight: 20, fontWeight: '600' },
   taskTextAction: { minHeight: 32, justifyContent: 'center', paddingHorizontal: spacing.sm },
-  taskTextActionLabel: { color: desktopSurfaces.accent, fontSize: 12, lineHeight: 17, fontWeight: '900' },
+  taskTextActionLabel: { color: desktopSurfaces.accent, fontSize: 14, lineHeight: 20, fontWeight: '600' },
   compactActionButton: { minWidth: 90 },
   deleteTextButton: { minHeight: 42, justifyContent: 'center', paddingHorizontal: spacing.md },
-  deleteText: { color: '#B52D2D', fontSize: 14, lineHeight: 20, fontWeight: '900' },
-  deleteConfirm: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', borderRadius: 16, borderWidth: 1, borderColor: '#E5A4A4', backgroundColor: '#FFF3F3', padding: spacing.lg, gap: spacing.lg },
-  deleteConfirmTitle: { color: '#8F2222', fontSize: 18, lineHeight: 24, fontWeight: '900' },
-  conflictResolutionCard: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', borderRadius: 16, borderWidth: 1, borderColor: '#D5A84C', backgroundColor: '#FFF8E8', padding: spacing.lg, gap: spacing.lg },
-  conflictResolutionTitle: { color: '#76510A', fontSize: 18, lineHeight: 24, fontWeight: '900' },
-  dangerButton: { minHeight: 42, borderRadius: 12, backgroundColor: '#C73535', alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.lg },
-  editorCard: { borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.xl, gap: spacing.lg },
-  editorTitle: { color: '#171A21', fontSize: 24, lineHeight: 31, fontWeight: '900' },
-  workflowProtectedField: { borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.cardMuted, gap: 2, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
-  workflowProtectedValue: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: '900' },
-  workflowEditorCard: { borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardBlue, gap: spacing.sm, padding: spacing.md },
+  deleteText: { color: '#B52D2D', fontSize: 16, lineHeight: 23, fontWeight: '600' },
+  deleteConfirm: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', borderRadius: 10, borderWidth: 1, borderColor: '#E5A4A4', backgroundColor: '#FFF3F3', padding: spacing.lg, gap: spacing.lg },
+  deleteConfirmTitle: { color: '#8F2222', fontSize: 18, lineHeight: 24, fontWeight: '600' },
+  conflictResolutionCard: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', borderRadius: 10, borderWidth: 1, borderColor: '#D5A84C', backgroundColor: '#FFF8E8', padding: spacing.lg, gap: spacing.lg },
+  conflictResolutionTitle: { color: '#76510A', fontSize: 18, lineHeight: 24, fontWeight: '600' },
+  dangerButton: { minHeight: 42, borderRadius: 8, backgroundColor: '#C73535', alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.lg },
+  editorCard: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.xl, gap: spacing.lg },
+  editorTitle: { color: '#1A1A18', fontSize: 28, fontFamily: displayFontFamily, lineHeight: 36, fontWeight: '400' },
+  workflowProtectedField: { borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.cardMuted, gap: 2, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  workflowProtectedValue: { color: colors.text, fontSize: 17, lineHeight: 23, fontWeight: '600' },
+  workflowEditorCard: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardBlue, gap: spacing.sm, padding: spacing.md },
   workflowEditorHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: spacing.sm },
-  workflowMissing: { color: '#76510A', fontSize: 13, lineHeight: 19, fontWeight: '700' },
+  workflowMissing: { color: '#76510A', fontSize: 15, lineHeight: 22, fontWeight: '600' },
   workflowButtonDisabled: { opacity: 0.42 },
   flexCopy: { flex: 1, minWidth: 0 },
-  taskInspectorEmpty: { minHeight: 300, borderRadius: 16, borderWidth: 1, borderStyle: 'dashed', borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, alignItems: 'center', justifyContent: 'center', gap: spacing.md, padding: spacing.xl },
-  taskInspectorEmptyIcon: { width: 54, height: 54, borderRadius: 18, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
-  taskInspectorEmptyTitle: { color: colors.text, fontSize: 20, lineHeight: 26, fontWeight: '900' },
-  taskInspectorEmptyText: { maxWidth: 320, color: colors.mutedText, fontSize: 14, lineHeight: 21, textAlign: 'center' },
-  taskDetailsPanel: { borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.lg, gap: spacing.md, boxShadow: desktopSurfaces.shadowStrong },
+  taskInspectorEmpty: { minHeight: 300, borderRadius: 10, borderWidth: 1, borderStyle: 'dashed', borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, alignItems: 'center', justifyContent: 'center', gap: spacing.md, padding: spacing.xl },
+  taskInspectorEmptyIcon: { width: 54, height: 54, borderRadius: 10, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  taskInspectorEmptyTitle: { color: colors.text, fontSize: 20, lineHeight: 26, fontWeight: '600' },
+  taskInspectorEmptyText: { maxWidth: 320, color: colors.mutedText, fontSize: 16, lineHeight: 24, textAlign: 'center' },
+  taskDetailsPanel: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.lg, gap: spacing.md, boxShadow: desktopSurfaces.shadowStrong },
   taskDetailsHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
-  taskDetailsEyebrow: { color: desktopSurfaces.accent, fontSize: 11, lineHeight: 15, fontWeight: '900', letterSpacing: 1, textTransform: 'uppercase' },
-  taskDetailsTitle: { color: colors.text, fontSize: 21, lineHeight: 27, fontWeight: '900', marginTop: 2 },
+  taskDetailsEyebrow: { color: desktopSurfaces.accent, fontSize: 13, lineHeight: 18, fontWeight: '600', letterSpacing: 1, textTransform: 'uppercase' },
+  taskDetailsTitle: { color: colors.text, fontSize: 21, lineHeight: 27, fontWeight: '600', marginTop: 2 },
   taskInspectorClose: { width: 36, height: 36, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, alignItems: 'center', justifyContent: 'center' },
   taskDetailsBadges: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
   taskProgressHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  taskProgressLabel: { color: colors.mutedText, fontSize: 13, lineHeight: 18, fontWeight: '800' },
-  taskProgressValue: { color: desktopSurfaces.accent, fontSize: 16, lineHeight: 21, fontWeight: '900' },
+  taskProgressLabel: { color: colors.mutedText, fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  taskProgressValue: { color: desktopSurfaces.accent, fontSize: 17, lineHeight: 22, fontWeight: '600' },
   taskProgressTrack: { height: 8, borderRadius: 999, backgroundColor: desktopSurfaces.border, overflow: 'hidden' },
   taskProgressFill: { height: '100%', borderRadius: 999, backgroundColor: desktopSurfaces.accent },
   taskDetailsFacts: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  taskDetailFact: { flexGrow: 1, flexBasis: 155, borderRadius: 11, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.sm, gap: 2 },
-  taskDetailFactLabel: { color: '#717A87', fontSize: 10, lineHeight: 14, fontWeight: '900', letterSpacing: 0.7, textTransform: 'uppercase' },
-  taskDetailFactValue: { color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: '800' },
-  taskDetailsCallout: { borderRadius: 12, borderLeftWidth: 4, borderLeftColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.accentSoft, padding: spacing.md, gap: 3 },
-  taskDetailsCalloutLabel: { color: desktopSurfaces.accentText, fontSize: 10, lineHeight: 14, fontWeight: '900', letterSpacing: 0.8, textTransform: 'uppercase' },
-  taskDetailsCalloutText: { color: desktopSurfaces.accentText, fontSize: 14, lineHeight: 21, fontWeight: '800' },
+  taskDetailFact: { flexGrow: 1, flexBasis: 155, borderRadius: 8, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.sm, gap: 2 },
+  taskDetailFactLabel: { color: '#66645E', fontSize: 12, lineHeight: 17, fontWeight: '600', letterSpacing: 0.7, textTransform: 'uppercase' },
+  taskDetailFactValue: { color: colors.text, fontSize: 16, lineHeight: 23, fontWeight: '600' },
+  taskDetailsCallout: { borderRadius: 8, borderLeftWidth: 4, borderLeftColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.accentSoft, padding: spacing.md, gap: 3 },
+  taskDetailsCalloutLabel: { color: desktopSurfaces.accentText, fontSize: 12, lineHeight: 17, fontWeight: '600', letterSpacing: 0.8, textTransform: 'uppercase' },
+  taskDetailsCalloutText: { color: desktopSurfaces.accentText, fontSize: 16, lineHeight: 24, fontWeight: '600' },
   taskDetailsSection: { borderTopWidth: 1, borderTopColor: desktopSurfaces.border, paddingTop: spacing.md, gap: 4 },
-  taskDetailsSectionTitle: { color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: '900' },
-  taskDetailsSectionText: { color: '#4F5865', fontSize: 14, lineHeight: 21 },
+  taskDetailsSectionTitle: { color: colors.text, fontSize: 16, lineHeight: 23, fontWeight: '600' },
+  taskDetailsSectionText: { color: '#3A3935', fontSize: 16, lineHeight: 24 },
   taskPhotoPicker: { borderTopWidth: 1, borderTopColor: desktopSurfaces.border, paddingTop: spacing.md, gap: spacing.sm },
   taskInspectorActions: { borderTopWidth: 1, borderTopColor: desktopSurfaces.border, paddingTop: spacing.md, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
   taskInspectorEditButton: { flexGrow: 1, minWidth: 180 },
@@ -8516,128 +8685,128 @@ const styles = StyleSheet.create({
   choiceFieldChoice: { maxWidth: '100%', flexShrink: 1 },
   choiceFieldChoiceText: { flexShrink: 1 },
   smallChoice: { minHeight: 44, borderRadius: 999, borderWidth: 1, borderColor: desktopSurfaces.border, paddingHorizontal: spacing.md, justifyContent: 'center', backgroundColor: desktopSurfaces.input },
-  optionalLabel: { color: '#7B828E', fontWeight: '500' },
-  activityEntry: { borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.md, gap: 3 },
+  optionalLabel: { color: '#66645E', fontWeight: '500' },
+  activityEntry: { borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.md, gap: 3 },
   notesInput: { minHeight: 112, paddingTop: spacing.md, textAlignVertical: 'top' },
-  reportExecutiveCard: { borderRadius: 20, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.xl, gap: spacing.md, boxShadow: desktopSurfaces.shadow },
+  reportExecutiveCard: { borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.xl, gap: spacing.md, boxShadow: desktopSurfaces.shadow },
   reportExecutiveHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
-  reportExecutiveEyebrow: { color: desktopSurfaces.accentText, fontSize: 11, lineHeight: 15, fontWeight: '900', letterSpacing: 1.1 },
-  reportExecutiveTitle: { color: colors.text, fontSize: 25, lineHeight: 31, fontWeight: '900', marginTop: 3 },
-  reportExecutiveSnapshot: { color: desktopSurfaces.text, fontSize: 18, lineHeight: 28, fontWeight: '700' },
+  reportExecutiveEyebrow: { color: desktopSurfaces.accentText, fontSize: 13, lineHeight: 18, fontWeight: '600', letterSpacing: 1.1 },
+  reportExecutiveTitle: { color: colors.text, fontSize: 29, fontFamily: displayFontFamily, lineHeight: 36, fontWeight: '400', marginTop: 3 },
+  reportExecutiveSnapshot: { color: desktopSurfaces.text, fontSize: 18, lineHeight: 28, fontWeight: '600' },
   reportProjectConditions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.xs },
-  reportProjectCondition: { flexGrow: 1, flexBasis: 300, borderRadius: 13, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.md, gap: 3 },
-  reportProjectConditionName: { color: colors.text, fontSize: 15, lineHeight: 21, fontWeight: '900' },
-  reportProjectConditionText: { color: desktopSurfaces.textMuted, fontSize: 14, lineHeight: 21 },
+  reportProjectCondition: { flexGrow: 1, flexBasis: 300, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.md, gap: 3 },
+  reportProjectConditionName: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: '600' },
+  reportProjectConditionText: { color: desktopSurfaces.textMuted, fontSize: 16, lineHeight: 24 },
   reportPMGrid: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'stretch', gap: spacing.md },
-  reportFactCard: { flexGrow: 1, flexBasis: 430, minWidth: 0, borderRadius: 16, borderWidth: 1, padding: spacing.lg, gap: spacing.md },
+  reportFactCard: { flexGrow: 1, flexBasis: 430, minWidth: 0, borderRadius: 10, borderWidth: 1, padding: spacing.lg, gap: spacing.md },
   reportFactCard_neutral: { borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.cardBlue },
   reportFactCard_warning: { borderColor: '#E7C982', backgroundColor: '#FFF9EC' },
   reportFactCard_danger: { borderColor: '#E3AAAA', backgroundColor: '#FFF4F4' },
   reportFactCard_success: { borderColor: '#A9D3B8', backgroundColor: '#F2FAF5' },
   reportFactHeading: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  reportFactIcon: { width: 42, height: 42, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
+  reportFactIcon: { width: 42, height: 42, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
   reportFactIcon_neutral: { backgroundColor: desktopSurfaces.accentSoft },
   reportFactIcon_warning: { backgroundColor: colors.warningSoft },
   reportFactIcon_danger: { backgroundColor: colors.dangerSoft },
   reportFactIcon_success: { backgroundColor: colors.successSoft },
-  reportFactTitle: { flex: 1, color: colors.text, fontSize: 18, lineHeight: 24, fontWeight: '900' },
+  reportFactTitle: { flex: 1, color: colors.text, fontSize: 18, lineHeight: 24, fontWeight: '600' },
   reportFactList: { gap: spacing.sm },
   reportFactRow: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm },
   reportFactBullet: { width: 7, height: 7, borderRadius: 4, backgroundColor: desktopSurfaces.accent, marginTop: 7 },
-  reportFactText: { flex: 1, color: '#3E4854', fontSize: 14, lineHeight: 21 },
-  reportFactEmpty: { color: colors.mutedText, fontSize: 14, lineHeight: 21, fontStyle: 'italic' },
-  reportFactMore: { color: desktopSurfaces.accentText, fontSize: 13, lineHeight: 19, fontWeight: '800', marginTop: spacing.xs },
-  reportNextActionsCard: { borderRadius: 17, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardLavender, padding: spacing.lg, gap: spacing.md },
+  reportFactText: { flex: 1, color: '#3A3935', fontSize: 16, lineHeight: 24 },
+  reportFactEmpty: { color: colors.mutedText, fontSize: 16, lineHeight: 24, fontStyle: 'italic' },
+  reportFactMore: { color: desktopSurfaces.accentText, fontSize: 15, lineHeight: 22, fontWeight: '600', marginTop: spacing.xs },
+  reportNextActionsCard: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardLavender, padding: spacing.lg, gap: spacing.md },
   reportActionList: { gap: spacing.sm },
-  reportPMAction: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md, borderRadius: 13, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.md },
+  reportPMAction: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md, borderRadius: 10, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.md },
   reportPMActionNumber: { width: 30, height: 30, borderRadius: 15, backgroundColor: desktopSurfaces.accent, alignItems: 'center', justifyContent: 'center' },
-  reportPMActionNumberText: { color: desktopSurfaces.onAccent, fontSize: 13, lineHeight: 18, fontWeight: '900' },
-  reportPMActionTitle: { color: colors.text, fontSize: 15, lineHeight: 21, fontWeight: '900' },
-  reportPMActionMeta: { color: desktopSurfaces.accentText, fontSize: 13, lineHeight: 19, fontWeight: '800', marginTop: 2 },
-  reportPrepareBar: { borderRadius: 16, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.lg, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.lg },
+  reportPMActionNumberText: { color: desktopSurfaces.onAccent, fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  reportPMActionTitle: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: '600' },
+  reportPMActionMeta: { color: desktopSurfaces.accentText, fontSize: 15, lineHeight: 22, fontWeight: '600', marginTop: 2 },
+  reportPrepareBar: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.lg, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.lg },
   reportPrepareButton: { minWidth: 240 },
   reportAudienceField: { gap: spacing.sm },
   reportAudienceChoices: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-  reportAudienceChoice: { flexGrow: 1, flexBasis: 300, minWidth: 240, borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.md, gap: spacing.xs },
+  reportAudienceChoice: { flexGrow: 1, flexBasis: 300, minWidth: 240, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardMuted, padding: spacing.md, gap: spacing.xs },
   reportAudienceChoiceActive: { borderColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.selected },
-  reportAudienceChoiceTitle: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: '900' },
+  reportAudienceChoiceTitle: { color: colors.text, fontSize: 17, lineHeight: 23, fontWeight: '600' },
   reportAudienceChoiceTitleActive: { color: desktopSurfaces.accentText },
-  reportAudienceChoiceDetail: { color: colors.mutedText, fontSize: 13, lineHeight: 19 },
+  reportAudienceChoiceDetail: { color: colors.mutedText, fontSize: 15, lineHeight: 22 },
   reportComposer: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-start', gap: spacing.lg },
-  reportPreviewColumn: { flexGrow: 1, flexBasis: 620, minWidth: 0, borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.lg, gap: spacing.md, boxShadow: desktopSurfaces.shadow },
+  reportPreviewColumn: { flexGrow: 1, flexBasis: 620, minWidth: 0, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.lg, gap: spacing.md, boxShadow: desktopSurfaces.shadow },
   reportPreviewHeader: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
   reportPreviewScroll: { maxHeight: 520 },
-  reportPreviewText: { color: colors.text, fontSize: 15, lineHeight: 24, fontFamily: 'system-ui' },
-  reportReviewPanel: { flexGrow: 1, flexBasis: 280, maxWidth: 360, borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.cardBlue, padding: spacing.lg, gap: spacing.md },
+  reportPreviewText: { color: colors.text, fontSize: 16, lineHeight: 26, fontFamily: 'system-ui' },
+  reportReviewPanel: { flexGrow: 1, flexBasis: 280, maxWidth: 360, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.cardBlue, padding: spacing.lg, gap: spacing.md },
   reportReviewHeading: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  reportReviewIcon: { width: 46, height: 46, borderRadius: 15, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
-  reportReviewText: { color: colors.mutedText, fontSize: 14, lineHeight: 21 },
+  reportReviewIcon: { width: 46, height: 46, borderRadius: 10, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  reportReviewText: { color: colors.mutedText, fontSize: 16, lineHeight: 24 },
   reportActionStack: { gap: spacing.sm },
   reportActionButton: { width: '100%' },
   reportInput: { minHeight: 520, paddingTop: spacing.md, textAlignVertical: 'top', fontFamily: 'monospace' },
-  uploadReview: { borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.cardBlue, padding: spacing.lg, gap: spacing.md },
-  reindexProgressCard: { borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardBlue, padding: spacing.lg, gap: spacing.sm },
+  uploadReview: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.cardBlue, padding: spacing.lg, gap: spacing.md },
+  reindexProgressCard: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.cardBlue, padding: spacing.lg, gap: spacing.sm },
   reindexProgressHeading: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   inlineButtons: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', alignItems: 'center', gap: spacing.sm },
   inlineButtonsLeft: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'flex-end', gap: spacing.md },
   saveTaskButton: { minWidth: 190 },
-  successBanner: { borderRadius: 12, borderWidth: 1, borderColor: '#7CC59A', backgroundColor: '#EFFAF3', padding: spacing.md },
-  successText: { color: '#195B35', fontSize: 14, lineHeight: 21 },
+  successBanner: { borderRadius: 8, borderWidth: 1, borderColor: '#7CC59A', backgroundColor: '#EFFAF3', padding: spacing.md },
+  successText: { color: '#195B35', fontSize: 16, lineHeight: 24 },
   statusBadge: { borderRadius: 999, paddingHorizontal: spacing.sm, paddingVertical: 5 },
   statusBadge_good: { backgroundColor: '#EAF8EF' },
   statusBadge_attention: { backgroundColor: '#FFF3DD' },
   statusBadge_danger: { backgroundColor: '#FDEBEB' },
   statusBadge_neutral: { backgroundColor: desktopSurfaces.selected },
-  statusBadgeText: { fontSize: 12, lineHeight: 16, fontWeight: '900' },
+  statusBadgeText: { fontSize: 14, lineHeight: 19, fontWeight: '600' },
   statusBadgeText_good: { color: '#217342' },
   statusBadgeText_attention: { color: '#956000' },
   statusBadgeText_danger: { color: '#B52D2D' },
-  statusBadgeText_neutral: { color: '#5D6571' },
+  statusBadgeText_neutral: { color: '#66645E' },
   taskStatusBadge: { minWidth: 116, borderRadius: 999, borderWidth: 1, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, alignItems: 'center', justifyContent: 'center' },
   taskStatusBadge_completed: { borderColor: '#86CDA1', backgroundColor: '#E5F7EB' },
   taskStatusBadge_overdue: { borderColor: '#E29A9A', backgroundColor: '#FDE7E7' },
   taskStatusBadge_notStarted: { borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.selected },
   taskStatusBadge_inProgress: { borderColor: '#E3B45A', backgroundColor: '#FFF0D1' },
-  taskStatusBadgeText: { fontSize: 14, lineHeight: 18, fontWeight: '900' },
+  taskStatusBadgeText: { fontSize: 16, lineHeight: 21, fontWeight: '600' },
   taskStatusBadgeText_completed: { color: '#146B37' },
   taskStatusBadgeText_overdue: { color: '#9C2323' },
   taskStatusBadgeText_notStarted: { color: desktopSurfaces.accentText },
   taskStatusBadgeText_inProgress: { color: '#7A4C00' },
-  emptyState: { borderRadius: 18, borderWidth: 1, borderStyle: 'dashed', borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.xl },
-  emptyStateText: { color: '#666D79', fontSize: 15, lineHeight: 23 },
+  emptyState: { borderRadius: 10, borderWidth: 1, borderStyle: 'dashed', borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.xl },
+  emptyStateText: { color: '#66645E', fontSize: 16, lineHeight: 25 },
   fieldGroup: { gap: spacing.xs },
-  fieldLabel: { color: '#2B3038', fontSize: 14, lineHeight: 20, fontWeight: '800' },
-  input: { minHeight: 52, borderWidth: 1, borderColor: desktopSurfaces.border, borderRadius: 12, backgroundColor: desktopSurfaces.input, color: desktopSurfaces.text, fontSize: 16, paddingHorizontal: spacing.md },
+  fieldLabel: { color: '#3A3935', fontSize: 16, lineHeight: 23, fontWeight: '600' },
+  input: { minHeight: 52, borderWidth: 1, borderColor: desktopSurfaces.border, borderRadius: 8, backgroundColor: desktopSurfaces.input, color: desktopSurfaces.text, fontSize: 17, paddingHorizontal: spacing.md },
   loadingRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingVertical: spacing.md },
-  mutedText: { color: '#747B87', fontSize: 14, lineHeight: 20 },
-  errorBanner: { borderRadius: 12, borderWidth: 1, borderColor: '#E5A4A4', backgroundColor: '#FDEEEE', padding: spacing.md },
-  errorText: { color: '#9B2525', fontSize: 14, lineHeight: 21 },
-  primaryButton: { minHeight: 52, borderRadius: 12, backgroundColor: desktopSurfaces.accent, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.lg },
-  primaryButtonText: { color: desktopSurfaces.onAccent, fontSize: 16, lineHeight: 22, fontWeight: '900' },
+  mutedText: { color: '#66645E', fontSize: 16, lineHeight: 23 },
+  errorBanner: { borderRadius: 8, borderWidth: 1, borderColor: '#E5A4A4', backgroundColor: '#FDEEEE', padding: spacing.md },
+  errorText: { color: '#9B2525', fontSize: 16, lineHeight: 24 },
+  primaryButton: { minHeight: 52, borderRadius: 8, backgroundColor: desktopSurfaces.accent, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.lg },
+  primaryButtonText: { color: desktopSurfaces.onAccent, fontSize: 17, lineHeight: 23, fontWeight: '600' },
   syncButton: { alignSelf: 'flex-start', minWidth: 240 },
   settingsWorkspace: { gap: spacing.xl },
-  syncHero: { borderRadius: 18, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, borderTopWidth: 5, borderTopColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.cardBlue, padding: spacing.xl, gap: spacing.xl, boxShadow: desktopSurfaces.shadow },
+  syncHero: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, borderTopWidth: 5, borderTopColor: desktopSurfaces.accent, backgroundColor: desktopSurfaces.cardBlue, padding: spacing.xl, gap: spacing.xl, boxShadow: desktopSurfaces.shadow },
   syncHeroHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.md },
-  syncHeroIcon: { width: 58, height: 58, borderRadius: 20, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center', boxShadow: '0 5px 14px rgba(23,33,58,0.06)' },
-  syncHeroEyebrow: { color: desktopSurfaces.accent, fontSize: 11, lineHeight: 15, fontWeight: '900', letterSpacing: 1.2 },
-  syncHeroTitle: { color: colors.text, fontSize: 25, lineHeight: 31, fontWeight: '900', marginTop: 2 },
-  syncHeroDetail: { color: colors.mutedText, fontSize: 14, lineHeight: 20, marginTop: 4 },
+  syncHeroIcon: { width: 58, height: 58, borderRadius: 12, backgroundColor: colors.surface, alignItems: 'center', justifyContent: 'center', boxShadow: '0 5px 14px rgba(26,26,24,0.06)' },
+  syncHeroEyebrow: { color: desktopSurfaces.accent, fontSize: 13, lineHeight: 18, fontWeight: '600', letterSpacing: 1.2 },
+  syncHeroTitle: { color: colors.text, fontSize: 29, fontFamily: displayFontFamily, lineHeight: 36, fontWeight: '400', marginTop: 2 },
+  syncHeroDetail: { color: colors.mutedText, fontSize: 16, lineHeight: 23, marginTop: 4 },
   settingsActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
   syncGuideGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.lg },
-  syncGuideCard: { flexGrow: 1, flexBasis: 420, borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md, padding: spacing.lg, boxShadow: desktopSurfaces.shadow },
-  syncGuideIcon: { width: 48, height: 48, borderRadius: 15, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
-  syncGuideText: { color: colors.mutedText, fontSize: 14, lineHeight: 21, marginTop: 3 },
+  syncGuideCard: { flexGrow: 1, flexBasis: 420, borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md, padding: spacing.lg, boxShadow: desktopSurfaces.shadow },
+  syncGuideIcon: { width: 48, height: 48, borderRadius: 10, backgroundColor: desktopSurfaces.accentSoft, alignItems: 'center', justifyContent: 'center' },
+  syncGuideText: { color: colors.mutedText, fontSize: 16, lineHeight: 24, marginTop: 3 },
   dataHealthHeading: { flexDirection: 'row', alignItems: 'flex-start', gap: spacing.md },
-  dataHealthIcon: { width: 46, height: 46, borderRadius: 15, backgroundColor: desktopSurfaces.cardMuted, alignItems: 'center', justifyContent: 'center' },
-  dataCheckSuccess: { borderRadius: 13, borderWidth: 1, borderColor: '#7CC59A', backgroundColor: '#EFFAF3', flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, padding: spacing.md },
-  dataCheckSuccessTitle: { color: '#1F6B3E', fontSize: 15, lineHeight: 21, fontWeight: '900' },
-  dataCheckSuccessText: { color: '#35664A', fontSize: 14, lineHeight: 20 },
-  syncBoundaryBanner: { borderRadius: 18, borderWidth: 1, borderColor: '#E7B766', backgroundColor: '#FFF7E8', padding: spacing.lg, gap: spacing.xs },
-  syncBoundaryTitle: { color: '#7B4D00', fontSize: 17, lineHeight: 23, fontWeight: '900' },
-  syncBoundaryDetail: { color: '#72551F', fontSize: 14, lineHeight: 21, maxWidth: 1000 },
-  secondaryButton: { minHeight: 42, borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.md },
-  secondaryButtonText: { color: desktopSurfaces.accent, fontSize: 14, lineHeight: 20, fontWeight: '900' },
+  dataHealthIcon: { width: 46, height: 46, borderRadius: 10, backgroundColor: desktopSurfaces.cardMuted, alignItems: 'center', justifyContent: 'center' },
+  dataCheckSuccess: { borderRadius: 10, borderWidth: 1, borderColor: '#7CC59A', backgroundColor: '#EFFAF3', flexDirection: 'row', alignItems: 'flex-start', gap: spacing.sm, padding: spacing.md },
+  dataCheckSuccessTitle: { color: '#1F6B3E', fontSize: 16, lineHeight: 22, fontWeight: '600' },
+  dataCheckSuccessText: { color: '#35664A', fontSize: 16, lineHeight: 23 },
+  syncBoundaryBanner: { borderRadius: 10, borderWidth: 1, borderColor: '#E7B766', backgroundColor: '#FFF7E8', padding: spacing.lg, gap: spacing.xs },
+  syncBoundaryTitle: { color: '#7B4D00', fontSize: 17, lineHeight: 23, fontWeight: '600' },
+  syncBoundaryDetail: { color: '#72551F', fontSize: 16, lineHeight: 24, maxWidth: 1000 },
+  secondaryButton: { minHeight: 42, borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.md },
+  secondaryButtonText: { color: desktopSurfaces.accent, fontSize: 16, lineHeight: 23, fontWeight: '600' },
   buttonDisabled: { opacity: 0.48 },
   buttonPressed: { opacity: 0.72 },
-  sessionNote: { color: '#747B87', fontSize: 12, lineHeight: 18 },
+  sessionNote: { color: '#66645E', fontSize: 14, lineHeight: 21 },
 });

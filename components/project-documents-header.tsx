@@ -211,8 +211,8 @@ const styles = StyleSheet.create({
   },
   actionText: {
     color: colors.primary,
-    fontSize: 14,
-    fontWeight: '900',
+    fontSize: 16,
+    fontWeight: '600',
     textAlign: 'center',
   },
   actionTextPrimary: {
@@ -223,19 +223,19 @@ const styles = StyleSheet.create({
   },
   statusTitle: {
     color: colors.text,
-    fontSize: 15,
-    fontWeight: '900',
+    fontSize: 16,
+    fontWeight: '600',
     paddingBottom: spacing.xs,
   },
   statusText: {
     color: colors.mutedText,
-    fontSize: 13,
-    lineHeight: 19,
+    fontSize: 15,
+    lineHeight: 22,
   },
   categoryTitle: {
     color: colors.text,
-    fontSize: 14,
-    fontWeight: '900',
+    fontSize: 16,
+    fontWeight: '600',
   },
   categoryWrap: {
     flexDirection: 'row',
@@ -258,8 +258,8 @@ const styles = StyleSheet.create({
   },
   categoryText: {
     color: colors.mutedText,
-    fontSize: 13,
-    fontWeight: '800',
+    fontSize: 15,
+    fontWeight: '600',
   },
   categoryTextSelected: {
     color: colors.primary,

@@ -8,7 +8,7 @@ export function UpdateDeleteControl({ onDelete }: { onDelete: () => void }) {
       backgroundColor: colors.dangerSoft,
       borderColor: colors.danger,
       borderWidth: 1,
-      borderRadius: 12,
+      borderRadius: 8,
       padding: 14,
       marginBottom: 14,
     }}>
@@ -25,11 +25,11 @@ export function UpdateDeleteControl({ onDelete }: { onDelete: () => void }) {
         accessibilityLabel="Permanently delete this saved update"
       >
         <Ionicons name="trash-outline" size={19} color={colors.danger} />
-        <Text style={{ color: colors.danger, fontSize: 16, fontWeight: '800' }}>
+        <Text style={{ color: colors.danger, fontSize: 17, fontWeight: '600' }}>
           Delete This Update
         </Text>
       </TouchableOpacity>
-      <Text style={{ color: colors.mutedText, fontSize: 14, lineHeight: 20 }}>
+      <Text style={{ color: colors.mutedText, fontSize: 16, lineHeight: 23 }}>
         Use this when an update was saved by mistake. Deleting the source update stops it from affecting project status and related warnings.
       </Text>
     </View>

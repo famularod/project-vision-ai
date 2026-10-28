@@ -11,6 +11,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import type { StartupHydrationFailure } from '../services/StartupRecovery';
 import { colors } from '../theme';
+import { displayFontFamily } from '../theme/typography';
 
 export function StartupHydrationBoundary({
   ready,
@@ -80,26 +81,26 @@ const styles = StyleSheet.create({
   card: {
     gap: 12,
     padding: 22,
-    borderRadius: 20,
+    borderRadius: 12,
     backgroundColor: colors.surface,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.border,
   },
-  title: { color: colors.text, fontSize: 24, lineHeight: 30, fontWeight: '800' },
-  body: { color: colors.mutedText, fontSize: 16, lineHeight: 23 },
+  title: { color: colors.text, fontSize: 28, fontFamily: displayFontFamily, lineHeight: 35, fontWeight: '400' },
+  body: { color: colors.mutedText, fontSize: 17, lineHeight: 24 },
   failureRow: {
     padding: 14,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.warningSoft,
   },
-  failureTitle: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: '800' },
-  failureText: { color: colors.mutedText, fontSize: 14, lineHeight: 20, marginTop: 3 },
+  failureTitle: { color: colors.text, fontSize: 17, lineHeight: 23, fontWeight: '600' },
+  failureText: { color: colors.mutedText, fontSize: 16, lineHeight: 23, marginTop: 3 },
   button: {
     minHeight: 50,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.primary,
   },
-  buttonText: { color: '#FFFFFF', fontSize: 16, lineHeight: 22, fontWeight: '800' },
+  buttonText: { color: '#FFFFFF', fontSize: 17, lineHeight: 23, fontWeight: '600' },
 });

@@ -13,7 +13,7 @@ import {
   planReportDrawingCrop,
   reportDrawingCropBounds,
 } from './ReportDrawingCrop';
-import { readReportImageHeaderSize, type ReportImageHeaderSize } from './ReportImageHeader';
+import { readReportImageHeaderInfo, type ReportImageHeaderInfo } from './ReportImageHeader';
 import {
   convertedReportImageMimeType,
   detectReportImageSignature,
@@ -104,7 +104,8 @@ export async function resolveNativeReportWordMedia(args: {
       continue;
     }
     const resolved = await resolvePhoto(match.photo, match.update, displayNumber);
-    if ('media' in resolved) media.push(resolved.media);
+    if ('media' in resolved) media.push(args.updates.flatMap(update => update.photos).filter(photo => photo.id === photoId).length === 1
+      ? resolved.media : { ...resolved.media, linkedTaskId: null });
     else unavailableMedia.push(resolved.unavailable);
   }
 
@@ -166,6 +167,8 @@ async function resolvePhoto(
         projectName: described.projectName,
         areaName: described.areaName,
         linkedTaskName: described.linkedTaskName,
+        linkedTaskId: update.scheduleItemId,
+        projectId: update.projectId,
         recordedAt: described.recordedAt,
         reasonForInclusion: described.reasonForInclusion,
       },
@@ -201,17 +204,17 @@ function localFileFormat(uri: string): ReportImageFormat {
 }
 
 /**
- * A local picture's size as it is shown upright, read from the header of its
- * file: a few short reads, with nothing decoded and the file not loaded
- * (review pass 1, L6 and L7). Null when this app does not read a size from
- * that kind of header or the file cannot be read; the device is asked then,
- * as it was before.
+ * A local picture's pixel budget and, when unambiguous, upright size, read
+ * from bounded header reads without decoding or loading the whole file.
+ * An uncertain JPEG retains encoded dimensions for the early guard; its
+ * displaySizeKnown flag tells the caller to ask the device for upright size.
+ * Null when this app cannot read dimensions from the header.
  */
-function localHeaderSize(uri: string, format: ReportImageFormat): ReportImageHeaderSize | null {
+function localHeaderSize(uri: string, format: ReportImageFormat): ReportImageHeaderInfo | null {
   try {
     const handle = new File(uri.trim()).open();
     try {
-      return readReportImageHeaderSize(format, {
+      return readReportImageHeaderInfo(format, {
         read(offset, length) {
           handle.offset = offset;
           return handle.readBytes(length);
@@ -281,7 +284,21 @@ async function localRaster(uri: string | null | undefined) {
   // Its size comes from its own header, so a photo that needs no work is
   // never opened; the device is asked only when the header cannot be read.
   if (mimeType && file.size <= REPORT_PHOTO_AS_IS_MAX_BYTES) {
-    const dimensions = localHeaderSize(normalizedUri, format) ?? await imageDimensions(normalizedUri);
+    const header = localHeaderSize(normalizedUri, format);
+    if (header && !header.displaySizeKnown) {
+      // Unsupported JPEG metadata must not turn a known huge frame into a
+      // full-image getSize/manipulate fallback. The frame's pixel count is
+      // independent of orientation and is available before any decoding.
+      if (reportDrawingScanTooLarge(header.width, header.height)) {
+        throw new Error(reportDrawingScanTooLargeMessage(header.width, header.height));
+      }
+      // If neither orientation could fit as-is, conversion is needed anyway;
+      // it reads the actual upright size once, as on the existing resize path.
+      if (!reportPictureFits(header.width, header.height) && !reportPictureFits(header.height, header.width)) {
+        return convertedRaster(normalizedUri, format);
+      }
+    }
+    const dimensions = header?.displaySizeKnown ? header : await imageDimensions(normalizedUri);
     if (reportPictureFits(dimensions.width, dimensions.height)) {
       return {
         data: await file.bytes(),

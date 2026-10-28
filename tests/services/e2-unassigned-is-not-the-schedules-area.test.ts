@@ -93,12 +93,8 @@ describe('guards: where the card names an area', () => {
       .toBe('GPS places you in North Pad. Accept it to use it for this update.');
   });
 
-  // Not changed here, and pinned so that it is known: a named place that is
-  // not one of the project's saved areas (a task's own location) still gets
-  // the schedule's line when the project has a schedule suggestion, whether
-  // or not that suggestion is this place. The card is not told which area
-  // the schedule suggests.
-  it('unchanged: a task\'s named location on a project with a schedule suggestion still gets the schedule\'s line', () => {
-    expect(cardWithSchedule({ selectedAreaName: 'Building 3', areaStatus: 'confirmed' }).reason).toBe(SCHEDULE_LINE);
+  it('4.39: a named location without recommendation identity gets a neutral reason', () => {
+    expect(cardWithSchedule({ selectedAreaName: 'Building 3', areaStatus: 'confirmed' }).reason)
+      .toBe('This is the location named on this update.');
   });
 });

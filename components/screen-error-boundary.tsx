@@ -4,6 +4,7 @@ import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { logStartupDiagnostic, startupErrorMessage } from '../services/StartupDiagnostics';
 import { colors } from '../theme';
 import type { AppScreen } from '../types/app-navigation';
+import { displayFontFamily } from '../theme/typography';
 
 type Props = {
   screen: AppScreen;
@@ -80,14 +81,14 @@ function Action({ label, onPress }: { label: string; onPress: () => void }) {
 const styles = StyleSheet.create({
   flex: { flex: 1 },
   container: { flex: 1, justifyContent: 'center', padding: 24, gap: 10 },
-  title: { color: colors.text, fontSize: 22, lineHeight: 28, fontWeight: '800' },
-  body: { color: colors.mutedText, fontSize: 16, lineHeight: 23, marginBottom: 8 },
+  title: { color: colors.text, fontSize: 25, fontFamily: displayFontFamily, lineHeight: 32, fontWeight: '400' },
+  body: { color: colors.mutedText, fontSize: 17, lineHeight: 24, marginBottom: 8 },
   button: {
     minHeight: 48,
-    borderRadius: 12,
+    borderRadius: 8,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.primary,
   },
-  buttonText: { color: colors.surface, fontSize: 16, lineHeight: 22, fontWeight: '800' },
+  buttonText: { color: colors.surface, fontSize: 17, lineHeight: 23, fontWeight: '600' },
 });

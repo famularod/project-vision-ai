@@ -185,19 +185,20 @@ describe('L4, the phone and iPad sheet', () => {
     expect(retried.priorTurnId).toBeUndefined();
   });
 
-  // Not changed by this fix, and pinned so that it is known: other failures still start a new conversation.
+  // Issue3.19 extends the time-out repair to temporary connection/server failures.
   it.each([
     ['the service is unavailable (503)', refused(503, { error: 'agent_gateway_unavailable' })],
     ['the answer could not be verified (502)', refused(502, { error: 'answer_invalid' })],
     ['the answer engine\'s own time limit', refused(503, { error: 'answer_timed_out' })],
     ['no connection ("Could not reach Ask ECOS")', (): Reply => 'no connection'],
-  ])('unchanged: after %s, Try Again sends the follow-up as a new conversation', async (_name, failed) => {
+  ])('issue3.19: after %s, Try Again keeps the last verified conversation', async (_name, failed) => {
     const hook = await followUpAfterAnAnswer(failed);
     await act(async () => { sheet(hook.result).onRetry(); });
     await settle();
     const [first, , retried] = mockServer.arrivals;
-    expect(retried.conversationId).not.toBe(first.conversationId);
-    expect(retried.priorTurnId).toBeUndefined();
+    expect(retried.conversationId).toBe(first.conversationId);
+    expect(turnOf(retried)).toEqual(turnOf(mockServer.arrivals[1]));
+    expect(retried.priorTurnId).toBeTruthy();
   });
 });
 
@@ -228,13 +229,13 @@ describe('L4, the desktop page', () => {
     expect(mockServer.arrivals[2].priorTurnId).toBeTruthy();
   });
 
-  it('unchanged: after "temporarily unavailable" (503), asking again starts a new conversation', async () => {
+  it('issue3.19: after "temporarily unavailable" (503), asking again keeps the last verified conversation', async () => {
     const screen = await followUpAfterAnAnswer(refused(503, { error: 'agent_gateway_unavailable' }));
     await screen.findByText('Ask ECOS is temporarily unavailable. Try again shortly.');
     await act(async () => { fireEvent.press(screen.getByText('Ask ECOS')); });
     await screen.findByText(`Answer to: ${FOLLOW_UP}`);
-    expect(mockServer.arrivals[2].conversationId).not.toBe(mockServer.arrivals[0].conversationId);
-    expect(mockServer.arrivals[2].priorTurnId).toBeUndefined();
+    expect(turnOf(mockServer.arrivals[2])).toEqual(turnOf(mockServer.arrivals[1]));
+    expect(mockServer.arrivals[2].priorTurnId).toBeTruthy();
   });
 });
 
@@ -263,10 +264,16 @@ describe('L4: which failures leave the conversation standing', () => {
     [409, { error: 'conversation_turn_stale' }],
     [429, { error: 'question_rate_limited' }],
     [401, { error: 'unauthorized' }],
-  ])('another failure (%i %p): it does not, and the sentence does not say so', async (status, payload) => {
+    [401, { error: 'request_failed' }],
+    [403, { error: 'request_failed' }],
+  ])('issue3.19: temporary failures keep continuity; context/auth refusals reset (%i %p)', async (status, payload) => {
     const error = await failure(status, payload);
     expect(error.message).not.toContain('still here');
-    expect(ecosAskConversationStands(error)).toBe(false);
+    expect(ecosAskConversationStands(error)).toBe(status >= 500 || status === 429);
+  });
+
+  it.each(['conversation_context_unavailable','prior_turn_id_invalid','proof_authority_identity_mismatch'])('explicit %s refusal resets even on a server error status',async code=>{
+    expect(ecosAskConversationStands(await failure(500,{error:code}))).toBe(false);
   });
 
   it('the app\'s own stops stand, as before; a plain error does not', () => {

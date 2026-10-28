@@ -11,6 +11,7 @@ import {
 import * as FileSystem from 'expo-file-system/legacy';
 import { useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
+  AccessibilityInfo,
   Alert,
   AppState,
   Modal,
@@ -63,6 +64,7 @@ import {
 } from './dave-voice-task-options';
 import { KeyboardAvoidingModalCard } from './KeyboardAvoidingModalCard';
 import { NativeWorkspaceOwnerContext, useNativeWorkspaceSignInPendingRef } from './native-workspace-owner';
+import { displayFontFamily } from '../theme/typography';
 
 /**
  * Review N1 L3: when a recording brought back from the device (everyday item
@@ -122,9 +124,10 @@ type KeepsUnder = Readonly<{
 /** A recording held aside by its sheet, and what it was made for (review P5 N1). */
 type RecordingHeldAside = Readonly<{ uri: string; durationMs: number; madeFor: KeepsUnder }>;
 
-/** Whether a sheet is open for the account and the project a recording in it was made for (review P4 L4). */
+/** Account, project and origin slot must match before a retained recording can rejoin this sheet. */
 function sameAccountAndProject(left: KeepsUnder, right: KeepsUnder): boolean {
   return left.account === right.account &&
+    left.slot === right.slot &&
     left.projectName.trim().toLowerCase() === right.projectName.trim().toLowerCase();
 }
 
@@ -169,6 +172,7 @@ export function DAVEVoiceCaptureSheet({
   autoSubmitOnStop = false,
   showWalkContext = true,
   keepSlot,
+  retryKeptRecordingAutomatically = true,
   onMemoryReady,
   onProjectChange,
   onTaskChange,
@@ -205,6 +209,8 @@ export function DAVEVoiceCaptureSheet({
    * Without one it is kept in the sheet only, while Vitruvius stays open.
    */
   keepSlot?: string;
+  /** Guided answers require an explicit tap even when a retained upload failed earlier. */
+  retryKeptRecordingAutomatically?: boolean;
   /** `kept` only for a recording brought back from the device after the app was closed (review N1 L3). */
   onMemoryReady: (result: DAVEVoiceUnderstandingResponse, kept?: DAVEVoiceKeptCapture) => void;
   onProjectChange?: (projectName: string) => void;
@@ -226,6 +232,14 @@ export function DAVEVoiceCaptureSheet({
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [retryY, setRetryY] = useState<number | null>(null);
+  useEffect(() => {
+    // iOS does not announce live-region text changes. Announce a new failure
+    // once; recorder ticks and unrelated rerenders must not repeat it.
+    if (!visible || !error || Platform.OS !== 'ios') return;
+    const timer = setTimeout(() => AccessibilityInfo.announceForAccessibility(error), 0);
+    return () => clearTimeout(timer);
+  }, [visible, error]);
   const [notice, setNotice] = useState<string | null>(null);
   const [taskPickerOpen, setTaskPickerOpen] = useState(false);
   const [taskSearch, setTaskSearch] = useState('');
@@ -711,12 +725,12 @@ export function DAVEVoiceCaptureSheet({
       keptCopyRef.current = kept.uri;
       keptStateRef.current = kept.state;
       sentForWordsRef.current = kept.state !== 'ready';
-      captureRef.current = { recordedAt: kept.recordedAt, walkArea: kept.walkArea, restored: true };
+      captureRef.current = { recordedAt: kept.recordedAt, walkArea: kept.walkArea, restored: true, ...(kept.sentDespiteNoSound === true ? { sendAnyway: 'sent' as const } : {}) };
       recordingGenerationRef.current += 1;
       recordingDurationRef.current = kept.durationMs;
       setRecordingUri(kept.uri);
       setRecordingDuration(kept.durationMs);
-      if (kept.state === 'ready') {
+      if (kept.state === 'ready' || !retryKeptRecordingAutomatically) {
         // Closed and kept before he had sent it for its words: offered, and left for him to use (review N1 L1).
         setNotice(`Kept from ${keptTimeLabel(kept.recordedAt)}. Replay it, then tap ${continueLabel} to use it, or record again.`);
         return;
@@ -808,6 +822,7 @@ export function DAVEVoiceCaptureSheet({
           recordedAt: capture?.recordedAt,
           walkArea: capture?.restored ? capture.walkArea : capture?.walkArea ?? walkContext?.recommendedArea ?? null,
           state,
+          ...(capture?.sendAnyway === 'sent' ? { sentDespiteNoSound: true } : {}),
         });
         // Discarded, used or recorded again meanwhile: this copy does not stay kept.
         if (epoch !== keepEpochRef.current) {
@@ -1044,7 +1059,8 @@ export function DAVEVoiceCaptureSheet({
   }
 
   async function transcribeRecording(uri: string, duration: number, hisTap = false) {
-    if (isTranscribing) return;
+    // State is not committed between two handlers from the same render.
+    if (isTranscribing || preparingOperationRef.current !== null) return;
     // Item 9: a recording whose microphone gave nothing is not sent: the speech service could only fail on it.
     // Item 9b (13 Oct 2026): unless he says he did speak. The level is not measured on a phone, and a
     // level read wrong must not cost him his dictation. Nothing is sent by itself (Stop on a sheet that
@@ -1068,53 +1084,65 @@ export function DAVEVoiceCaptureSheet({
     const recording = recordingGenerationRef.current;
     const held = heldTranscriptRef.current;
     heldTranscriptRef.current = null;
-    if (held?.recording === recording) {
-      // The words for this recording arrived after he stopped waiting for them.
-      setError(null);
-      setNotice(null);
-      await removeRecording(uri);
-      forgetRecordingKeptOnDevice();
-      setRecordingUri(null);
-      handOverWords(held.result);
-      return;
-    }
     const operation = ++transcriptionOperationRef.current;
+    const madeFor = keepsUnder;
+    const isCurrent = () => operation === transcriptionOperationRef.current &&
+      recording === recordingGenerationRef.current && sheetInPlaceRef.current && sheetShownRef.current &&
+      sameAccountAndProject(madeFor, openSheetKeepsUnderRef.current) &&
+      madeFor.projectId === openSheetKeepsUnderRef.current.projectId;
     preparingOperationRef.current = operation;
     sentForWordsRef.current = true;
-    // Sent for its words: brought back after a closed app, it is tried again by itself (review N1 L2).
-    if (keepsOnDevice) void keepRecordingOnDevice(uri, duration, 'sent');
+    // Keep this origin's audio before any successful-response cleanup. A
+    // close during cleanup must leave its durable entry and copy intact.
+    const originalKeep = keepsOnDevice ? keepRecordingOnDevice(uri, duration, 'sent') : Promise.resolve(false);
+    const deliver = async (result: DAVEVoiceUnderstandingResponse) => {
+      await originalKeep;
+      if (!isCurrent()) return;
+      const copy = keptCopyRef.current;
+      // Never delete the durable copy before the final handoff check. When
+      // there is no copy, keep the cache file until handoff has committed.
+      if (copy && uri !== copy) {
+        await removeRecording(uri);
+        if (!isCurrent()) return;
+      }
+      if (!isCurrent()) return;
+      // No awaits between this check and handoff: these refs still belong
+      // to this recording, so an old completion cannot forget a newer copy.
+      forgetRecordingKeptOnDevice();
+      setRecordingUri(null);
+      handOverWords(result);
+      if (!copy) void removeRecording(uri);
+    };
     setError(null);
     setNotice(null);
     setIsTranscribing(true);
     try {
-      const result = await transcribeDAVECaptureMemoryAudio({
+      const result = held?.recording === recording ? held.result : await transcribeDAVECaptureMemoryAudio({
         uri,
         projectId,
         projectName,
         candidateLocations,
         purpose: transcriptionPurpose,
-        isRequestCurrent: () => operation === transcriptionOperationRef.current,
+        isRequestCurrent: isCurrent,
         signInPending: () => signInPendingRef.current,
       });
-      if (operation !== transcriptionOperationRef.current) {
+      if (!isCurrent()) {
         const stopped = stoppedWaitingRef.current;
-        if (stopped?.operation === operation && stopped.recording === recordingGenerationRef.current) {
+        if (sheetInPlaceRef.current && sheetShownRef.current && sameAccountAndProject(madeFor, openSheetKeepsUnderRef.current) &&
+          stopped?.operation === operation && stopped.recording === recordingGenerationRef.current) {
           heldTranscriptRef.current = { recording: stopped.recording, result };
         }
         return;
       }
-      await removeRecording(uri);
-      forgetRecordingKeptOnDevice();
-      setRecordingUri(null);
-      handOverWords(result);
+      await deliver(result);
     } catch (reason) {
-      if (operation !== transcriptionOperationRef.current) return;
+      if (!isCurrent()) return;
       // Kept on this device past a closed app when this sheet keeps it (everyday item 4), whatever
       // the failure (review N1 L2). The message says so once it is, for the upload's own failures
       // (review N1 L4); a recording that could not be kept is not called kept.
       const kept = keepsOnDevice &&
         await keepRecordingOnDevice(uri, duration, daveVoiceFailureIsWaitingForSignal(reason) ? 'no-signal' : 'sent');
-      if (operation !== transcriptionOperationRef.current) return;
+      if (!isCurrent()) return;
       // Item 9b: sent anyway, and the speech service could make nothing of it either. Not its own words,
       // which send him to a quieter place: both things, and what to do about a microphone that gives
       // nothing. Every other failure keeps its own words.
@@ -1296,14 +1324,16 @@ export function DAVEVoiceCaptureSheet({
     : recorderState.isRecording
       ? 'listening'
       : recordingUri
-        ? 'captured'
+        ? error ? 'attention' : 'captured'
         : 'ready';
   const captureStatus = captureLabel
     ? captureState === 'processing'
       ? `ECOS is processing: ${captureLabel}`
       : captureState === 'listening'
         ? `ECOS is listening for: ${captureLabel}`
-        : captureState === 'captured'
+        : captureState === 'attention'
+          ? `Answer needs attention for: ${captureLabel}`
+          : captureState === 'captured'
           ? `Answer recorded for: ${captureLabel}`
           : `ECOS is ready for: ${captureLabel}`
     : null;
@@ -1312,6 +1342,7 @@ export function DAVEVoiceCaptureSheet({
     <Modal visible={visible} animationType="slide" transparent onRequestClose={() => confirmDiscardThen(cancel, onCancel)}>
       <View style={[styles.backdrop, usesTabletSheet && styles.backdropTablet]}>
         <KeyboardAvoidingModalCard
+          scrollTarget={visible && error && recordingUri && retryY !== null ? { key: error, y: retryY } : null}
           containerStyle={[
             styles.sheetContainer,
             usesTabletSheet && styles.sheetContainerTablet,
@@ -1486,13 +1517,15 @@ export function DAVEVoiceCaptureSheet({
               <Ionicons
                 name={captureState === 'processing'
                   ? 'hourglass-outline'
-                  : captureState === 'captured'
+                  : captureState === 'attention'
+                    ? 'alert-circle-outline'
+                    : captureState === 'captured'
                     ? 'checkmark-circle-outline'
                     : 'mic-outline'}
                 size={21}
                 color={captureState === 'listening'
                   ? colors.danger
-                  : captureState === 'processing'
+                  : captureState === 'processing' || captureState === 'attention'
                     ? colors.warning
                     : captureState === 'captured'
                       ? colors.success
@@ -1509,7 +1542,7 @@ export function DAVEVoiceCaptureSheet({
             </View>
           ) : null}
 
-          <Text style={styles.prompt}>{recorderState.isRecording ? 'Listening…' : recordingUri ? 'Recording ready' : prompt}</Text>
+          <Text style={styles.prompt}>{recorderState.isRecording ? 'Listening…' : recordingUri ? error && captureLabel ? 'Review this recording' : 'Recording ready' : prompt}</Text>
           <Text style={styles.guidance}>{guidance}</Text>
 
           {showWalkContext && walkContext ? <View style={styles.walkCard}>
@@ -1533,35 +1566,37 @@ export function DAVEVoiceCaptureSheet({
 
           {startIsWaiting ? <Text style={styles.notice} accessibilityLiveRegion="polite">{START_IS_WAITING}</Text> : null}
           {notice && !error ? <Text style={styles.notice} accessibilityLiveRegion="polite">{notice}</Text> : null}
-          {error ? <Text style={styles.error}>{error}</Text> : null}
+          {error ? <Text style={styles.error} accessibilityLiveRegion={Platform.OS === 'android' ? 'polite' : undefined}>{error}</Text> : null}
 
-          {recorderState.isRecording ? (
-            <TouchableOpacity style={styles.stopButton} onPress={() => { void stopRecording(); }} accessibilityRole="button">
-              <Ionicons name="stop" size={21} color="#FFF" />
-              <Text style={styles.primaryText}>{autoSubmitOnStop ? 'Stop & Continue' : 'Stop Recording'}</Text>
-            </TouchableOpacity>
-          ) : recordingUri ? (
-            <>
-              <TouchableOpacity style={styles.continueButton} disabled={isTranscribing || startIsWaiting} onPress={() => { void transcribe(); }} accessibilityRole="button">
-                <Ionicons name="sparkles-outline" size={20} color="#FFF" />
-                <Text style={styles.primaryText}>{isTranscribing ? 'Preparing…' : continueLabel}</Text>
+          <View testID="voice-recording-actions" onLayout={event => setRetryY(event.nativeEvent.layout.y)}>
+            {recorderState.isRecording ? (
+              <TouchableOpacity style={styles.stopButton} onPress={() => { void stopRecording(); }} accessibilityRole="button">
+                <Ionicons name="stop" size={21} color="#FFF" />
+                <Text style={styles.primaryText}>{autoSubmitOnStop ? 'Stop & Continue' : 'Stop Recording'}</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.secondaryButton} disabled={isTranscribing} onPress={() => { void startRecording(); }} accessibilityRole="button">
-                <Ionicons name="refresh" size={19} color={colors.primary} />
-                <Text style={styles.secondaryText}>Record Again</Text>
+            ) : recordingUri ? (
+              <>
+                <TouchableOpacity style={styles.continueButton} disabled={isTranscribing || startIsWaiting} onPress={() => { void transcribe(); }} accessibilityRole="button">
+                  <Ionicons name="sparkles-outline" size={20} color="#FFF" />
+                  <Text style={styles.primaryText}>{isTranscribing ? 'Preparing…' : continueLabel}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.secondaryButton} disabled={isTranscribing} onPress={() => { void startRecording(); }} accessibilityRole="button">
+                  <Ionicons name="refresh" size={19} color={colors.primary} />
+                  <Text style={styles.secondaryText}>Record Again</Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <TouchableOpacity
+                style={[styles.recordButton, !projectName && styles.buttonDisabled]}
+                onPress={() => { void startRecording(); }}
+                accessibilityRole="button"
+                disabled={!projectName}
+              >
+                <Ionicons name="mic" size={23} color="#FFF" />
+                <Text style={styles.primaryText}>Start Recording</Text>
               </TouchableOpacity>
-            </>
-          ) : (
-            <TouchableOpacity
-              style={[styles.recordButton, !projectName && styles.buttonDisabled]}
-              onPress={() => { void startRecording(); }}
-              accessibilityRole="button"
-              disabled={!projectName}
-            >
-              <Ionicons name="mic" size={23} color="#FFF" />
-              <Text style={styles.primaryText}>Start Recording</Text>
-            </TouchableOpacity>
-          )}
+            )}
+          </View>
 
           {!recorderState.isRecording ? (
             <TouchableOpacity style={styles.typeButton} disabled={isTranscribing || !projectName} onPress={() => confirmDiscardThen(typeInstead, onTypeInstead)} accessibilityRole="button">
@@ -1615,7 +1650,7 @@ function formatDuration(milliseconds: number) {
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: 'rgba(16,24,40,0.35)', justifyContent: 'flex-end' },
+  backdrop: { flex: 1, backgroundColor: 'rgba(26,26,24,0.35)', justifyContent: 'flex-end' },
   backdropTablet: { alignItems: 'center', justifyContent: 'center', padding: spacing.xxl },
   sheetContainer: { flex: 1, justifyContent: 'flex-end' },
   sheetContainerTablet: { maxWidth: DAVE_VOICE_CAPTURE_TABLET_MAX_WIDTH, width: '100%', justifyContent: 'center' },
@@ -1626,64 +1661,64 @@ const styles = StyleSheet.create({
   handle: { width: 40, height: 5, borderRadius: 3, backgroundColor: colors.border, alignSelf: 'center', marginTop: 9 },
   header: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingTop: spacing.md, paddingBottom: spacing.lg },
   main: { flex: 1 },
-  title: { color: colors.text, fontSize: 25, fontWeight: '800' },
-  subtitle: { color: colors.mutedText, fontSize: 14, marginTop: 3 },
+  title: { color: colors.text, fontSize: 29, fontFamily: displayFontFamily, fontWeight: '400' },
+  subtitle: { color: colors.mutedText, fontSize: 16, marginTop: 3 },
   closeButton: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.surfaceMuted, alignItems: 'center', justifyContent: 'center' },
-  projectChoiceCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.md, marginBottom: spacing.lg },
-  projectChoiceTitle: { color: colors.text, fontSize: 16, lineHeight: 21, fontWeight: '800', marginBottom: spacing.sm },
+  projectChoiceCard: { borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.md, marginBottom: spacing.lg },
+  projectChoiceTitle: { color: colors.text, fontSize: 17, lineHeight: 22, fontWeight: '600', marginBottom: spacing.sm },
   projectChoices: { gap: spacing.sm },
-  projectChoiceButton: { minHeight: 48, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md },
-  projectChoiceText: { color: colors.text, fontSize: 15, lineHeight: 20, fontWeight: '700', flex: 1 },
-  operationCard: { alignItems: 'center', backgroundColor: colors.primarySoft, borderColor: colors.primary, borderRadius: 14, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md, minHeight: 72, padding: spacing.md },
+  projectChoiceButton: { minHeight: 48, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.md },
+  projectChoiceText: { color: colors.text, fontSize: 16, lineHeight: 21, fontWeight: '600', flex: 1 },
+  operationCard: { alignItems: 'center', backgroundColor: colors.primarySoft, borderColor: colors.primary, borderRadius: 10, borderWidth: 1, flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md, minHeight: 72, padding: spacing.md },
   operationIcon: { alignItems: 'center', backgroundColor: colors.surface, borderRadius: 20, height: 40, justifyContent: 'center', width: 40 },
-  operationLabel: { color: colors.text, fontSize: 16, fontWeight: '800' },
-  operationGuidance: { color: colors.mutedText, fontSize: 13, lineHeight: 18, marginTop: 2 },
-  taskContextCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, marginBottom: spacing.lg, overflow: 'hidden' },
+  operationLabel: { color: colors.text, fontSize: 17, fontWeight: '600' },
+  operationGuidance: { color: colors.mutedText, fontSize: 15, lineHeight: 21, marginTop: 2 },
+  taskContextCard: { borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, marginBottom: spacing.lg, overflow: 'hidden' },
   taskContextHeader: { minHeight: 62, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md },
-  taskContextLabel: { color: colors.mutedText, fontSize: 12, lineHeight: 16, fontWeight: '800', textTransform: 'uppercase' },
-  taskContextValue: { color: colors.text, fontSize: 15, lineHeight: 20, fontWeight: '800', marginTop: 2 },
+  taskContextLabel: { color: colors.mutedText, fontSize: 14, lineHeight: 19, fontWeight: '600', textTransform: 'uppercase' },
+  taskContextValue: { color: colors.text, fontSize: 16, lineHeight: 21, fontWeight: '600', marginTop: 2 },
   taskPicker: { borderTopWidth: 1, borderTopColor: colors.border, gap: spacing.xs, padding: spacing.sm },
-  taskSearch: { minHeight: 46, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, color: colors.text, fontSize: 15, paddingHorizontal: spacing.md, marginBottom: spacing.xs },
+  taskSearch: { minHeight: 46, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, color: colors.text, fontSize: 16, paddingHorizontal: spacing.md, marginBottom: spacing.xs },
   taskFilterRow: { minHeight: 40, flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.sm, paddingHorizontal: spacing.sm },
-  taskFilterSummary: { color: colors.mutedText, fontSize: 13, lineHeight: 18, fontWeight: '700', fontVariant: ['tabular-nums'] },
+  taskFilterSummary: { color: colors.mutedText, fontSize: 15, lineHeight: 21, fontWeight: '600', fontVariant: ['tabular-nums'] },
   completedTasksButton: { minHeight: 40, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4, paddingHorizontal: spacing.sm },
-  completedTasksButtonText: { color: colors.primary, fontSize: 13, lineHeight: 18, fontWeight: '800' },
-  taskOption: { minHeight: 54, borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
+  completedTasksButtonText: { color: colors.primary, fontSize: 15, lineHeight: 21, fontWeight: '600' },
+  taskOption: { minHeight: 54, borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: spacing.sm, paddingHorizontal: spacing.sm, paddingVertical: spacing.xs },
   taskOptionSelected: { backgroundColor: colors.primarySoft },
-  taskOptionName: { color: colors.text, fontSize: 14, lineHeight: 19, fontWeight: '700', flexShrink: 1 },
-  taskOptionDetail: { color: colors.mutedText, fontSize: 12, lineHeight: 17, marginTop: 2 },
-  taskEmpty: { color: colors.mutedText, fontSize: 14, lineHeight: 20, padding: spacing.md, textAlign: 'center' },
-  captureStatus: { alignItems: 'center', alignSelf: 'stretch', backgroundColor: colors.primarySoft, borderColor: colors.primary, borderRadius: 14, borderWidth: 2, flexDirection: 'row', gap: spacing.sm, justifyContent: 'center', marginBottom: spacing.md, minHeight: 54, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  taskOptionName: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: '600', flexShrink: 1 },
+  taskOptionDetail: { color: colors.mutedText, fontSize: 14, lineHeight: 20, marginTop: 2 },
+  taskEmpty: { color: colors.mutedText, fontSize: 16, lineHeight: 23, padding: spacing.md, textAlign: 'center' },
+  captureStatus: { alignItems: 'center', alignSelf: 'stretch', backgroundColor: colors.primarySoft, borderColor: colors.primary, borderRadius: 10, borderWidth: 2, flexDirection: 'row', gap: spacing.sm, justifyContent: 'center', marginBottom: spacing.md, minHeight: 54, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   captureStatusListening: { backgroundColor: colors.dangerSoft, borderColor: colors.danger },
   captureStatusProcessing: { backgroundColor: colors.warningSoft, borderColor: colors.warning },
   captureStatusCaptured: { backgroundColor: colors.successSoft, borderColor: colors.success },
-  captureStatusText: { color: colors.primary, flexShrink: 1, fontSize: 16, fontWeight: '800', lineHeight: 21, textAlign: 'center' },
+  captureStatusText: { color: colors.primary, flexShrink: 1, fontSize: 17, fontWeight: '600', lineHeight: 22, textAlign: 'center' },
   captureStatusTextListening: { color: colors.danger },
   captureStatusTextProcessing: { color: colors.warning },
   captureStatusTextCaptured: { color: colors.success },
-  prompt: { color: colors.text, fontSize: 20, fontWeight: '800', textAlign: 'center' },
-  guidance: { color: colors.mutedText, fontSize: 14, lineHeight: 20, marginTop: 5, textAlign: 'center' },
-  walkCard: { borderRadius: 16, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.primarySoft, padding: spacing.md, marginTop: spacing.lg },
+  prompt: { color: colors.text, fontSize: 20, fontWeight: '600', textAlign: 'center' },
+  guidance: { color: colors.mutedText, fontSize: 16, lineHeight: 23, marginTop: 5, textAlign: 'center' },
+  walkCard: { borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.primarySoft, padding: spacing.md, marginTop: spacing.lg },
   walkHeader: { flexDirection: 'row', alignItems: 'center', gap: 7 },
-  walkTitle: { color: colors.primary, fontSize: 14, fontWeight: '800' },
-  walkLocation: { color: colors.mutedText, fontSize: 13, lineHeight: 19, marginTop: 7 },
-  walkPrompt: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: '700', marginTop: spacing.sm },
-  walkWhy: { color: colors.mutedText, fontSize: 13, lineHeight: 19, marginTop: 5 },
-  recorderCard: { borderRadius: 18, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, alignItems: 'center', padding: spacing.lg, marginTop: spacing.lg },
+  walkTitle: { color: colors.primary, fontSize: 16, fontWeight: '600' },
+  walkLocation: { color: colors.mutedText, fontSize: 15, lineHeight: 22, marginTop: 7 },
+  walkPrompt: { color: colors.text, fontSize: 17, lineHeight: 23, fontWeight: '600', marginTop: spacing.sm },
+  walkWhy: { color: colors.mutedText, fontSize: 15, lineHeight: 22, marginTop: 5 },
+  recorderCard: { borderRadius: 10, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, alignItems: 'center', padding: spacing.lg, marginTop: spacing.lg },
   recorderCardActive: { borderColor: colors.danger, backgroundColor: '#FFF7F7' },
-  timer: { color: colors.text, fontSize: 38, fontWeight: '800', fontVariant: ['tabular-nums'] },
-  recordingLimit: { color: colors.mutedText, fontSize: 12, marginTop: 4 },
-  limitWarning: { color: colors.danger, fontSize: 14, fontWeight: '800', lineHeight: 20, marginTop: spacing.sm, textAlign: 'center' },
+  timer: { color: colors.text, fontSize: 44, fontFamily: displayFontFamily, fontWeight: '400', fontVariant: ['tabular-nums'] },
+  recordingLimit: { color: colors.mutedText, fontSize: 14, marginTop: 4 },
+  limitWarning: { color: colors.danger, fontSize: 16, fontWeight: '600', lineHeight: 23, marginTop: spacing.sm, textAlign: 'center' },
   playbackButton: { minHeight: 46, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: spacing.md, paddingHorizontal: spacing.md },
-  recordButton: { minHeight: 56, borderRadius: 14, backgroundColor: colors.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, marginTop: spacing.lg },
+  recordButton: { minHeight: 56, borderRadius: 10, backgroundColor: colors.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, marginTop: spacing.lg },
   buttonDisabled: { opacity: 0.45 },
-  stopButton: { minHeight: 56, borderRadius: 14, backgroundColor: colors.danger, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, marginTop: spacing.lg },
-  continueButton: { minHeight: 56, borderRadius: 14, backgroundColor: colors.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, marginTop: spacing.lg },
+  stopButton: { minHeight: 56, borderRadius: 10, backgroundColor: colors.danger, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, marginTop: spacing.lg },
+  continueButton: { minHeight: 56, borderRadius: 10, backgroundColor: colors.primary, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 9, marginTop: spacing.lg },
   secondaryButton: { minHeight: 48, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7 },
-  primaryText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
-  secondaryText: { color: colors.primary, fontSize: 15, fontWeight: '800' },
+  primaryText: { color: '#FFF', fontSize: 17, fontWeight: '600' },
+  secondaryText: { color: colors.primary, fontSize: 16, fontWeight: '600' },
   typeButton: { minHeight: 48, alignItems: 'center', justifyContent: 'center' },
-  typeText: { color: colors.primary, fontSize: 15, fontWeight: '800' },
-  error: { color: colors.danger, fontSize: 14, lineHeight: 20, fontWeight: '700', marginTop: spacing.md, textAlign: 'center' },
-  notice: { backgroundColor: colors.warningSoft, borderColor: colors.warning, borderRadius: 12, borderWidth: 1, color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: '700', marginTop: spacing.md, overflow: 'hidden', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, textAlign: 'center' },
+  typeText: { color: colors.primary, fontSize: 16, fontWeight: '600' },
+  error: { color: colors.danger, fontSize: 16, lineHeight: 23, fontWeight: '600', marginTop: spacing.md, textAlign: 'center' },
+  notice: { backgroundColor: colors.warningSoft, borderColor: colors.warning, borderRadius: 8, borderWidth: 1, color: colors.text, fontSize: 16, lineHeight: 23, fontWeight: '600', marginTop: spacing.md, overflow: 'hidden', paddingHorizontal: spacing.md, paddingVertical: spacing.sm, textAlign: 'center' },
 });

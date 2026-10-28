@@ -171,10 +171,24 @@ export function nextScheduleWbsCode(
     ? sourceItems.find(item => item.id === parentItemId)
     : null;
   const prefix = parent?.wbsCode?.trim();
-  const siblingCount = sourceItems.filter(
+  const siblings = sourceItems.filter(
     item => normalizedId(item.parentItemId) === normalizedId(parentItemId),
-  ).length;
-  return prefix ? `${prefix}.${siblingCount + 1}` : String(siblingCount + 1);
+  );
+  const stem = prefix ? `${prefix}.` : '';
+  const used = new Set(sourceItems.map(item => item.wbsCode?.trim()).filter(Boolean));
+  // Deleted rows and imported/custom numbering leave holes: seven siblings may already own 8 (7.66).
+  let greatest = BigInt(siblings.length);
+  for (const item of siblings) {
+    const code = item.wbsCode?.trim() || '';
+    if (!code.startsWith(stem)) continue;
+    const suffix = code.slice(stem.length);
+    if (!/^\d+$/.test(suffix)) continue;
+    const value = BigInt(suffix);
+    if (value > greatest) greatest = value;
+  }
+  let next = greatest + BigInt(1);
+  while (used.has(`${stem}${next}`)) next += BigInt(1);
+  return `${stem}${next}`;
 }
 
 function uniqueScheduleItems(sourceItems: readonly ScheduleItem[]) {

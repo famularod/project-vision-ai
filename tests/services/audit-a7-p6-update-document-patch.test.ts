@@ -2614,6 +2614,8 @@ async function pressSyncNow(phone: Device): Promise<string> {
         projectAreas: [], scheduleItems: [], referenceDocuments: [],
         getSyncStatus, getSyncConflicts, setSyncStatus: () => undefined, setSyncConflicts: () => undefined,
         onApplyCloudRecovery: () => undefined, failedDocumentCountRef: { current: 0 },
+        // Open item 2.76: a download of every record ends Settings' and Reports' wait (not part of this test).
+        recordDeviceCloudPull: () => undefined, noteSyncNowDownloadFailed: () => undefined, // N276b: Reports' wait
         projectDocumentsStillUploadingNotice: () => null, showMissingPhotoSyncAlert: jest.fn(),
         updateSyncAttentionCount: 0, failedDocumentCount: 0,
       },
@@ -4216,6 +4218,8 @@ describe('Sync Now that cannot finish counts an update held for conflict review 
         localProjects: ['P'], savedUpdates: phone.savedUpdatesRef.current, projectAreas: [], scheduleItems: [], referenceDocuments: [],
         getSyncStatus, getSyncConflicts, setSyncStatus: () => undefined, setSyncConflicts: () => undefined,
         onApplyCloudRecovery: () => undefined, failedDocumentCountRef: { current: 0 },
+        recordDeviceCloudPull: () => undefined, // open item 2.76 (not reached: the sync fails)
+        noteSyncNowDownloadFailed: () => undefined, // N276b: the failed sync ends Reports' wait (not part of this test)
         projectDocumentsStillUploadingNotice: () => null, showMissingPhotoSyncAlert: jest.fn(),
         // As AdminScreen counts them: its cards Waiting to Sync or failed.
         updateSyncAttentionCount: phone.savedUpdatesRef.current.filter(update => update.status === 'queued' || update.status === 'failed').length,

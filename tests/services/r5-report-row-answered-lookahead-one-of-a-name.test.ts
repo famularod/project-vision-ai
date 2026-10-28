@@ -173,7 +173,7 @@ describe('R5 item 4: he answered "this row is the lookahead\'s task", and each r
     sameOnTheWeb(state, first.sent, '2026-09-12T15:00:00.000Z', next);
   });
 
-  it('where he had set nothing on the master\'s Pour slab, nothing of his is lost, and the one Pour slab of each report reads as one task, as before', () => {
+  it('even without own fields, confirmed new lookahead identity cannot become the explicitly excluded master task', () => {
     let state = approve({ items: [], documents: [] }, schedule('MASTER 1', '2026-09-07T12:00:00.000Z'), [FRAMING, pour('10/05/2026', '10/09/2026')]);
     const first = report(state, null, '2026-09-08T15:00:00.000Z');
     state = approve(state, schedule('LOOKAHEAD 1', '2026-09-09T12:00:00.000Z', 'lookahead'), [pour('10/06/2026', '10/10/2026'), pour('10/20/2026', '10/24/2026')]);
@@ -181,7 +181,14 @@ describe('R5 item 4: he answered "this row is the lookahead\'s task", and each r
     state = approve(state, schedule('LOOKAHEAD 2', '2026-09-11T12:00:00.000Z', 'lookahead'), ['Framing,Alpha,Lot,09/16/2026,09/26/2026,']);
     expect(one(state, 'Pour slab').map(item => [item.id, item.revisedFromTaskIds])).toEqual([['MASTER 2-2', ['LOOKAHEAD 1-2']]]);
     const next = report(state, first.sent, '2026-09-12T15:00:00.000Z');
-    expect(next.pour).toEqual(['Pour slab finish changed from 10/09/2026 to 10/25/2026.']);
+    // L1's review confirmed a new task, not the master's one. That explicit exclusion
+    // propagates through its earlier IDs and takes precedence over the no-own-fields
+    // name fallback described in DAVEReportSnapshot's later lookahead heuristic.
+    expect(next.sent.tasks.find(task => task.taskName === 'Pour slab')?.notTaskIds).toContain('MASTER 1-2');
+    expect(next.pour).toEqual([ADDED, REMOVED].sort());
+    expect(next.pour.some(line => /^Pour slab (?:finish changed|moved from|owner changed|changed from)/.test(line))).toBe(false);
+    expect(next.counts).toBe('+0 completed; +0 open');
+    expect(next.onceApproved.pour).toEqual(next.pour);
     sameOnTheWeb(state, first.sent, '2026-09-12T15:00:00.000Z', next);
   });
 
@@ -193,4 +200,20 @@ describe('R5 item 4: he answered "this row is the lookahead\'s task", and each r
     expect(next.counts).toBe('+0 completed; +0 open');
     sameOnTheWeb(state, first.sent, '2026-09-12T15:00:00.000Z', next);
   });
+});
+
+// Opposite explicit identity with no hand-set fields: the same master task moved.
+it('guard: without own fields, selecting the master identity still reports only its finish change', () => {
+  let state = approve({ items: [], documents: [] }, schedule('MASTER 1', '2026-09-07T12:00:00.000Z'), [FRAMING, pour('10/05/2026', '10/09/2026')]);
+  const first = report(state, null, '2026-09-08T15:00:00.000Z');
+  state = approve(state, schedule('LOOKAHEAD 1', '2026-09-09T12:00:00.000Z', 'lookahead'), [pour('10/06/2026', '10/10/2026'), pour('10/20/2026', '10/24/2026')]);
+  state = approve(state, schedule('MASTER 2', '2026-09-10T12:00:00.000Z'), [FRAMING, pour('10/21/2026', '10/25/2026')], PLAIN, THE_MASTERS);
+  state = approve(state, schedule('LOOKAHEAD 2', '2026-09-11T12:00:00.000Z', 'lookahead'), ['Framing,Alpha,Lot,09/16/2026,09/26/2026,']);
+  expect(one(state, 'Pour slab').map(item => [item.id, item.revisedFromTaskIds])).toEqual([['MASTER 2-2', ['MASTER 1-2']]]);
+  const next = report(state, first.sent, '2026-09-12T15:00:00.000Z');
+  expect(next.pour).toEqual(['Pour slab finish changed from 10/09/2026 to 10/25/2026.']);
+  expect(next.pour.some(line => /^Pour slab (?:was added|was removed|moved from|owner changed|changed from)/.test(line))).toBe(false);
+  expect(next.counts).toBe('+0 completed; +0 open');
+  expect(next.onceApproved.pour).toEqual(next.pour);
+  sameOnTheWeb(state, first.sent, '2026-09-12T15:00:00.000Z', next);
 });

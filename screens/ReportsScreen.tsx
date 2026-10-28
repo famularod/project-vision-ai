@@ -1,3 +1,5 @@
+import { nativeScheduleItemsAsBeforeLowYearFormatting } from '../services/ReportScheduleProjection';
+import { reportWordingRequiresAppTextKey } from '../services/PIEReporter';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type {
@@ -54,6 +56,7 @@ import type {
   PIEDecisionLedgerMigrationStatus,
 } from '../services/PIEDecisionLedgerStorage';
 import type { PIEDecisionSyncMetadata } from '../services/PIEDecisionLedgerSync';
+import { daveProjectTruthHasProjectKey } from '../services/DAVEProjectTruth';
 import { buildDAVEReportProjectTruths } from '../services/DAVEReportProjectTruths';
 import { holdDAVEReportCheckInput } from '../services/DAVEReportCheckDetails';
 import {
@@ -108,7 +111,9 @@ import {
   reportSnapshotToSave,
 } from '../services/DAVEReportSnapshot';
 import {
+  deviceCloudPullState,
   lastScheduleCloudPull,
+  onDeviceCloudPullChange,
   onScheduleCloudPull,
   reportSendFirstSeenAt,
   requestScheduleCloudPull,
@@ -174,6 +179,7 @@ import {
 
 import { useListedSharedDocuments } from '../hooks/use-listed-shared-documents';
 import { referenceDocumentsCitedAsListed, withoutListedPageIndexes } from '../services/ECOSDocumentIndexPersistence';
+import { displayFontFamily } from '../theme/typography';
 
 const EMPTY_REVIEW_IDS: readonly string[] = Object.freeze([]);
 
@@ -318,6 +324,8 @@ export function ReportsScreen({
   const [reportEdits, setReportEdits] = useState<ReportSessionEdits | null>(null);
   const [communicationPending, setCommunicationPending] = useState(false);
   const [communicationError, setCommunicationError] = useState('');
+  // A policy refusal follows the current policy; a delivery/export error is a separate event.
+  const [communicationPolicyRefusal, setCommunicationPolicyRefusal] = useState<Readonly<{ requireApproval: boolean }> | null>(null);
   // Its own line: a send clears the communication message, and this one must
   // stay until the next approval (whole-app audit A6 pass 5).
   const [snapshotSaveError, setSnapshotSaveError] = useState('');
@@ -335,6 +343,11 @@ export function ReportsScreen({
   const [approvalChecking, setApprovalChecking] = useState(false);
   // When this device last downloaded every task (whole-app audit A6 pass 10 M1, M2).
   const [schedulePulledAt, setSchedulePulledAt] = useState<string | null>(null);
+  // Open item 2.76: opened, or back after time away, and every record not downloaded since (N276b: and whether
+  // approval has stopped waiting for it, and what is missing).
+  const [deviceDownload, setDeviceDownload] = useState(() => deviceCloudPullState());
+  // N276b F3: while approval waits for that download, the period is read again every few seconds.
+  const [periodRecheck, setPeriodRecheck] = useState(0);
   // Everyday item 1 (2 Oct 2026): the approval this device saved, to record as sent another way.
   const [approvalSavedHereKey, setApprovalSavedHereKey] = useState<string | null>(null);
   // The approval waiting to be sent for which that has been read from this device's storage, saved here or not.
@@ -370,7 +383,10 @@ export function ReportsScreen({
   const baseReportDraft = stableReportDraft.draft;
   // One recipe with the web's Reports page (open item, 6 Oct 2026): the saved
   // tasks decide whose update it is here too, as in the app's own scope.
-  const reportTruths = useMemo(() => buildDAVEReportProjectTruths({
+  const reportTruths = useMemo(() => {
+    const beforeSchedule = nativeScheduleItemsAsBeforeLowYearFormatting(scheduleItems);
+    const beforeKnown = knownScheduleItems && nativeScheduleItemsAsBeforeLowYearFormatting(knownScheduleItems);
+    return buildDAVEReportProjectTruths({
     projects: selectedProjectNames.map(name => ({
       name,
       projectId: `report:${reportProjectKey(name) || 'project'}`,
@@ -380,12 +396,16 @@ export function ReportsScreen({
     scheduleItems,
     // What a newer lookahead replaced, for "since the last report" (owner answer 3 Oct 2026).
     knownScheduleItems,
+    ...(beforeSchedule !== scheduleItems || beforeKnown !== knownScheduleItems ? {
+      asBuiltBefore: { scheduleItems: beforeSchedule, knownScheduleItems: beforeKnown },
+    } : {}),
     knownScheduleDocuments,
     projectAreas,
     // High item 3: the documents are held as before (the 1.0 fingerprint does not move); the drawings are cited as listed.
     referenceDocuments: referenceDocuments && withoutListedPageIndexes(referenceDocuments),
     drawingDocuments: citedDocuments,
-  }), [
+    });
+  }, [
     citedDocuments,
     knownScheduleDocuments,
     knownScheduleItems,
@@ -474,6 +494,17 @@ export function ReportsScreen({
       })
     : null;
   const reportDeviceBehind = Boolean(reportDeviceBehindSend);
+  // Open item 2.76 (15 Oct 2026): opened after four hours away, the phone showed the report on its old records
+  // ("Test fence was removed from the current project plan") with Approve, until a download it had not done yet.
+  // While the cloud answers (the period was read) and this device has not downloaded every record since it was
+  // opened or came back, approval waits, saying why.
+  // N276 review pass 1 F2 (sending must never be blocked for good): the wait ends, with a note naming what could not
+  // be downloaded, once a Sync Now could not download every record, after two minutes, or offline (the period could
+  // not be read: at opening, or while waiting, F3). A later download of every record removes the note.
+  const reportWaitsForDownload = deviceDownload.pending && !deviceDownload.gaveUp && snapshotScopeLoaded &&
+    sharedPeriodCheck === 'checked';
+  const reportDownloadNote = deviceDownload.pending && snapshotScopeLoaded && !snapshotLoadFailed &&
+    (deviceDownload.gaveUp || sharedPeriodCheck === 'unchecked') ? reportDownloadMissingNote(deviceDownload.missing) : '';
   const reportBriefing = useMemo(() => buildDAVEReportBriefing({
     truths: reportTruths,
     selectedProjectNames,
@@ -561,13 +592,19 @@ export function ReportsScreen({
   // R232 review pass 1, R1: and the app writes the same report as when it went out (`appTextKey`). The fingerprint
   // alone said "sent" over a reworded field note in a project named with no Latin letter or digit ("Башня Север"), or
   // only "the", "building", "project": such a name's notes are not in it. A send recorded before Build 233 kept no
-  // key, and keeps the fingerprint's rule.
+  // key. Such a legacy send cannot prove equality when the project has no truth matching key, or this writer restores
+  // captured-for notes / capitalizes Please actions (4.86 / 4.84) under unchanged report facts.
   const builtReportTextKey = useMemo(() => reportTextKey(builtReportDraft), [builtReportDraft]);
+  const reportSourceCanRepresentSelectedProjects = selectedProjectNames.length > 0 &&
+    selectedProjectNames.every(daveProjectTruthHasProjectKey);
+  const sentReportWordsMatch = typeof previousReportSnapshot?.appTextKey === 'string'
+    ? previousReportSnapshot.appTextKey === builtReportTextKey
+    : reportSourceCanRepresentSelectedProjects && !reportWordingRequiresAppTextKey(builtReportDraft, reportFormat);
   const sentFromHereAt = snapshotScopeLoaded && !snapshotLoadFailed &&
     typeof previousReportSnapshot?.deliveredAt === 'string' &&
     ownReportSendTimes().has(previousReportSnapshot.deliveredAt) &&
     sameReportSource(previousReportSnapshot.sourceFingerprint, reportSourceFingerprint) &&
-    (typeof previousReportSnapshot.appTextKey !== 'string' || previousReportSnapshot.appTextKey === builtReportTextKey) &&
+    sentReportWordsMatch &&
     effectiveReportDraft.title === pieReportDraft.title && effectiveReportDraft.body === pieReportDraft.body
     ? previousReportSnapshot.deliveredAt
     : null;
@@ -632,6 +669,7 @@ export function ReportsScreen({
     reportFactsAreCurrent &&
     reportEditsPeriodIsCurrent &&
     !reportDeviceBehind &&
+    !reportWaitsForDownload &&
     snapshotScopeLoaded;
   // HIGH item 1c: the report's fingerprint is worked out against the report it counts from, so a period that moved
   // moves it too; where the period moved, that is the reason said (as before 1c), not "project facts changed".
@@ -641,9 +679,14 @@ export function ReportsScreen({
         ? 'The reporting period is still loading.'
         : reportDeviceBehindSend
           ? reportDeviceBehindMessage(reportDeviceBehindSend)
+          : reportWaitsForDownload
+            ? REPORT_WAITS_FOR_DOWNLOAD
           : !reportEditsPeriodIsCurrent
             ? editedReportPeriodChangedMessage(reportEdits?.baselineSentAt ?? null, reportBaselineSentAt)
             : reportApprovalPolicy.message;
+  const communicationPolicyMessage = communicationPolicyRefusal &&
+    (!reportApprovalAllowed || (communicationPolicyRefusal.requireApproval && !reportApproved))
+      ? reportApprovalMessage : '';
   const reportIdentityRef = useRef(reportCommunicationIdentityKey);
   const previousReportSnapshotRef = useRef(previousReportSnapshot);
   previousReportSnapshotRef.current = previousReportSnapshot;
@@ -692,6 +735,26 @@ export function ReportsScreen({
   useEffect(() => onScheduleCloudPull(pulledAt => {
     if (mountedRef.current) setSchedulePulledAt(current => laterTime(current, pulledAt));
   }), []);
+  useEffect(() => {
+    setDeviceDownload(deviceCloudPullState());
+    return onDeviceCloudPullChange(() => {
+      if (mountedRef.current) setDeviceDownload(deviceCloudPullState());
+    });
+  }, []);
+  // N276b F2: two minutes on, the wait ends by itself.
+  useEffect(() => {
+    if (deviceDownload.giveUpAt === null || deviceDownload.gaveUp) return;
+    const timer = setTimeout(() => {
+      if (mountedRef.current) setDeviceDownload(deviceCloudPullState());
+    }, Math.max(0, deviceDownload.giveUpAt - Date.now()) + 50);
+    return () => clearTimeout(timer);
+  }, [deviceDownload]);
+  // N276b F3: offline while it waits, the next read of the period fails and the wait ends, as offline at opening.
+  useEffect(() => {
+    if (!reportWaitsForDownload) return;
+    const timer = setInterval(() => setPeriodRecheck(count => count + 1), REPORT_DOWNLOAD_WAIT_RECHECK_MS);
+    return () => clearInterval(timer);
+  }, [reportWaitsForDownload]);
 
   // While waiting, the app is asked to download the tasks now (its refresh;
   // Settings › Sync Now does the same), again on each return to the app.
@@ -769,7 +832,7 @@ export function ReportsScreen({
     return () => {
       cancelled = true;
     };
-  }, [reportFormat, reportSnapshotScopeKey, snapshotReload]);
+  }, [reportFormat, reportSnapshotScopeKey, snapshotReload, periodRecheck]);
 
   /**
    * Whole-app audit A6 pass 7 (30 Sep 2026): the other device's last report,
@@ -886,6 +949,7 @@ export function ReportsScreen({
     setReviewAcknowledgement(remembered?.acknowledgement ?? { fingerprint: '', ids: [] });
     setCommunicationPending(false);
     setCommunicationError('');
+    setCommunicationPolicyRefusal(null);
     setSnapshotSaveError('');
     setPeriodNotice('');
     setMarkSentMessage('');
@@ -922,7 +986,7 @@ export function ReportsScreen({
     // status sentence in red).
     const requireApproval = options.requireApproval ?? true;
     if ((requireApproval && !reportApproved) || !reportApprovalAllowed) {
-      setCommunicationError(reportApprovalMessage);
+      setCommunicationPolicyRefusal({ requireApproval });
       return;
     }
 
@@ -956,6 +1020,7 @@ export function ReportsScreen({
     pendingCommunicationTokenRef.current = communicationToken;
     setCommunicationPending(true);
     setCommunicationError('');
+    setCommunicationPolicyRefusal(null);
 
     void (async () => {
       try {
@@ -1031,7 +1096,7 @@ export function ReportsScreen({
 
   const markReportApproved = () => {
     if (!reportApprovalAllowed) {
-      setCommunicationError(reportApprovalMessage);
+      setCommunicationPolicyRefusal({ requireApproval: false });
       return;
     }
     if (approvalCheckRef.current) return;
@@ -1048,7 +1113,7 @@ export function ReportsScreen({
   };
   const approveAfterPeriodCheck = () => {
     if (!reportApprovalAllowed) {
-      setCommunicationError(reportApprovalMessage);
+      setCommunicationPolicyRefusal({ requireApproval: false });
       return;
     }
     if (approvalCheckRef.current) return;
@@ -1079,7 +1144,7 @@ export function ReportsScreen({
   /** The approval, with the report on screen once the check is back. */
   const approveCheckedReport = (checkedTextKey: string) => {
     if (!reportApprovalAllowed) {
-      setCommunicationError(reportApprovalMessage);
+      setCommunicationPolicyRefusal({ requireApproval: false });
       return;
     }
     if (checkedTextKey !== approvalTextKey) {
@@ -1187,6 +1252,7 @@ export function ReportsScreen({
   // it again. Said until the owner approves it again, over an earlier notice
   // about a report that differed from it (this device's sync caught up).
   const alreadySentNotice = snapshotScopeLoaded && !reportApproved &&
+    ((reportSourceCanRepresentSelectedProjects && !reportWordingRequiresAppTextKey(builtReportDraft, reportFormat)) || sentReportWordsMatch) &&
     typeof previousReportSnapshot?.deliveredAt === 'string' &&
     sameReportSource(previousReportSnapshot.sourceFingerprint, reportSourceFingerprint) &&
     !ownReportSendTimes().has(previousReportSnapshot.deliveredAt)
@@ -1399,10 +1465,11 @@ export function ReportsScreen({
             approvalMessage={reportApprovalMessage}
             approvalChecking={approvalChecking || approvalSavedHereUnknown}
             periodNotice={shownPeriodNotice}
+            downloadNote={reportDownloadNote}
             periodNote={sharedPeriodNote}
             communicationPending={communicationPending}
             onStopWaiting={stopWaitingForShare}
-            communicationError={[snapshotSaveError, communicationError].filter(Boolean).join(' ')}
+            communicationError={[snapshotSaveError, communicationError, communicationPolicyMessage].filter(Boolean).join(' ')}
             reportEditing={reportEditing}
             drawingReferences={drawingReferences}
             updates={updates}
@@ -1674,6 +1741,19 @@ const STOPPED_WAITING_FOR_SHARE = 'Stopped waiting. If that share finishes later
 /** Said when he stops a share that had not opened yet: it never will (review pass 2 of the report fixes, H2R-1). */
 const STOPPED_BEFORE_THE_SHARE_OPENED = 'Stopped. That share had not opened yet, so nothing was sent. Share again when you are ready.';
 
+/** N276b F3: how often the period is read again while approval waits for the download (offline ends the wait). */
+const REPORT_DOWNLOAD_WAIT_RECHECK_MS = 5_000;
+
+/** N276b F2: said once approval no longer waits for a download that could not be done. */
+function reportDownloadMissingNote(missing: string): string {
+  return `This device could not download ${missing} from the cloud; ` +
+    "the report may not include your other devices' latest changes.";
+}
+
+/** Open item 2.76: why approval waits while this device downloads the cloud's records after opening. */
+const REPORT_WAITS_FOR_DOWNLOAD = "This device is still downloading your other devices' latest changes. " +
+  'Approval waits until they are here; Settings › Sync Now gets them now.';
+
 /**
  * Approval waits for this device to catch up with the other device's changes
  * (whole-app audit A6 pass 9 M2), and says why (pass 10 L2): the other
@@ -1781,6 +1861,7 @@ function PIEReporterPreview({
   approvalMessage,
   approvalChecking,
   periodNotice,
+  downloadNote,
   periodNote,
   communicationPending,
   onStopWaiting,
@@ -1821,6 +1902,8 @@ function PIEReporterPreview({
   approvalChecking: boolean;
   /** The other device sent a later report: what happened, and what to do (A6 pass 7). */
   periodNotice: string;
+  /** What this device could not download from the cloud, approval no longer waiting for it (N276b F2). */
+  downloadNote: string;
   /** The other device's last report could not be checked (A6 pass 7). */
   periodNote: string;
   communicationPending: boolean;
@@ -1856,6 +1939,9 @@ function PIEReporterPreview({
 }) {
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const wordDownloadHint = reportApprovalAllowed
+    ? 'Review copy with available photos and drawing excerpts'
+    : `Before downloading Word: ${approvalMessage}`;
 
   return (
     <View style={styles.reportPreview}>
@@ -2088,13 +2174,13 @@ function PIEReporterPreview({
         accessibilityRole="button"
         accessibilityState={{ disabled: communicationPending }}
         accessibilityLabel="Download Word Report"
-        accessibilityHint="Downloads a Word review copy with available report photos and drawing excerpts"
+        accessibilityHint={wordDownloadHint}
       >
         <Ionicons name="document-attach-outline" size={19} color={colors.primary} />
         <View style={styles.reportWordDownloadCopy}>
           <Text style={styles.reportActionText}>Download Word Report</Text>
           <Text style={styles.reportWordDownloadHint}>
-            Review copy with available photos and drawing excerpts
+            {wordDownloadHint}
           </Text>
         </View>
         <Ionicons name="download-outline" size={19} color={colors.primary} />
@@ -2128,6 +2214,8 @@ function PIEReporterPreview({
         <Text style={styles.reportPeriodNoticeText}>{periodNotice}</Text>
       ) : null}
 
+      {downloadNote ? <Text style={styles.reportPeriodNoticeText}>{downloadNote}</Text> : null}
+
       {!reportApproved || !reportApprovalAllowed ? (
         <Text style={styles.approvalBoundaryText}>
           {!reportApprovalAllowed
@@ -2138,7 +2226,7 @@ function PIEReporterPreview({
         </Text>
       ) : null}
 
-      {hasManualEdits && !reportEditing ? (
+      {hasManualEdits ? (
         <TouchableOpacity onPress={onDiscardEdits} accessibilityRole="button" accessibilityLabel="Discard report edits">
           <Text style={styles.reportActionText}>Discard edits and use the current report</Text>
         </TouchableOpacity>
@@ -2179,8 +2267,17 @@ function ReportDocumentPreview({
   const [workAreasOpen, setWorkAreasOpen] = useState(true);
   const [writtenReportOpen, setWrittenReportOpen] = useState(false);
   const photosById = useMemo(() => reportPhotosById(updates), [updates]);
-  const workAreaCount = reportDraft.locationGroups.reduce((total, group) => total + group.workAreas.length, 0);
-  const photoCount = reportDraft.locationGroups.reduce(
+  // The writer keeps model advice for other report consumers, even when an
+  // area's printable bullets are empty. Preview only cards with visible content.
+  const visibleLocationGroups = reportDraft.locationGroups
+    .map(group => ({
+      ...group,
+      workAreas: group.workAreas.filter(area =>
+        area.imageReferences.length > 0 || area.bullets.some(bullet => Boolean(reportBulletText(bullet)))),
+    }))
+    .filter(group => group.workAreas.length > 0);
+  const workAreaCount = visibleLocationGroups.reduce((total, group) => total + group.workAreas.length, 0);
+  const photoCount = visibleLocationGroups.reduce(
     (total, group) => total + group.workAreas.reduce((areaTotal, area) => areaTotal + area.imageReferences.length, 0),
     0,
   );
@@ -2241,7 +2338,7 @@ function ReportDocumentPreview({
         ) : null}
       </View>
 
-      {reportFormat === 'project_manager' && reportDraft.locationGroups.length ? (
+      {reportFormat === 'project_manager' && visibleLocationGroups.length ? (
         <View style={styles.reportDisclosure}>
           <TouchableOpacity
             style={styles.reportDisclosureHeader}
@@ -2259,7 +2356,7 @@ function ReportDocumentPreview({
             <Ionicons name={workAreasOpen ? 'chevron-up' : 'chevron-down'} size={18} color={colors.primary} />
           </TouchableOpacity>
 
-          {workAreasOpen ? reportDraft.locationGroups.map((group, groupIndex) => (
+          {workAreasOpen ? visibleLocationGroups.map((group, groupIndex) => (
             <View key={`${group.id}-${groupIndex}`} style={styles.reportDocumentSection}>
               <Text style={styles.reportDocumentLocationTitle}>
                 {group.title}
@@ -2854,7 +2951,7 @@ function ReportWorkArea({
           <View key={`${bullet.id}-${index}`} style={styles.reportDocumentBulletRow}>
             <Text style={styles.reportDocumentBulletMarker}>•</Text>
             <Text style={styles.reportDocumentBulletText}>
-              <Text style={styles.reportDocumentBulletLabel}>{reportPreviewBulletLabel(bullet.kind)}:{' '}</Text>
+              <Text style={styles.reportDocumentBulletLabel}>{reportPreviewBulletLabel(bullet)}:{' '}</Text>
               {bullet.text}
             </Text>
           </View>
@@ -3111,12 +3208,15 @@ function ReportShareButton({
   );
 }
 
-function reportPreviewBulletLabel(kind: string) {
+function reportPreviewBulletLabel(bullet: PIEReportDraft['locationGroups'][number]['workAreas'][number]['bullets'][number]) {
+  const { kind } = bullet;
   if (kind === 'safety') return 'Safety';
   if (kind === 'issue') return 'Issue';
   if (kind === 'next_step') return 'Action';
   if (kind === 'schedule') return 'Schedule';
   if (kind === 'image_reference') return 'Photo';
+  if (bullet.previewKind === 'photo') return 'Photo';
+  if (bullet.previewKind === 'field_note') return 'Field note';
 
   return 'Progress';
 }
@@ -3680,17 +3780,17 @@ const styles = StyleSheet.create({
 
   experienceEyebrow: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 15,
-    fontWeight: '900',
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
 
   experienceState: {
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 21,
-    fontWeight: '900',
+    fontSize: 17,
+    lineHeight: 22,
+    fontWeight: '600',
     textTransform: 'capitalize',
     marginTop: spacing.xxs,
   },
@@ -3699,13 +3799,13 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 18,
     lineHeight: 24,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   experienceReason: {
     ...typography.body,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 23,
   },
 
   beforeShareDetails: {
@@ -3769,16 +3869,16 @@ const styles = StyleSheet.create({
 
   preparedItemText: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '800',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   preparedItemDetail: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '600',
     marginTop: 2,
   },
 
@@ -3795,9 +3895,9 @@ const styles = StyleSheet.create({
 
   advancedToggleText: {
     color: colors.primary,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reporterCard: {
@@ -3845,9 +3945,9 @@ const styles = StyleSheet.create({
 
   decisionChipText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '900',
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '600',
     textTransform: 'capitalize',
   },
 
@@ -3857,9 +3957,9 @@ const styles = StyleSheet.create({
 
   decisionHelperText: {
     color: colors.mutedText,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   decisionInput: {
@@ -3869,8 +3969,8 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.surface,
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 23,
     fontWeight: '600',
     padding: spacing.sm,
     textAlignVertical: 'top',
@@ -3915,8 +4015,8 @@ const styles = StyleSheet.create({
 
   reporterHelp: {
     ...typography.body,
-    fontSize: 13,
-    lineHeight: 18,
+    fontSize: 15,
+    lineHeight: 21,
     marginTop: spacing.xxs,
   },
 
@@ -3933,9 +4033,9 @@ const styles = StyleSheet.create({
 
   generateReportText: {
     color: '#FFFFFF',
-    fontSize: 15,
-    lineHeight: 19,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportPreview: {
@@ -3958,16 +4058,16 @@ const styles = StyleSheet.create({
 
   reportOptionsTitle: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   reportOptionsSummary: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportOptionsPanel: {
@@ -4000,23 +4100,23 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 20,
     lineHeight: 26,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   reportDocumentType: {
     color: colors.primary,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '900',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
 
   reportDocumentMeta: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportDocumentRule: {
@@ -4038,9 +4138,9 @@ const styles = StyleSheet.create({
   reportEditNoticeText: {
     flex: 1,
     color: colors.text,
-    fontSize: 11,
-    lineHeight: 16,
-    fontWeight: '700',
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '600',
   },
 
   reportConditionBanner: {
@@ -4067,9 +4167,9 @@ const styles = StyleSheet.create({
 
   reportConditionEyebrow: {
     color: colors.mutedText,
-    fontSize: 10,
-    lineHeight: 14,
-    fontWeight: '900',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
     letterSpacing: 0.5,
   },
 
@@ -4077,28 +4177,28 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 18,
     lineHeight: 23,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   reportConditionText: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 20,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 23,
+    fontWeight: '600',
   },
 
   reportConditionSchedule: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '800',
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '600',
     borderTopWidth: 1,
     borderTopColor: colors.border,
     paddingTop: spacing.xs,
   },
 
   reportChartSection: {
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
@@ -4107,7 +4207,7 @@ const styles = StyleSheet.create({
   },
 
   reportPeriodSection: {
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
@@ -4132,7 +4232,7 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 18,
     lineHeight: 23,
-    fontWeight: '900',
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
 
@@ -4146,9 +4246,9 @@ const styles = StyleSheet.create({
 
   reportDeltaLabel: {
     color: colors.mutedText,
-    fontSize: 10,
-    lineHeight: 14,
-    fontWeight: '800',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
   },
 
   reportChangeList: {
@@ -4164,9 +4264,9 @@ const styles = StyleSheet.create({
   reportChangeText: {
     flex: 1,
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportProjectPositionSection: {
@@ -4178,7 +4278,7 @@ const styles = StyleSheet.create({
   },
 
   reportProjectPositionCard: {
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
@@ -4196,24 +4296,24 @@ const styles = StyleSheet.create({
   reportProjectPositionTitle: {
     flex: 1,
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   reportProjectPositionPercent: {
     color: colors.primary,
-    fontSize: 16,
-    lineHeight: 20,
-    fontWeight: '900',
+    fontSize: 17,
+    lineHeight: 21,
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
 
   reportProjectPositionText: {
     color: colors.text,
-    fontSize: 11,
-    lineHeight: 16,
-    fontWeight: '700',
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '600',
   },
 
   reportProjectDateRow: {
@@ -4235,15 +4335,15 @@ const styles = StyleSheet.create({
     color: colors.mutedText,
     fontSize: 9,
     lineHeight: 13,
-    fontWeight: '900',
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
 
   reportDateFactValue: {
     color: colors.text,
-    fontSize: 11,
-    lineHeight: 16,
-    fontWeight: '900',
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '600',
   },
 
   reportDateFactAlert: {
@@ -4259,7 +4359,7 @@ const styles = StyleSheet.create({
   },
 
   reportManagementCard: {
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     borderLeftWidth: 4,
@@ -4283,16 +4383,16 @@ const styles = StyleSheet.create({
 
   reportManagementTask: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   reportManagementContext: {
     color: colors.mutedText,
-    fontSize: 10,
-    lineHeight: 14,
-    fontWeight: '700',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
   },
 
   reportDuePill: {
@@ -4306,7 +4406,7 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 9,
     lineHeight: 13,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   reportManagementFactRow: {
@@ -4317,23 +4417,23 @@ const styles = StyleSheet.create({
     color: colors.primary,
     fontSize: 9,
     lineHeight: 13,
-    fontWeight: '900',
+    fontWeight: '600',
     textTransform: 'uppercase',
     letterSpacing: 0.4,
   },
 
   reportManagementText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportManagementOwner: {
     color: colors.mutedText,
-    fontSize: 10,
-    lineHeight: 15,
-    fontWeight: '900',
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '600',
   },
 
   reportMilestoneSection: {
@@ -4383,23 +4483,23 @@ const styles = StyleSheet.create({
 
   reportMilestoneTitle: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '900',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportMilestoneMeta: {
     color: colors.mutedText,
     fontSize: 9,
     lineHeight: 13,
-    fontWeight: '700',
+    fontWeight: '600',
   },
 
   reportMilestoneState: {
     color: colors.text,
     fontSize: 9,
     lineHeight: 13,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   reportControlSection: {
@@ -4424,7 +4524,7 @@ const styles = StyleSheet.create({
     color: colors.text,
     fontSize: 17,
     lineHeight: 22,
-    fontWeight: '900',
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
 
@@ -4432,7 +4532,7 @@ const styles = StyleSheet.create({
     color: colors.mutedText,
     fontSize: 9,
     lineHeight: 13,
-    fontWeight: '800',
+    fontWeight: '600',
   },
 
   reportProgressHeader: {
@@ -4449,9 +4549,9 @@ const styles = StyleSheet.create({
 
   reportProgressHelper: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '800',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
   },
 
   reportStatusChart: {
@@ -4486,17 +4586,17 @@ const styles = StyleSheet.create({
 
   reportLegendText: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '800',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
 
   reportChartEmpty: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportMetricRow: {
@@ -4530,17 +4630,18 @@ const styles = StyleSheet.create({
 
   reportMetricValue: {
     color: colors.text,
-    fontSize: 22,
-    lineHeight: 26,
-    fontWeight: '900',
+    fontSize: 25,
+    fontFamily: displayFontFamily,
+    lineHeight: 30,
+    fontWeight: '400',
     fontVariant: ['tabular-nums'],
   },
 
   reportMetricLabel: {
     color: colors.mutedText,
-    fontSize: 10,
-    lineHeight: 13,
-    fontWeight: '900',
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: '600',
     textAlign: 'center',
     textTransform: 'uppercase',
   },
@@ -4573,20 +4674,20 @@ const styles = StyleSheet.create({
 
   reportSummaryTitle: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportSummaryText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportProgressSection: {
-    borderRadius: 12,
+    borderRadius: 8,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.surface,
@@ -4612,16 +4713,16 @@ const styles = StyleSheet.create({
   reportAreaProgressTitle: {
     flex: 1,
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportAreaProgressValue: {
     color: colors.primary,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
 
@@ -4640,9 +4741,9 @@ const styles = StyleSheet.create({
 
   reportAreaProgressMeta: {
     color: colors.mutedText,
-    fontSize: 10,
-    lineHeight: 14,
-    fontWeight: '700',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
     fontVariant: ['tabular-nums'],
   },
 
@@ -4655,8 +4756,8 @@ const styles = StyleSheet.create({
 
   reportDocumentIntro: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 21,
+    fontSize: 16,
+    lineHeight: 24,
     fontWeight: '600',
   },
 
@@ -4666,16 +4767,16 @@ const styles = StyleSheet.create({
 
   reportDocumentSectionTitle: {
     color: colors.text,
-    fontSize: 15,
-    lineHeight: 20,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportDocumentLocationTitle: {
     color: colors.primary,
-    fontSize: 15,
-    lineHeight: 20,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportDocumentArea: {
@@ -4703,16 +4804,16 @@ const styles = StyleSheet.create({
 
   reportAreaMeta: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '700',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
   },
 
   reportDocumentAreaTitle: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   reportDocumentBulletList: {
@@ -4728,9 +4829,9 @@ const styles = StyleSheet.create({
   reportDocumentBulletMarker: {
     width: 14,
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 23,
+    fontWeight: '600',
   },
 
   reportInsightMarker: {
@@ -4757,19 +4858,19 @@ const styles = StyleSheet.create({
   reportDocumentBulletText: {
     flex: 1,
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 20,
+    fontSize: 15,
+    lineHeight: 23,
     fontWeight: '600',
   },
 
   reportDocumentBulletLabel: {
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   reportDocumentClosing: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 20,
+    fontSize: 15,
+    lineHeight: 23,
     fontWeight: '600',
     marginTop: spacing.xs,
   },
@@ -4804,16 +4905,16 @@ const styles = StyleSheet.create({
 
   reportDisclosureTitle: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 19,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   reportDisclosureSummary: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '700',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
   },
 
   reportDisclosureContent: {
@@ -4823,17 +4924,17 @@ const styles = StyleSheet.create({
 
   reportSupportingLabel: {
     color: colors.mutedText,
-    fontSize: 10,
-    lineHeight: 14,
-    fontWeight: '900',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
     letterSpacing: 0.4,
   },
 
   reportEvidenceLine: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportReasoningToggle: {
@@ -4849,15 +4950,15 @@ const styles = StyleSheet.create({
 
   reportReasoningToggleText: {
     color: colors.primary,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportReasoningText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 18,
+    fontSize: 14,
+    lineHeight: 21,
     fontWeight: '600',
     backgroundColor: colors.surfaceMuted,
     borderRadius: 8,
@@ -4892,9 +4993,9 @@ const styles = StyleSheet.create({
 
   reportEvidenceReferenceText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   segmentRow: {
@@ -4904,9 +5005,9 @@ const styles = StyleSheet.create({
 
   reportOptionLabel: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: '900',
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
 
@@ -4929,9 +5030,9 @@ const styles = StyleSheet.create({
 
   reportTypeText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '900',
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '600',
     textAlign: 'center',
   },
 
@@ -4964,20 +5065,20 @@ const styles = StyleSheet.create({
   reportProjectOptionText: {
     flex: 1,
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportProjectOptionTextSelected: {
     color: colors.primary,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   reportProjectSelectionHelper: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
   },
 
   reportStatusRow: {
@@ -4998,17 +5099,17 @@ const styles = StyleSheet.create({
 
   reportStatusLabel: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 14,
-    fontWeight: '900',
+    fontSize: 13,
+    lineHeight: 17,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
 
   reportStatusValue: {
     color: colors.text,
-    fontSize: 14,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 16,
+    lineHeight: 21,
+    fontWeight: '600',
     textTransform: 'capitalize',
   },
 
@@ -5033,42 +5134,42 @@ const styles = StyleSheet.create({
   },
   reviewAcknowledgeText: {
     color: colors.primary,
-    fontWeight: '700',
-    fontSize: 15,
+    fontWeight: '600',
+    fontSize: 16,
   },
   reviewFlagText: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reviewFlagHelper: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportPreviewLabel: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 16,
-    fontWeight: '900',
+    fontSize: 14,
+    lineHeight: 19,
+    fontWeight: '600',
     textTransform: 'uppercase',
   },
 
   reportTitleText: {
     color: colors.text,
-    fontSize: 16,
-    lineHeight: 22,
-    fontWeight: '900',
+    fontSize: 17,
+    lineHeight: 23,
+    fontWeight: '600',
   },
 
   reportBodyText: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 20,
+    fontSize: 15,
+    lineHeight: 23,
     fontWeight: '600',
   },
 
@@ -5078,9 +5179,9 @@ const styles = StyleSheet.create({
 
   reportListText: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '700',
+    fontSize: 15,
+    lineHeight: 22,
+    fontWeight: '600',
   },
 
   reportSourcePanel: {
@@ -5117,9 +5218,9 @@ const styles = StyleSheet.create({
 
   reportMediaAvailabilityText: {
     color: colors.mutedText,
-    fontSize: 11,
-    lineHeight: 16,
-    fontWeight: '700',
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '600',
     marginTop: 2,
   },
 
@@ -5132,16 +5233,16 @@ const styles = StyleSheet.create({
 
   managementActionTitle: {
     color: colors.text,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   managementActionMeta: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   expandActionButton: {
@@ -5159,9 +5260,9 @@ const styles = StyleSheet.create({
 
   expandActionText: {
     color: colors.primary,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 
   reportActionRow: {
@@ -5222,9 +5323,9 @@ const styles = StyleSheet.create({
 
   reportWordDownloadHint: {
     color: colors.mutedText,
-    fontSize: 11,
-    fontWeight: '700',
-    lineHeight: 15,
+    fontSize: 13,
+    fontWeight: '600',
+    lineHeight: 18,
     marginTop: 2,
   },
 
@@ -5261,16 +5362,16 @@ const styles = StyleSheet.create({
 
   reportActionTextPrimary: {
     color: '#FFFFFF',
-    fontSize: 13,
-    lineHeight: 17,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportActionText: {
     color: colors.primary,
-    fontSize: 13,
-    lineHeight: 17,
-    fontWeight: '900',
+    fontSize: 15,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportActionTextDisabled: {
@@ -5279,35 +5380,35 @@ const styles = StyleSheet.create({
 
   approvalBoundaryText: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '700',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   communicationErrorText: {
     color: colors.danger,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '800',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportPeriodNoticeText: {
     color: colors.text,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '800',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '600',
   },
 
   reportPeriodCheckNote: {
     color: colors.mutedText,
-    fontSize: 12,
-    lineHeight: 17,
+    fontSize: 14,
+    lineHeight: 20,
     fontWeight: '600',
   },
 
   primaryReviewButton: {
     minHeight: 76,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.primary,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
@@ -5334,14 +5435,14 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 19,
     lineHeight: 24,
-    fontWeight: '900',
+    fontWeight: '600',
   },
 
   primaryReviewSubtitle: {
-    color: '#EAF4FF',
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '700',
+    color: '#F3F1EC',
+    fontSize: 15,
+    lineHeight: 21,
+    fontWeight: '600',
     marginTop: spacing.xxs,
   },
 
@@ -5371,7 +5472,7 @@ const styles = StyleSheet.create({
   iconBadge: {
     width: 48,
     height: 48,
-    borderRadius: 12,
+    borderRadius: 8,
     backgroundColor: colors.primarySoft,
     alignItems: 'center',
     justifyContent: 'center',
@@ -5402,8 +5503,8 @@ const styles = StyleSheet.create({
 
   cardDescription: {
     ...typography.body,
-    fontSize: 14,
-    lineHeight: 20,
+    fontSize: 16,
+    lineHeight: 23,
   },
 
   comingSoonPill: {
@@ -5415,8 +5516,8 @@ const styles = StyleSheet.create({
 
   comingSoonText: {
     color: colors.warning,
-    fontSize: 12,
-    lineHeight: 15,
-    fontWeight: '900',
+    fontSize: 14,
+    lineHeight: 18,
+    fontWeight: '600',
   },
 });

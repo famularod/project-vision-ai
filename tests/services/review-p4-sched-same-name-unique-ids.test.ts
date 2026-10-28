@@ -176,7 +176,7 @@ describe('Review P4 P2-2: a new task on the old days of a task that moved is not
     const onB = approve(onA(withIds, TWO), B, rows(B, FIRST_MOVES_EARLIER, withIds));
     expect(pours(onB)).toEqual([`10/05/2026 ${HIS}${id}`, `10/26/2026 ${NONE}${withIds ? ' id 102' : ''}`]);
     const cRows = rows(C, ANOTHER_ON_ITS_OLD_DAYS, withIds);
-    expect(scheduleImportReviewPairingQuestions({ saved: onB.items, documents: onB.documents, importBatchId: C.importBatchId!, imported: cRows })).toEqual([]);
+    expect(scheduleImportReviewPairingQuestions({ saved: onB.items, documents: onB.documents, importBatchId: C.importBatchId!, imported: cRows })).toHaveLength(withIds ? 0 : 1); // Changed multiplicity requires confirmation without persistent IDs.
     // (It was: "10/12/2026 40% [Forms stripped] [Mike] Pending/5" as well, with id 101 where the files carry ids: the
     // task's own hidden old row, shown again beside the task.)
     expect(pours(approve(onB, C, cRows))).toEqual([`10/05/2026 ${HIS}${id}`, `10/12/2026 ${NONE}${withIds ? ' id 104' : ''}`, `10/26/2026 ${NONE}${withIds ? ' id 102' : ''}`]);

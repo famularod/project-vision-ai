@@ -9,10 +9,12 @@ import {
 
 import { PRODUCT_BRAND } from '../product-brand';
 import { spacing } from '../theme';
+import { displayFontFamily } from '../theme/typography';
 
-export const VITRUVIUS_BRAND_DARK_BLUE = '#194A91';
-export const VITRUVIUS_BRAND_SOFT_BLUE = '#E8F3FF';
-export const VITRUVIUS_BRAND_BORDER = '#B8CDE3';
+// Atelier brand mark: a cream serif V on deep green.
+export const VITRUVIUS_BRAND_MARK_INK = '#FBFAF8';
+export const VITRUVIUS_BRAND_MARK_FILL = '#1F3A2E';
+export const VITRUVIUS_BRAND_BORDER = '#E7E4DE';
 
 export function VitruviusBrandLockup({
   compact = false,
@@ -150,36 +152,37 @@ const styles = StyleSheet.create({
   mark: {
     width: 48,
     height: 48,
-    borderRadius: 15,
+    borderRadius: 10,
     borderCurve: 'continuous',
-    borderWidth: 1,
-    borderColor: VITRUVIUS_BRAND_BORDER,
-    backgroundColor: VITRUVIUS_BRAND_SOFT_BLUE,
+    backgroundColor: VITRUVIUS_BRAND_MARK_FILL,
     alignItems: 'center',
     justifyContent: 'center',
   },
   markCompact: {
     width: 44,
     height: 44,
-    borderRadius: 14,
+    borderRadius: 9,
   },
   markLarge: {
     width: 56,
     height: 56,
-    borderRadius: 17,
+    borderRadius: 8,
   },
   markText: {
-    color: VITRUVIUS_BRAND_DARK_BLUE,
-    fontSize: 32,
-    lineHeight: 37,
-    fontWeight: '900',
+    color: VITRUVIUS_BRAND_MARK_INK,
+    fontSize: 34,
+    fontFamily: displayFontFamily,
+    lineHeight: 40,
+    fontWeight: '400',
   },
   markTextCompact: {
-    fontSize: 29,
-    lineHeight: 34,
+    fontSize: 31,
+    fontFamily: displayFontFamily,
+    lineHeight: 37,
   },
   markTextLarge: {
-    fontSize: 40,
+    fontSize: 39,
+    fontFamily: displayFontFamily,
     lineHeight: 46,
   },
   copy: {
@@ -187,25 +190,25 @@ const styles = StyleSheet.create({
     minWidth: 0,
   },
   name: {
-    color: '#172033',
-    fontSize: 18,
-    lineHeight: 22,
-    fontWeight: '900',
-    letterSpacing: 0.2,
+    color: '#1A1A18',
+    fontSize: 24,
+    fontFamily: displayFontFamily,
+    lineHeight: 28,
+    fontWeight: '400',
   },
   nameCompact: {
-    fontSize: 17,
-    lineHeight: 21,
+    fontSize: 22,
+    lineHeight: 26,
   },
   subtitle: {
-    color: '#5E6A7D',
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '700',
+    color: '#66645E',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
   },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(15, 30, 52, 0.46)',
+    backgroundColor: 'rgba(26, 26, 24, 0.4)',
     padding: spacing.lg,
     alignItems: 'center',
     justifyContent: 'center',
@@ -213,14 +216,14 @@ const styles = StyleSheet.create({
   modalCard: {
     width: '100%',
     maxWidth: 520,
-    borderRadius: 24,
+    borderRadius: 12,
     borderCurve: 'continuous',
     borderWidth: 1,
     borderColor: VITRUVIUS_BRAND_BORDER,
     backgroundColor: '#FFFFFF',
     padding: spacing.xl,
     gap: spacing.md,
-    shadowColor: '#10233F',
+    shadowColor: '#1A1A18',
     shadowOpacity: 0.18,
     shadowRadius: 22,
     shadowOffset: { width: 0, height: 12 },
@@ -235,40 +238,41 @@ const styles = StyleSheet.create({
     flexShrink: 0,
   },
   modalEyebrow: {
-    color: '#3C72B7',
-    fontSize: 11,
-    lineHeight: 15,
-    fontWeight: '900',
+    color: '#1F3A2E',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '600',
     letterSpacing: 1.1,
   },
   modalTitle: {
-    color: '#172033',
-    fontSize: 23,
-    lineHeight: 29,
-    fontWeight: '900',
+    color: '#1A1A18',
+    fontSize: 26,
+    fontFamily: displayFontFamily,
+    lineHeight: 33,
+    fontWeight: '400',
   },
   modalBody: {
-    color: '#3F4A5B',
-    fontSize: 16,
-    lineHeight: 24,
+    color: '#3A3935',
+    fontSize: 17,
+    lineHeight: 26,
     fontWeight: '500',
   },
   closeButton: {
     minHeight: 48,
-    borderRadius: 14,
+    borderRadius: 10,
     borderCurve: 'continuous',
-    backgroundColor: '#147CE5',
+    backgroundColor: '#1F3A2E',
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: spacing.xs,
   },
   closeButtonPressed: {
-    backgroundColor: '#0F68C6',
+    backgroundColor: '#1F3A2E',
   },
   closeButtonText: {
     color: '#FFFFFF',
-    fontSize: 16,
-    lineHeight: 20,
-    fontWeight: '900',
+    fontSize: 17,
+    lineHeight: 21,
+    fontWeight: '600',
   },
 });

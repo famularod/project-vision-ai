@@ -165,16 +165,19 @@ const text = (value: unknown) => (typeof value === 'string' ? value.trim() : '')
 export function buildWrittenReportFacts({
   projectName,
   updates,
+  cloudUpdateReceipts,
   scheduleItems,
   now,
 }: {
   projectName: string;
   updates: readonly ProjectUpdate[];
+  /** Actual downloaded rows may retain a queued status; preserve their explicit receipt at this final selector. */
+  cloudUpdateReceipts?: boolean;
   scheduleItems: readonly ScheduleItem[];
   now: string;
 }): DAVEWrittenReportFacts {
   const moment = new Date(now);
-  const newestFirst = fieldUpdatesNewestFirst(updates);
+  const newestFirst = fieldUpdatesNewestFirst(updates, { cloudReceipts: cloudUpdateReceipts });
   const focus = whatChangedForWrittenReport({
     userUpdateEvidence: [],
     photoEvidence: [],

@@ -80,6 +80,8 @@ export class ECOSProjectQuestionError extends Error {
     public readonly traceId: string | null = null,
     /** How long the server asked the app to wait before repeating the request, when it said. */
     public readonly retryAfterSeconds: number | null = null,
+    /** Transport status only, for retaining a verified conversation after a temporary failure. */
+    public readonly httpStatus: number | null = null,
   ) {
     super(message);
     this.name = 'ECOSProjectQuestionError';
@@ -255,6 +257,7 @@ async function requestECOSProjectAnswer({
       projectQuestionErrorMessage(response?.status ?? 0, code, cleanProjectName, cleanQuestion, refusal, body),
       diagnostics?.traceId || null,
       positiveIntegerOrNull(body?.retryAfterSeconds),
+      response?.status ?? 0,
     );
   }
   const answer = parseECOSProjectQuestionAnswer(data);

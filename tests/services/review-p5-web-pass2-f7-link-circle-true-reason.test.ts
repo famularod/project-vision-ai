@@ -36,8 +36,8 @@ const grading = task('grading', 'Grading', after('excavation'));
 /** Punch walk as this save would write it: to start after Grading. */
 const saving = { ...punch, ...after('grading') };
 
-const IN_THIS_SCHEDULE = 'Not saved. “Grading” already comes after “Punch walk” (through “Excavation”). Making “Punch walk” start after “Grading” as well would put them in a circle, and the schedule could not place either one. Untick “Grading” and save again, or remove the other link first.';
-const MADE_ELSEWHERE = 'Not saved. “Grading” already comes after “Punch walk” (through “Excavation”), on another device or in another browser tab. Making “Punch walk” start after “Grading” as well would put them in a circle, and the schedule could not place either one. Untick “Grading” and save again, or remove the other link first.';
+const IN_THIS_SCHEDULE = 'Not saved. “Grading” already comes after “Punch walk” (through “Excavation”). Making “Punch walk” start after “Grading” as well would put them in a circle, and the schedule could not place either one. Untick “Grading” and save again, or remove one of the existing links in that chain first.';
+const MADE_ELSEWHERE = 'Not saved. “Grading” already comes after “Punch walk” (through “Excavation”), on another device or in another browser tab. Making “Punch walk” start after “Grading” as well would put them in a circle, and the schedule could not place either one. Untick “Grading” and save again, or remove one of the existing links in that chain first.';
 
 describe('second review, web F7 (the sentence): what the refusal says about where the other links are', () => {
   const cloud = tasksOf([excavation, grading, punch]);

@@ -1,3 +1,4 @@
+import { recentProjectItemActivity } from '../services/ProjectItemActivityPresentation';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
@@ -223,7 +224,7 @@ export function ProjectItemDetailsEditor({
       ) : null}
 
       <FieldLabel text="Activity" />
-      {(item.activity || []).slice(-3).reverse().map(entry => (
+      {recentProjectItemActivity(item.activity).map(entry => (
         <View key={entry.id} style={styles.activityCard}>
           <Text style={styles.activityText}>{entry.message}</Text>
           <Text style={styles.activityMeta}>{entry.author} • {formatActivityTime(entry.createdAt)}</Text>
@@ -261,31 +262,31 @@ function formatActivityTime(value: string) {
 const styles = StyleSheet.create({
   summaryRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
   typeBadge: { alignSelf: 'flex-start', borderRadius: 999, backgroundColor: `${colors.primary}14`, paddingHorizontal: spacing.sm, paddingVertical: 6 },
-  typeBadgeText: { color: colors.primary, fontSize: 13, fontWeight: '800' },
+  typeBadgeText: { color: colors.primary, fontSize: 15, fontWeight: '600' },
   nextActionCard: { borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, gap: 4, marginTop: spacing.sm, padding: spacing.md },
-  nextActionTitle: { color: colors.text, fontSize: 14, fontWeight: '800' },
-  nextActionText: { color: colors.text, fontSize: 15, lineHeight: 21 },
-  label: { color: colors.text, fontSize: 15, fontWeight: '700', marginBottom: 6, marginTop: 14 },
+  nextActionTitle: { color: colors.text, fontSize: 16, fontWeight: '600' },
+  nextActionText: { color: colors.text, fontSize: 16, lineHeight: 22 },
+  label: { color: colors.text, fontSize: 16, fontWeight: '600', marginBottom: 6, marginTop: 14 },
   optionGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   option: { minHeight: 44, borderRadius: 999, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, justifyContent: 'center', paddingHorizontal: spacing.md },
   optionActive: { borderColor: colors.primary, backgroundColor: colors.primary },
   optionDisabled: { opacity: 0.38 },
-  optionText: { color: colors.text, fontSize: 13, fontWeight: '800' },
+  optionText: { color: colors.text, fontSize: 15, fontWeight: '600' },
   optionTextActive: { color: '#FFFFFF' },
-  input: { minHeight: 48, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, color: colors.text, fontSize: 16, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
+  input: { minHeight: 48, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, color: colors.text, fontSize: 17, paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
   multilineInput: { minHeight: 96, textAlignVertical: 'top' },
   activityCard: { borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, gap: 4, marginBottom: spacing.sm, padding: spacing.md },
-  activityText: { color: colors.text, fontSize: 15, lineHeight: 21 },
-  activityMeta: { color: colors.mutedText, fontSize: 12, lineHeight: 17 },
+  activityText: { color: colors.text, fontSize: 16, lineHeight: 22 },
+  activityMeta: { color: colors.mutedText, fontSize: 14, lineHeight: 20 },
   addActivityButton: { minHeight: 48, borderRadius: radius.md, borderWidth: 1, borderColor: colors.primary, alignItems: 'center', justifyContent: 'center', marginTop: spacing.sm, paddingHorizontal: spacing.md },
-  addActivityText: { color: colors.primary, fontSize: 15, fontWeight: '800' },
+  addActivityText: { color: colors.primary, fontSize: 16, fontWeight: '600' },
   workflowCard: { borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surfaceMuted, gap: 5, marginTop: spacing.md, padding: spacing.md },
-  workflowTitle: { color: colors.text, fontSize: 16, fontWeight: '900' },
-  workflowDetail: { color: colors.text, fontSize: 14, lineHeight: 20 },
-  workflowMissing: { color: colors.warning, fontSize: 13, lineHeight: 19, fontWeight: '700' },
-  workflowResult: { color: colors.primary, fontSize: 13, lineHeight: 18, fontWeight: '800' },
+  workflowTitle: { color: colors.text, fontSize: 17, fontWeight: '600' },
+  workflowDetail: { color: colors.text, fontSize: 16, lineHeight: 23 },
+  workflowMissing: { color: colors.warning, fontSize: 15, lineHeight: 22, fontWeight: '600' },
+  workflowResult: { color: colors.primary, fontSize: 15, lineHeight: 21, fontWeight: '600' },
   workflowButton: { minHeight: 46, borderRadius: radius.md, backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center', marginTop: spacing.sm, paddingHorizontal: spacing.md },
   workflowButtonDisabled: { opacity: 0.42 },
-  workflowButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '900' },
+  workflowButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '600' },
   pressed: { opacity: 0.72 },
 });

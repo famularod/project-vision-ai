@@ -105,7 +105,7 @@ export function scheduleImportPairingWording(question: ScheduleImportPairingQues
     : `Saved ${question.taskName} ${index + 1}: ${savedLabel(item)}`);
   if (question.returning) {
     return {
-      intro: 'This task was on an earlier schedule and is not in your list now. If this file brings the same task back, its percent, notes and what you set on it come back with it. Nothing is carried unless you say it is the same task.',
+      intro: 'This task was on an earlier schedule and is not in your list now. If this file brings the same task back, its notes and what you set on it come back with it. Your own percent is kept unless this file states a higher percent. Nothing is carried unless you say it is the same task.',
       savedTitle, rowOption: row => `The same task: ${rowLabel(row)}`, none: 'New work',
     };
   }
@@ -178,17 +178,17 @@ export function ScheduleImportPairingCheck({
 }
 
 const styles = StyleSheet.create({
-  card: { borderRadius: 16, borderWidth: 1, borderColor: colors.warning, backgroundColor: colors.warningSoft, padding: spacing.md, gap: spacing.sm },
+  card: { borderRadius: 10, borderWidth: 1, borderColor: colors.warning, backgroundColor: colors.warningSoft, padding: spacing.md, gap: spacing.sm },
   header: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-  title: { flex: 1, color: colors.text, fontSize: 16, lineHeight: 21, fontWeight: '800' },
-  text: { color: colors.text, fontSize: 14, lineHeight: 20 },
+  title: { flex: 1, color: colors.text, fontSize: 17, lineHeight: 22, fontWeight: '600' },
+  text: { color: colors.text, fontSize: 16, lineHeight: 23 },
   saved: { gap: spacing.xs },
-  savedTitle: { color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: '800' },
-  option: { minHeight: 44, borderRadius: 12, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, paddingHorizontal: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+  savedTitle: { color: colors.text, fontSize: 16, lineHeight: 23, fontWeight: '600' },
+  option: { minHeight: 44, borderRadius: 8, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, paddingHorizontal: spacing.sm, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
   optionSelected: { borderColor: colors.primary, borderWidth: 2 },
-  optionText: { flex: 1, color: colors.text, fontSize: 14, lineHeight: 20 },
-  confirm: { minHeight: 44, alignSelf: 'flex-start', borderRadius: 12, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.surface, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+  optionText: { flex: 1, color: colors.text, fontSize: 16, lineHeight: 23 },
+  confirm: { minHeight: 44, alignSelf: 'flex-start', borderRadius: 8, borderWidth: 1, borderColor: colors.primary, backgroundColor: colors.surface, paddingHorizontal: spacing.md, flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
   confirmed: { backgroundColor: colors.primarySoft },
-  confirmText: { color: colors.primary, fontSize: 14, fontWeight: '800' },
+  confirmText: { color: colors.primary, fontSize: 16, fontWeight: '600' },
   disabled: { opacity: 0.45 },
 });

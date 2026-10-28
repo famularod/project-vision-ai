@@ -343,6 +343,24 @@ describe('a predecessor that is no longer in the schedule can still be removed (
 });
 
 describe('a link that names a row a master has since replaced (owner answer Q29), with a project chosen at the top', () => {
+  it.each([NORTH, null])('3.7: another item still names an earlier same-schedule row; editing Fence under %s needs no repair visit to that item', async chosen => {
+    const shown = [
+      task('excavation', 'Excavation', NORTH, [], { revisedFromTaskIds: ['excavation-earlier-row'], startDate: '2026-10-05', finishDate: '2026-10-09' }),
+      task('punch', 'Punch walk', NORTH, ['excavation-earlier-row']),
+      task('fence', 'Fence', NORTH),
+    ];
+    const before = JSON.stringify(shown);
+    const screen = page(shown, chosen, [task('excavation-earlier-row', 'Excavation', NORTH, [], { importBatchId: 'batch-older-master' })]);
+    fireEvent.press(screen.getByLabelText('Edit Fence'));
+    fireEvent.changeText(screen.getByLabelText('Contractor'), 'Fence Co');
+    expect(saveButton(screen)).toEqual(['Save Changes']);
+    expect(screen.queryAllByText(/missing predecessor/)).toHaveLength(0);
+    await save(screen);
+    expect([saved().id, saved().contractor]).toEqual(['fence', 'Fence Co']);
+    expect(JSON.stringify(shown)).toBe(before);
+    expect(loadDAVEWebReadOnlySnapshot).not.toHaveBeenCalled();
+  });
+
   it('is the task\'s row shown, wherever that is filed: listed by name, and saved on that row without asking the cloud', async () => {
     const shown = [
       task('excavation', 'Excavation', ROOT, [], { revisedFromTaskIds: ['excavation-earlier-row'] }),

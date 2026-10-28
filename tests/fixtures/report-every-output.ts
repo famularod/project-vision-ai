@@ -1,3 +1,4 @@
+import { fieldUpdatesNewestFirst } from '../../services/PIEEvidenceFusion';
 /**
  * HIGH item 1f (the final review's F1; the coordinator's decision): every output a report of one format produces, on
  * the phone and on the desktop, as words a test can compare. "Already sent" (and an approval) is true to the reader
@@ -20,6 +21,7 @@ import * as RI from '../../services/DAVEReportIntelligence';
 import { buildDAVEWebReportTitle, formatDAVEWebReport } from '../../services/DAVEWebOperations';
 import type { ReportDrawingReference } from '../../services/ReportDrawingReferences';
 import type * as Description from '../../services/ReportWordMediaDescription';
+import { reportWordBodyLines, type ReportWordMedia } from '../../services/ReportWordDocument';
 import type { ProjectUpdate } from '../../types';
 
 /**
@@ -138,19 +140,40 @@ const drawingWords = (reference: ReportDrawingReference, index: number) => JSON.
 export const drawingPanelWords = (references: readonly ReportDrawingReference[]): string[] =>
   references.slice(0, 6).flatMap(reference => [`${reference.projectName} · ${reference.areaName}`, reference.citation.label, drawingWords(reference, 0)]);
 
-/** A Word file: its title, its body, each photo (numbered as the file numbers it) and each drawing excerpt. */
-export function wordFileWords({ title, body, photos, drawings }: {
+/** A Word file: its title, actual body lines, numbered photos and drawings.
+ * Reuse the renderer's photo-reference transform so authority changes count
+ * exactly when they change a visible sentence, not as unused metadata.
+ */
+export function wordFileWords({ title, body, photos, drawings, taskLines }: {
   title: string;
   body: string;
   photos: ReadonlyArray<Readonly<{ photoId: string; number: number }>>;
   drawings: readonly ReportDrawingReference[];
+  taskLines?: Briefing['wordTaskLines'];
 }, updates: readonly ProjectUpdate[]): string[] {
   const byId = new Map(updates.flatMap(update => (update.photos ?? []).map(photo => [photo.id, { photo, update }] as const)));
+  const preparedPhotos: ReportWordMedia[] = photos.flatMap(({ photoId, number }) => {
+    const found = byId.get(photoId);
+    if (!found) return [];
+    const unique = updates.flatMap(update => update.photos ?? []).filter(photo => photo.id === photoId).length === 1;
+    return [{
+      ...reportWordPhotoDescription(found.photo, found.update),
+      id: photoId, kind: 'photo', displayNumber: number,
+      linkedTaskId: unique ? found.update.scheduleItemId : null,
+      projectId: found.update.projectId,
+      // The pure body transform only reads authority and numbering; these
+      // stand-ins do not fetch/encode images or replace the real DOCX tests.
+      data: new Uint8Array(), mimeType: 'image/png', width: 1, height: 1,
+    }];
+  });
   return [
-    `TITLE ${title}`, body,
+    `TITLE ${title}`, ...reportWordBodyLines(body, preparedPhotos, taskLines ?? []),
     ...photos.map(({ photoId, number }) => {
       const found = byId.get(photoId);
-      return JSON.stringify(found ? { label: `Photo ${number}`, photoId, ...reportWordPhotoDescription(found.photo, found.update) } : { label: `Photo ${number}`, photoId, missing: true });
+      return JSON.stringify(found ? {
+        label: `Photo ${number}`, photoId,
+        ...reportWordPhotoDescription(found.photo, found.update),
+      } : { label: `Photo ${number}`, photoId, missing: true });
     }),
     ...drawings.map(drawingWords),
   ];
@@ -178,7 +201,7 @@ export function phoneOutputs({ briefing, draft, format, drawingReferences, updat
     '== Reports screen', ...reportScreenWords(briefing, format),
     '== Drawing References panel', ...drawingPanelWords(drawingReferences),
     ...(format === 'project_manager' ? ['== Work Areas & Photos panel', ...workAreasPanelWords(draft)] : []),
-    '== Word file', ...wordFileWords({ title: String(report.title), body, photos: cited, drawings: drawingReferences }, updates),
+    '== Word file', ...wordFileWords({ title: String(report.title), body, photos: cited, drawings: drawingReferences, taskLines: briefing.wordTaskLines }, updates),
     '== e-mail and text photos', ...cited.map(photo => `${photo.number} ${photo.photoId}`),
   ].join('\n');
 }
@@ -193,9 +216,11 @@ export function desktopOutputs({ briefing, format, drawingReferences, updates }:
   const since = RI.reportPeriodMovementLines(briefing);
   const body = formatDAVEWebReport(briefing, format, since ? { label: briefing.reportingPeriod.label, lines: since } : null)
     .split('\n').filter(text => !/^Generated: /.test(text)).join('\n');
-  const photos = updates.flatMap(update => (update.photos ?? []).map(photo => photo.id)).map((photoId, index) => ({ photoId, number: index + 1 }));
+  // The actual desktop producer uses the written report's order, not cloud upload order (7.58).
+  const orderedUpdates = fieldUpdatesNewestFirst(updates);
+  const photos = [...new Set(orderedUpdates.flatMap(update => (update.photos ?? []).map(photo => photo.id)))].map((photoId, index) => ({ photoId, number: index + 1 }));
   return [
     '== report', body,
-    '== Word file', ...wordFileWords({ title: buildDAVEWebReportTitle(briefing, format), body, photos, drawings: drawingReferences }, updates),
+    '== Word file', ...wordFileWords({ title: buildDAVEWebReportTitle(briefing, format), body, photos, drawings: drawingReferences, taskLines: briefing.wordTaskLines }, orderedUpdates),
   ].join('\n');
 }

@@ -1,3 +1,6 @@
+import type { DAVEWebReferenceDocument } from './DAVEWebReadOnlyRepository';
+import { scheduleDocumentIsScheduleLike } from './PIEScheduleReconciliation';
+import { daveWebDocumentCanArchive } from './DAVEWebDocumentManagement';
 import {
   createClient,
   isAuthError,
@@ -147,6 +150,14 @@ export class DAVEWebSignOutNeedsConnectionError extends Error {
   constructor() {
     super('Signing out your other devices needs an internet connection, and Vitruvius could not reach the cloud just now. Nothing was signed out.');
     this.name = 'DAVEWebSignOutNeedsConnectionError';
+  }
+}
+
+/** The server asked this sign-out's refresh to wait; the session remains signed in. */
+export class DAVEWebSignOutWaitError extends Error {
+  constructor() {
+    super('The sign-in server asked Vitruvius to wait because of too many requests. Nothing was signed out. Wait a few minutes and try again.');
+    this.name = 'DAVEWebSignOutWaitError';
   }
 }
 
@@ -305,7 +316,7 @@ function keepRealtimeOnThisTabsSignIn(client: SupabaseClient): void {
 export function createDAVEWebSupabaseGateway(
   client: SupabaseClient | null,
   /** The guard the client's requests go through, when it has one (batch W1). */
-  signInGuard: (Pick<DAVEWebSignInRefreshGuard, 'gaveWay'> & Partial<Pick<DAVEWebSignInRefreshGuard, 'signInOver' | 'vouchedFor' | 'signingOut' | 'signOutConfirmed'>>) | null = null,
+  signInGuard: (Pick<DAVEWebSignInRefreshGuard, 'gaveWay'> & Partial<Pick<DAVEWebSignInRefreshGuard, 'signInOver' | 'vouchedFor' | 'signingOut' | 'signOutConfirmed' | 'serverRequestedWait'>>) | null = null,
 ) {
   if (client) keepRealtimeOnThisTabsSignIn(client);
   let artifactPathOwnerId: string | null = null;
@@ -359,6 +370,7 @@ export function createDAVEWebSupabaseGateway(
   let signInChanges = 0;
   /** The Sign Out of This Computer last made in this tab signed it out without the cloud confirming it. */
   let signedOutUnconfirmed = false;
+  let globalSignOut: { session: string; work: Promise<void> } | null = null;
 
   function invalidateAuthorization() {
     authorizationCache = null;
@@ -738,46 +750,65 @@ export function createDAVEWebSupabaseGateway(
      * sign-in page to say (`signedOutWithoutCloudConfirmation`).
      */
     async signOut(scope: DAVEWebSignOutScope = 'local'): Promise<void> {
-      signedOutUnconfirmed = false;
-      if (!client) return;
-      const ending = browserTabStoredSignIn();
-      const askAuth = () => client.auth.signOut({ scope });
-      /** All Devices is refused below when the cloud did not do it; with nothing to sign out there is nothing to confirm. */
-      let confirmedByCloud = true;
-      if (scope === 'global') {
-        // The sign-out's own refresh is not held back by a "too many requests" wait.
-        const { error } = await (signInGuard?.signingOut ? signInGuard.signingOut('everywhere', askAuth) : askAuth());
-        if (error && isAuthRetryableFetchError(error)) throw new DAVEWebSignOutNeedsConnectionError();
-        if (error) throw new Error('The desktop session could not be closed.');
-      } else {
-        try {
-          const { error } = await (signInGuard?.signingOut ? signInGuard.signingOut('here', askAuth) : askAuth());
-          // What the server itself answered, as the guard heard it; without a guard, auth-js's word that it went through.
-          confirmedByCloud = !ending ||
-            (signInGuard?.signingOut && signInGuard.signOutConfirmed ? signInGuard.signOutConfirmed() : !error);
-        } catch {
-          // Whatever auth-js left in this tab is looked at below.
-          confirmedByCloud = !ending;
-        }
-        // What auth-js could not take out is taken out here. A sign-in made here meanwhile (another session,
-        // or any at all when the tab held none as this sign-out began) is not this sign-out's to remove, as
-        // when another tab's sign-out is heard.
-        const stored = browserTabStoredSignIn();
-        const anotherSignIn = stored !== null && ending !== null &&
-          stored.sessionId !== null && ending.sessionId !== null &&
-          (stored.userId !== ending.userId || stored.sessionId !== ending.sessionId);
-        if (stored && ending && !anotherSignIn) {
-          forgetBrowserTabSignIn();
-          // auth-js tells its listeners of the sign-out it could not finish (no request: nothing is stored now).
-          await client.auth.signOut({ scope: 'local' }).catch(() => undefined);
-        }
+      const session = JSON.stringify(browserTabStoredSignIn());
+      if (scope === 'global' && globalSignOut) {
+        // A newly signed-in session must never inherit the preceding account's operation.
+        if (globalSignOut.session !== session) throw new DAVEWebSignOutNeedsConnectionError();
+        return globalSignOut.work;
       }
-      forgetSignedInReads();
-      // The account's report periods leave this browser with its sign-in (review N1).
-      if (ending) forgetDAVEWebReportPeriods(ending.userId);
-      // And so does the note the Duplicate Tab guard keeps for it (review pass 1, web L2).
-      if (ending) await signInGuard?.signInOver?.(ending.sessionId);
-      signedOutUnconfirmed = !confirmedByCloud;
+      const perform = async () => {
+        signedOutUnconfirmed = false;
+        if (!client) return;
+        const ending = browserTabStoredSignIn();
+        const askAuth = () => client.auth.signOut({ scope });
+        /** All Devices is refused below when the cloud did not do it; with nothing to sign out there is nothing to confirm. */
+        let confirmedByCloud = true;
+        if (scope === 'global') {
+          // The sign-out's own refresh is not held back by a "too many requests" wait.
+          let serverAskedToWait = false;
+          const { error } = await (signInGuard?.signingOut
+            ? signInGuard.signingOut('everywhere', askAuth, () => { serverAskedToWait = true; })
+            : askAuth());
+          if (error && (serverAskedToWait || error.status === 429 || signInGuard?.serverRequestedWait?.(error))) {
+            throw new DAVEWebSignOutWaitError();
+          }
+          if (error && isAuthRetryableFetchError(error)) throw new DAVEWebSignOutNeedsConnectionError();
+          if (error) throw new Error('The desktop session could not be closed.');
+        } else {
+          try {
+            const { error } = await (signInGuard?.signingOut ? signInGuard.signingOut('here', askAuth) : askAuth());
+            // What the server itself answered, as the guard heard it; without a guard, auth-js's word that it went through.
+            confirmedByCloud = !ending ||
+              (signInGuard?.signingOut && signInGuard.signOutConfirmed ? signInGuard.signOutConfirmed() : !error);
+          } catch {
+            // Whatever auth-js left in this tab is looked at below.
+            confirmedByCloud = !ending;
+          }
+          // What auth-js could not take out is taken out here. A sign-in made here meanwhile (another session,
+          // or any at all when the tab held none as this sign-out began) is not this sign-out's to remove, as
+          // when another tab's sign-out is heard.
+          const stored = browserTabStoredSignIn();
+          const anotherSignIn = stored !== null && ending !== null &&
+            stored.sessionId !== null && ending.sessionId !== null &&
+            (stored.userId !== ending.userId || stored.sessionId !== ending.sessionId);
+          if (stored && ending && !anotherSignIn) {
+            forgetBrowserTabSignIn();
+            // auth-js tells its listeners of the sign-out it could not finish (no request: nothing is stored now).
+            await client.auth.signOut({ scope: 'local' }).catch(() => undefined);
+          }
+        }
+        forgetSignedInReads();
+        // The account's report periods leave this browser with its sign-in (review N1).
+        if (ending) forgetDAVEWebReportPeriods(ending.userId);
+        // And so does the note the Duplicate Tab guard keeps for it (review pass 1, web L2).
+        if (ending) await signInGuard?.signInOver?.(ending.sessionId);
+        signedOutUnconfirmed = !confirmedByCloud;
+      };
+      if (scope !== 'global') return perform();
+      const work = perform();
+      const mine = { session, work };
+      globalSignOut = mine;
+      try { await work; } finally { if (globalSignOut === mine) globalSignOut = null; }
     },
 
     /**
@@ -1855,6 +1886,74 @@ export function createDAVEWebSupabaseGateway(
       return readCloudTimestamp(data) || updatedAt;
     },
 
+    /** Archive is a conditional mark only: never rewrite metadata, tasks, files or sent reports. */
+    async setAuthorizedDocumentArchived(
+      document: DAVEWebReferenceDocument,
+      archived: boolean,
+      expectedOwnerId: string,
+    ): Promise<string | null> {
+      if (!client) throw new Error('The desktop cloud connection is not configured.');
+      if (!document.id || !document.cloudUpdatedAt || !expectedOwnerId) throw staleDocumentError();
+      const generation = signInChanges;
+      const controller = new AbortController();
+      const failed = () => new DAVEWebDocumentMutationError('write_failed',
+        'The archive change could not be confirmed. Refresh Documents and try again when connected. Nothing is queued on this computer.');
+      let timer: ReturnType<typeof setTimeout>;
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => { controller.abort(); reject(failed()); }, 15_000);
+      });
+      const withinLimit = <T,>(work: PromiseLike<T>): Promise<T> => Promise.race([work, deadline]);
+      const stillThisOwner = async () => {
+        const owner = await withinLimit(requireAuthorizedOwner(client));
+        if (owner !== expectedOwnerId || generation !== signInChanges) {
+          throw new DAVEWebAuthorizationError('The sign-in changed. Refresh Documents before trying again.');
+        }
+        return owner;
+      };
+      try {
+        const ownerId = await stillThisOwner();
+        const { data: current, error: readError } = await withinLimit(client.from('reference_documents')
+          .select('id,updated_at,archived_at,category,document_data').eq('owner_id', ownerId).eq('id', document.id)
+          .abortSignal(controller.signal).maybeSingle());
+        if (readError) throw failed();
+        if (!current || current.id !== document.id || readCloudTimestamp(current) !== document.cloudUpdatedAt) throw staleDocumentError();
+        const seen = document.archivedAt ?? null;
+        const mark = typeof current.archived_at === 'string' ? current.archived_at : null;
+        // No clock ordering: either the exact mark is still there, or the owner must review the new state.
+        if (mark !== seen) throw staleDocumentError();
+        const data = isRecord(current.document_data) ? current.document_data : {};
+        const currentDocument = { ...data, category: String(data.category || current.category || '') } as unknown as ReferenceDocument;
+        if (archived && (!daveWebDocumentCanArchive(currentDocument) || scheduleDocumentIsScheduleLike(currentDocument))) {
+          throw new DAVEWebDocumentMutationError('write_failed', 'Only compliance documents can be archived here. Schedules keep their existing protections.');
+        }
+        await stillThisOwner();
+        if (controller.signal.aborted) throw failed();
+        const next = archived ? new Date().toISOString() : null;
+        let query = client.from('reference_documents').update({ archived_at: next })
+          .eq('owner_id', ownerId).eq('id', document.id).eq('updated_at', document.cloudUpdatedAt);
+        query = seen === null ? query.is('archived_at', null) : query.eq('archived_at', seen);
+        const { data: written, error } = await withinLimit(query.select('id,archived_at').abortSignal(controller.signal));
+        if (error) throw failed();
+        if (!Array.isArray(written) || written.length !== 1 || written[0].id !== document.id || (next === null ? written[0].archived_at !== null : Date.parse(written[0].archived_at) !== Date.parse(next))) {
+          throw staleDocumentError();
+        }
+        await stillThisOwner();
+        markBehindCloud('reference_documents');
+        if (cachedRowsOwnerId === ownerId && cachedAuthorizedRows) {
+          cachedAuthorizedRows = Object.freeze({ ...cachedAuthorizedRows,
+            referenceDocuments: Object.freeze(cachedAuthorizedRows.referenceDocuments.map(row =>
+              isRecord(row) && row.id === document.id ? { ...row, archived_at: next } : row)),
+          });
+        }
+        return next;
+      } catch (error) {
+        if (error instanceof DAVEWebDocumentMutationError || error instanceof DAVEWebAuthorizationError) throw error;
+        throw failed();
+      } finally {
+        clearTimeout(timer!);
+      }
+    },
+
     async deleteAuthorizedReferenceDocument(
       documentId: string,
       expectedCloudUpdatedAt: string | null,
@@ -2549,6 +2648,7 @@ function referenceDocumentRow(
     : compactECOSDocumentIndexForCloud(document);
   const {
     cloudUpdatedAt: _cloudUpdatedAt,
+    archivedAt: _archivedAt, // Archive is a separate conditional column; never save its view projection into metadata.
     cloudDetailsSeen: _cloudDetailsSeen,
     linkedScheduleItems: _linkedScheduleItems,
     importedScheduleItemCount: _importedScheduleItemCount,

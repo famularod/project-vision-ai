@@ -41,13 +41,13 @@ export function DesktopReportCheckDetails(input: DAVEReportCheckInput) {
 }
 
 const styles = StyleSheet.create({
-  card: { borderRadius: 14, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.lg, gap: spacing.md },
+  card: { borderRadius: 10, borderWidth: 1, borderColor: desktopSurfaces.border, backgroundColor: desktopSurfaces.card, padding: spacing.lg, gap: spacing.md },
   heading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.md },
   grow: { flexGrow: 1, flexShrink: 1, flexBasis: 240 },
-  title: { color: colors.text, fontSize: 15, lineHeight: 21, fontWeight: '900' },
-  meta: { color: colors.mutedText, fontSize: 13, lineHeight: 19 },
-  button: { minHeight: 42, borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.md },
-  buttonText: { color: desktopSurfaces.accent, fontSize: 14, lineHeight: 20, fontWeight: '900' },
+  title: { color: colors.text, fontSize: 16, lineHeight: 22, fontWeight: '600' },
+  meta: { color: colors.mutedText, fontSize: 15, lineHeight: 22 },
+  button: { minHeight: 42, borderRadius: 8, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, alignItems: 'center', justifyContent: 'center', paddingHorizontal: spacing.md },
+  buttonText: { color: desktopSurfaces.accent, fontSize: 16, lineHeight: 23, fontWeight: '600' },
   pressed: { opacity: 0.72 },
-  text: { color: colors.text, fontSize: 12, lineHeight: 17, fontFamily: 'monospace' },
+  text: { color: colors.text, fontSize: 14, lineHeight: 20, fontFamily: 'monospace' },
 });

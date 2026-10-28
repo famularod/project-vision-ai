@@ -323,6 +323,9 @@ export function fakeImageBytes(format: FakeImageFormat, picture?: FakePicture, f
 }
 
 export function fakeFormatOf(bytes: Uint8Array): FakeImageFormat {
+  // Real JPEGs may start with EXIF, XMP or a comment before JFIF.
+  // Match the same SOI/marker signature as the report's format detector.
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'jpeg';
   const formats = Object.keys(FAKE_SIGNATURES) as FakeImageFormat[];
   return formats.find(format => format !== 'unknown' &&
     FAKE_SIGNATURES[format].every((value, index) => bytes[index] === value)) || 'unknown';

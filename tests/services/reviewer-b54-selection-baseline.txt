@@ -1,0 +1,156 @@
+async function confirmDocumentProjectSelection() {
+    if (!documentUploadRequest) return;
+
+    const {
+      asset,
+      selected,
+      category,
+      attachToDraft,
+      areaId,
+      updateId,
+      drawingControls,
+    } = documentUploadRequest;
+
+    const drawingValidation = category === 'Drawing'
+      ? validateECOSMobileDrawingControls(drawingControls)
+      : null;
+    if (drawingValidation && !drawingValidation.valid) {
+      Alert.alert('Complete drawing details', drawingValidation.message || 'Add the required drawing details.');
+      return;
+    }
+
+    const selectedProjectNames = Array.from(selected);
+    const existingCardIds = new Set(projectDocumentsCurrentRef.current.map(document => document.id));
+    const attemptCards: Array<{ document: ProjectDocument; projectName: string }> = [];
+    let projectIndex = -1;
+    const uploadAfterReview: string[] = [];
+    let scheduleUploadIsCurrent: (() => boolean) | null = null;
+
+    // Same picked file, one ProjectDocument record per selected project -
+    // each project keeps its own independent upload/retry/status lifecycle,
+    // matching how documents already work everywhere else in this screen.
+    try {
+      const replacementDocument = category === 'Drawing' &&
+        selectedProjectNames.length === 1 &&
+        drawingControls.replacementDocumentId
+        ? referenceDocumentsCurrentRef.current.find(document =>
+            document.id === drawingControls.replacementDocumentId &&
+            canonicalReferenceCategory(document) === 'drawing' &&
+            (referenceDocumentAppliesToProject(document, selectedProjectNames[0]) ||
+              document.projectId === authorityProjectId(selectedProjectNames[0])),
+          ) || null
+        : null;
+      const drawingMetadata = category === 'Drawing'
+        ? mobileDrawingMetadataForUpload(drawingControls, replacementDocument)
+        : undefined;
+      // Open item 5.26: a schedule PDF nothing could be read from (no signal) is kept as a card first, as any document
+      // added here (it uploads as any added without signal), then reviewed; closing the review leaves the card.
+      let unreadSchedule: PIEScheduleImportBatch | null = null;
+      if (category === 'Schedule' && !attachToDraft) {
+        scheduleUploadIsCurrent = bindProjectDocumentUploadToAccount();
+        const batch = await prepareScheduleImportFromAsset(asset, selectedProjectNames);
+        if (!batch?.nothingRead) {
+          if (batch) {
+            setIncomingScheduleImportBatch(batch);
+            setScheduleProjectFilter(null);
+            setScreen('Schedule');
+          }
+          return;
+        }
+        unreadSchedule = batch;
+      }
+
+      const keptCards: ProjectDocument[] = [];
+      try {
+        for (const projectName of selected) {
+          projectIndex += 1;
+          const document = await createProjectDocumentFromAsset(asset, {
+            projectName,
+            areaId: attachToDraft ? areaId : null,
+            updateId: attachToDraft ? updateId : null,
+            category,
+            drawingMetadata,
+          });
+          const duplicate = duplicateProjectDocumentForAsset(
+            projectDocuments, document.projectId, {
+              name: document.name, mimeType: document.mimeType, size: document.sizeBytes,
+            },
+          );
+          // A created copy is not proof of a saved card. Remember only this
+          // attempt's new non-duplicate identity; the catch checks the durable ref.
+          if (!attachToDraft && !duplicate && !existingCardIds.has(document.id)) attemptCards.push({ document, projectName });
+          if (!duplicate) keptCards.push(document); // a duplicate is kept only if he says Upload Anyway
+          if (unreadSchedule && !duplicate) {
+            // 5.30: durable storage is required before saying saved. Waiting
+            // for the upload is not: the review also works without a signal.
+            await addProjectDocumentDurably(document);
+            uploadAfterReview.push(document.id);
+          } else await confirmAndAttachProjectDocument(document, duplicate, attachToDraft);
+        }
+      } catch (error) {
+        if (unreadSchedule) cancelScheduleImport(unreadSchedule); // no review says "saved"; its copy goes
+        throw error;
+      }
+      if (unreadSchedule) {
+        // One project: its tasks saved from the review make this card current, as Import This Schedule does.
+        if (selectedProjectNames.length === 1 && keptCards.length === 1) projectScheduleImportCardRef.current = { batchId: unreadSchedule.id, documentId: keptCards[0].id };
+        setIncomingScheduleImportBatch({ ...unreadSchedule, message: `The PDF is saved in Documents. ${unreadSchedule.message}` });
+        setScheduleProjectFilter(null);
+        setScreen('Schedule');
+      }
+    } catch (error) {
+      const savedCopies = attemptCards.flatMap(attempt => {
+        const made = attempt.document;
+        const saved = projectDocumentsCurrentRef.current.find(current =>
+          current.id === made.id && current.projectId === made.projectId &&
+          Boolean(made.ownedFileId) && current.ownedFileId === made.ownedFileId &&
+          current.localUri === made.localUri && current.name === made.name && current.category === made.category);
+        return saved ? [{ document: saved, projectName: attempt.projectName }] : [];
+      });
+      if (savedCopies.length > 0) {
+        const savedLines = savedCopies.map(({ document, projectName }) => {
+          const status = document.status === 'uploaded' ? 'file uploaded'
+            : document.status === 'uploading' ? 'upload in progress'
+              : document.status === 'failed' ? 'upload needs retry' : 'waiting to upload';
+          return `“${document.name}” — ${projectName} (${status}).`;
+        });
+        const currentProject = selectedProjectNames[projectIndex];
+        const currentWasSaved = savedCopies.some(copy => copy.projectName === currentProject);
+        const remainder = selectedProjectNames.slice(projectIndex + 1);
+        const reason = error instanceof Error ? error.message : 'The document add could not be completed.';
+        // Scope the old single-copy storage failure to this incomplete copy;
+        // earlier durable cards and their independent upload retries stay intact.
+        const detail = reason === 'Vitruvius could not save this document record. The selected file was not uploaded.'
+          ? 'Vitruvius could not save this document record.' : reason;
+        Alert.alert('Some document copies were saved', [
+          'Saved in Documents on this device:', ...savedLines,
+          currentProject ? currentWasSaved ? `The add for ${currentProject} did not finish.` : `The copy for ${currentProject} was not saved.` : '',
+          remainder.length ? `Not attempted: ${remainder.join(', ')}.` : '',
+          category === 'Schedule' ? 'Schedule review was not opened.' : '',
+          detail,
+          'Review Documents before adding the incomplete copies again.',
+        ].filter(Boolean).join('\n'));
+        return;
+      }
+      Alert.alert(
+        category === 'Schedule' ? 'Schedule review unavailable' : 'Document unavailable',
+        error instanceof Error
+          ? error.message
+          : 'The selected document could not be copied into secure app storage.',
+      );
+    } finally {
+      setDocumentUploadRequest(null);
+      // Keep the same sequential, silent background upload behavior as Retry.
+      // This attempt's saved copies stay retryable even after a partial add.
+      // Never start its deferred work in a different account's workspace.
+      const sameAccount = scheduleUploadIsCurrent;
+      if (sameAccount && uploadAfterReview.length) void (async () => {
+        for (const documentId of uploadAfterReview) {
+          if (!sameAccount()) break;
+          const current = projectDocumentsCurrentRef.current.find(document => document.id === documentId);
+          if (current?.status !== 'local' || current.isArchived) continue;
+          await retryProjectDocumentUpload(documentId);
+        }
+      })().catch(() => undefined);
+    }
+  }

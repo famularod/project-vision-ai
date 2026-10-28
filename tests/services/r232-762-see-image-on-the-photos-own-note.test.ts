@@ -144,17 +144,25 @@ describe('7.62: "See Image N" sits on the note of the photo\'s own update', () =
     expect(read.section).toContain(`• ${PROJECT} — Roof: See Image 1.`);
   });
 
-  it('an area\'s only plain note takes the area\'s photo numbers only when they are its own photos (4c)', () => {
+  it('a plain note never takes another update\'s photo numbers; a separate citation and Latest update keep their own provenance (4c)', () => {
     const own = phone([update('d1', 'Dock', '2026-10-09', 'Neighbor asked about weekend hours.', [photo('d1p')])]);
-    expect(own.section).toEqual([`• ${PROJECT} — Dock: Neighbor asked about weekend hours. See Image 1.`]);
+    citedOnItsOwnNote(own.section, own.numberOf, { d1p: 'Neighbor asked about weekend hours.' });
+    expect(own.section.map(line => line.replace(/^• [^—]+— /, ''))).toEqual(own.cards);
+    expect(own.section).toEqual([
+      `• ${PROJECT} — Dock: See Image 1.`,
+      `• ${PROJECT} — Dock: Neighbor asked about weekend hours.`,
+      `• ${PROJECT} — Dock: Latest update: Neighbor asked about weekend hours.`,
+    ]);
     const another = phone([
       update('d2', 'Dock', '2026-10-09', '', [photo('d2p', '', { selectedAreaName: 'Dock' })]),
       update('d3', 'Dock', '2026-10-10', 'Mail carrier left a parcel at the trailer.'),
     ]);
     citedOnItsOwnNote(another.section, another.numberOf, { d2p: '' });
+    expect(another.section.map(line => line.replace(/^• [^—]+— /, ''))).toEqual(another.cards);
     expect(another.section).toEqual([
       `• ${PROJECT} — Dock: See Image 1.`,
       `• ${PROJECT} — Dock: Mail carrier left a parcel at the trailer.`,
+      `• ${PROJECT} — Dock: Latest update: Mail carrier left a parcel at the trailer.`,
     ]);
   });
 

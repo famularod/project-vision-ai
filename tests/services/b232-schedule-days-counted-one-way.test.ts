@@ -112,9 +112,10 @@ describe('a length he typed is never changed', () => {
     [3, 3, '2026-10-28'],
     [1, 1, '2026-10-26'],
     [10, 10, '2026-11-06'],
-    // A part day is taken to the nearest whole day, and never to none, in both places, as before.
-    [2.5, 3, '2026-10-28'],
-    [0.4, 1, '2026-10-26'],
+    // Accepted 4.68 preserves exact fractional lengths in storage and analytics.
+    // Date-only scheduling occupies ceil(length) weekday slots; the finish dates stay unchanged.
+    [2.5, 2.5, '2026-10-28'],
+    [0.4, 0.4, '2026-10-26'],
   ])('%p typed on a Friday-to-Monday task counts as %p in both places, not the 2 its dates give', (typed, counted, rescheduledFinish) => {
     const typedTask = { startDate: '2026-10-09', finishDate: '2026-10-12', durationDays: typed };
     expect(lengthOnTheCriticalPath(typedTask)).toBe(counted);

@@ -1,5 +1,6 @@
 import { ecosProjectReferenceMismatchMessage } from '../../services/ECOSProjectRefusal';
 import { mentionedDAVEProject } from '../../services/DAVEConversationRouter';
+import uspsSuffixes from '../fixtures/usps-c1-street-suffixes.json';
 import { ECOS_STREET_LETTER_WORDS } from '../../supabase/functions/_shared/ecos-project-reference';
 
 // Review pass 1, L5 (older; the limit of "a project name typed with a
@@ -55,14 +56,10 @@ function differencesFor(street: string): string[] {
 }
 
 describe('L5: the street words that make a lower-case "a" the street\'s letter', () => {
-  it('the list: the ten there were, the five the review named, and the other common ones, each with its usual short form', () => {
-    expect([...ECOS_STREET_LETTER_WORDS].sort()).toEqual([
-      'alley', 'aly', 'ave', 'avenue', 'bend', 'blvd', 'bnd', 'boulevard', 'cir', 'circle', 'court', 'cove', 'cres', 'crescent',
-      'crossing', 'ct', 'cv', 'dr', 'drive', 'expressway', 'expy', 'freeway', 'fwy', 'glen', 'gln', 'heights', 'highway', 'hts', 'hwy',
-      'lane', 'ln', 'loop', 'parkway', 'pass', 'path', 'pike', 'pkwy', 'pl', 'place', 'plaza', 'plz', 'point', 'pt', 'rd', 'rdg',
-      'ridge', 'road', 'route', 'row', 'rte', 'run', 'sq', 'square', 'st', 'street', 'ter', 'terrace', 'tpke', 'trace', 'trail',
-      'trce', 'trl', 'turnpike', 'view', 'vw', 'walk', 'way', 'xing',
-    ]);
+  it('the finite vocabulary is every USPS C1 primary/common/abbreviated spelling plus the explicit issue word Close', () => {
+    expect(uspsSuffixes).toHaveLength(549);
+    expect(new Set(uspsSuffixes).size).toBe(549);
+    expect([...ECOS_STREET_LETTER_WORDS].sort()).toEqual([...uspsSuffixes, 'close'].sort());
   });
 
   it.each(['Way', 'Circle', 'Terrace', 'Trail', 'Alley'])('"24117 - 450 a %s": on 450 Elm St, "What is left at 450 A?" names that project (was answered from 450 Elm St)', street => {
