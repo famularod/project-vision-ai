@@ -37,6 +37,11 @@ import { normalizeProjectControls, reviseProjectControls } from '../../services/
 import { normalizeScheduleDependencies } from '../../services/VitruviusScheduleEngine';
 import type { ScheduleItem } from '../../types';
 
+// The upload derives priority from how soon a task finishes (7 days or less is High),
+// so the rows below are built on the upload's own day. On the real clock, from
+// 23 Oct 2026, Framing already read High, and "his first priority edit" changed nothing.
+jest.useFakeTimers({ now: new Date('2026-09-10T18:00:00.000Z'), advanceTimers: true });
+
 /* The App's own normalizer, compiled from App.tsx ----------------------------------------------------------------- */
 const APP = fs.readFileSync(path.resolve(__dirname, '../../App.tsx'), 'utf8');
 function appFunction(name: string): string {
