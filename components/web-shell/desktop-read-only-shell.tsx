@@ -7859,19 +7859,59 @@ function DesktopSidebar({
     <View style={styles.sidebar}>
       <VitruviusBrandLockup large testID="desktop-sidebar-brand-lockup" />
       <View style={styles.navigation} role="navigation">
-        {desktopNavigationItems.map(item => (
-          <DesktopNavigationLink
-            key={item.href}
-            pathname={pathname}
-            item={item}
-            selectedProject={selectedProject}
-            badgeCount={item.page === 'documents' ? documentCount : undefined}
-          />
-        ))}
+        {desktopSidebarSections.map(section => {
+          const sectionItems = desktopNavigationItems.filter(item => desktopSidebarSectionFor(item.page) === section.key);
+          if (sectionItems.length === 0) return null;
+          return (
+            <View key={section.key} style={[styles.navigationSection, section.key === 'settings' && styles.navigationSectionBottom]}>
+              {section.label ? <Text style={styles.navigationSectionLabel}>{section.label}</Text> : null}
+              {sectionItems.map(item => (
+                <DesktopNavigationLink
+                  key={item.href}
+                  pathname={pathname}
+                  item={item}
+                  selectedProject={selectedProject}
+                  badgeCount={item.page === 'documents' ? documentCount : undefined}
+                />
+              ))}
+            </View>
+          );
+        })}
       </View>
       <DesktopReleaseLabel />
     </View>
   );
+}
+
+// Sidebar grouping is presentation only: the item list and its order stay in
+// desktop-navigation.ts.
+const desktopSidebarSections: readonly { key: string; label: string | null }[] = [
+  { key: 'home', label: null },
+  { key: 'work', label: 'Work' },
+  { key: 'field', label: 'Field' },
+  { key: 'library', label: 'Library' },
+  { key: 'settings', label: null },
+];
+
+function desktopSidebarSectionFor(page: DesktopNavigationItem['page']): string {
+  switch (page) {
+    case 'overview':
+    case 'ask-ecos':
+      return 'home';
+    case 'projects':
+    case 'tasks':
+    case 'schedule':
+      return 'work';
+    case 'field-notes':
+    case 'evidence':
+    case 'photos':
+      return 'field';
+    case 'documents':
+    case 'reports':
+      return 'library';
+    default:
+      return 'settings';
+  }
 }
 
 function RefreshProjectDataButton({ onPress }: { onPress: () => void }) {
@@ -7949,16 +7989,9 @@ function DesktopNavigationLink({
         <View style={compact ? styles.topNavigationIconWrap : styles.navigationIconWrap}>
           <Ionicons
             name={item.icon}
-            size={compact ? 19 : 30}
+            size={compact ? 19 : 20}
             color={active ? desktopSurfaces.accent : desktopSurfaces.sidebarMuted}
           />
-          {!compact && badgeCount !== undefined ? (
-            <View style={styles.navigationIconCountBadge}>
-              <Text style={styles.navigationIconCountText}>
-                {badgeCount > 99 ? '99+' : String(badgeCount)}
-              </Text>
-            </View>
-          ) : null}
         </View>
         <Text
           style={[
@@ -7969,6 +8002,11 @@ function DesktopNavigationLink({
         >
           {item.label}
         </Text>
+        {!compact && badgeCount !== undefined ? (
+          <Text style={styles.navigationCountText}>
+            {badgeCount > 99 ? '99+' : String(badgeCount)}
+          </Text>
+        ) : null}
       </Pressable>
     </Link>
   );
@@ -8358,16 +8396,18 @@ const styles = StyleSheet.create({
   gateCard: { width: '100%', maxWidth: 560, borderRadius: 12, borderWidth: 1, borderColor: desktopSurfaces.borderStrong, backgroundColor: desktopSurfaces.card, padding: spacing.xxl, gap: spacing.lg, boxShadow: desktopSurfaces.shadowStrong },
   gateTitle: { color: '#1A1A18', fontSize: 37, fontFamily: displayFontFamily, lineHeight: 45, fontWeight: '400' },
   sidebar: { width: 280, minHeight: '100%', backgroundColor: desktopSurfaces.sidebar, borderRightWidth: 1, borderRightColor: desktopSurfaces.sidebarDeep, padding: spacing.lg, gap: spacing.xl, boxShadow: desktopSurfaces.sidebarShadow },
-  navigation: { gap: spacing.xs },
-  navigationLink: { minHeight: 48, borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: spacing.md, justifyContent: 'flex-start', paddingHorizontal: spacing.md },
+  navigation: { flex: 1, gap: spacing.lg },
+  navigationSection: { gap: 2 },
+  navigationSectionBottom: { marginTop: 'auto' },
+  navigationSectionLabel: { color: desktopSurfaces.sidebarMuted, fontSize: 13, lineHeight: 17, fontWeight: '500', letterSpacing: 1.2, textTransform: 'uppercase', paddingHorizontal: spacing.md, paddingBottom: spacing.xs },
+  navigationCountText: { marginLeft: 'auto', color: desktopSurfaces.sidebarMuted, fontSize: 14, lineHeight: 20, fontWeight: '500' },
+  navigationLink: { minHeight: 42, borderRadius: 6, flexDirection: 'row', alignItems: 'center', gap: spacing.md, justifyContent: 'flex-start', paddingHorizontal: spacing.md },
   topNavigationLink: { flexGrow: 1, flexBasis: 132, minWidth: 0, minHeight: 44, borderRadius: 8, flexDirection: 'row', alignItems: 'center', gap: spacing.xs, justifyContent: 'center', paddingHorizontal: spacing.sm },
   navigationLinkActive: { backgroundColor: desktopSurfaces.selected },
   navigationLabel: { color: desktopSurfaces.sidebarMuted, fontSize: 16, lineHeight: 23, fontWeight: '600' },
-  navigationLabelSidebar: { fontSize: 17, lineHeight: 23, fontWeight: '500' },
-  navigationIconWrap: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'visible' },
+  navigationLabelSidebar: { fontSize: 16, lineHeight: 22, fontWeight: '500' },
+  navigationIconWrap: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center', position: 'relative', overflow: 'visible' },
   topNavigationIconWrap: { width: 24, height: 24, alignItems: 'center', justifyContent: 'center' },
-  navigationIconCountBadge: { position: 'absolute', top: -3, right: -6, minWidth: 20, height: 20, borderRadius: 10, backgroundColor: desktopSurfaces.accent, borderWidth: 2, borderColor: desktopSurfaces.sidebar, paddingHorizontal: 3, alignItems: 'center', justifyContent: 'center' },
-  navigationIconCountText: { color: desktopSurfaces.onAccent, fontSize: 12, lineHeight: 16, fontWeight: '600' },
   navigationLabelActive: { color: desktopSurfaces.text, fontWeight: '600' },
   sidebarReleaseSummary: { marginTop: 'auto', paddingHorizontal: spacing.xs, gap: 2 },
   topReleaseSummary: { alignSelf: 'flex-start', paddingHorizontal: spacing.xs, gap: 2 },

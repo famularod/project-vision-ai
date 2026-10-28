@@ -487,7 +487,7 @@ function FieldNotesWorkspaceContent({
         styles.quickCaptureCard,
         compactMobileLayout && styles.quickCaptureCardCompact,
       ]}>
-        <View style={styles.grow}>
+        <View style={compactMobileLayout ? styles.quickCaptureCopyCompact : styles.grow}>
           <Text style={styles.quickCaptureTitle}>Add a field note</Text>
           <Text style={styles.quickCaptureText}>Capture it now. Add a project only when it helps.</Text>
         </View>
@@ -1020,12 +1020,13 @@ const styles = StyleSheet.create({
   localBannerTitle: { color: colors.text, fontSize: 16, lineHeight: 21, fontWeight: '600' },
   localBannerText: { color: colors.mutedText, fontSize: 15, lineHeight: 22, marginTop: 2 },
   quickCaptureCard: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.md, borderRadius: radius.xl, borderWidth: 1, borderColor: '#DDD9D2', backgroundColor: colors.surface, padding: spacing.md },
-  quickCaptureCardCompact: { flexDirection: 'column', alignItems: 'stretch' },
+  quickCaptureCardCompact: { flexDirection: 'column', flexWrap: 'nowrap', alignItems: 'stretch' },
+  quickCaptureCopyCompact: { alignSelf: 'stretch' },
   quickCaptureTitle: { color: colors.text, fontSize: 18, lineHeight: 23, fontWeight: '600' },
   quickCaptureText: { color: colors.mutedText, fontSize: 15, lineHeight: 22, marginTop: 2 },
   quickCaptureActions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.xs },
-  quickCaptureActionsCompact: { width: '100%', flexWrap: 'nowrap' },
-  quickCaptureButtonCompact: { flexGrow: 1, flexBasis: 0, paddingHorizontal: spacing.sm },
+  quickCaptureActionsCompact: { alignSelf: 'stretch', flexDirection: 'column', flexWrap: 'nowrap', gap: spacing.sm },
+  quickCaptureButtonCompact: { alignSelf: 'stretch', minHeight: 56, paddingHorizontal: spacing.md },
   quickRecordButton: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, borderRadius: radius.md, backgroundColor: colors.primary, paddingHorizontal: spacing.md },
   quickRecordButtonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '600' },
   quickTypeButton: { minHeight: 44, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.xs, borderRadius: radius.md, borderWidth: 1, borderColor: '#DDD9D2', backgroundColor: colors.primarySoft, paddingHorizontal: spacing.md },
