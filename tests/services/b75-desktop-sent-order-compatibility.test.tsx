@@ -285,6 +285,8 @@ function legacy71() {
 
 import fs from 'fs';
 import {world,NOW,PAIRS} from '../fixtures/b75-unicode-world';
+// Native records saved by the B75 native test (B75_RECORD); B75_BASELINE overrides with a fresh capture.
+const B75_NATIVE_RECORDS=require('path').resolve(__dirname,'../fixtures/b75-native-sent-records.json');
 const b75Records:any[]=[];
 const scenarioNames=['unicode-changed-order','unicode-already-ordered','ascii-unchanged']as const;
 function scenario(label:string){const names=label==='ascii-unchanged'?['4410 Alder Works','Zinnia Court']:[...PAIRS[0]];return world(names,label==='unicode-already-ordered'?0:1);}
@@ -295,7 +297,7 @@ async function open75(w:ReturnType<typeof world>){current?.unmount();current=nul
 afterAll(()=>{if(process.env.B75_RECORD)fs.writeFileSync(process.env.B75_RECORD,JSON.stringify(b75Records,null,2)+'\n');});
 
 it.each(scenarioNames.flatMap(label=>['project_manager','executive'].flatMap(format=>[false,true].map(legacy=>({label,format,legacy})))) )('actual desktop saved native period $label/$format/legacy=$legacy records printed output and sent recognition',async({label,format,legacy})=>{
- const rows=JSON.parse(fs.readFileSync(process.env.B75_BASELINE!,'utf8')),row=rows.find((r:any)=>r.label===label&&r.format===format);restore(row);if(legacy)legacy71();
+ const rows=JSON.parse(fs.readFileSync(process.env.B75_BASELINE||B75_NATIVE_RECORDS,'utf8')),row=rows.find((r:any)=>r.label===label&&r.format===format);restore(row);if(legacy)legacy71();
  const w=scenario(label);setClock(NOW);mockAuth.snapshot={...w.snapshot,tasksPulledAt:NOW};mockAuth.freshness={status:'connected',lastSuccessfulRefreshAt:NOW,lastAttemptAt:NOW,consecutiveFailures:0};
  current=render(<DesktopReadOnlyShell page="reports"/>);
  await screen.findByLabelText('Since the last report',{},SLOW);await settle();

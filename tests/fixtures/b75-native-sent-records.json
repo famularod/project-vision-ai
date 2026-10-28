@@ -1,0 +1,418 @@
+[
+  {
+    "label": "unicode-changed-order",
+    "format": "project_manager",
+    "body": "Please review the updates below and look for action items assigned to your name.\n\nCURRENT STATUS\n2 projects project status.\n\nSINCE THE LAST REPORT\n• Sending this report establishes the baseline for the next reporting period.\n\nCOMPLETED WORK\n• No completed work is recorded in the current project scope.\n\nWORK AREAS / PHOTO NOTES\n• Башня Восток — Bay 0: Temporary fencing was installed along the street frontage. See Image 2.\n• Башня Восток — Yard 0: Conduit was trenched along the yard fence.\n• Башня Восток — Башня Восток: Latest update: Temporary fencing was installed along the street frontage. Latest photo: Fence panel 0 Schedule focus: Install panels 0 (due 11/01/2026).\n• Башня Север — Bay 1: Temporary fencing was installed along the street frontage. See Image 1.\n• Башня Север — Yard 1: Conduit was trenched along the yard fence.\n\nPlease let me know if you have any questions.",
+    "stores": [
+      [
+        "phone",
+        [
+          [
+            "@vitruvius/report-snapshots/v1:selected-projects:project_manager",
+            "{\"version\":\"dave-report-snapshot/1.0\",\"scopeKey\":\"selected-projects\",\"capturedAt\":\"2026-10-18T12:00:00.000Z\",\"sourceFingerprint\":\"dave-report-source/3.0:dc7b8201\",\"tasks\":[],\"replacedLookaheads\":[],\"sourceReferences\":[],\"reportFormat\":\"project_manager\",\"appTextKey\":\"652f5f962230af13\",\"deliveredAt\":\"2026-10-18T12:00:00.000Z\",\"outOfPlan\":{\"since\":\"2026-10-18T12:00:00.000Z\",\"tasks\":[]},\"sentBy\":\"1d3a14a5-d254-4b01-ab87-de09ebba405f\"}"
+          ],
+          [
+            "@vitruvius/report-snapshots/own-sends/v1",
+            "[\"2026-10-18T12:00:00.000Z\"]"
+          ],
+          [
+            "@vitruvius/report-sender-id/v1",
+            "1d3a14a5-d254-4b01-ab87-de09ebba405f"
+          ]
+        ]
+      ]
+    ],
+    "cloud": [
+      [
+        "selected-projects|project_manager",
+        {
+          "snapshot": {
+            "version": "dave-report-snapshot/1.0",
+            "scopeKey": "selected-projects",
+            "capturedAt": "2026-10-18T12:00:00.000Z",
+            "sourceFingerprint": "dave-report-source/3.0:dc7b8201",
+            "tasks": [],
+            "replacedLookaheads": [],
+            "sourceReferences": [],
+            "reportFormat": "project_manager",
+            "appTextKey": "652f5f962230af13",
+            "deliveredAt": "2026-10-18T12:00:00.000Z",
+            "outOfPlan": {
+              "since": "2026-10-18T12:00:00.000Z",
+              "tasks": []
+            },
+            "sentBy": "1d3a14a5-d254-4b01-ab87-de09ebba405f"
+          },
+          "deliveredAt": "2026-10-18T12:00:00.000Z"
+        }
+      ]
+    ],
+    "modern": {
+      "share": true,
+      "approve": false,
+      "review": false
+    },
+    "legacy": {
+      "share": false,
+      "approve": true,
+      "review": true
+    }
+  },
+  {
+    "label": "unicode-changed-order",
+    "format": "executive",
+    "body": "Please review the updates below and look for action items assigned to your name.\n\nEXECUTIVE STATUS\n2 projects project status.\n\nSINCE THE LAST REPORT\n• Sending this report establishes the baseline for the next reporting period.\n\nCOMPLETED WORK\n• No completed work is recorded in the current project scope.\n\nPROJECT POSITION\n• Башня Восток: 0% complete; No current schedule dates are available.\n• Башня Север: 0% complete; No current schedule dates are available.\n\nPlease let me know if you have any questions.",
+    "stores": [
+      [
+        "phone",
+        [
+          [
+            "@vitruvius/report-snapshots/v1:selected-projects:executive",
+            "{\"version\":\"dave-report-snapshot/1.0\",\"scopeKey\":\"selected-projects\",\"capturedAt\":\"2026-10-18T12:00:00.000Z\",\"sourceFingerprint\":\"dave-report-source/3.0:e1d2b269\",\"tasks\":[],\"replacedLookaheads\":[],\"sourceReferences\":[],\"reportFormat\":\"executive\",\"appTextKey\":\"46f2c1cad5026bed\",\"deliveredAt\":\"2026-10-18T12:00:00.000Z\",\"outOfPlan\":{\"since\":\"2026-10-18T12:00:00.000Z\",\"tasks\":[]},\"sentBy\":\"917faec0-6b82-452c-a2ee-18d2ced62c1a\"}"
+          ],
+          [
+            "@vitruvius/report-snapshots/own-sends/v1",
+            "[\"2026-10-18T12:00:00.000Z\"]"
+          ],
+          [
+            "@vitruvius/report-sender-id/v1",
+            "917faec0-6b82-452c-a2ee-18d2ced62c1a"
+          ]
+        ]
+      ]
+    ],
+    "cloud": [
+      [
+        "selected-projects|executive",
+        {
+          "snapshot": {
+            "version": "dave-report-snapshot/1.0",
+            "scopeKey": "selected-projects",
+            "capturedAt": "2026-10-18T12:00:00.000Z",
+            "sourceFingerprint": "dave-report-source/3.0:e1d2b269",
+            "tasks": [],
+            "replacedLookaheads": [],
+            "sourceReferences": [],
+            "reportFormat": "executive",
+            "appTextKey": "46f2c1cad5026bed",
+            "deliveredAt": "2026-10-18T12:00:00.000Z",
+            "outOfPlan": {
+              "since": "2026-10-18T12:00:00.000Z",
+              "tasks": []
+            },
+            "sentBy": "917faec0-6b82-452c-a2ee-18d2ced62c1a"
+          },
+          "deliveredAt": "2026-10-18T12:00:00.000Z"
+        }
+      ]
+    ],
+    "modern": {
+      "share": true,
+      "approve": false,
+      "review": false
+    },
+    "legacy": {
+      "share": false,
+      "approve": true,
+      "review": true
+    }
+  },
+  {
+    "label": "unicode-already-ordered",
+    "format": "project_manager",
+    "body": "Please review the updates below and look for action items assigned to your name.\n\nCURRENT STATUS\n2 projects project status.\n\nSINCE THE LAST REPORT\n• Sending this report establishes the baseline for the next reporting period.\n\nCOMPLETED WORK\n• No completed work is recorded in the current project scope.\n\nWORK AREAS / PHOTO NOTES\n• Башня Восток — Bay 0: Temporary fencing was installed along the street frontage. See Image 1.\n• Башня Восток — Yard 0: Conduit was trenched along the yard fence.\n• Башня Восток — Башня Восток: Latest update: Temporary fencing was installed along the street frontage. Latest photo: Fence panel 0 Schedule focus: Install panels 0 (due 11/01/2026).\n• Башня Север — Bay 1: Temporary fencing was installed along the street frontage. See Image 2.\n• Башня Север — Yard 1: Conduit was trenched along the yard fence.\n\nPlease let me know if you have any questions.",
+    "stores": [
+      [
+        "phone",
+        [
+          [
+            "@vitruvius/report-snapshots/v1:selected-projects:project_manager",
+            "{\"version\":\"dave-report-snapshot/1.0\",\"scopeKey\":\"selected-projects\",\"capturedAt\":\"2026-10-18T12:00:00.000Z\",\"sourceFingerprint\":\"dave-report-source/3.0:e279a4ec\",\"tasks\":[],\"replacedLookaheads\":[],\"sourceReferences\":[],\"reportFormat\":\"project_manager\",\"appTextKey\":\"00e42308a1fd9ea5\",\"deliveredAt\":\"2026-10-18T12:00:00.000Z\",\"outOfPlan\":{\"since\":\"2026-10-18T12:00:00.000Z\",\"tasks\":[]},\"sentBy\":\"002cca2c-fe83-4e12-899b-9d623d3e9c36\"}"
+          ],
+          [
+            "@vitruvius/report-snapshots/own-sends/v1",
+            "[\"2026-10-18T12:00:00.000Z\"]"
+          ],
+          [
+            "@vitruvius/report-sender-id/v1",
+            "002cca2c-fe83-4e12-899b-9d623d3e9c36"
+          ]
+        ]
+      ]
+    ],
+    "cloud": [
+      [
+        "selected-projects|project_manager",
+        {
+          "snapshot": {
+            "version": "dave-report-snapshot/1.0",
+            "scopeKey": "selected-projects",
+            "capturedAt": "2026-10-18T12:00:00.000Z",
+            "sourceFingerprint": "dave-report-source/3.0:e279a4ec",
+            "tasks": [],
+            "replacedLookaheads": [],
+            "sourceReferences": [],
+            "reportFormat": "project_manager",
+            "appTextKey": "00e42308a1fd9ea5",
+            "deliveredAt": "2026-10-18T12:00:00.000Z",
+            "outOfPlan": {
+              "since": "2026-10-18T12:00:00.000Z",
+              "tasks": []
+            },
+            "sentBy": "002cca2c-fe83-4e12-899b-9d623d3e9c36"
+          },
+          "deliveredAt": "2026-10-18T12:00:00.000Z"
+        }
+      ]
+    ],
+    "modern": {
+      "share": true,
+      "approve": false,
+      "review": false
+    },
+    "legacy": {
+      "share": false,
+      "approve": true,
+      "review": true
+    }
+  },
+  {
+    "label": "unicode-already-ordered",
+    "format": "executive",
+    "body": "Please review the updates below and look for action items assigned to your name.\n\nEXECUTIVE STATUS\n2 projects project status.\n\nSINCE THE LAST REPORT\n• Sending this report establishes the baseline for the next reporting period.\n\nCOMPLETED WORK\n• No completed work is recorded in the current project scope.\n\nPROJECT POSITION\n• Башня Восток: 0% complete; No current schedule dates are available.\n• Башня Север: 0% complete; No current schedule dates are available.\n\nPlease let me know if you have any questions.",
+    "stores": [
+      [
+        "phone",
+        [
+          [
+            "@vitruvius/report-snapshots/v1:selected-projects:executive",
+            "{\"version\":\"dave-report-snapshot/1.0\",\"scopeKey\":\"selected-projects\",\"capturedAt\":\"2026-10-18T12:00:00.000Z\",\"sourceFingerprint\":\"dave-report-source/3.0:be92e00e\",\"tasks\":[],\"replacedLookaheads\":[],\"sourceReferences\":[],\"reportFormat\":\"executive\",\"appTextKey\":\"46f2c1cad5026bed\",\"deliveredAt\":\"2026-10-18T12:00:00.000Z\",\"outOfPlan\":{\"since\":\"2026-10-18T12:00:00.000Z\",\"tasks\":[]},\"sentBy\":\"e8081e49-0301-4e67-bb7f-d5ed08064a3d\"}"
+          ],
+          [
+            "@vitruvius/report-snapshots/own-sends/v1",
+            "[\"2026-10-18T12:00:00.000Z\"]"
+          ],
+          [
+            "@vitruvius/report-sender-id/v1",
+            "e8081e49-0301-4e67-bb7f-d5ed08064a3d"
+          ]
+        ]
+      ]
+    ],
+    "cloud": [
+      [
+        "selected-projects|executive",
+        {
+          "snapshot": {
+            "version": "dave-report-snapshot/1.0",
+            "scopeKey": "selected-projects",
+            "capturedAt": "2026-10-18T12:00:00.000Z",
+            "sourceFingerprint": "dave-report-source/3.0:be92e00e",
+            "tasks": [],
+            "replacedLookaheads": [],
+            "sourceReferences": [],
+            "reportFormat": "executive",
+            "appTextKey": "46f2c1cad5026bed",
+            "deliveredAt": "2026-10-18T12:00:00.000Z",
+            "outOfPlan": {
+              "since": "2026-10-18T12:00:00.000Z",
+              "tasks": []
+            },
+            "sentBy": "e8081e49-0301-4e67-bb7f-d5ed08064a3d"
+          },
+          "deliveredAt": "2026-10-18T12:00:00.000Z"
+        }
+      ]
+    ],
+    "modern": {
+      "share": true,
+      "approve": false,
+      "review": false
+    },
+    "legacy": {
+      "share": false,
+      "approve": true,
+      "review": true
+    }
+  },
+  {
+    "label": "ascii-unchanged",
+    "format": "project_manager",
+    "body": "Please review the updates below and look for action items assigned to your name.\n\nCURRENT STATUS\n2 projects: 0 of 2 tasks complete, 2 open, 2 in progress.\n\nSINCE THE LAST REPORT\n• Sending this report establishes the baseline for the next reporting period.\n\nCOMPLETED WORK\n• No completed work is recorded in the current project scope.\n\nCURRENT WORK\n• 4410 Alder Works — Install panels 0 (Bay 0): In Progress; 25% complete; due 11/01/2026.\n• Zinnia Court — Install panels 1 (Bay 1): In Progress; 50% complete; due 11/01/2026.\n\nWORK AREAS / PHOTO NOTES\n• 4410 Alder Works — 4410 Bay 0: Temporary fencing was installed along the street frontage. See Image 2.\n• 4410 Alder Works — 4410 Yard 0: Conduit was trenched along the yard fence.\n• 4410 Alder Works — 4410 Alder Works: Latest update: Temporary fencing was installed along the street frontage. Latest photo: Fence panel 0 Schedule focus: Install panels 0 (due 11/01/2026).\n• Zinnia Court — Bay 1: Temporary fencing was installed along the street frontage. See Image 1.\n• Zinnia Court — Yard 1: Conduit was trenched along the yard fence.\n\nPlease let me know if you have any questions.",
+    "stores": [
+      [
+        "phone",
+        [
+          [
+            "@vitruvius/report-snapshots/v1:4410%20alder%20works%7Czinnia%20court:project_manager",
+            "{\"version\":\"dave-report-snapshot/1.0\",\"scopeKey\":\"4410 alder works|zinnia court\",\"capturedAt\":\"2026-10-18T12:00:00.000Z\",\"sourceFingerprint\":\"dave-report-source/3.0:012f3a29\",\"tasks\":[{\"taskId\":\"b75-task-0\",\"projectName\":\"4410 Alder Works\",\"taskName\":\"Install panels 0\",\"areaName\":\"Bay 0\",\"owner\":\"Dana\",\"status\":\"In Progress\",\"percentComplete\":25,\"finishDate\":\"11/01/2026\",\"urgency\":\"upcoming\",\"approvalStatus\":null,\"estimatedScheduleImpactDays\":null,\"contentKey\":\"task-content/1:82660f0e\",\"activityKey\":\"task-activity/1:cd7cf6a5\"},{\"taskId\":\"b75-task-1\",\"projectName\":\"Zinnia Court\",\"taskName\":\"Install panels 1\",\"areaName\":\"Bay 1\",\"owner\":\"Dana\",\"status\":\"In Progress\",\"percentComplete\":50,\"finishDate\":\"11/01/2026\",\"urgency\":\"upcoming\",\"approvalStatus\":null,\"estimatedScheduleImpactDays\":null,\"contentKey\":\"task-content/1:ba2e72ad\",\"activityKey\":\"task-activity/1:cd7cf6a5\"}],\"replacedLookaheads\":[],\"sourceReferences\":[],\"reportFormat\":\"project_manager\",\"appTextKey\":\"df464a32e4d448f1\",\"deliveredAt\":\"2026-10-18T12:00:00.000Z\",\"outOfPlan\":{\"since\":\"2026-10-18T12:00:00.000Z\",\"tasks\":[]},\"sentBy\":\"4d8663a5-64ff-4389-b853-b10146349149\"}"
+          ],
+          [
+            "@vitruvius/report-snapshots/own-sends/v1",
+            "[\"2026-10-18T12:00:00.000Z\"]"
+          ],
+          [
+            "@vitruvius/report-sender-id/v1",
+            "4d8663a5-64ff-4389-b853-b10146349149"
+          ]
+        ]
+      ]
+    ],
+    "cloud": [
+      [
+        "4410 alder works|zinnia court|project_manager",
+        {
+          "snapshot": {
+            "version": "dave-report-snapshot/1.0",
+            "scopeKey": "4410 alder works|zinnia court",
+            "capturedAt": "2026-10-18T12:00:00.000Z",
+            "sourceFingerprint": "dave-report-source/3.0:012f3a29",
+            "tasks": [
+              {
+                "taskId": "b75-task-0",
+                "projectName": "4410 Alder Works",
+                "taskName": "Install panels 0",
+                "areaName": "Bay 0",
+                "owner": "Dana",
+                "status": "In Progress",
+                "percentComplete": 25,
+                "finishDate": "11/01/2026",
+                "urgency": "upcoming",
+                "approvalStatus": null,
+                "estimatedScheduleImpactDays": null,
+                "contentKey": "task-content/1:82660f0e",
+                "activityKey": "task-activity/1:cd7cf6a5"
+              },
+              {
+                "taskId": "b75-task-1",
+                "projectName": "Zinnia Court",
+                "taskName": "Install panels 1",
+                "areaName": "Bay 1",
+                "owner": "Dana",
+                "status": "In Progress",
+                "percentComplete": 50,
+                "finishDate": "11/01/2026",
+                "urgency": "upcoming",
+                "approvalStatus": null,
+                "estimatedScheduleImpactDays": null,
+                "contentKey": "task-content/1:ba2e72ad",
+                "activityKey": "task-activity/1:cd7cf6a5"
+              }
+            ],
+            "replacedLookaheads": [],
+            "sourceReferences": [],
+            "reportFormat": "project_manager",
+            "appTextKey": "df464a32e4d448f1",
+            "deliveredAt": "2026-10-18T12:00:00.000Z",
+            "outOfPlan": {
+              "since": "2026-10-18T12:00:00.000Z",
+              "tasks": []
+            },
+            "sentBy": "4d8663a5-64ff-4389-b853-b10146349149"
+          },
+          "deliveredAt": "2026-10-18T12:00:00.000Z"
+        }
+      ]
+    ],
+    "modern": {
+      "share": true,
+      "approve": false,
+      "review": false
+    },
+    "legacy": {
+      "share": true,
+      "approve": false,
+      "review": false
+    }
+  },
+  {
+    "label": "ascii-unchanged",
+    "format": "executive",
+    "body": "Please review the updates below and look for action items assigned to your name.\n\nEXECUTIVE STATUS\n2 projects: 0 of 2 tasks complete, 2 open, 2 in progress.\n\nSINCE THE LAST REPORT\n• Sending this report establishes the baseline for the next reporting period.\n\nCOMPLETED WORK\n• No completed work is recorded in the current project scope.\n\nPROJECT POSITION\n• 4410 Alder Works: 25% complete; 1 open task; none overdue or due within 7 days.\n• Zinnia Court: 50% complete; 1 open task; none overdue or due within 7 days.\n\nPlease let me know if you have any questions.",
+    "stores": [
+      [
+        "phone",
+        [
+          [
+            "@vitruvius/report-snapshots/v1:4410%20alder%20works%7Czinnia%20court:executive",
+            "{\"version\":\"dave-report-snapshot/1.0\",\"scopeKey\":\"4410 alder works|zinnia court\",\"capturedAt\":\"2026-10-18T12:00:00.000Z\",\"sourceFingerprint\":\"dave-report-source/3.0:fd1d1bf5\",\"tasks\":[{\"taskId\":\"b75-task-0\",\"projectName\":\"4410 Alder Works\",\"taskName\":\"Install panels 0\",\"areaName\":\"Bay 0\",\"owner\":\"Dana\",\"status\":\"In Progress\",\"percentComplete\":25,\"finishDate\":\"11/01/2026\",\"urgency\":\"upcoming\",\"approvalStatus\":null,\"estimatedScheduleImpactDays\":null,\"contentKey\":\"task-content/1:82660f0e\",\"activityKey\":\"task-activity/1:cd7cf6a5\"},{\"taskId\":\"b75-task-1\",\"projectName\":\"Zinnia Court\",\"taskName\":\"Install panels 1\",\"areaName\":\"Bay 1\",\"owner\":\"Dana\",\"status\":\"In Progress\",\"percentComplete\":50,\"finishDate\":\"11/01/2026\",\"urgency\":\"upcoming\",\"approvalStatus\":null,\"estimatedScheduleImpactDays\":null,\"contentKey\":\"task-content/1:ba2e72ad\",\"activityKey\":\"task-activity/1:cd7cf6a5\"}],\"replacedLookaheads\":[],\"sourceReferences\":[],\"reportFormat\":\"executive\",\"appTextKey\":\"e65db916446b0a01\",\"deliveredAt\":\"2026-10-18T12:00:00.000Z\",\"outOfPlan\":{\"since\":\"2026-10-18T12:00:00.000Z\",\"tasks\":[]},\"sentBy\":\"42340651-6f5c-4666-8d52-6a7d61fc483d\"}"
+          ],
+          [
+            "@vitruvius/report-snapshots/own-sends/v1",
+            "[\"2026-10-18T12:00:00.000Z\"]"
+          ],
+          [
+            "@vitruvius/report-sender-id/v1",
+            "42340651-6f5c-4666-8d52-6a7d61fc483d"
+          ]
+        ]
+      ]
+    ],
+    "cloud": [
+      [
+        "4410 alder works|zinnia court|executive",
+        {
+          "snapshot": {
+            "version": "dave-report-snapshot/1.0",
+            "scopeKey": "4410 alder works|zinnia court",
+            "capturedAt": "2026-10-18T12:00:00.000Z",
+            "sourceFingerprint": "dave-report-source/3.0:fd1d1bf5",
+            "tasks": [
+              {
+                "taskId": "b75-task-0",
+                "projectName": "4410 Alder Works",
+                "taskName": "Install panels 0",
+                "areaName": "Bay 0",
+                "owner": "Dana",
+                "status": "In Progress",
+                "percentComplete": 25,
+                "finishDate": "11/01/2026",
+                "urgency": "upcoming",
+                "approvalStatus": null,
+                "estimatedScheduleImpactDays": null,
+                "contentKey": "task-content/1:82660f0e",
+                "activityKey": "task-activity/1:cd7cf6a5"
+              },
+              {
+                "taskId": "b75-task-1",
+                "projectName": "Zinnia Court",
+                "taskName": "Install panels 1",
+                "areaName": "Bay 1",
+                "owner": "Dana",
+                "status": "In Progress",
+                "percentComplete": 50,
+                "finishDate": "11/01/2026",
+                "urgency": "upcoming",
+                "approvalStatus": null,
+                "estimatedScheduleImpactDays": null,
+                "contentKey": "task-content/1:ba2e72ad",
+                "activityKey": "task-activity/1:cd7cf6a5"
+              }
+            ],
+            "replacedLookaheads": [],
+            "sourceReferences": [],
+            "reportFormat": "executive",
+            "appTextKey": "e65db916446b0a01",
+            "deliveredAt": "2026-10-18T12:00:00.000Z",
+            "outOfPlan": {
+              "since": "2026-10-18T12:00:00.000Z",
+              "tasks": []
+            },
+            "sentBy": "42340651-6f5c-4666-8d52-6a7d61fc483d"
+          },
+          "deliveredAt": "2026-10-18T12:00:00.000Z"
+        }
+      ]
+    ],
+    "modern": {
+      "share": true,
+      "approve": false,
+      "review": false
+    },
+    "legacy": {
+      "share": true,
+      "approve": false,
+      "review": false
+    }
+  }
+]

@@ -80,11 +80,7 @@ import {
 } from './services/DAVEOperationalRefresh';
 import { createDAVEOperationalRealtimeApplier, createDAVEOperationalRealtimeCommit, mergeProjectNames } from './services/DAVEOperationalRealtimeApplication';
 import { reconcileDAVEOperationalProjects } from './services/DAVEOperationalProjectRecovery';
-import {
-  isLegacyNonProjectShellName,
-  legacyNonProjectShellNamesPresent,
-  LEGACY_NON_PROJECT_SHELL_NAMES,
-} from './services/CrossDeviceVisibility';
+import { isLegacyNonProjectShellName, legacyNonProjectShellNamesPresent, LEGACY_NON_PROJECT_SHELL_NAMES } from './services/CrossDeviceVisibility';
 import { isReservedLegacyProjectName, RESERVED_LEGACY_PROJECT_NAME_MESSAGE } from './services/ReservedProjectNames';
 import { AdminScreen, SignInModal } from './screens/AdminScreen';
 import { ReportsScreen } from './screens/ReportsScreen';
@@ -340,11 +336,7 @@ import { restoreProjectDocumentBytesFromCloud } from './services/ExpoProjectDocu
 import { logStartupDiagnostic } from './services/StartupDiagnostics';
 import { startNewUpdate } from './services/StartNewUpdate';
 import { cleanupProjectPhotoDirectory } from './services/PhotoDirectoryCleanupPolicy';
-import {
-  normalizeStartupArray,
-  readStartupJson,
-  readStartupJsonArray,
-} from './services/StartupRecovery';
+import { normalizeStartupArray, readStartupJson, readStartupJsonArray } from './services/StartupRecovery';
 import {
   isStartupContactBook,
   isStartupDeletedUpdateRecord,
@@ -489,11 +481,7 @@ import {
   photoDisplayResultIsReviewCandidate,
   withStoredPhotoComparisonCap,
 } from './services/PhotoAssessment';
-import {
-  attentionCategoryForPhotoCategory,
-  buildStableAttentionItemId,
-  dedupeAttentionItemsById,
-} from './services/PIEAttentionIdentity';
+import { attentionCategoryForPhotoCategory, buildStableAttentionItemId, dedupeAttentionItemsById } from './services/PIEAttentionIdentity';
 import { buildECOSTalkProjectIntelligence } from './services/ECOSTalkProjectIntelligence';
 import { talkContextProjectForScreen } from './services/ECOSTalkProjectContext';
 import { selectActionableDailyBriefItems } from './services/DAVEDailyBrief';
@@ -545,20 +533,12 @@ import {
 } from './services/DAVEAskConversation';
 import { type DAVEAskAnswer, type DAVEAskEvidence } from './services/DAVEAsk';
 import type { DAVEVoiceUnderstandingResponse } from './services/DAVEVoiceUnderstanding';
-import {
-  buildDAVEProjectWalkContext,
-  type DAVEProjectWalkContext,
-  type DAVEProjectWalkLocationInput,
-} from './services/DAVEProjectWalk';
+import { buildDAVEProjectWalkContext, type DAVEProjectWalkContext, type DAVEProjectWalkLocationInput } from './services/DAVEProjectWalk';
 import {
   buildDAVEProjectWalkFieldUpdateDraft,
   unusedConfirmedProjectWalkMemories,
 } from './services/DAVEProjectWalkFieldUpdate';
-import {
-  createCaptureMemory,
-  type DAVECaptureMemory,
-  type DAVEConfirmedCaptureMemory,
-} from './services/DAVECaptureMemory';
+import { createCaptureMemory, type DAVECaptureMemory, type DAVEConfirmedCaptureMemory } from './services/DAVECaptureMemory';
 import {
   DAVE_CAPTURE_MEMORY_STORAGE_KEY,
   captureMemoryRepositoryStorageValue,
@@ -618,11 +598,7 @@ import { createLocalPIEDecisionHistoryActions } from './services/LocalPIEDecisio
 import { buildVerifiedLearningEventsFromDecisionLedger } from './services/PIEDecisionOutcomeLearning';
 import type { PIEExecutiveJudgmentRecord } from './services/PIEExecutiveJudgmentRepository';
 import type { PIEReportDraft, PIEReportType } from './services/domains/reporting';
-import {
-  oneAtATime,
-  renderNativeReportDrawingPreview,
-  resolveNativeReportWordMedia,
-} from './services/ReportWordMedia.native';
+import { oneAtATime, renderNativeReportDrawingPreview, resolveNativeReportWordMedia } from './services/ReportWordMedia.native';
 import type { ReportDrawingReference } from './services/ReportDrawingReferences';
 import {
   buildPIEScheduleReconciliation,
@@ -693,11 +669,7 @@ import {
   updateHasOpenDAVEBlocker,
   updateHasOpenDAVESafetyConcern,
 } from './services/DAVEProjectBlockerState';
-import {
-  canonicalizeDAVEScheduleItems,
-  daveRegisteredIdentityNames,
-  scheduleTaskGroupName,
-} from './services/DAVEIdentity';
+import { canonicalizeDAVEScheduleItems, daveRegisteredIdentityNames, scheduleTaskGroupName } from './services/DAVEIdentity';
 import { useIdentityAliasCleanup } from './hooks/use-identity-alias-cleanup';
 import { useKeptTalkCapture } from './hooks/use-kept-talk-capture';
 import { constructionRelevantObservations } from './services/dave-construction-relevance';
